@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Llangón Web App</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <img src="/static/logo-llangon.png" alt="Asesores Llangon" class="sidebar-logo">
+        <div>
+          <p class="eyebrow">Panel privado</p>
+          <h1>Llangón Web App</h1>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav" aria-label="Navegación principal">
+        <p class="nav-group-title">Trabajo diario</p>
+        <button id="days-button" class="nav-item" data-nav-section="days">Días Infonalia</button>
+        <button id="list-button" class="nav-item" data-nav-section="licitaciones">Todas las licitaciones</button>
+        <button id="calendar-button" class="nav-item" data-nav-section="calendar">Calendario</button>
+
+        <p class="nav-group-title nav-future-title">Próximos módulos</p>
+        <button class="nav-item nav-item-muted" type="button" disabled>Clientes</button>
+        <button class="nav-item nav-item-muted" type="button" disabled>Tareas</button>
+        <button class="nav-item nav-item-muted" type="button" disabled>Requerimientos</button>
+
+        <p class="nav-group-title" data-admin-only hidden>Administración</p>
+        <button id="news-admin-button" class="nav-item" data-nav-section="news-admin" data-admin-only hidden>Noticias</button>
+        <button id="config-button" class="nav-item" data-nav-section="config" data-admin-only hidden>Configuración</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span id="session-user" class="session-user"></span>
+        <a href="/logout" class="logout-link">Salir</a>
+      </div>
+    </aside>
+
+    <div class="main-area">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="page-kicker">Bandeja privada</p>
+          <h1 id="page-title">Días Infonalia</h1>
+        </div>
+        <div class="topbar-actions">
+          <button id="notifications-button" class="secondary" data-nav-section="notifications">Buzón</button>
+          <button id="import-button" class="primary" data-admin-only hidden>Importar</button>
+          <button id="new-button" class="secondary" data-admin-only hidden>Nueva licitación</button>
+        </div>
+      </header>
+
+      <main class="shell">
+    <section id="days-section">
+      <section id="nuria-days-tabs" class="segmented" hidden>
+        <button type="button" data-nuria-days-view="pending" class="active">Pendientes de revisión</button>
+        <button type="button" data-nuria-days-view="reviewed">Revisados</button>
+      </section>
+      <section class="summary" id="days-summary"></section>
+      <section class="days-board" id="days-board"></section>
+    </section>
+
+    <section id="licitaciones-section" hidden>
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Detalle</p>
+          <h2 id="current-day-title">Licitaciones</h2>
+        </div>
+        <div class="section-actions">
+          <button id="send-nuria-button" class="secondary" data-admin-only hidden>Enviar a revisión</button>
+          <button id="review-day-button" class="primary" disabled>Marcar como revisado</button>
+          <button id="back-to-days" class="ghost">Volver a días</button>
+        </div>
+      </div>
+
+      <section id="licitaciones-tabs" class="segmented" hidden>
+        <button type="button" data-licitaciones-view="live" class="active">Licitaciones vivas</button>
+        <button type="button" data-licitaciones-view="active">Licitaciones no vencidas</button>
+        <button type="button" data-licitaciones-view="all">Todas las licitaciones</button>
+      </section>
+
+      <section class="summary" id="summary"></section>
+
+      <section class="toolbar">
+        <label>
+          Buscar
+          <input id="search" placeholder="Expediente, organismo, provincia...">
+        </label>
+        <label>
+          Estado
+          <select id="state-filter">
+            <option>Todos</option>
+          </select>
+        </label>
+        <label>
+          Fecha presentación
+          <select id="date-order">
+            <option value="asc">Más próximas primero</option>
+            <option value="desc">Más lejanas primero</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="board" id="board"></section>
+    </section>
+
+    <section id="calendar-section" hidden>
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Calendario</p>
+          <h2 id="calendar-month-title">Vencimientos</h2>
+        </div>
+        <div class="section-actions">
+          <button id="calendar-prev" class="ghost">Mes anterior</button>
+          <button id="calendar-today" class="secondary">Hoy</button>
+          <button id="calendar-next" class="ghost">Mes siguiente</button>
+        </div>
+      </div>
+
+      <section class="toolbar calendar-toolbar">
+        <label>
+          Buscar
+          <input id="calendar-search" placeholder="Expediente, organismo, provincia...">
+        </label>
+        <label>
+          Estado
+          <select id="calendar-state-filter">
+            <option>Todos</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="summary" id="calendar-summary"></section>
+      <section class="calendar-radar" id="calendar-radar"></section>
+
+      <section class="calendar-layout">
+        <div class="calendar-month-wrap">
+          <div class="calendar-weekdays">
+            <span>Lun</span>
+            <span>Mar</span>
+            <span>Mié</span>
+            <span>Jue</span>
+            <span>Vie</span>
+            <span>Sáb</span>
+            <span>Dom</span>
+          </div>
+          <section class="calendar-board" id="calendar-board"></section>
+        </div>
+        <aside class="calendar-panel" id="calendar-day-panel"></aside>
+      </section>
+    </section>
+
+    <section id="notifications-section" hidden>
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Buzón</p>
+          <h2>Notificaciones</h2>
+        </div>
+        <button id="back-from-notifications" class="ghost">Volver</button>
+      </div>
+      <section class="toolbar notification-toolbar">
+        <label>
+          Buscar
+          <input id="notification-search" placeholder="Asunto o cuerpo...">
+        </label>
+        <label data-admin-only hidden>
+          Vista
+          <select id="notification-scope">
+            <option value="mine">Mis notificaciones</option>
+            <option value="all">Todas</option>
+          </select>
+        </label>
+        <label data-admin-only hidden>
+          Usuario destino
+          <select id="notification-destination">
+            <option value="">Todos</option>
+          </select>
+        </label>
+        <label>
+          Email
+          <select id="notification-email-state">
+            <option value="">Todos</option>
+            <option value="sent">Enviado</option>
+            <option value="pending">Pendiente</option>
+          </select>
+        </label>
+      </section>
+      <section class="board" id="notifications-board"></section>
+    </section>
+
+    <section id="news-admin-section" hidden>
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Web pública</p>
+          <h2>Gestión de noticias</h2>
+        </div>
+        <button id="reset-news-form" class="ghost">Nueva noticia</button>
+      </div>
+
+      <section class="config-grid">
+        <article class="config-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Edición</p>
+              <h3 id="news-form-title">Nueva noticia</h3>
+            </div>
+          </div>
+          <form id="news-form" class="config-form">
+            <input type="hidden" name="id">
+            <label>Título<input name="title" required></label>
+            <label>Slug<input name="slug" placeholder="se-genera-si-se-deja-vacio"></label>
+            <label>Extracto<textarea name="excerpt" rows="2"></textarea></label>
+            <label>Contenido<textarea name="content" rows="8"></textarea></label>
+            <label>Categoría<input name="category" placeholder="Contratación pública"></label>
+            <label>Etiquetas<input name="tags" placeholder="pliegos, subsanaciones"></label>
+            <label>Imagen destacada<input name="featuredImage" placeholder="URL opcional"></label>
+            <label>Estado
+              <select name="status">
+                <option value="draft">Borrador</option>
+                <option value="published">Publicada</option>
+                <option value="archived">Archivada</option>
+              </select>
+            </label>
+            <label>Fecha publicación<input name="publishedAt" type="datetime-local"></label>
+            <label class="check-field">
+              <input name="isFeatured" type="checkbox">
+              Noticia destacada
+            </label>
+            <div class="dialog-actions">
+              <button type="submit" class="primary">Guardar noticia</button>
+            </div>
+            <div class="import-result" id="news-result"></div>
+          </form>
+        </article>
+
+        <article class="config-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Listado</p>
+              <h3>Noticias</h3>
+            </div>
+          </div>
+          <div id="news-admin-board" class="users-board"></div>
+        </article>
+      </section>
+    </section>
+
+    <section id="config-section" hidden>
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Administración</p>
+          <h2>Configuración</h2>
+        </div>
+        <button id="back-from-config" class="ghost">Volver</button>
+      </div>
+
+      <section class="config-grid">
+        <article class="config-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Usuarios</p>
+              <h3>Alta y edición</h3>
+            </div>
+          </div>
+          <form id="user-config-form" class="config-form">
+            <input type="hidden" name="editing_username">
+            <label>Usuario<input name="username" required></label>
+            <label>Nombre visible<input name="display_name" required></label>
+            <label>Email<input name="email" type="email"></label>
+            <label>Rol
+              <select name="role">
+                <option value="admin">Administrador</option>
+                <option value="nuria">Revisión</option>
+              </select>
+            </label>
+            <label>Contraseña<input name="password" type="password" autocomplete="new-password"></label>
+            <label class="check-field">
+              <input name="active" type="checkbox" checked>
+              Usuario activo
+            </label>
+            <div class="dialog-actions">
+              <button type="button" class="ghost" id="reset-user-form">Limpiar</button>
+              <button type="submit" class="primary">Guardar usuario</button>
+            </div>
+          </form>
+          <div id="users-board" class="users-board"></div>
+        </article>
+
+        <article class="config-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Servidor</p>
+              <h3>SMTP y mantenimiento</h3>
+            </div>
+          </div>
+          <form id="settings-form" class="config-form">
+            <label class="check-field">
+              <input name="maintenance_mode" type="checkbox">
+              Modo mantenimiento, solo administradores
+            </label>
+            <label>Servidor SMTP<input name="smtp_host"></label>
+            <label>Puerto<input name="smtp_port" inputmode="numeric"></label>
+            <label>Usuario SMTP<input name="smtp_user"></label>
+            <label>Contraseña SMTP<input name="smtp_password" type="password" autocomplete="new-password" placeholder="Dejar vacío para no cambiar"></label>
+            <label class="check-field">
+              <input name="clear_smtp_password" type="checkbox">
+              Borrar contraseña SMTP guardada
+            </label>
+            <label>Remitente<input name="smtp_from" type="email"></label>
+            <label class="check-field">
+              <input name="smtp_tls" type="checkbox" checked>
+              Usar TLS
+            </label>
+            <label class="check-field">
+              <input name="smtp_ssl" type="checkbox">
+              Usar SSL directo
+            </label>
+            <div class="dialog-actions">
+              <button type="button" class="ghost" id="test-smtp-button">Probar SMTP</button>
+              <button type="submit" class="primary">Guardar configuración</button>
+            </div>
+            <div class="import-result" id="settings-result"></div>
+          </form>
+        </article>
+      </section>
+    </section>
+      </main>
+    </div>
+  </div>
+
+  <dialog id="editor">
+    <form id="licitacion-form" method="dialog">
+      <input type="hidden" name="id">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow" id="editor-eyebrow">Alta manual</p>
+          <h2 id="editor-title">Nueva licitación</h2>
+        </div>
+        <button type="button" class="icon-button" id="close-editor">×</button>
+      </div>
+
+      <div class="form-grid">
+        <label>Expediente<input name="expediente" required></label>
+        <label>Estado
+          <select name="estado">
+            <option value="Pendiente">Pendiente</option>
+            <option value="Descartada por mí">Descartada por mí</option>
+            <option value="Pendiente Nuria">Pendiente de revisión</option>
+            <option value="Descartar">Descartada</option>
+            <option value="Descargar">Solo descargar</option>
+            <option value="Hacer">Preparar licitación</option>
+          </select>
+        </label>
+        <label>Objeto<textarea name="objeto" rows="3"></textarea></label>
+        <label>Organismo<input name="organismo"></label>
+        <label>Provincia<input name="provincia"></label>
+        <label>Tipo<input name="tipo"></label>
+        <label>Presupuesto<input name="presupuesto" inputmode="decimal"></label>
+        <label>Fecha límite<input name="fecha_limite" type="date"></label>
+        <label>Hora límite<input name="hora_limite" type="time"></label>
+        <label>Fecha Infonalia<input name="fecha_infonalia" type="date"></label>
+        <label>Plataforma<input name="plataforma" placeholder="PLACE, Junta, Madrid..."></label>
+        <label>Enlace perfil<input name="enlace_perfil"></label>
+        <label>Enlace Infonalia<input name="enlace_infonalia"></label>
+        <label>Ruta carpeta<input name="ruta_carpeta"></label>
+        <label>Comentario<textarea name="comentario" rows="2"></textarea></label>
+      </div>
+
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="cancel-editor">Cancelar</button>
+        <button type="submit" class="primary">Guardar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="importer">
+    <form id="import-form" method="dialog" enctype="multipart/form-data">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">Importación</p>
+          <h2>Importar fichero</h2>
+        </div>
+        <button type="button" class="icon-button" id="close-importer">×</button>
+      </div>
+
+      <p class="muted">
+        Selecciona un fichero .msg de Infonalia o un CSV exportado desde Excel. La app elegirá automáticamente el tipo de importación.
+      </p>
+
+      <label class="file-field">
+        Archivo
+        <input name="import_file" type="file" accept=".msg,.csv,application/vnd.ms-outlook,text/csv" required>
+      </label>
+
+      <label class="check-field">
+        <input name="enrich_pdf" type="checkbox" checked>
+        Completar tipo y hora leyendo los PDF de Infonalia cuando sea posible
+      </label>
+
+      <div class="import-result" id="import-result"></div>
+
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="cancel-importer">Cancelar</button>
+        <button type="submit" class="primary">Importar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="monitor-dialog" class="wide-dialog">
+    <div class="dialog-head">
+      <div>
+        <p class="eyebrow">Monitor de licitación</p>
+        <h2 id="monitor-dialog-title">Revisión de plataforma</h2>
+      </div>
+      <button type="button" class="icon-button" id="close-monitor-dialog">×</button>
+    </div>
+    <div id="monitor-dialog-content" class="monitor-dialog-content"></div>
+    <div class="dialog-actions">
+      <button type="button" class="primary" id="accept-monitor-dialog">Aceptar</button>
+    </div>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

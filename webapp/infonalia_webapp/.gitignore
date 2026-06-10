@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+server.out.log
+server.err.log
+data/*.db
+data/*.db-*
+data/secret.key
+data/descargas/
+data/tmp/
+data/tmp_pdf/
+data/uploads/
+

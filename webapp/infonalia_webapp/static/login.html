@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Llangón Web App - Acceso</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <img src="/static/logo-llangon.png" alt="Asesores Llangon" class="login-logo">
+    <div>
+      <p class="eyebrow">Acceso a zona privada</p>
+      <h1>LLANGON WEB APP</h1>
+      <p class="muted">Acceso restringido a clientes autorizados.</p>
+    </div>
+
+    <form method="post" action="/login" class="login-form">
+      <label>
+        Usuario o email
+        <input name="username" autocomplete="username" required>
+      </label>
+      <label>
+        Contraseña
+        <input name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <p class="login-error" id="login-error">Usuario o contraseña incorrectos.</p>
+      <button type="submit" class="primary">Entrar</button>
+      <a href="/" class="ghost login-back-link">Volver a la web pública</a>
+      <p class="muted login-help">He olvidado mi contraseña. Contacte con ASESORES LLANGON, S.L. para restablecer el acceso.</p>
+    </form>
+  </main>
+  <script>
+    const error = new URLSearchParams(location.search).get("error");
+    if (error) {
+      const el = document.getElementById("login-error");
+      if (error === "maintenance") {
+        el.textContent = "La app está en mantenimiento. Solo pueden entrar administradores.";
+      }
+      el.style.display = "block";
+    }
+  </script>
+</body>
+</html>
