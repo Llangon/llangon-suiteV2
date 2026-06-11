@@ -22,7 +22,7 @@ const appState = {
   lastSection: "days",
   config: null,
   expandedCards: new Set(),
-  monitorDetails: {},
+  cardDetails: {},
 };
 
 const daysSection = document.getElementById("days-section");
@@ -66,9 +66,6 @@ const form = document.getElementById("licitacion-form");
 const importer = document.getElementById("importer");
 const importForm = document.getElementById("import-form");
 const importResult = document.getElementById("import-result");
-const monitorDialog = document.getElementById("monitor-dialog");
-const monitorDialogTitle = document.getElementById("monitor-dialog-title");
-const monitorDialogContent = document.getElementById("monitor-dialog-content");
 const userConfigForm = document.getElementById("user-config-form");
 const usersBoard = document.getElementById("users-board");
 const settingsForm = document.getElementById("settings-form");
@@ -1276,7 +1273,7 @@ function renderCard(item) {
   const remainingDays = daysUntil(item.fecha_limite, item.hora_limite);
   const enlacePerfil = normalizeUrl(item.enlace_perfil);
   const enlaceInfonalia = normalizeUrl(item.enlace_infonalia);
-  const monitorDetail = appState.monitorDetails[item.id] || null;
+  const detail = appState.cardDetails[item.id] || null;
   const expanded = appState.expandedCards.has(String(item.id));
   const links = [
     enlacePerfil ? `<a href="${escapeHtml(enlacePerfil)}" target="_blank" rel="noreferrer">Perfil del contratante</a>` : "",
@@ -1301,7 +1298,6 @@ function renderCard(item) {
             <div class="card-flags">
               ${dueText ? `<span class="due-chip ${dueClass(remainingDays)}">${escapeHtml(dueText)}</span>` : ""}
               ${item.provincia ? `<span class="province-chip">${escapeHtml(item.provincia)}</span>` : ""}
-              ${item.documentos_count ? `<span class="document-chip">${escapeHtml(item.documentos_count)} doc.</span>` : ""}
             </div>
           </div>
 
@@ -1323,7 +1319,6 @@ function renderCard(item) {
 
         <div class="card-side-actions">
           ${isAdmin() ? `<button class="download-button" data-download-id="${item.id}">Descargar ficheros</button>` : ""}
-          ${isAdmin() ? `<button data-monitor-id="${item.id}">Actualizar ficha desde URL</button>` : ""}
           <button data-preview-id="${item.id}">Vista preliminar por IA</button>
           ${isAdmin() ? `<button data-edit-id="${item.id}">Editar</button>` : ""}
           ${isAdmin() ? `<button data-duplicate-id="${item.id}">Duplicar</button>` : ""}
@@ -1334,7 +1329,7 @@ function renderCard(item) {
         </div>
       </div>
 
-      ${expanded ? renderExpandedCard(item, monitorDetail) : ""}
+      ${expanded ? renderExpandedCard(item, detail) : ""}
     </article>
   `;
 }
@@ -1344,24 +1339,10 @@ function renderExpandedCard(item, detail) {
     return `<div class="card-expanded"><div class="empty">Cargando información ampliada...</div></div>`;
   }
 
-  const monitor = detail.monitor || {};
-  const documentos = detail.documentos || [];
   const preview = detail.preview || null;
-  const monitorStatus = monitor.status || item.monitor_status || "Sin revisar";
 
   return `
     <div class="card-expanded">
-      <div class="expanded-toolbar">
-        <button class="secondary" data-open-monitor="${item.id}">Ver monitor de licitación</button>
-        <span class="muted">${escapeHtml(monitorStatus)}${monitor.last_checked_at_formatted ? ` · Última revisión: ${escapeHtml(monitor.last_checked_at_formatted)}` : ""}</span>
-      </div>
-
-      <section class="expanded-panel">
-          <p class="eyebrow">Ficheros disponibles</p>
-          <h3>${documentos.length} documento(s)</h3>
-          ${renderDocumentTable(documentos)}
-      </section>
-
       <section class="expanded-panel ai-preview-panel">
         <div class="panel-head">
           <div>
@@ -1374,91 +1355,6 @@ function renderExpandedCard(item, detail) {
       </section>
     </div>
   `;
-}
-
-function documentTypeLabel(documento) {
-  const ext = String(documento?.extension || "").replace(".", "").trim().toUpperCase();
-  return ext ? `(${ext})` : "";
-}
-
-function documentDateLabel(documento) {
-  return documento?.fecha_documento_formatted
-    || documento?.fecha_documento
-    || "";
-}
-
-function renderDocumentTable(documentos) {
-  if (!documentos.length) {
-    return `<div class="empty">No hay ficheros detectados. Pulsa “Actualizar ficha desde URL”.</div>`;
-  }
-
-  return `
-    <div class="document-table-wrap">
-      <table class="document-table">
-        <thead>
-          <tr>
-            <th>Fecha</th>
-            <th>Descripción</th>
-            <th>Tipo</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${documentos.map((documento) => `
-            <tr>
-              <td>${escapeHtml(documentDateLabel(documento) || "Sin fecha")}</td>
-              <td>
-                <a href="${escapeHtml(normalizeUrl(documento.url))}" target="_blank" rel="noreferrer">${escapeHtml(documento.titulo || "Documento")}</a>
-                ${documento.seccion ? `<small>${escapeHtml(documento.seccion)}</small>` : ""}
-              </td>
-              <td>${escapeHtml(documentTypeLabel(documento))}</td>
-            </tr>
-          `).join("")}
-        </tbody>
-      </table>
-    </div>
-  `;
-}
-
-function renderMonitorInfo(item, detail) {
-  const monitor = detail?.monitor || {};
-  const eventos = detail?.eventos || [];
-  const monitorStatus = monitor.status || item?.monitor_status || "Sin revisar";
-
-  return `
-    <div class="monitor-status-grid">
-      <div>
-        <p class="eyebrow">Estado</p>
-        <h3>${escapeHtml(monitorStatus)}</h3>
-      </div>
-      <div>
-        <p class="eyebrow">Última revisión</p>
-        <h3>${escapeHtml(monitor.last_checked_at_formatted || "Sin revisar")}</h3>
-      </div>
-    </div>
-    ${monitor.page_title ? `<p><strong>Ficha:</strong> ${escapeHtml(monitor.page_title)}</p>` : ""}
-    ${monitor.url ? `<p><strong>URL:</strong> <a href="${escapeHtml(normalizeUrl(monitor.url))}" target="_blank" rel="noreferrer">${escapeHtml(monitor.url)}</a></p>` : ""}
-    ${monitor.error ? `<p class="notification-warning">${escapeHtml(monitor.error)}</p>` : ""}
-    <div class="event-list">
-      ${eventos.length ? eventos.map((event) => `
-        <div class="event-row">
-          <span>${escapeHtml(event.fecha_hora_formatted || event.fecha_hora)}</span>
-          <strong>${escapeHtml(event.resumen)}</strong>
-        </div>
-      `).join("") : `<div class="empty">Todavía no hay eventos registrados para esta ficha.</div>`}
-    </div>
-  `;
-}
-
-async function openMonitorDialog(id) {
-  if (!appState.monitorDetails[id]) {
-    monitorDialogContent.innerHTML = `<div class="empty">Cargando monitor...</div>`;
-    monitorDialog.showModal();
-    await loadMonitorDetails(id);
-  }
-  const item = appState.items.find((row) => String(row.id) === String(id)) || {};
-  monitorDialogTitle.textContent = item.expediente ? `Monitor ${item.expediente}` : "Revisión de plataforma";
-  monitorDialogContent.innerHTML = renderMonitorInfo(item, appState.monitorDetails[id]);
-  if (!monitorDialog.open) monitorDialog.showModal();
 }
 
 function renderPreview(preview) {
@@ -1579,16 +1475,6 @@ async function downloadLicitacion(id, button) {
   }
 }
 
-async function loadMonitorDetails(id) {
-  const response = await fetch(`/api/licitaciones/${id}/monitor`);
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    appState.monitorDetails[id] = { monitor: { status: "Error", error: result.error || "No se pudo cargar la información ampliada." }, documentos: [], eventos: [] };
-    return;
-  }
-  appState.monitorDetails[id] = { ...(appState.monitorDetails[id] || {}), ...result };
-}
-
 async function toggleDetails(id) {
   const key = String(id);
   if (appState.expandedCards.has(key)) {
@@ -1597,32 +1483,10 @@ async function toggleDetails(id) {
     return;
   }
   appState.expandedCards.add(key);
-  if (!appState.monitorDetails[id]) {
-    renderBoard();
-    await loadMonitorDetails(id);
+  if (!appState.cardDetails[id]) {
+    appState.cardDetails[id] = {};
   }
   renderBoard();
-}
-
-async function runMonitor(id, button) {
-  const originalText = button.textContent;
-  button.disabled = true;
-  button.textContent = "Actualizando...";
-  appState.expandedCards.add(String(id));
-  try {
-    const response = await fetch(`/api/licitaciones/${id}/monitor`, { method: "POST" });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      appState.monitorDetails[id] = result.monitor || { monitor: { status: "Error", error: result.error || "No se pudo actualizar la ficha." }, documentos: [], eventos: [] };
-      alert(result.error || "No se pudo actualizar la ficha.");
-    } else {
-      appState.monitorDetails[id] = result.monitor;
-    }
-    await loadItems();
-  } finally {
-    button.disabled = false;
-    button.textContent = originalText;
-  }
 }
 
 async function generatePreview(id, button) {
@@ -1630,8 +1494,8 @@ async function generatePreview(id, button) {
   button.disabled = true;
   button.textContent = "Generando...";
   appState.expandedCards.add(String(id));
-  if (!appState.monitorDetails[id]) {
-    await loadMonitorDetails(id);
+  if (!appState.cardDetails[id]) {
+    appState.cardDetails[id] = {};
   }
   try {
     const response = await fetch(`/api/licitaciones/${id}/ia-preview`, { method: "POST" });
@@ -1640,7 +1504,7 @@ async function generatePreview(id, button) {
       alert(result.error || "No se pudo generar la vista preliminar.");
       return;
     }
-    appState.monitorDetails[id] = { ...(appState.monitorDetails[id] || {}), preview: result.preview };
+    appState.cardDetails[id] = { ...(appState.cardDetails[id] || {}), preview: result.preview };
     renderBoard();
   } finally {
     button.disabled = false;
@@ -1784,8 +1648,6 @@ document.getElementById("import-button").addEventListener("click", () => {
 });
 document.getElementById("close-importer").addEventListener("click", () => importer.close());
 document.getElementById("cancel-importer").addEventListener("click", () => importer.close());
-document.getElementById("close-monitor-dialog").addEventListener("click", () => monitorDialog.close());
-document.getElementById("accept-monitor-dialog").addEventListener("click", () => monitorDialog.close());
 stateFilter.addEventListener("change", loadItems);
 dateOrder.addEventListener("change", loadItems);
 searchInput.addEventListener("input", debounce(loadItems, 250));
@@ -1861,12 +1723,6 @@ board.addEventListener("click", (event) => {
     return;
   }
 
-  const monitorButton = event.target.closest("button[data-monitor-id]");
-  if (monitorButton) {
-    runMonitor(monitorButton.dataset.monitorId, monitorButton);
-    return;
-  }
-
   const previewButton = event.target.closest("button[data-preview-id]");
   if (previewButton) {
     generatePreview(previewButton.dataset.previewId, previewButton);
@@ -1876,12 +1732,6 @@ board.addEventListener("click", (event) => {
   const emailPreviewButton = event.target.closest("button[data-email-preview-id]");
   if (emailPreviewButton) {
     emailPreview(emailPreviewButton.dataset.emailPreviewId, emailPreviewButton);
-    return;
-  }
-
-  const openMonitorButton = event.target.closest("button[data-open-monitor]");
-  if (openMonitorButton) {
-    openMonitorDialog(openMonitorButton.dataset.openMonitor);
     return;
   }
 

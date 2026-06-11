@@ -9,7 +9,7 @@ La memoria del proyecto debe vivir en archivos versionados y revisables. Una con
 ## Alcance
 
 - Aplicación privada para importar y revisar información de licitaciones.
-- Descargadores por plataforma y monitorización opcional.
+- Descargadores por plataforma.
 - Web pública independiente de la zona privada.
 - Macros y documentación de apoyo.
 
@@ -27,12 +27,12 @@ La memoria del proyecto debe vivir en archivos versionados y revisables. Una con
 - Resolver rutas desde el repositorio o mediante variables de entorno.
 - No incluir rutas rígidas ligadas a un usuario o equipo.
 - Mantener Firebase público separado de la aplicación privada.
-- No activar monitorización, descargas ni exposición de red por defecto.
+- No activar descargas ni exposición de red por defecto.
 
 ## Componentes
 
 - `webapp/infonalia_webapp/`: servidor Python, frontend, SQLite local e importación de mensajes.
-- `herramientas_python/`: descargadores, orquestador y monitor.
+- `herramientas_python/`: descargadores y orquestador.
 - `firebase/public_firebase/`: web pública estática.
 - `macros/`: automatizaciones VBA.
 - `docs/`: operación y colaboración.

@@ -15,7 +15,6 @@ import smtplib
 import sqlite3
 import subprocess
 import sys
-import threading
 import time
 import unicodedata
 from email.message import EmailMessage
@@ -39,7 +38,6 @@ DOWNLOAD_ROOT = DATA_ROOT / "descargas"
 DB_PATH = DATA_ROOT / "infonalia.db"
 SECRET_PATH = DATA_ROOT / "secret.key"
 LAUNCHER_PATH = TOOLS_ROOT / "Descargar_Licitacion.py"
-MONITOR_PATH = TOOLS_ROOT / "MonitorDeLicitaciones.py"
 ENV_PATH = APP_ROOT / ".env"
 PUBLIC_ROUTES = {
     "/",
@@ -163,8 +161,6 @@ DEFAULT_SETTINGS = {
     "smtp_tls": "1" if SMTP_USE_TLS else "0",
     "smtp_ssl": "1" if SMTP_USE_SSL else "0",
 }
-
-MONITOR_INTERVAL_MINUTES = int(os.environ.get("INFONALIA_MONITOR_INTERVAL_MINUTES", "0"))
 
 DIA_ESTADOS_ORDEN = [
     "Importado",
@@ -371,58 +367,6 @@ def init_db() -> None:
         )
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS licitacion_monitor (
-                licitacion_id INTEGER PRIMARY KEY,
-                url TEXT,
-                page_title TEXT,
-                content_hash TEXT,
-                data_json TEXT,
-                status TEXT NOT NULL DEFAULT 'Pendiente',
-                error TEXT,
-                last_checked_at TEXT,
-                last_changed_at TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY (licitacion_id) REFERENCES licitaciones(id) ON DELETE CASCADE
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS licitacion_documentos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                licitacion_id INTEGER NOT NULL,
-                titulo TEXT NOT NULL,
-                url TEXT NOT NULL,
-                extension TEXT,
-                seccion TEXT,
-                fecha_documento TEXT,
-                fingerprint TEXT NOT NULL,
-                first_seen_at TEXT NOT NULL,
-                last_seen_at TEXT NOT NULL,
-                active INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                UNIQUE(licitacion_id, fingerprint),
-                FOREIGN KEY (licitacion_id) REFERENCES licitaciones(id) ON DELETE CASCADE
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS licitacion_monitor_eventos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                licitacion_id INTEGER NOT NULL,
-                fecha_hora TEXT NOT NULL,
-                tipo TEXT NOT NULL,
-                resumen TEXT NOT NULL,
-                detalle_json TEXT,
-                FOREIGN KEY (licitacion_id) REFERENCES licitaciones(id) ON DELETE CASCADE
-            )
-            """
-        )
-        conn.execute(
-            """
             CREATE TABLE IF NOT EXISTS usuarios (
                 username TEXT PRIMARY KEY,
                 password_hash TEXT NOT NULL,
@@ -474,14 +418,9 @@ def init_db() -> None:
         ensure_column(conn, "usuarios", "active", "INTEGER NOT NULL DEFAULT 1")
         ensure_column(conn, "usuarios", "created_at", "TEXT")
         ensure_column(conn, "usuarios", "updated_at", "TEXT")
-        ensure_column(conn, "licitacion_documentos", "fecha_documento", "TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_licitaciones_dia ON licitaciones(infonalia_dia_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_licitaciones_estado ON licitaciones(estado)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_licitaciones_fecha_limite ON licitaciones(fecha_limite)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_monitor_checked ON licitacion_monitor(last_checked_at)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_documentos_licitacion ON licitacion_documentos(licitacion_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_documentos_active ON licitacion_documentos(active)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_monitor_eventos_licitacion ON licitacion_monitor_eventos(licitacion_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_notificaciones_destino ON notificaciones(usuario_destino)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_notificaciones_fecha ON notificaciones(fecha_hora)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_usuarios_role ON usuarios(role)")
@@ -1293,9 +1232,6 @@ def import_csv_content(content: bytes) -> dict:
         for dia_id in touched_days:
             refresh_dia_estado(conn, dia_id)
 
-    for dia_id in touched_days:
-        schedule_monitor_day(dia_id)
-
     return {
         "importadas": imported,
         "actualizadas": updated,
@@ -1563,8 +1499,6 @@ def import_msg_content(content: bytes, enrich_pdf: bool = True) -> dict:
             else:
                 skipped += 1
         refresh_dia_estado(conn, dia_id)
-
-    schedule_monitor_day(dia_id)
 
     return {
         "dias": 1,
@@ -1860,481 +1794,6 @@ def write_http_url(folder: Path, url: str) -> None:
     )
 
 
-def run_monitor_script(url: str) -> dict:
-    if not MONITOR_PATH.exists():
-        raise RuntimeError(f"No se encuentra el monitor: {MONITOR_PATH}")
-
-    completed = subprocess.run(
-        [sys.executable, str(MONITOR_PATH), url],
-        cwd=str(TOOLS_ROOT),
-        capture_output=True,
-        text=True,
-        timeout=90,
-        check=False,
-    )
-    output = (completed.stdout or "").strip()
-    if not output:
-        raise RuntimeError((completed.stderr or "El monitor no devolvió datos.").strip())
-
-    try:
-        result = json.loads(output)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Respuesta no válida del monitor: {output[:500]}") from exc
-
-    if not result.get("ok"):
-        raise RuntimeError(clean_text(result.get("error")) or "No se pudo leer la ficha.")
-    return result
-
-
-def monitor_to_dict(row: sqlite3.Row | None) -> dict:
-    if not row:
-        return {
-            "status": "Sin revisar",
-            "url": "",
-            "page_title": "",
-            "last_checked_at": "",
-            "last_checked_at_formatted": "",
-            "last_changed_at": "",
-            "last_changed_at_formatted": "",
-            "error": "",
-            "data": {},
-        }
-
-    data = {}
-    try:
-        data = json.loads(row["data_json"] or "{}")
-    except json.JSONDecodeError:
-        data = {}
-
-    return {
-        "status": row["status"],
-        "url": row["url"],
-        "page_title": row["page_title"],
-        "last_checked_at": row["last_checked_at"],
-        "last_checked_at_formatted": format_datetime_es(row["last_checked_at"]),
-        "last_changed_at": row["last_changed_at"],
-        "last_changed_at_formatted": format_datetime_es(row["last_changed_at"]),
-        "error": row["error"],
-        "data": data,
-    }
-
-
-def monitor_documents_for_licitacion(conn: sqlite3.Connection, licitacion_id: int) -> list[dict]:
-    rows = conn.execute(
-        """
-        SELECT *
-        FROM licitacion_documentos
-        WHERE licitacion_id = ? AND active = 1
-        ORDER BY seccion COLLATE NOCASE ASC, fecha_documento ASC, titulo COLLATE NOCASE ASC, id ASC
-        """,
-        (licitacion_id,),
-    ).fetchall()
-    return [
-        {
-            "id": row["id"],
-            "titulo": row["titulo"],
-            "url": row["url"],
-            "extension": row["extension"],
-            "seccion": row["seccion"],
-            "fecha_documento": row["fecha_documento"],
-            "fecha_documento_formatted": format_datetime_es(row["fecha_documento"]),
-            "first_seen_at": row["first_seen_at"],
-            "first_seen_at_formatted": format_datetime_es(row["first_seen_at"]),
-            "last_seen_at": row["last_seen_at"],
-            "last_seen_at_formatted": format_datetime_es(row["last_seen_at"]),
-        }
-        for row in rows
-    ]
-
-
-def monitor_summary_for_rows(conn: sqlite3.Connection, items: list[dict]) -> None:
-    ids = [int(item["id"]) for item in items if item.get("id")]
-    if not ids:
-        return
-
-    placeholders = ", ".join("?" for _ in ids)
-    monitors = {
-        row["licitacion_id"]: row
-        for row in conn.execute(
-            f"SELECT * FROM licitacion_monitor WHERE licitacion_id IN ({placeholders})",
-            ids,
-        )
-    }
-    document_counts = {
-        row["licitacion_id"]: row["total"]
-        for row in conn.execute(
-            f"""
-            SELECT licitacion_id, COUNT(*) AS total
-            FROM licitacion_documentos
-            WHERE active = 1 AND licitacion_id IN ({placeholders})
-            GROUP BY licitacion_id
-            """,
-            ids,
-        )
-    }
-
-    for item in items:
-        licitacion_id = int(item["id"])
-        monitor = monitors.get(licitacion_id)
-        item["monitor_status"] = monitor["status"] if monitor else "Sin revisar"
-        item["monitor_last_checked_at"] = monitor["last_checked_at"] if monitor else ""
-        item["monitor_last_checked_at_formatted"] = format_datetime_es(monitor["last_checked_at"]) if monitor else ""
-        item["monitor_error"] = monitor["error"] if monitor else ""
-        item["documentos_count"] = document_counts.get(licitacion_id, 0)
-
-
-def save_monitor_result(conn: sqlite3.Connection, licitacion_id: int, url: str, result: dict) -> dict:
-    timestamp = now_iso()
-    previous = conn.execute(
-        "SELECT * FROM licitacion_monitor WHERE licitacion_id = ?",
-        (licitacion_id,),
-    ).fetchone()
-    previous_hash = previous["content_hash"] if previous else ""
-    content_hash = clean_text(result.get("content_hash"))
-    changed = bool(previous_hash and content_hash and previous_hash != content_hash)
-    first_check = previous is None
-    last_changed_at = timestamp if (first_check or changed) else previous["last_changed_at"]
-
-    payload = {
-        "content_type": clean_text(result.get("content_type")),
-        "datos": result.get("datos") or {},
-        "text_excerpt": clean_text(result.get("text_excerpt")),
-    }
-    data_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-
-    conn.execute(
-        """
-        INSERT INTO licitacion_monitor (
-            licitacion_id, url, page_title, content_hash, data_json, status, error,
-            last_checked_at, last_changed_at, created_at, updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, 'OK', '', ?, ?, ?, ?)
-        ON CONFLICT(licitacion_id) DO UPDATE SET
-            url = excluded.url,
-            page_title = excluded.page_title,
-            content_hash = excluded.content_hash,
-            data_json = excluded.data_json,
-            status = 'OK',
-            error = '',
-            last_checked_at = excluded.last_checked_at,
-            last_changed_at = excluded.last_changed_at,
-            updated_at = excluded.updated_at
-        """,
-        (
-            licitacion_id,
-            url,
-            clean_text(result.get("page_title")),
-            content_hash,
-            data_json,
-            timestamp,
-            last_changed_at,
-            timestamp,
-            timestamp,
-        ),
-    )
-
-    existing = {
-        row["fingerprint"]: row
-        for row in conn.execute(
-            "SELECT * FROM licitacion_documentos WHERE licitacion_id = ?",
-            (licitacion_id,),
-        )
-    }
-    seen: set[str] = set()
-    new_documents = 0
-
-    for document in result.get("documentos") or []:
-        fingerprint = clean_text(document.get("fingerprint"))
-        document_url = normalize_url(document.get("url"))
-        if not fingerprint or not document_url:
-            continue
-        seen.add(fingerprint)
-        fecha_documento = clean_text(document.get("fecha") or document.get("fecha_documento"))
-        if fingerprint in existing:
-            conn.execute(
-                """
-                UPDATE licitacion_documentos
-                SET titulo = ?, url = ?, extension = ?, seccion = ?, fecha_documento = ?, active = 1,
-                    last_seen_at = ?, updated_at = ?
-                WHERE licitacion_id = ? AND fingerprint = ?
-                """,
-                (
-                    clean_text(document.get("titulo")) or "Documento",
-                    document_url,
-                    clean_text(document.get("extension")),
-                    clean_text(document.get("seccion")) or "Documentación",
-                    fecha_documento,
-                    timestamp,
-                    timestamp,
-                    licitacion_id,
-                    fingerprint,
-                ),
-            )
-        else:
-            new_documents += 1
-            conn.execute(
-                """
-                INSERT INTO licitacion_documentos (
-                    licitacion_id, titulo, url, extension, seccion, fecha_documento, fingerprint,
-                    first_seen_at, last_seen_at, active, created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-                """,
-                (
-                    licitacion_id,
-                    clean_text(document.get("titulo")) or "Documento",
-                    document_url,
-                    clean_text(document.get("extension")),
-                    clean_text(document.get("seccion")) or "Documentación",
-                    fecha_documento,
-                    fingerprint,
-                    timestamp,
-                    timestamp,
-                    timestamp,
-                    timestamp,
-                ),
-            )
-
-    removed_documents = 0
-    for fingerprint, row in existing.items():
-        if fingerprint not in seen and row["active"]:
-            removed_documents += 1
-            conn.execute(
-                """
-                UPDATE licitacion_documentos
-                SET active = 0, updated_at = ?
-                WHERE licitacion_id = ? AND fingerprint = ?
-                """,
-                (timestamp, licitacion_id, fingerprint),
-            )
-
-    if changed:
-        conn.execute(
-            """
-            INSERT INTO licitacion_monitor_eventos (licitacion_id, fecha_hora, tipo, resumen, detalle_json)
-            VALUES (?, ?, 'cambio_ficha', ?, ?)
-            """,
-            (
-                licitacion_id,
-                timestamp,
-                "La ficha de la plataforma ha cambiado.",
-                json.dumps({"content_hash": content_hash}, ensure_ascii=False),
-            ),
-        )
-    if new_documents:
-        conn.execute(
-            """
-            INSERT INTO licitacion_monitor_eventos (licitacion_id, fecha_hora, tipo, resumen, detalle_json)
-            VALUES (?, ?, 'nuevos_documentos', ?, ?)
-            """,
-            (
-                licitacion_id,
-                timestamp,
-                f"Se han detectado {new_documents} documento(s) nuevo(s).",
-                json.dumps({"nuevos": new_documents}, ensure_ascii=False),
-            ),
-        )
-    if removed_documents:
-        conn.execute(
-            """
-            INSERT INTO licitacion_monitor_eventos (licitacion_id, fecha_hora, tipo, resumen, detalle_json)
-            VALUES (?, ?, 'documentos_no_vistos', ?, ?)
-            """,
-            (
-                licitacion_id,
-                timestamp,
-                f"{removed_documents} documento(s) ya no aparecen en la ficha.",
-                json.dumps({"no_vistos": removed_documents}, ensure_ascii=False),
-            ),
-        )
-
-    return {
-        "changed": changed,
-        "first_check": first_check,
-        "new_documents": new_documents,
-        "removed_documents": removed_documents,
-        "documents": len(seen),
-    }
-
-
-def save_monitor_error(conn: sqlite3.Connection, licitacion_id: int, url: str, error: str) -> None:
-    timestamp = now_iso()
-    conn.execute(
-        """
-        INSERT INTO licitacion_monitor (
-            licitacion_id, url, page_title, content_hash, data_json, status, error,
-            last_checked_at, last_changed_at, created_at, updated_at
-        )
-        VALUES (?, ?, '', '', '{}', 'Error', ?, ?, '', ?, ?)
-        ON CONFLICT(licitacion_id) DO UPDATE SET
-            url = excluded.url,
-            status = 'Error',
-            error = excluded.error,
-            last_checked_at = excluded.last_checked_at,
-            updated_at = excluded.updated_at
-        """,
-        (licitacion_id, url, clean_text(error), timestamp, timestamp, timestamp),
-    )
-
-
-def monitor_licitacion(licitacion_id: int) -> dict:
-    with db_session() as conn:
-        row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
-    if not row:
-        raise ValueError("Licitación no encontrada")
-
-    url = normalize_url(row["enlace_perfil"])
-    if not url:
-        raise ValueError("La licitación no tiene URL de perfil.")
-
-    try:
-        result = run_monitor_script(url)
-    except Exception as exc:
-        with db_session() as conn:
-            save_monitor_error(conn, licitacion_id, url, str(exc))
-        raise
-
-    with db_session() as conn:
-        summary = save_monitor_result(conn, licitacion_id, url, result)
-
-    return {
-        "ok": True,
-        "summary": summary,
-        "monitor": get_monitor_payload(licitacion_id),
-    }
-
-
-def get_monitor_payload(licitacion_id: int) -> dict:
-    with db_session() as conn:
-        monitor = conn.execute(
-            "SELECT * FROM licitacion_monitor WHERE licitacion_id = ?",
-            (licitacion_id,),
-        ).fetchone()
-        documents = monitor_documents_for_licitacion(conn, licitacion_id)
-        events = [
-            {
-                "fecha_hora": row["fecha_hora"],
-                "fecha_hora_formatted": format_datetime_es(row["fecha_hora"]),
-                "tipo": row["tipo"],
-                "resumen": row["resumen"],
-            }
-            for row in conn.execute(
-                """
-                SELECT *
-                FROM licitacion_monitor_eventos
-                WHERE licitacion_id = ?
-                ORDER BY fecha_hora DESC, id DESC
-                LIMIT 8
-                """,
-                (licitacion_id,),
-            )
-        ]
-    return {
-        "monitor": monitor_to_dict(monitor),
-        "documentos": documents,
-        "eventos": events,
-    }
-
-
-def monitor_licitacion_background(licitacion_id: int) -> None:
-    try:
-        monitor_licitacion(licitacion_id)
-    except Exception:
-        return
-
-
-def schedule_monitor_licitacion(licitacion_id: int) -> None:
-    thread = threading.Thread(
-        target=monitor_licitacion_background,
-        args=(licitacion_id,),
-        daemon=True,
-    )
-    thread.start()
-
-
-def schedule_monitor_day(dia_id: int | None) -> None:
-    if not dia_id:
-        return
-
-    def worker() -> None:
-        with db_session() as conn:
-            ids = [
-                row["id"]
-                for row in conn.execute(
-                    """
-                    SELECT id
-                    FROM licitaciones
-                    WHERE infonalia_dia_id = ?
-                      AND enlace_perfil IS NOT NULL
-                      AND enlace_perfil <> ''
-                    ORDER BY id ASC
-                    """,
-                    (dia_id,),
-                )
-            ]
-        for licitacion_id in ids:
-            monitor_licitacion_background(int(licitacion_id))
-
-    threading.Thread(target=worker, daemon=True).start()
-
-
-def monitor_due_licitaciones_once(interval_minutes: int) -> int:
-    cutoff = (datetime.now() - timedelta(minutes=interval_minutes)).replace(microsecond=0).isoformat()
-    current = datetime.now()
-    with db_session() as conn:
-        rows = conn.execute(
-            """
-            SELECT l.id
-            FROM licitaciones l
-            LEFT JOIN licitacion_monitor m ON m.licitacion_id = l.id
-            WHERE l.enlace_perfil IS NOT NULL
-              AND l.enlace_perfil <> ''
-              AND l.estado IN ('Pendiente Nuria', 'Descargar', 'Hacer')
-              AND l.fecha_limite IS NOT NULL
-              AND l.fecha_limite <> ''
-              AND (
-                    l.fecha_limite > ?
-                    OR (
-                        l.fecha_limite = ?
-                        AND COALESCE(NULLIF(l.hora_limite, ''), '23:59') >= ?
-                    )
-              )
-              AND (m.last_checked_at IS NULL OR m.last_checked_at = '' OR m.last_checked_at < ?)
-            ORDER BY l.fecha_limite ASC, l.hora_limite ASC, l.id ASC
-            LIMIT 25
-            """,
-            (
-                current.date().isoformat(),
-                current.date().isoformat(),
-                current.strftime("%H:%M"),
-                cutoff,
-            ),
-        ).fetchall()
-
-    checked = 0
-    for row in rows:
-        monitor_licitacion_background(int(row["id"]))
-        checked += 1
-    return checked
-
-
-def start_monitor_daemon() -> None:
-    interval = max(15, MONITOR_INTERVAL_MINUTES)
-    if MONITOR_INTERVAL_MINUTES <= 0:
-        return
-
-    def worker() -> None:
-        time.sleep(20)
-        while True:
-            try:
-                monitor_due_licitaciones_once(interval)
-            except Exception:
-                pass
-            time.sleep(interval * 60)
-
-    threading.Thread(target=worker, daemon=True).start()
-
-
 def extract_lotes_from_text(text: str) -> list[str]:
     source = clean_text(text)
     if not source:
@@ -2394,16 +1853,10 @@ def build_ai_preview_payload(licitacion_id: int) -> dict:
         row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
         if not row:
             raise ValueError("Licitación no encontrada")
-        monitor_row = conn.execute(
-            "SELECT * FROM licitacion_monitor WHERE licitacion_id = ?",
-            (licitacion_id,),
-        ).fetchone()
-        documents = monitor_documents_for_licitacion(conn, licitacion_id)
 
-    monitor_data = monitor_to_dict(monitor_row)["data"]
-    text_excerpt = clean_text(monitor_data.get("text_excerpt"))
     objeto = clean_text(row["objeto"])
-    lotes = extract_lotes_from_text(objeto) or extract_lotes_from_text(text_excerpt)
+    text_excerpt = objeto
+    lotes = extract_lotes_from_text(objeto)
     criterios = extract_keyword_context(
         text_excerpt,
         ["criterios de adjudicación", "criterios adjudicación", "precio", "calidad"],
@@ -2441,18 +1894,18 @@ def build_ai_preview_payload(licitacion_id: int) -> dict:
     else:
         resumen = "No hay datos suficientes para generar un resumen automático fiable."
 
+    generated_at = now_iso()
     return {
         "licitacion_id": licitacion_id,
-        "generated_at": now_iso(),
-        "generated_at_formatted": format_datetime_es(now_iso()),
+        "generated_at": generated_at,
+        "generated_at_formatted": format_datetime_es(generated_at),
         "cabecera": cabecera,
         "centros": centros,
         "lotes": lotes,
         "criterios_adjudicacion": criterios,
         "criterios_ejecucion": ejecucion,
-        "documentos": documents,
         "resumen": resumen,
-        "nota": "Resumen automático orientativo generado con los datos disponibles en la ficha y la plataforma.",
+        "nota": "Resumen automático orientativo generado con los datos ya guardados en la ficha.",
     }
 
 
@@ -2475,15 +1928,6 @@ def preview_payload_to_text(preview: dict) -> str:
     add_section("Detalle de lotes e importes", preview.get("lotes") or [])
     add_section("Criterios de adjudicación", preview.get("criterios_adjudicacion") or [])
     add_section("Criterios especiales de ejecución", preview.get("criterios_ejecucion") or [])
-
-    documents = preview.get("documentos") or []
-    lines.extend(["", "Ficheros disponibles:"])
-    if documents:
-        for document in documents[:20]:
-            lines.append(f"- {document.get('titulo')} ({document.get('url')})")
-    else:
-        lines.append("- No hay ficheros detectados todavía.")
-
     lines.extend(["", "Resumen generado:", preview.get("resumen") or "", "", preview.get("nota") or ""])
     return "\n".join(lines).strip()
 
@@ -2897,12 +2341,6 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_list_dias()
         elif path == "/api/licitaciones":
             self.api_list_licitaciones(parsed.query)
-        elif path.startswith("/api/licitaciones/") and path.endswith("/monitor"):
-            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/monitor").strip("/")
-            if not licitacion_id.isdigit():
-                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
-                return
-            self.api_get_licitacion_monitor(int(licitacion_id))
         elif path == "/api/notificaciones":
             self.api_list_notificaciones(parsed.query)
         elif path == "/api/config":
@@ -2960,12 +2398,6 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_download_licitacion(int(licitacion_id))
-        elif path.startswith("/api/licitaciones/") and path.endswith("/monitor"):
-            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/monitor").strip("/")
-            if not licitacion_id.isdigit():
-                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
-                return
-            self.api_run_licitacion_monitor(int(licitacion_id))
         elif path.startswith("/api/licitaciones/") and path.endswith("/ia-preview/email"):
             licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ia-preview/email").strip("/")
             if not licitacion_id.isdigit():
@@ -3683,7 +3115,6 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         with db_session() as conn:
             rows = [row_to_dict(row) for row in conn.execute(sql, values)]
-            monitor_summary_for_rows(conn, rows)
             totals = {
                 row["estado"]: row["total"]
                 for row in conn.execute(totals_sql, values)
@@ -3795,8 +3226,6 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 mark_dia_nuria_dirty(conn, dia_id)
                 refresh_dia_estado(conn, dia_id)
             row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (cur.lastrowid,)).fetchone()
-        if row and clean_text(row["enlace_perfil"]):
-            schedule_monitor_licitacion(int(row["id"]))
         self.send_json(row_to_dict(row), HTTPStatus.CREATED)
 
     def api_import_csv(self) -> None:
@@ -4031,22 +3460,6 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         self.send_json(item)
 
-    def api_get_licitacion_monitor(self, licitacion_id: int) -> None:
-        self.send_json(get_monitor_payload(licitacion_id))
-
-    def api_run_licitacion_monitor(self, licitacion_id: int) -> None:
-        if not self.require_admin():
-            return
-        try:
-            payload = monitor_licitacion(licitacion_id)
-        except Exception as exc:
-            self.send_json(
-                {"error": str(exc), "monitor": get_monitor_payload(licitacion_id)},
-                HTTPStatus.BAD_REQUEST,
-            )
-            return
-        self.send_json(payload)
-
     def api_generate_ai_preview(self, licitacion_id: int) -> None:
         try:
             preview = build_ai_preview_payload(licitacion_id)
@@ -4237,8 +3650,6 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if not row:
             self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
             return
-        if row and ("enlace_perfil" in updates or "plataforma" in updates):
-            schedule_monitor_licitacion(int(row["id"]))
         self.send_json(row_to_dict(row))
 
     def api_delete_licitacion(self, licitacion_id: int) -> None:
@@ -4276,18 +3687,6 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
             if licitacion_ids:
                 placeholders = ",".join("?" for _ in licitacion_ids)
-                conn.execute(
-                    f"DELETE FROM licitacion_documentos WHERE licitacion_id IN ({placeholders})",
-                    licitacion_ids,
-                )
-                conn.execute(
-                    f"DELETE FROM licitacion_monitor_eventos WHERE licitacion_id IN ({placeholders})",
-                    licitacion_ids,
-                )
-                conn.execute(
-                    f"DELETE FROM licitacion_monitor WHERE licitacion_id IN ({placeholders})",
-                    licitacion_ids,
-                )
                 conn.execute(
                     f"DELETE FROM licitaciones WHERE id IN ({placeholders})",
                     licitacion_ids,
@@ -4361,15 +3760,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 def run(host: str = "127.0.0.1", port: int = 8787) -> None:
     init_db()
     repaired = repair_internal_download_routes()
-    start_monitor_daemon()
     server = ThreadingHTTPServer((host, port), InfonaliaHandler)
     print(f"Infonalia app disponible en http://{host}:{port}")
     print(f"Usuario administrador: {ADMIN_USER}")
     print(f"Usuario de revisión: {REVIEWER_USER}")
     if repaired:
         print(f"Rutas de descarga normalizadas: {repaired}")
-    if MONITOR_INTERVAL_MINUTES > 0:
-        print(f"Monitor de licitaciones activo cada {MONITOR_INTERVAL_MINUTES} minuto(s)")
     server.serve_forever()
 
 

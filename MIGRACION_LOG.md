@@ -3,9 +3,9 @@
 ## Registro
 
 - Fecha y hora: `2026-06-10 12:39:43 +02:00`
-- Origen: `C:\Users\LLangon03\Documents\Codex\llangon-suite`
+- Origen: repositorio histórico anterior
 - Destino: `C:\Users\LLangon03\Documents\Codex\Llangon-SuiteV2`
-- Respaldo: `C:\Users\LLangon03\Documents\Codex\BACKUP_llangon-suite_20260610_123524`
+- Respaldo: copia de seguridad local del repositorio histórico anterior
 
 ## Copia de seguridad
 
@@ -32,7 +32,6 @@ El respaldo completo conserva 161 archivos y 5.712.121 bytes. La comparación SH
 
 - Credenciales obligatorias mediante `.env`, sin contraseñas por defecto.
 - Alias administrativo desactivado por defecto y sin contraseña incorporada.
-- Monitor desactivado por defecto.
 - Lanzador limitado a `127.0.0.1`.
 - URL de plataforma trasladada a `INFONALIA_PLATFORM_URL`.
 - Correo de macro retirado del código.
@@ -45,7 +44,7 @@ El respaldo completo conserva 161 archivos y 5.712.121 bytes. La comparación SH
 - Confirmar la ubicación y política de copia de los datos privados externos mencionados por documentación anterior.
 - Revisar manualmente la lista final de Git antes del primer commit.
 
-No se ejecutó la aplicación, ningún descargador, el monitor ni Firebase. No se instaló ninguna dependencia. No se realizó commit ni push.
+No se ejecutó la aplicación, ningún descargador ni Firebase. No se instaló ninguna dependencia. No se realizó commit ni push.
 
 ## Preparación Git
 

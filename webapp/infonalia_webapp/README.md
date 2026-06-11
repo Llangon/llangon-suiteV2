@@ -8,7 +8,7 @@ Aplicación privada para gestionar días de Infonalia, revisar licitaciones y co
 webapp/infonalia_webapp/
 ```
 
-Los descargadores y el monitor utilizados por la app están en:
+Los descargadores utilizados por la app están en:
 
 ```text
 herramientas_python/
@@ -38,7 +38,6 @@ Antes de arrancar, editar `.env` y completar los usuarios y contraseñas obligat
 Para una primera prueba segura:
 
 - usar `INFONALIA_HOST=127.0.0.1`,
-- mantener `INFONALIA_MONITOR_INTERVAL_MINUTES=0`,
 - mantener `INFONALIA_ENABLE_ADMIN_ALIAS=0`,
 - no utilizar datos reales.
 
@@ -54,7 +53,7 @@ Después abrir:
 http://127.0.0.1:8787
 ```
 
-También existen los lanzadores `Instalar dependencias.bat` y `Arrancar Infonalia.bat`. El BAT de arranque usa `127.0.0.1` y mantiene el monitor desactivado salvo configuración local expresa.
+También existen los lanzadores `Instalar dependencias.bat` y `Arrancar Infonalia.bat`. El BAT de arranque usa `127.0.0.1` y deja la app lista para una prueba local básica.
 
 ## Configuración
 
@@ -74,7 +73,6 @@ INFONALIA_HOST=127.0.0.1
 INFONALIA_PORT=8787
 INFONALIA_DROPBOX_ROOT=
 INFONALIA_PDFTOTEXT=
-INFONALIA_MONITOR_INTERVAL_MINUTES=0
 INFONALIA_PLATFORM_URL=
 INFONALIA_SMTP_HOST=
 INFONALIA_SMTP_PORT=587
@@ -97,7 +95,6 @@ La URL de acceso incluida en notificaciones solo se muestra cuando `INFONALIA_PL
 - Filtros, estados, comentarios y notificaciones.
 - Integración opcional con SMTP.
 - Descarga por plataforma mediante `herramientas_python/Descargar_Licitacion.py`.
-- Actualización de fichas mediante `herramientas_python/MonitorDeLicitaciones.py`.
 - Interfaz para escritorio y móvil.
 
 ## Datos locales

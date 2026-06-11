@@ -2,8 +2,6 @@
 
 Monorepo privado y limpio para las herramientas de Llangón relacionadas con Infonalia, seguimiento de licitaciones, descargadores por plataforma, web pública y automatizaciones auxiliares.
 
-Este repositorio sustituye al espacio de trabajo anterior `llangon-suite`. No contiene su historial Git, sus datos de ejecución ni sus repositorios anidados.
-
 ## Contenido
 
 ```text
@@ -23,7 +21,7 @@ Llangon-SuiteV2/
 
 - `webapp/infonalia_webapp/`: aplicación privada Python, frontend y plantilla de configuración.
 - `firebase/public_firebase/`: web pública estática para Firebase Hosting.
-- `herramientas_python/`: descargadores y monitor. No deben ejecutarse sin una prueba controlada.
+- `herramientas_python/`: descargadores y utilidades auxiliares. No deben ejecutarse sin una prueba controlada.
 - `macros/`: módulos VBA de apoyo.
 - `docs/`: documentación operativa vigente.
 - `documentos_contexto/`: antecedentes históricos claramente marcados.
@@ -68,11 +66,10 @@ Completar en `.env` los usuarios y contraseñas obligatorios. Para la primera pr
 
 ```text
 INFONALIA_HOST=127.0.0.1
-INFONALIA_MONITOR_INTERVAL_MINUTES=0
 INFONALIA_ENABLE_ADMIN_ALIAS=0
 ```
 
-Después puede iniciarse manualmente con `python app.py`. No usar datos reales, descargas, monitorización ni acceso de red hasta validar la configuración local.
+Después puede iniciarse manualmente con `python app.py`. No usar datos reales, descargas ni acceso de red hasta validar la configuración local.
 
 ## Orden de lectura
 

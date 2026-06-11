@@ -13,7 +13,7 @@ Antes de abrir el acceso a la red, debe completarse una prueba local en `127.0.0
 3. Copiar `.env.example` como `.env`.
 4. Configurar usuarios, contraseñas únicas y rutas locales.
 5. Probar primero con `INFONALIA_HOST=127.0.0.1`.
-6. Mantener `INFONALIA_MONITOR_INTERVAL_MINUTES=0` hasta validar el monitor por separado.
+6. Mantener desactivadas las automatizaciones no imprescindibles hasta validar la configuración local.
 
 La prueba local se abre en:
 

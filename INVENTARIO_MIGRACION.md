@@ -1,14 +1,14 @@
 # Inventario De Migración
 
-Origen revisado: `C:\Users\LLangon03\Documents\Codex\llangon-suite`
+Origen revisado: repositorio histórico anterior ya consolidado en `Llangon-SuiteV2`
 
 | Elemento origen | Destino en `Llangon-SuiteV2` | Clasificación | Decisión | Motivo |
 |---|---|---|---|---|
 | `.git/` raíz | ninguno | historial Git | excluido | El repositorio nuevo comienza sin historia ni remoto heredado. |
-| `.git/config` | ninguno | configuración Git | excluido | Refería a `Llangon/llangon-suite.git`. |
+| `.git/config` | ninguno | configuración Git | excluido | Refería a un remoto histórico ya sustituido por la V2. |
 | `.gitattributes` | `.gitattributes` | configuración | copiado | Configuración neutra y reutilizable. |
 | `.gitignore` | `.gitignore` | seguridad | sustituido | Se creó una política más estricta para datos, secretos y temporales. |
-| `README.md`, `PROJECT_CONTEXT.md` | raíz | documentación | sustituidos | Describían el repositorio anterior. |
+| `README.md`, `PROJECT_CONTEXT.md` | raíz | documentación | sustituidos | Se reescribieron para describir la V2 vigente. |
 | `INVENTARIO_MIGRACION.md`, `MIGRACION_LOG.md` | raíz | documentación histórica | sustituidos | Registraban una migración previa y rutas ya obsoletas. |
 | `docs/DESPLIEGUE_COLABORACION.md` | mismo destino | documentación | copiado | Guía útil de trabajo interno. |
 | `docs/ROLES_Y_FLUJO.md` | mismo destino | documentación | copiado | Contexto funcional vigente. |
@@ -17,7 +17,7 @@ Origen revisado: `C:\Users\LLangon03\Documents\Codex\llangon-suite`
 | `webapp/infonalia_webapp/app.py` | mismo destino | código | copiado y saneado | Se eliminaron credenciales utilizables por defecto y referencias operativas antiguas. |
 | `webapp/infonalia_webapp/static/` | mismo destino | frontend | copiado y saneado | Activos necesarios; se generalizaron etiquetas visibles del rol revisor. |
 | `webapp/infonalia_webapp/.env.example` | mismo destino | plantilla | copiado y saneado | Sin usuarios, contraseñas, correos ni rutas reales. |
-| Lanzadores BAT | mismo destino | configuración local | copiados y saneados | Arranque local en `127.0.0.1` y monitor desactivado. |
+| Lanzadores BAT | mismo destino | configuración local | copiados y saneados | Arranque local en `127.0.0.1` sin automatismos adicionales. |
 | `webapp/infonalia_webapp/data/.gitkeep` y `README_DATOS.md` | mismo destino | estructura segura | copiados | Mantienen la carpeta sin datos reales. |
 | Bases de datos, claves, MSG, PDF, TXT y descargas | ninguno | sensible | excluido | No estaban presentes en la fuente versionable y quedan bloqueados por `.gitignore`. |
 | `firebase/public_firebase/` | mismo destino | web pública | copiado parcialmente | Se conservaron web y configuración de hosting. |

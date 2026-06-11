@@ -5,8 +5,6 @@ cd /d "%~dp0"
 
 if not defined INFONALIA_HOST set "INFONALIA_HOST=127.0.0.1"
 if not defined INFONALIA_PORT set "INFONALIA_PORT=8787"
-if not defined INFONALIA_MONITOR_INTERVAL_MINUTES set "INFONALIA_MONITOR_INTERVAL_MINUTES=0"
-
 echo Iniciando Infonalia...
 echo.
 echo Direccion local:
