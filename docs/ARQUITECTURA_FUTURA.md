@@ -811,3 +811,102 @@ Limitaciones pendientes:
 - las descargas no quedan limitadas en esta fase;
 - no se anaden tests funcionales de endpoints en esta fase;
 - no se cambian SQLite, frontend, Firebase, macros, Dropbox ni descargadores.
+
+## Tests funcionales minimos en Fase 1C
+
+La Fase 1C añade tests funcionales mínimos para los endpoints reales de importación, sin arrancar servidor HTTP y sin tocar la SQLite productiva.
+
+Estrategia elegida:
+
+- importar `app.py` con variables de entorno ficticias de test;
+- no llamar a `run()` ni arrancar `ThreadingHTTPServer`;
+- construir un `InfonaliaHandler` controlado en memoria;
+- simular permisos de administrador solo dentro del test;
+- enviar cuerpos `multipart/form-data` ficticios pequeños;
+- usar SQLite temporal solo para el caso CSV válido.
+
+Cobertura conseguida:
+
+- `POST /api/import/csv` con `.csv` pequeño válido, usando DB temporal;
+- rechazo de CSV con extensión incorrecta;
+- rechazo de CSV con nombre inseguro;
+- rechazo de CSV con `Content-Length` superior al límite sin crear un fichero grande real;
+- rechazo de MSG con extensión incorrecta;
+- rechazo de MSG con nombre inseguro;
+- rechazo de MSG con `Content-Length` superior al límite sin crear un fichero grande real.
+
+El procesamiento completo de MSG válido queda pendiente. No se crea una fixture `.msg` realista en esta fase para evitar datos reales, dependencias pesadas o acoplamiento innecesario a formato binario de Outlook.
+
+La base productiva `webapp/infonalia_webapp/data/infonalia.db` no se usa en estos tests. Los tests guardan cualquier inserción en una ruta temporal y restauran las rutas globales de la app al terminar.
+
+## Seguridad minima de descargas en Fase 1D
+
+La Fase 1D añade una capa minima de seguridad alrededor del flujo actual de descargas locales. No implementa Dropbox real, no crea `DownloadJob` persistente y no cambia el endpoint existente.
+
+Flujo protegido:
+
+- frontend: `downloadLicitacion(id, button)`;
+- backend: `POST /api/licitaciones/{id}/descargar`;
+- handler: `api_download_licitacion()`;
+- destino: `resolve_destination_folder()`;
+- fichero auxiliar: `HTTP.url`;
+- lanzador: `herramientas_python/Descargar_Licitacion.py`.
+
+Limites y validaciones añadidos:
+
+- URL de descarga: solo se aceptan `http` y `https`;
+- destino: la carpeta resuelta debe quedar bajo `DOWNLOAD_ROOT` o bajo la raiz Dropbox local configurada/detectada;
+- timeout de proceso: `900` segundos centralizados en `download_safety.py`;
+- salida capturada: se trunca a `20000` caracteres;
+- carpeta resultante: maximo `500` ficheros;
+- carpeta resultante: maximo `500 * 1024 * 1024` bytes.
+
+Cambio de seguridad importante:
+
+- `ruta_carpeta` solo se actualiza en SQLite si el proceso termina con codigo `0` y la carpeta final no supera los limites;
+- si el proceso falla, se devuelve error y no se marca la carpeta como descarga correcta;
+- si la carpeta supera limites, se devuelve error y no se actualiza `ruta_carpeta`.
+
+Limitaciones pendientes:
+
+- los descargadores siguen escribiendo localmente;
+- no hay Dropbox API real;
+- no hay `DownloadJob` persistente;
+- no hay manifest completo de ficheros;
+- los limites se validan despues de que el descargador termine, no durante cada escritura interna;
+- esta fase reduce riesgo, pero no sustituye al futuro `StorageBackend`.
+
+## Fase 1E — Tests funcionales de descarga
+
+La Fase 1E añade tests funcionales mínimos para `POST /api/licitaciones/{id}/descargar` sin arrancar servidor HTTP, sin ejecutar descargadores reales y sin tocar Internet.
+
+Estrategia elegida:
+
+- importar `app.py` con variables de entorno ficticias de test;
+- construir un `InfonaliaHandler` controlado en memoria;
+- simular permisos de administrador solo dentro del test;
+- usar SQLite temporal;
+- usar carpeta temporal para descargas;
+- crear un lanzador ficticio temporal para pasar la validación de existencia;
+- sustituir `subprocess.run` por funciones falsas dentro de cada test.
+
+Cobertura conseguida:
+
+- descarga simulada correcta con `returncode = 0`;
+- creación de fichero ficticio pequeño en la carpeta temporal;
+- actualización de `ruta_carpeta` solo cuando la descarga simulada termina bien y la carpeta pasa los límites;
+- fallo simulado con `returncode != 0` sin actualizar `ruta_carpeta`;
+- timeout simulado sin actualizar `ruta_carpeta`;
+- carpeta fuera de límites sin actualizar `ruta_carpeta`;
+- URL `file://` rechazada antes de ejecutar `subprocess`;
+- URL vacía rechazada antes de ejecutar `subprocess`;
+- destino inseguro rechazado antes de ejecutar `subprocess`.
+
+La SQLite productiva `webapp/infonalia_webapp/data/infonalia.db` no se usa en estos tests. Las rutas globales de la app se sustituyen temporalmente y se restauran al terminar.
+
+Pendiente:
+
+- no se valida todavía un descargador real de cada plataforma;
+- no hay manifest completo de ficheros;
+- no hay `DownloadJob` persistente;
+- los límites de tamaño y número de ficheros siguen comprobándose después de que el proceso termine.

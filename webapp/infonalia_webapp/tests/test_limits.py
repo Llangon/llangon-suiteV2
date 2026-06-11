@@ -32,13 +32,14 @@ def assert_raises(expected_exception: type[T], callback: Callable[[], object]) -
 
 def test_limits_import_does_not_import_app_or_side_effect_modules() -> None:
     sys.modules.pop("webapp.infonalia_webapp.limits", None)
+    app_was_imported = "webapp.infonalia_webapp.app" in sys.modules
     before = set(sys.modules)
 
     importlib.import_module("webapp.infonalia_webapp.limits")
 
     added = set(sys.modules) - before
     assert "app" not in sys.modules
-    assert "webapp.infonalia_webapp.app" not in sys.modules
+    assert ("webapp.infonalia_webapp.app" in sys.modules) is app_was_imported
     assert not {"sqlite3", "requests", "http.server", "socketserver"} & added
 
 

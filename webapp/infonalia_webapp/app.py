@@ -28,6 +28,33 @@ from urllib import request as urlrequest
 from urllib.parse import parse_qs, unquote, urlparse
 
 try:
+    from .download_safety import (
+        MAX_CAPTURED_OUTPUT_CHARS,
+        MAX_DOWNLOAD_FILE_COUNT,
+        MAX_DOWNLOAD_RUNTIME_SECONDS,
+        MAX_DOWNLOAD_TOTAL_BYTES,
+        DownloadSafetyError,
+        scan_download_folder,
+        summarize_process_output,
+        validate_download_folder_limits,
+        validate_download_url,
+        validate_resolved_destination,
+    )
+except ImportError:
+    from download_safety import (
+        MAX_CAPTURED_OUTPUT_CHARS,
+        MAX_DOWNLOAD_FILE_COUNT,
+        MAX_DOWNLOAD_RUNTIME_SECONDS,
+        MAX_DOWNLOAD_TOTAL_BYTES,
+        DownloadSafetyError,
+        scan_download_folder,
+        summarize_process_output,
+        validate_download_folder_limits,
+        validate_download_url,
+        validate_resolved_destination,
+    )
+
+try:
     from .limits import (
         MAX_BODY_BYTES,
         MAX_UPLOAD_BYTES,
@@ -3586,11 +3613,26 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if not url:
             self.send_json({"error": "Esta licitacion no tiene enlace de perfil."}, HTTPStatus.BAD_REQUEST)
             return
+        try:
+            url = validate_download_url(url)
+        except DownloadSafetyError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
         if not LAUNCHER_PATH.exists():
             self.send_json({"error": f"No se encuentra el lanzador: {LAUNCHER_PATH}"}, HTTPStatus.BAD_REQUEST)
             return
 
-        destino = resolve_destination_folder(row)
+        dropbox_root = find_dropbox_root()
+        allowed_destination_roots = [DOWNLOAD_ROOT]
+        if dropbox_root:
+            allowed_destination_roots.append(dropbox_root)
+
+        try:
+            destino = validate_resolved_destination(resolve_destination_folder(row), allowed_destination_roots)
+        except DownloadSafetyError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
         ruta_guardada = folder_path_for_storage(destino)
         destino.mkdir(parents=True, exist_ok=True)
         write_http_url(destino, url)
@@ -3601,7 +3643,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 cwd=str(destino),
                 capture_output=True,
                 text=True,
-                timeout=900,
+                timeout=MAX_DOWNLOAD_RUNTIME_SECONDS,
             )
         except subprocess.TimeoutExpired:
             self.send_json(
@@ -3610,9 +3652,46 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             )
             return
 
-        salida = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
-        if len(salida) > 4000:
-            salida = salida[-4000:]
+        output_summary = summarize_process_output(
+            completed.stdout,
+            completed.stderr,
+            MAX_CAPTURED_OUTPUT_CHARS,
+        )
+        salida = output_summary["combined"]
+
+        if completed.returncode != 0:
+            self.send_json(
+                {
+                    "ok": False,
+                    "codigo": completed.returncode,
+                    "carpeta": str(destino),
+                    "ruta_carpeta": ruta_guardada,
+                    "salida": salida,
+                },
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        try:
+            folder_summary = scan_download_folder(destino)
+            validate_download_folder_limits(
+                folder_summary,
+                max_total_bytes=MAX_DOWNLOAD_TOTAL_BYTES,
+                max_file_count=MAX_DOWNLOAD_FILE_COUNT,
+            )
+        except DownloadSafetyError as exc:
+            self.send_json(
+                {
+                    "ok": False,
+                    "codigo": completed.returncode,
+                    "error": str(exc),
+                    "carpeta": str(destino),
+                    "ruta_carpeta": ruta_guardada,
+                    "salida": salida,
+                },
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
 
         updates = {
             "ruta_carpeta": ruta_guardada,
@@ -3628,16 +3707,15 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             if row["infonalia_dia_id"]:
                 refresh_dia_estado(conn, int(row["infonalia_dia_id"]))
 
-        status = HTTPStatus.OK if completed.returncode == 0 else HTTPStatus.BAD_REQUEST
         self.send_json(
             {
-                "ok": completed.returncode == 0,
+                "ok": True,
                 "codigo": completed.returncode,
                 "carpeta": str(destino),
                 "ruta_carpeta": ruta_guardada,
                 "salida": salida,
             },
-            status,
+            HTTPStatus.OK,
         )
 
     def api_update_licitacion(self, licitacion_id: int) -> None:
