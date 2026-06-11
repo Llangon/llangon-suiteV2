@@ -32,6 +32,7 @@ firebase-adminsdk*.json
 *.pdf
 *.txt
 !**/requirements.txt
+!requirements-dev.txt
 webapp/infonalia_webapp/data/*
 !webapp/infonalia_webapp/data/.gitkeep
 !webapp/infonalia_webapp/data/README_DATOS.md

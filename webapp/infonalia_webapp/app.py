@@ -27,6 +27,31 @@ from pathlib import Path
 from urllib import request as urlrequest
 from urllib.parse import parse_qs, unquote, urlparse
 
+try:
+    from .limits import (
+        MAX_BODY_BYTES,
+        MAX_UPLOAD_BYTES,
+        InvalidContentLength,
+        InvalidUploadExtension,
+        InvalidUploadName,
+        RequestTooLarge,
+        validate_content_length,
+        validate_upload_filename,
+        validate_upload_size,
+    )
+except ImportError:
+    from limits import (
+        MAX_BODY_BYTES,
+        MAX_UPLOAD_BYTES,
+        InvalidContentLength,
+        InvalidUploadExtension,
+        InvalidUploadName,
+        RequestTooLarge,
+        validate_content_length,
+        validate_upload_filename,
+        validate_upload_size,
+    )
+
 
 APP_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_ROOT.parent
@@ -2280,7 +2305,25 @@ def create_notification(
     return int(cur.lastrowid)
 
 
-def extract_multipart_file(content_type: str, body: bytes, field_name: str) -> bytes:
+def extract_multipart_filename(headers: bytes) -> str | None:
+    headers_text = headers.decode("utf-8", errors="replace")
+    quoted = re.search(r'filename="(?P<filename>[^"]*)"', headers_text)
+    if quoted:
+        return quoted.group("filename")
+    plain = re.search(r"filename=(?P<filename>[^;\r\n]+)", headers_text)
+    if plain:
+        return plain.group("filename").strip().strip('"')
+    return None
+
+
+def extract_multipart_file(
+    content_type: str,
+    body: bytes,
+    field_name: str,
+    *,
+    allowed_extensions: set[str] | None = None,
+    max_upload_bytes: int | None = None,
+) -> bytes:
     match = re.search(r"boundary=(?P<boundary>[^;]+)", content_type)
     if not match:
         raise ValueError("No se ha recibido un fichero válido.")
@@ -2295,7 +2338,12 @@ def extract_multipart_file(content_type: str, body: bytes, field_name: str) -> b
         if not data:
             continue
         if f'name="{field_name}"'.encode("utf-8") in headers:
-            return data.rstrip(b"\r\n")
+            if allowed_extensions is not None:
+                validate_upload_filename(extract_multipart_filename(headers), allowed_extensions)
+            payload = data.rstrip(b"\r\n")
+            if max_upload_bytes is not None:
+                validate_upload_size(len(payload), max_upload_bytes)
+            return payload
 
     raise ValueError("No se ha encontrado el fichero CSV en la petición.")
 
@@ -2497,8 +2545,11 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         self.send_json({"error": "No tienes permiso para esta accion."}, HTTPStatus.FORBIDDEN)
         return False
 
-    def read_body(self) -> bytes:
-        length = int(self.headers.get("Content-Length", "0") or "0")
+    def read_body(self, max_bytes: int | None = None) -> bytes:
+        if max_bytes is None:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        else:
+            length = validate_content_length(self.headers, max_bytes)
         return self.rfile.read(length)
 
     def read_json(self) -> dict:
@@ -3234,9 +3285,24 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         try:
             content_type = self.headers.get("Content-Type", "")
-            body = self.read_body()
-            csv_bytes = extract_multipart_file(content_type, body, "csv_file")
+            body = self.read_body(max_bytes=MAX_BODY_BYTES)
+            csv_bytes = extract_multipart_file(
+                content_type,
+                body,
+                "csv_file",
+                allowed_extensions={".csv"},
+                max_upload_bytes=MAX_UPLOAD_BYTES,
+            )
             result = import_csv_content(csv_bytes)
+        except RequestTooLarge as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
+        except InvalidContentLength as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        except (InvalidUploadName, InvalidUploadExtension) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -3252,10 +3318,25 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         try:
             content_type = self.headers.get("Content-Type", "")
-            body = self.read_body()
-            msg_bytes = extract_multipart_file(content_type, body, "msg_file")
+            body = self.read_body(max_bytes=MAX_BODY_BYTES)
+            msg_bytes = extract_multipart_file(
+                content_type,
+                body,
+                "msg_file",
+                allowed_extensions={".msg"},
+                max_upload_bytes=MAX_UPLOAD_BYTES,
+            )
             enrich_pdf = b'name="enrich_pdf"' in body
             result = import_msg_content(msg_bytes, enrich_pdf=enrich_pdf)
+        except RequestTooLarge as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
+        except InvalidContentLength as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        except (InvalidUploadName, InvalidUploadExtension) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return

@@ -41,6 +41,21 @@ Para una primera prueba segura:
 - mantener `INFONALIA_ENABLE_ADMIN_ALIAS=0`,
 - no utilizar datos reales.
 
+## Tests locales
+
+Los tests se preparan desde la raíz del repositorio, usando un entorno virtual local:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r webapp\infonalia_webapp\requirements.txt
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+`requirements-dev.txt` contiene dependencias de desarrollo y test. No forma parte de las dependencias mínimas de producción de la app.
+
 ## Arranque manual
 
 ```powershell
