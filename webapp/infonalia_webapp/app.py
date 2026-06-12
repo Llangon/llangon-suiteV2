@@ -236,6 +236,21 @@ except ImportError:
     )
 
 try:
+    from .notification_delivery import (
+        attach_logo_to_message,
+        create_notification_record,
+        notification_recipients_for_target,
+        send_notification_email_with_settings,
+    )
+except ImportError:
+    from notification_delivery import (
+        attach_logo_to_message,
+        create_notification_record,
+        notification_recipients_for_target,
+        send_notification_email_with_settings,
+    )
+
+try:
     from .db_migrations import run_migrations
 except ImportError:
     from db_migrations import run_migrations
@@ -1165,18 +1180,11 @@ def build_ai_preview_payload(licitacion_id: int) -> dict:
 
 
 def notification_recipients(usuario_destino: str | None) -> list[str]:
-    destinatario = clean_text(usuario_destino)
-    if destinatario:
-        user = get_user_record(destinatario)
-        users = [user] if user and user.get("active") else []
-    else:
-        users = list_user_records(active_only=True)
-    emails = []
-    for user in users:
-        email = clean_text(user.get("email"))
-        if email and email not in emails:
-            emails.append(email)
-    return emails
+    return notification_recipients_for_target(
+        usuario_destino,
+        get_user=get_user_record,
+        list_users=list_user_records,
+    )
 
 
 PLATFORM_URL = os.environ.get("INFONALIA_PLATFORM_URL", "").strip()
@@ -1193,71 +1201,23 @@ def render_notification_email_html(asunto: str, cuerpo: str, usuario_destino: st
 
 
 def attach_notification_logo(message: EmailMessage) -> None:
-    logo_path = STATIC_ROOT / "logo-llangon.png"
-    if not logo_path.exists():
-        return
-
-    try:
-        html_part = message.get_payload()[-1]
-        html_part.add_related(
-            logo_path.read_bytes(),
-            maintype="image",
-            subtype="png",
-            cid="<llangon-logo>",
-        )
-    except Exception:
-        return
+    attach_logo_to_message(message, STATIC_ROOT / "logo-llangon.png")
 
 
 def send_notification_email(usuario_destino: str | None, asunto: str, cuerpo: str) -> tuple[str | None, str | None]:
     settings = get_settings()
-    smtp_host = clean_text(settings.get("smtp_host"))
-    smtp_port = int(clean_text(settings.get("smtp_port")) or "587")
-    smtp_user = clean_text(settings.get("smtp_user"))
-    smtp_password = clean_text(settings.get("smtp_password"))
-    smtp_from = clean_text(settings.get("smtp_from")) or smtp_user
-    smtp_use_ssl = bool_text(settings.get("smtp_ssl"))
-    smtp_use_tls = bool_text(settings.get("smtp_tls", "1"))
     recipients = notification_recipients(usuario_destino)
-    if not smtp_host:
-        return None, "SMTP no configurado"
-    if not smtp_from:
-        return None, "Remitente SMTP no configurado"
-    if not recipients:
-        return None, "El usuario de destino no tiene email configurado"
-
-    message = EmailMessage()
-    message["From"] = smtp_from
-    message["To"] = ", ".join(recipients)
-    message["Subject"] = asunto
-    message.set_content(cuerpo or asunto)
-    message.add_alternative(
-        render_notification_email_html(asunto, cuerpo or asunto, usuario_destino),
-        subtype="html",
+    return send_notification_email_with_settings(
+        settings=settings,
+        recipients=recipients,
+        subject=asunto,
+        body=cuerpo,
+        html_body=render_notification_email_html(asunto, cuerpo or asunto, usuario_destino),
+        logo_path=STATIC_ROOT / "logo-llangon.png",
+        now=now_iso,
+        smtp_factory=smtplib.SMTP,
+        smtp_ssl_factory=smtplib.SMTP_SSL,
     )
-    attach_notification_logo(message)
-
-    try:
-        if smtp_use_ssl:
-            server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=20)
-        else:
-            server = smtplib.SMTP(smtp_host, smtp_port, timeout=20)
-        with server:
-            if smtp_use_tls and not smtp_use_ssl:
-                server.starttls()
-            if smtp_user:
-                server.login(smtp_user, smtp_password)
-            server.send_message(message)
-        return now_iso(), None
-    except PermissionError as exc:
-        if getattr(exc, "winerror", None) == 10013:
-            return None, (
-                "Windows ha bloqueado la conexión SMTP saliente "
-                f"({smtp_host}:{smtp_port}). Revisa firewall, antivirus, proxy o permisos de red."
-            )
-        return None, str(exc)
-    except Exception as exc:
-        return None, str(exc)
 
 
 def create_notification(
@@ -1269,33 +1229,17 @@ def create_notification(
     ficheros_adjuntos: str = "",
 ) -> int:
     sent_at, email_error = send_notification_email(usuario_destino, asunto, cuerpo)
-    timestamp = now_iso()
-    cur = conn.execute(
-        """
-        INSERT INTO notificaciones (
-            fecha_hora,
-            usuario_origen,
-            usuario_destino,
-            asunto,
-            cuerpo,
-            ficheros_adjuntos,
-            email_sent_at,
-            email_error
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            timestamp,
-            clean_text(usuario_origen),
-            clean_text(usuario_destino),
-            clean_text(asunto),
-            cuerpo,
-            clean_text(ficheros_adjuntos),
-            sent_at,
-            email_error,
-        ),
+    return create_notification_record(
+        conn,
+        usuario_origen=usuario_origen,
+        usuario_destino=usuario_destino,
+        asunto=asunto,
+        cuerpo=cuerpo,
+        ficheros_adjuntos=ficheros_adjuntos,
+        sent_at=sent_at,
+        email_error=email_error,
+        timestamp=now_iso(),
     )
-    return int(cur.lastrowid)
 
 
 class InfonaliaHandler(BaseHTTPRequestHandler):

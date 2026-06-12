@@ -2157,3 +2157,25 @@ Fuera de esta fase:
 - no se cambia el texto renderizado de preview;
 - no se cambia SQLite;
 - no se cambia frontend ni Firebase.
+
+## Fase 3M — Extraccion de entrega de notificaciones
+
+La Fase 3M separa helpers de destinatarios, email SMTP y registro de notificaciones.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/notification_delivery.py`;
+- se mueve seleccion/deduplicacion de destinatarios;
+- se mueve adjunto de logo al email;
+- se mueve construccion y envio SMTP parametrizado;
+- se mueve insercion en `notificaciones`;
+- `app.py` conserva envoltorios compatibles;
+- se anaden tests con SMTP falso y SQLite en memoria.
+
+Fuera de esta fase:
+
+- no se envian correos reales en tests;
+- no se cambian endpoints ni respuestas JSON;
+- no se cambian permisos;
+- no se anaden migraciones;
+- no se cambia frontend ni Firebase.

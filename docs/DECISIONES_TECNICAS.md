@@ -895,3 +895,20 @@ Mover el armado del payload a `build_preview_payload()` dentro de `webapp/infona
 - Se mantiene el JSON de preview y email.
 - No se cambian endpoints ni permisos.
 - No se cambia SQLite, frontend ni Firebase.
+
+## ADR-045 — Extraer entrega de notificaciones
+
+### Contexto
+
+`app.py` mezclaba seleccion de destinatarios, adjunto de logo, construccion de email, envio SMTP y registro SQLite de notificaciones. La entrega SMTP puede probarse con dobles sin enviar correo real.
+
+### Decisión
+
+Crear `webapp/infonalia_webapp/notification_delivery.py` con helpers parametrizados. `app.py` conserva las funciones publicas actuales e inyecta settings, usuarios, HTML renderizado, `now_iso()` y factorias SMTP.
+
+### Consecuencias
+
+- El envio SMTP queda testeado sin red real.
+- Se mantienen mensajes de error y cabeceras del email.
+- Se mantiene el registro de `notificaciones`.
+- No se cambian endpoints, permisos, frontend ni Firebase.
