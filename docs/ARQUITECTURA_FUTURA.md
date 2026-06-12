@@ -1502,3 +1502,32 @@ Fuera de esta fase:
 - no se cambian respuestas JSON;
 - no se toca SQLite;
 - no se cambia Firebase.
+
+## Fase 2I — Precheck refactor de app.py
+
+La Fase 2I prepara el terreno para refactorizar `app.py` sin hacerlo todavia.
+
+Cambios aplicados:
+
+- se crea `docs/PRECHECK_REFACTOR_APP.md`;
+- se inventaria la superficie actual de `app.py`: entorno, rutas, sesiones, SQLite, importaciones, descargas, noticias, notificaciones y HTTP;
+- se documenta la responsabilidad de `InfonaliaHandler` y sus metodos `do_GET()`, `do_POST()`, `do_PATCH()` y `do_DELETE()`;
+- se identifican modulos ya extraidos o cercanos como `web_security.py`, `csrf.py`, `limits.py` y `core/`;
+- se fijan invariantes para conservar endpoints, respuestas JSON, login, logout, CSRF, SQLite temporal y Firebase;
+- se propone un orden seguro de extraccion empezando por funciones puras;
+- se anade test documental para asegurar que el precheck cubre piezas clave.
+
+Fuera de esta fase:
+
+- no se refactoriza `app.py`;
+- no se mueve codigo;
+- no se cambian imports;
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se toca SQLite;
+- no se activan migraciones;
+- no se activa CSRF global;
+- no se implementa `StorageBackend`;
+- no se implementa Markdown;
+- no se cambia frontend;
+- no se cambia Firebase.

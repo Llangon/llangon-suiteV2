@@ -185,3 +185,44 @@ def test_csrf_global_precheck_keeps_implementation_out_of_scope() -> None:
         "No se usan datos reales",
     ):
         assert item in text
+
+
+def test_app_refactor_precheck_documents_current_surface() -> None:
+    text = (DOCS_ROOT / "PRECHECK_REFACTOR_APP.md").read_text(encoding="utf-8")
+
+    for item in (
+        "InfonaliaHandler",
+        "do_GET()",
+        "do_POST()",
+        "do_PATCH()",
+        "do_DELETE()",
+        "run()",
+        "init_db()",
+        "db_session()",
+        "import_csv_content()",
+        "import_msg_content()",
+        "api_download_licitacion()",
+        "web_security.py",
+        "csrf.py",
+        "core/models.py",
+        "404 Not Found",
+    ):
+        assert item in text
+
+
+def test_app_refactor_precheck_keeps_implementation_out_of_scope() -> None:
+    text = (DOCS_ROOT / "PRECHECK_REFACTOR_APP.md").read_text(encoding="utf-8")
+
+    for item in (
+        "No se refactoriza `app.py`",
+        "No se mueve codigo",
+        "No se cambian imports",
+        "No se cambian endpoints",
+        "No se cambian respuestas JSON",
+        "No se toca SQLite",
+        "No se activa CSRF global",
+        "No se implementa `StorageBackend`",
+        "No se cambia Firebase",
+        "No se usan datos reales",
+    ):
+        assert item in text

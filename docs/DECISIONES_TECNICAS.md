@@ -401,3 +401,19 @@ Crear `docs/PRECHECK_CSRF_GLOBAL.md` y cubrirlo con tests documentales. El prech
 - La futura fase de CSRF global parte de una superficie inventariada.
 - Login, logout, rutas publicas, GET privados y rutas desconocidas quedan identificados como casos sensibles.
 - No se mezcla CSRF global con refactor de `app.py`.
+
+## ADR-015 — Precheck antes de refactor de app.py
+
+### Contexto
+
+`app.py` sigue concentrando entorno, sesiones, SQLite, importaciones, descargas, noticias, notificaciones y enrutado HTTP. Refactorizarlo puede mejorar mantenibilidad, pero tambien puede alterar imports, orden de validaciones, endpoints o respuestas JSON si se hace sin una puerta propia.
+
+### Decisión
+
+Crear `docs/PRECHECK_REFACTOR_APP.md` y cubrirlo con tests documentales. El precheck no refactoriza `app.py`; solo fija superficie actual, invariantes, riesgos, orden seguro de extraccion y plan de rollback.
+
+### Consecuencias
+
+- La futura fase de refactor parte de un mapa verificable.
+- `app.py` debe mantenerse como fachada publica mientras se extraen piezas.
+- El refactor no se mezcla con SQLite, migraciones, CSRF global, StorageBackend ni Markdown.
