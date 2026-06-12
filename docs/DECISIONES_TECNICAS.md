@@ -742,3 +742,20 @@ Mover esos helpers a `webapp/infonalia_webapp/audit_records.py` y dejar `app.py`
 - La auditoria de importaciones y descargas tiene un modulo propio testeable.
 - No se cambia SQLite ni se anaden migraciones.
 - No se cambia comportamiento visible.
+
+## ADR-036 — Extraer parsing multipart de subidas
+
+### Contexto
+
+`app.py` mantenia el parseo manual de multipart para CSV y MSG junto al enrutado HTTP. Esa logica no depende de SQLite ni de estado global.
+
+### Decisión
+
+Mover `extract_multipart_file()` y el helper de filename a `webapp/infonalia_webapp/multipart_uploads.py`, reutilizando las validaciones existentes de `limits.py`.
+
+### Consecuencias
+
+- El parseo de subidas queda testeado sin importar `app.py`.
+- Los endpoints de importacion conservan los mismos campos multipart.
+- No se cambian respuestas JSON ni limites.
+- No se cambia frontend ni Firebase.

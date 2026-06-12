@@ -1974,3 +1974,23 @@ Fuera de esta fase:
 - no se cambia SQLite;
 - no se anaden migraciones;
 - no se cambia frontend ni Firebase.
+
+## Fase 3D — Extraccion de parsing multipart
+
+La Fase 3D separa el parseo de ficheros multipart usados por importaciones CSV y MSG.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/multipart_uploads.py`;
+- se mueve la extraccion de nombre de fichero y contenido multipart;
+- se reutilizan las validaciones existentes de extension y tamano;
+- `app.py` mantiene los mismos endpoints y nombres de campo;
+- se anaden tests directos de multipart.
+
+Fuera de esta fase:
+
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambian limites de subida;
+- no se toca SQLite;
+- no se cambia frontend ni Firebase.
