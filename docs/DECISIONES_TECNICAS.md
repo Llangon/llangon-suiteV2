@@ -691,3 +691,20 @@ Anadir la migracion `0003_import_history` con las tablas `import_runs` e `import
 - No se conectan todavia CSV ni MSG a estas tablas.
 - No se cambian endpoints, respuestas JSON ni frontend.
 - No se implementan fuentes reales nuevas como PLACE.
+
+## ADR-033 — Registrar descargas como jobs síncronos
+
+### Contexto
+
+Ya existe la tabla `download_jobs` y las descargas correctas generan manifest, pero el endpoint seguia sin dejar rastro persistente de cada ejecucion.
+
+### Decisión
+
+Crear un job `running` justo antes de ejecutar el descargador local y cerrarlo como `completed` o `failed` segun el resultado. El endpoint sigue siendo sincrono y mantiene la misma respuesta JSON.
+
+### Consecuencias
+
+- Las descargas ejecutadas quedan auditadas en SQLite.
+- Los errores de proceso, timeout, limites o manifest quedan asociados al job.
+- Las validaciones previas que no llegan a ejecutar descarga no crean job.
+- No se implementa cola en segundo plano ni Dropbox real.

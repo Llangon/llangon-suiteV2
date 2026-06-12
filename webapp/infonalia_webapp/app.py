@@ -146,9 +146,9 @@ except ImportError:
     from db_migrations import run_migrations
 
 try:
-    from .local_storage import LocalStorageError, write_local_manifest
+    from .local_storage import LocalStorageError, local_uri_for_path, write_local_manifest
 except ImportError:
-    from local_storage import LocalStorageError, write_local_manifest
+    from local_storage import LocalStorageError, local_uri_for_path, write_local_manifest
 
 try:
     from .web_security import (
@@ -1416,6 +1416,59 @@ def storage_root_for_destination(destination: Path, allowed_roots: list[Path]) -
         except ValueError:
             continue
     raise LocalStorageError("La carpeta de destino queda fuera del almacenamiento local permitido.")
+
+
+def create_download_job(conn: sqlite3.Connection, licitacion_id: int, *, timestamp: str) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO download_jobs (
+            licitacion_id,
+            status,
+            created_at,
+            started_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (licitacion_id, "running", timestamp, timestamp, timestamp),
+    )
+    return int(cur.lastrowid)
+
+
+def finish_download_job(
+    conn: sqlite3.Connection,
+    job_id: int,
+    *,
+    status: str,
+    storage_backend: str | None = None,
+    storage_uri: str | None = None,
+    file_manifest: str | None = None,
+    error_message: str | None = None,
+    timestamp: str,
+) -> None:
+    conn.execute(
+        """
+        UPDATE download_jobs
+        SET status = ?,
+            storage_backend = ?,
+            storage_uri = ?,
+            file_manifest = ?,
+            error_message = ?,
+            finished_at = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            status,
+            storage_backend,
+            storage_uri,
+            file_manifest,
+            error_message,
+            timestamp,
+            timestamp,
+            job_id,
+        ),
+    )
 
 
 def build_ai_preview_payload(licitacion_id: int) -> dict:
@@ -3013,6 +3066,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         ruta_guardada = folder_path_for_storage(destino)
         destino.mkdir(parents=True, exist_ok=True)
         write_http_url(destino, url)
+        with db_session() as conn:
+            download_job_id = create_download_job(conn, licitacion_id, timestamp=now_iso())
 
         try:
             completed = subprocess.run(
@@ -3023,8 +3078,17 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 timeout=MAX_DOWNLOAD_RUNTIME_SECONDS,
             )
         except subprocess.TimeoutExpired:
+            error_message = "La descarga ha tardado demasiado y se ha detenido."
+            with db_session() as conn:
+                finish_download_job(
+                    conn,
+                    download_job_id,
+                    status="failed",
+                    error_message=error_message,
+                    timestamp=now_iso(),
+                )
             self.send_json(
-                {"error": "La descarga ha tardado demasiado y se ha detenido.", "carpeta": str(destino)},
+                {"error": error_message, "carpeta": str(destino)},
                 HTTPStatus.REQUEST_TIMEOUT,
             )
             return
@@ -3037,6 +3101,15 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         salida = output_summary["combined"]
 
         if completed.returncode != 0:
+            error_message = f"El descargador devolvio codigo {completed.returncode}: {salida}".strip()
+            with db_session() as conn:
+                finish_download_job(
+                    conn,
+                    download_job_id,
+                    status="failed",
+                    error_message=error_message[:2000],
+                    timestamp=now_iso(),
+                )
             self.send_json(
                 {
                     "ok": False,
@@ -3057,8 +3130,17 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 max_file_count=MAX_DOWNLOAD_FILE_COUNT,
             )
             storage_root = storage_root_for_destination(destino, allowed_destination_roots)
-            write_local_manifest(storage_root, destino, source_url=url)
+            manifest_object = write_local_manifest(storage_root, destino, source_url=url)
+            storage_uri = local_uri_for_path(storage_root, destino)
         except DownloadSafetyError as exc:
+            with db_session() as conn:
+                finish_download_job(
+                    conn,
+                    download_job_id,
+                    status="failed",
+                    error_message=str(exc)[:2000],
+                    timestamp=now_iso(),
+                )
             self.send_json(
                 {
                     "ok": False,
@@ -3072,11 +3154,20 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             )
             return
         except (LocalStorageError, OSError) as exc:
+            error_message = f"No se pudo crear el manifiesto de descarga: {exc}"
+            with db_session() as conn:
+                finish_download_job(
+                    conn,
+                    download_job_id,
+                    status="failed",
+                    error_message=error_message[:2000],
+                    timestamp=now_iso(),
+                )
             self.send_json(
                 {
                     "ok": False,
                     "codigo": completed.returncode,
-                    "error": f"No se pudo crear el manifiesto de descarga: {exc}",
+                    "error": error_message,
                     "carpeta": str(destino),
                     "ruta_carpeta": ruta_guardada,
                     "salida": salida,
@@ -3098,6 +3189,15 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             )
             if row["infonalia_dia_id"]:
                 refresh_dia_estado(conn, int(row["infonalia_dia_id"]))
+            finish_download_job(
+                conn,
+                download_job_id,
+                status="completed",
+                storage_backend="local",
+                storage_uri=storage_uri,
+                file_manifest=manifest_object.uri,
+                timestamp=updates["updated_at"],
+            )
 
         self.send_json(
             {

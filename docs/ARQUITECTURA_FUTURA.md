@@ -1911,3 +1911,24 @@ Fuera de esta fase:
 - no se cambian endpoints ni respuestas JSON;
 - no se implementa PLACE real;
 - no se cambia frontend ni Firebase.
+
+## Fase 3A — Registro sincro de jobs de descarga
+
+La Fase 3A usa la tabla `download_jobs` para auditar descargas sin convertir el flujo en una cola real.
+
+Cambios aplicados:
+
+- el endpoint crea un job `running` justo antes de ejecutar el descargador local;
+- una descarga correcta cierra el job como `completed`;
+- fallos de proceso, timeout, limites o manifest cierran el job como `failed`;
+- el job guarda backend local, URI de carpeta y URI de manifest cuando la descarga termina bien;
+- se amplian tests funcionales de descarga para cubrir jobs completados, fallidos y validaciones previas.
+
+Fuera de esta fase:
+
+- no se implementa ejecucion asincrona;
+- no se cambian respuestas JSON;
+- no se cambian endpoints;
+- no se implementa Dropbox real;
+- no se ejecutan descargadores reales en tests;
+- no se cambia frontend ni Firebase.

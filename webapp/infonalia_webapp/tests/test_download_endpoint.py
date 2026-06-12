@@ -117,6 +117,15 @@ def get_ruta_carpeta(app: ModuleType, licitacion_id: int) -> str:
     return row["ruta_carpeta"] or ""
 
 
+def get_download_jobs(app: ModuleType, licitacion_id: int) -> list[dict]:
+    with app.db_session() as conn:
+        rows = conn.execute(
+            "SELECT * FROM download_jobs WHERE licitacion_id = ? ORDER BY id",
+            (licitacion_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 @contextmanager
 def mocked_subprocess_run(app: ModuleType, fake_run):
     old_run = app.subprocess.run
@@ -168,6 +177,15 @@ def test_download_endpoint_success_updates_ruta_carpeta_with_mocked_subprocess()
         assert manifest["schema"] == "infonalia.download_manifest.v1"
         assert manifest["source_url"] == "https://example.test/licitacion/1"
         assert sorted(item["path"] for item in manifest["files"]) == ["HTTP.url", "documento-ficticio.pdf"]
+        jobs = get_download_jobs(app, licitacion_id)
+        assert len(jobs) == 1
+        assert jobs[0]["status"] == "completed"
+        assert jobs[0]["storage_backend"] == "local"
+        assert jobs[0]["storage_uri"].startswith("local://")
+        assert jobs[0]["file_manifest"].endswith(".infonalia_manifest.json")
+        assert jobs[0]["error_message"] is None
+        assert jobs[0]["started_at"]
+        assert jobs[0]["finished_at"]
         assert calls[0]["capture_output"] is True
         assert calls[0]["text"] is True
         assert calls[0]["timeout"] == app.MAX_DOWNLOAD_RUNTIME_SECONDS
@@ -256,6 +274,12 @@ def test_download_endpoint_failure_does_not_update_ruta_carpeta() -> None:
         assert payload["codigo"] == 2
         assert "fallo ficticio" in payload["salida"]
         assert get_ruta_carpeta(app, licitacion_id) == ""
+        jobs = get_download_jobs(app, licitacion_id)
+        assert len(jobs) == 1
+        assert jobs[0]["status"] == "failed"
+        assert "codigo 2" in jobs[0]["error_message"]
+        assert "fallo ficticio" in jobs[0]["error_message"]
+        assert jobs[0]["finished_at"]
 
 
 def test_download_endpoint_timeout_does_not_update_ruta_carpeta() -> None:
@@ -275,6 +299,11 @@ def test_download_endpoint_timeout_does_not_update_ruta_carpeta() -> None:
         assert status == HTTPStatus.REQUEST_TIMEOUT
         assert "tardado demasiado" in payload["error"]
         assert get_ruta_carpeta(app, licitacion_id) == ""
+        jobs = get_download_jobs(app, licitacion_id)
+        assert len(jobs) == 1
+        assert jobs[0]["status"] == "failed"
+        assert "tardado demasiado" in jobs[0]["error_message"]
+        assert jobs[0]["finished_at"]
 
 
 def test_download_endpoint_folder_limit_failure_does_not_update_ruta_carpeta() -> None:
@@ -300,6 +329,10 @@ def test_download_endpoint_folder_limit_failure_does_not_update_ruta_carpeta() -
             assert payload["ok"] is False
             assert "ficheros" in payload["error"]
             assert get_ruta_carpeta(app, licitacion_id) == ""
+            jobs = get_download_jobs(app, licitacion_id)
+            assert len(jobs) == 1
+            assert jobs[0]["status"] == "failed"
+            assert "ficheros" in jobs[0]["error_message"]
     finally:
         app.MAX_DOWNLOAD_FILE_COUNT = old_max_file_count
 
@@ -321,6 +354,7 @@ def test_download_endpoint_rejects_file_url_without_subprocess() -> None:
         assert status == HTTPStatus.BAD_REQUEST
         assert "http o https" in payload["error"]
         assert get_ruta_carpeta(app, licitacion_id) == ""
+        assert get_download_jobs(app, licitacion_id) == []
 
 
 def test_download_endpoint_rejects_empty_url_without_subprocess() -> None:
@@ -340,6 +374,7 @@ def test_download_endpoint_rejects_empty_url_without_subprocess() -> None:
         assert status == HTTPStatus.BAD_REQUEST
         assert "enlace de perfil" in payload["error"]
         assert get_ruta_carpeta(app, licitacion_id) == ""
+        assert get_download_jobs(app, licitacion_id) == []
 
 
 def test_download_endpoint_rejects_unsafe_destination_without_subprocess() -> None:
@@ -360,3 +395,4 @@ def test_download_endpoint_rejects_unsafe_destination_without_subprocess() -> No
         assert status == HTTPStatus.BAD_REQUEST
         assert "fuera" in payload["error"]
         assert get_ruta_carpeta(app, licitacion_id) == unsafe_destination
+        assert get_download_jobs(app, licitacion_id) == []
