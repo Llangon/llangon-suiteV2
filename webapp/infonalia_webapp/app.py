@@ -141,9 +141,9 @@ except ImportError:
     from licitation_records import licitation_row_to_dict
 
 try:
-    from .news_helpers import NEWS_STATUSES, news_to_dict, normalize_news_status, slugify
+    from .news_helpers import build_news_payload, news_to_dict
 except ImportError:
-    from news_helpers import NEWS_STATUSES, news_to_dict, normalize_news_status, slugify
+    from news_helpers import build_news_payload, news_to_dict
 
 try:
     from .msg_parsing import (
@@ -1647,28 +1647,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
     def read_news_payload(self) -> dict:
         data = self.read_json()
-        title = clean_text(data.get("title"))
-        if not title:
-            raise ValueError("El título es obligatorio.")
-
-        status = normalize_news_status(data.get("status"))
-        slug = slugify(data.get("slug") or title)
-        published_at = clean_text(data.get("publishedAt"))
-        if status == "published" and not published_at:
-            published_at = now_iso()
-
-        return {
-            "title": title,
-            "slug": slug,
-            "excerpt": clean_text(data.get("excerpt")),
-            "content": clean_text(data.get("content")),
-            "category": clean_text(data.get("category")),
-            "tags": clean_text(data.get("tags")),
-            "featured_image": normalize_url(data.get("featuredImage")),
-            "status": status,
-            "is_featured": 1 if data.get("isFeatured") else 0,
-            "published_at": published_at,
-        }
+        return build_news_payload(data, now=now_iso, normalize_url_value=normalize_url)
 
     def api_create_news(self) -> None:
         if not self.require_news_manager():

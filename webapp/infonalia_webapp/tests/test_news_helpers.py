@@ -4,7 +4,9 @@ import importlib
 import sys
 from unittest.mock import patch
 
-from webapp.infonalia_webapp.news_helpers import news_to_dict, normalize_news_status, slugify
+import pytest
+
+from webapp.infonalia_webapp.news_helpers import build_news_payload, news_to_dict, normalize_news_status, slugify
 
 
 def test_news_helpers_import_does_not_import_app_or_side_effect_modules() -> None:
@@ -33,6 +35,62 @@ def test_normalize_news_status_preserves_current_defaults() -> None:
     assert normalize_news_status("ARCHIVED") == "archived"
     assert normalize_news_status("visible") == "draft"
     assert normalize_news_status("") == "draft"
+
+
+def test_build_news_payload_preserves_current_normalization() -> None:
+    payload = build_news_payload(
+        {
+            "title": " Nueva noticia ",
+            "slug": "",
+            "excerpt": " Resumen ",
+            "content": " Contenido ",
+            "category": " Categoria ",
+            "tags": " uno,dos ",
+            "featuredImage": " https://example.test/image.jpg ",
+            "status": "published",
+            "isFeatured": True,
+            "publishedAt": "",
+        },
+        now=lambda: "2026-06-12T10:00:00",
+        normalize_url_value=lambda value: f"url:{str(value).strip()}",
+    )
+
+    assert payload == {
+        "title": "Nueva noticia",
+        "slug": "nueva-noticia",
+        "excerpt": "Resumen",
+        "content": "Contenido",
+        "category": "Categoria",
+        "tags": "uno,dos",
+        "featured_image": "url:https://example.test/image.jpg",
+        "status": "published",
+        "is_featured": 1,
+        "published_at": "2026-06-12T10:00:00",
+    }
+
+
+def test_build_news_payload_keeps_explicit_published_at_and_draft_defaults() -> None:
+    payload = build_news_payload(
+        {
+            "title": "Borrador",
+            "slug": "slug-manual",
+            "status": "unknown",
+            "isFeatured": False,
+            "publishedAt": "2026-06-11T09:00:00",
+        },
+        now=lambda: "2026-06-12T10:00:00",
+        normalize_url_value=lambda value: str(value or ""),
+    )
+
+    assert payload["slug"] == "slug-manual"
+    assert payload["status"] == "draft"
+    assert payload["is_featured"] == 0
+    assert payload["published_at"] == "2026-06-11T09:00:00"
+
+
+def test_build_news_payload_requires_title() -> None:
+    with pytest.raises(ValueError, match="El título es obligatorio."):
+        build_news_payload({}, now=lambda: "2026-06-12T10:00:00", normalize_url_value=lambda value: str(value or ""))
 
 
 def test_news_to_dict_preserves_public_shape() -> None:

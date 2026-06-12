@@ -2200,3 +2200,23 @@ Fuera de esta fase:
 - no se cambian permisos;
 - no se anaden migraciones;
 - no se cambia frontend ni Firebase.
+
+## Fase 3O — Extraccion de payload de noticias
+
+La Fase 3O separa la normalizacion de payload de noticias del handler HTTP.
+
+Cambios aplicados:
+
+- se anade `build_news_payload()` en `news_helpers.py`;
+- se mueve validacion de titulo obligatorio;
+- se mueve normalizacion de slug, estado, fecha e imagen destacada;
+- `app.py` conserva `read_news_payload()` como envoltorio compatible;
+- se anaden tests directos de normalizacion.
+
+Fuera de esta fase:
+
+- no se cambia Markdown;
+- no se cambian endpoints ni respuestas JSON;
+- no se cambian permisos;
+- no se anaden migraciones;
+- no se cambia frontend ni Firebase.

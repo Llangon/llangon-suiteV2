@@ -929,3 +929,20 @@ Mover esa logica mecanica a `webapp/infonalia_webapp/notification_records.py`. E
 - Se mantiene la respuesta de `/api/notificaciones`.
 - No se cambian permisos ni endpoints.
 - No se cambia SQLite, frontend ni Firebase.
+
+## ADR-047 — Extraer payload de noticias
+
+### Contexto
+
+`app.py` normalizaba directamente el payload de creacion y edicion de noticias: titulo, slug, estado, fecha de publicacion e imagen destacada.
+
+### Decisión
+
+Mover esa normalizacion a `build_news_payload()` en `webapp/infonalia_webapp/news_helpers.py`. `app.py` conserva `read_news_payload()` como fachada que lee JSON e inyecta `now_iso()` y `normalize_url()`.
+
+### Consecuencias
+
+- La normalizacion de noticias queda testeada sin handler HTTP.
+- Se mantiene el CRUD de noticias y sus respuestas.
+- No se cambia render Markdown ni contenido HTML.
+- No se cambia SQLite, frontend ni Firebase.

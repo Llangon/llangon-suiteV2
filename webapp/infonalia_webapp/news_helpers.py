@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import time
 import unicodedata
+from collections.abc import Callable
 from typing import Any
 
 try:
@@ -17,6 +18,7 @@ except ImportError:
 
 NEWS_STATUSES = {"draft", "published", "archived"}
 NEWS_RENDERER = SafeMarkdownRenderer()
+UrlNormalizer = Callable[[object], str]
 
 
 def slugify(value: object) -> str:
@@ -30,6 +32,31 @@ def slugify(value: object) -> str:
 def normalize_news_status(value: object) -> str:
     status = clean_text(value).lower()
     return status if status in NEWS_STATUSES else "draft"
+
+
+def build_news_payload(data: dict, *, now: Callable[[], str], normalize_url_value: UrlNormalizer) -> dict[str, object]:
+    title = clean_text(data.get("title"))
+    if not title:
+        raise ValueError("El título es obligatorio.")
+
+    status = normalize_news_status(data.get("status"))
+    slug = slugify(data.get("slug") or title)
+    published_at = clean_text(data.get("publishedAt"))
+    if status == "published" and not published_at:
+        published_at = now()
+
+    return {
+        "title": title,
+        "slug": slug,
+        "excerpt": clean_text(data.get("excerpt")),
+        "content": clean_text(data.get("content")),
+        "category": clean_text(data.get("category")),
+        "tags": clean_text(data.get("tags")),
+        "featured_image": normalize_url_value(data.get("featuredImage")),
+        "status": status,
+        "is_featured": 1 if data.get("isFeatured") else 0,
+        "published_at": published_at,
+    }
 
 
 def news_to_dict(row: Any) -> dict:
