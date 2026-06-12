@@ -577,3 +577,19 @@ Crear `webapp/infonalia_webapp/db_migrations.py` con tabla `schema_migrations`, 
 - Existe una base minima para futuras migraciones versionadas.
 - La migracion inicial no transforma datos ni cambia endpoints.
 - Antes de esta fase se crea backup local ignorado en `.local_backups/`.
+
+## ADR-026 — Implementar StorageBackend local aislado
+
+### Contexto
+
+El contrato `StorageBackend` ya existia, pero solo con implementaciones falsas en tests. Antes de tocar el endpoint de descarga conviene disponer de una implementacion local real, pequena y probada con filesystem temporal.
+
+### Decisión
+
+Crear `webapp/infonalia_webapp/local_storage.py` con `LocalStorageBackend`. Acepta URIs `local://...`, escribe solo dentro de una raiz explicita, devuelve `StorageObject` y rechaza rutas absolutas o traversal.
+
+### Consecuencias
+
+- Hay una base local para conectar descargas en una fase posterior.
+- No se implementa Dropbox ni se cambia `api_download_licitacion()`.
+- No se cambia SQLite ni `ruta_carpeta`.

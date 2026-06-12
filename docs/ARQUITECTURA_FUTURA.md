@@ -1764,3 +1764,25 @@ Fuera de esta fase:
 - no se cambian respuestas JSON;
 - no se cambia frontend;
 - no se cambia Firebase.
+
+## Fase 2T — StorageBackend local aislado
+
+La Fase 2T introduce una implementacion local del contrato `StorageBackend` sin conectarla aun al flujo real de descarga.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/local_storage.py`;
+- se implementa `LocalStorageBackend`;
+- se aceptan URIs `local://...`;
+- se rechazan rutas inseguras, absolutas o con `..`;
+- se calcula tamano y hash SHA-256 de ficheros guardados;
+- se anaden tests con `tmp_path` para guardar, crear carpetas, obtener ruta visible, borrar y rechazar rutas inseguras.
+
+Fuera de esta fase:
+
+- no se implementa Dropbox;
+- no se cambia `api_download_licitacion()`;
+- no se ejecutan descargadores reales;
+- no se cambia SQLite;
+- no se cambia `ruta_carpeta`;
+- no se cambian endpoints ni respuestas JSON.
