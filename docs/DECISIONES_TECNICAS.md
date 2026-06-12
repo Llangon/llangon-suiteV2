@@ -810,3 +810,20 @@ Mover `load_env_file()` y `required_env()` a `webapp/infonalia_webapp/environmen
 - Se conserva el orden de carga actual.
 - No se cambian nombres de variables ni valores por defecto.
 - No se cambian endpoints ni comportamiento visible.
+
+## ADR-040 — Extraer helpers de usuarios y configuración
+
+### Contexto
+
+`app.py` mantenia serializacion de usuarios, siembra inicial de usuarios/settings y upsert de configuracion junto al enrutado. Son funciones SQLite pequenas que pueden aislarse sin cambiar endpoints.
+
+### Decisión
+
+Mover esas piezas a `webapp/infonalia_webapp/user_settings.py` y dejar en `app.py` envoltorios para inyectar `USERS`, `DEFAULT_SETTINGS`, `now_iso()` y `hash_password()`.
+
+### Consecuencias
+
+- La logica de usuarios/settings queda testeada sin importar `app.py`.
+- Se mantiene el formato JSON de usuarios.
+- Se mantiene la siembra inicial actual.
+- No se cambian endpoints ni respuestas.

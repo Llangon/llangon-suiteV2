@@ -28,6 +28,19 @@ except ImportError:
     from environment import load_env_file, required_env
 
 try:
+    from .user_settings import (
+        seed_users_and_settings as seed_user_settings,
+        update_settings as update_settings_values,
+        user_row_to_dict,
+    )
+except ImportError:
+    from user_settings import (
+        seed_users_and_settings as seed_user_settings,
+        update_settings as update_settings_values,
+        user_row_to_dict,
+    )
+
+try:
     from .auth_crypto import (
         encode_token_payload as encode_signed_token_payload,
         hash_password,
@@ -590,47 +603,13 @@ def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition:
 
 
 def seed_users_and_settings(conn: sqlite3.Connection) -> None:
-    timestamp = now_iso()
-    for user in USERS.values():
-        username = clean_text(user.get("username")).lower()
-        if not username:
-            continue
-        exists = conn.execute("SELECT username FROM usuarios WHERE username = ?", (username,)).fetchone()
-        if exists:
-            continue
-        conn.execute(
-            """
-            INSERT INTO usuarios (
-                username,
-                password_hash,
-                role,
-                display_name,
-                email,
-                active,
-                created_at,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-            """,
-            (
-                username,
-                hash_password(clean_text(user.get("password"))),
-                clean_text(user.get("role")) or "nuria",
-                clean_text(user.get("display_name")) or username,
-                clean_text(user.get("email")),
-                timestamp,
-                timestamp,
-            ),
-        )
-
-    for key, value in DEFAULT_SETTINGS.items():
-        exists = conn.execute("SELECT key FROM app_settings WHERE key = ?", (key,)).fetchone()
-        if exists:
-            continue
-        conn.execute(
-            "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
-            (key, clean_text(value), timestamp),
-        )
+    seed_user_settings(
+        conn,
+        USERS,
+        DEFAULT_SETTINGS,
+        timestamp=now_iso(),
+        password_hasher=hash_password,
+    )
 
 
 def now_iso() -> str:
@@ -644,23 +623,6 @@ def row_to_dict(row: sqlite3.Row) -> dict:
     item["enlace_perfil"] = normalize_url(item.get("enlace_perfil"))
     item["enlace_infonalia"] = normalize_url(item.get("enlace_infonalia"))
     item["ruta_carpeta"] = folder_path_for_storage(item.get("ruta_carpeta"))
-    return item
-
-
-def user_row_to_dict(row: sqlite3.Row | None, include_password: bool = False) -> dict | None:
-    if not row:
-        return None
-    item = {
-        "username": row["username"],
-        "role": row["role"],
-        "display_name": row["display_name"],
-        "email": row["email"] or "",
-        "active": bool(row["active"]),
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-    }
-    if include_password:
-        item["password_hash"] = row["password_hash"]
     return item
 
 
@@ -697,16 +659,7 @@ def get_setting(key: str, default: str = "") -> str:
 
 
 def update_settings(conn: sqlite3.Connection, settings: dict[str, object]) -> None:
-    timestamp = now_iso()
-    for key, value in settings.items():
-        conn.execute(
-            """
-            INSERT INTO app_settings (key, value, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-            """,
-            (key, clean_text(value), timestamp),
-        )
+    update_settings_values(conn, settings, timestamp=now_iso())
 
 
 def maintenance_mode_enabled() -> bool:

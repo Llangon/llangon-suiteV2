@@ -2055,3 +2055,24 @@ Fuera de esta fase:
 - no se cambian endpoints ni respuestas JSON;
 - no se cambia SQLite;
 - no se cambia frontend ni Firebase.
+
+## Fase 3H — Extraccion de usuarios y configuración
+
+La Fase 3H separa helpers SQLite pequenos de usuarios y settings.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/user_settings.py`;
+- se mueve `user_row_to_dict()`;
+- se mueve la siembra inicial de usuarios/settings;
+- se mueve el upsert de settings;
+- `app.py` conserva envoltorios para inyectar configuracion global y timestamp;
+- se anaden tests directos de serializacion, siembra y upsert.
+
+Fuera de esta fase:
+
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambian roles ni usuarios por defecto;
+- no se anaden migraciones;
+- no se cambia frontend ni Firebase.
