@@ -14,7 +14,6 @@ import sqlite3
 import subprocess
 import sys
 import time
-import unicodedata
 from email.message import EmailMessage
 from contextlib import contextmanager
 from datetime import datetime
@@ -90,6 +89,11 @@ except ImportError:
         read_csv_rows,
         row_value,
     )
+
+try:
+    from .news_helpers import NEWS_STATUSES, news_to_dict, normalize_news_status, slugify
+except ImportError:
+    from news_helpers import NEWS_STATUSES, news_to_dict, normalize_news_status, slugify
 
 try:
     from .web_security import (
@@ -679,42 +683,6 @@ def update_settings(conn: sqlite3.Connection, settings: dict[str, object]) -> No
 
 def maintenance_mode_enabled() -> bool:
     return bool_text(get_setting("maintenance_mode", "0"))
-
-
-NEWS_STATUSES = {"draft", "published", "archived"}
-
-
-def slugify(value: object) -> str:
-    text = unicodedata.normalize("NFD", clean_text(value).lower())
-    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
-    text = re.sub(r"[^a-z0-9]+", "-", text)
-    text = text.strip("-")
-    return text[:100].strip("-") or f"noticia-{int(time.time())}"
-
-
-def normalize_news_status(value: object) -> str:
-    status = clean_text(value).lower()
-    return status if status in NEWS_STATUSES else "draft"
-
-
-def news_to_dict(row: sqlite3.Row) -> dict:
-    return {
-        "id": row["id"],
-        "title": row["title"],
-        "slug": row["slug"],
-        "excerpt": row["excerpt"],
-        "content": row["content"],
-        "category": row["category"],
-        "tags": row["tags"],
-        "featuredImage": row["featured_image"],
-        "status": row["status"],
-        "isFeatured": bool(row["is_featured"]),
-        "publishedAt": row["published_at"],
-        "publishedAtFormatted": format_datetime_es(row["published_at"]),
-        "createdAt": row["created_at"],
-        "updatedAt": row["updated_at"],
-        "author": row["author"],
-    }
 
 
 def path_is_relative_to(path: Path, parent: Path) -> bool:

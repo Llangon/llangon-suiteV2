@@ -1648,3 +1648,26 @@ Fuera de esta fase:
 - no se cambia frontend;
 - no se cambia Firebase;
 - no se usan datos reales.
+
+## Fase 2O — Extraccion de helpers puros de noticias
+
+La Fase 2O continua el refactor incremental de `app.py` con helpers de noticias que no escriben en SQLite.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/news_helpers.py`;
+- se mueven `NEWS_STATUSES`, `slugify()`, `normalize_news_status()` y `news_to_dict()`;
+- `app.py` importa esos nombres y los conserva como fachada para llamadas existentes;
+- se anaden tests puros para slug, estado y forma JSON actual de noticias;
+- se confirma que importar `news_helpers.py` no importa `app.py` ni modulos con efectos laterales.
+
+Fuera de esta fase:
+
+- no se implementa Markdown;
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambia SQLite;
+- no se mueven handlers HTTP;
+- no se toca `InfonaliaHandler`;
+- no se cambia frontend;
+- no se cambia Firebase.

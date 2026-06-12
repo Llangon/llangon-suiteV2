@@ -497,3 +497,19 @@ Mover solo el parsing CSV puro a `webapp/infonalia_webapp/csv_parsing.py` y reim
 - Se reduce otra parte del monolito sin cambiar comportamiento.
 - El contrato de parsing CSV queda probado de forma aislada.
 - La escritura SQLite queda fuera de esta fase.
+
+## ADR-021 — Extraer helpers puros de noticias desde app.py
+
+### Contexto
+
+`slugify()`, `normalize_news_status()` y `news_to_dict()` preparan valores de noticias sin escribir en SQLite ni tocar endpoints. La evolucion a Markdown seguro queda fuera.
+
+### Decisión
+
+Mover esos helpers a `webapp/infonalia_webapp/news_helpers.py` y reimportarlos desde `app.py` para conservar compatibilidad.
+
+### Consecuencias
+
+- Se reduce otra parte del monolito sin cambiar comportamiento.
+- El contrato actual de noticias queda probado de forma aislada.
+- Markdown seguro y cambios de esquema quedan fuera de esta fase.
