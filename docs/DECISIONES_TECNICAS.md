@@ -417,3 +417,19 @@ Crear `docs/PRECHECK_REFACTOR_APP.md` y cubrirlo con tests documentales. El prec
 - La futura fase de refactor parte de un mapa verificable.
 - `app.py` debe mantenerse como fachada publica mientras se extraen piezas.
 - El refactor no se mezcla con SQLite, migraciones, CSRF global, StorageBackend ni Markdown.
+
+## ADR-016 — Extraer normalizacion pura desde app.py
+
+### Contexto
+
+El precheck de refactor identifica las funciones puras como primera frontera segura. `clean_text()`, `bool_text()`, `parse_money()`, `parse_date_value()` y `parse_time_value()` no necesitan servidor, SQLite, red, frontend ni filesystem.
+
+### Decisión
+
+Mover esas funciones a `webapp/infonalia_webapp/normalization.py` y reimportarlas desde `app.py` para conservar compatibilidad. El modulo nuevo debe poder importarse sin importar `app.py` ni modulos con efectos laterales.
+
+### Consecuencias
+
+- Se reduce una parte pequena del monolito sin cambiar comportamiento.
+- Las funciones quedan testeadas como contrato puro.
+- `app.py` conserva los nombres para tests y llamadas existentes.

@@ -1531,3 +1531,25 @@ Fuera de esta fase:
 - no se implementa Markdown;
 - no se cambia frontend;
 - no se cambia Firebase.
+
+## Fase 2J — Extraccion de normalizacion pura
+
+La Fase 2J inicia el refactor de `app.py` con una extraccion pequena y reversible.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/normalization.py`;
+- se mueven helpers puros: `clean_text()`, `bool_text()`, `parse_money()`, `parse_date_value()` y `parse_time_value()`;
+- `app.py` importa esos nombres y sigue funcionando como fachada publica para llamadas existentes;
+- se anaden tests puros para confirmar formatos actuales y que importar `normalization.py` no importa `app.py` ni modulos con efectos laterales.
+
+Fuera de esta fase:
+
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambia SQLite;
+- no se mueven handlers HTTP;
+- no se toca `InfonaliaHandler`;
+- no se cambia frontend;
+- no se cambia Firebase;
+- no se ejecutan descargadores reales.
