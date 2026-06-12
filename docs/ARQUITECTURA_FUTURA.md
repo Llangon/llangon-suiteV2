@@ -1301,5 +1301,37 @@ Fuera de esta fase:
 Riesgos pendientes:
 
 - `app.js` sigue usando `innerHTML` como mecanismo principal de render;
-- algunas clases CSS dinámicas proceden de helpers propios y deberán revisarse en otra fase;
+- algunas clases CSS dinámicas proceden de helpers propios y quedan endurecidas después en Fase 2C.6;
 - la validación real de permisos e ids sigue perteneciendo al backend.
+
+## Fase 2C.6 — Tokens seguros para clases CSS privadas
+
+La Fase 2C.6 revisa las clases CSS dinámicas generadas a partir de estados privados en `app.js`.
+
+Cambios aplicados:
+
+- se añade `cssClassToken()` para convertir valores dinámicos en tokens CSS seguros;
+- `badgeClass()` delega en ese helper;
+- se conservan letras, números, guiones y guiones bajos;
+- acentos y marcas diacríticas se eliminan como antes;
+- cualquier otro carácter se sustituye por `-`;
+- tokens vacíos vuelven al fallback `Pendiente`;
+- se añade un test estático que evita volver al reemplazo limitado de espacios.
+
+Ámbito:
+
+- badges de estado de días y licitaciones;
+- eventos del calendario que usan `event-${stateClass}`;
+- clases derivadas de estados internos actuales.
+
+Fuera de esta fase:
+
+- sustitución de `innerHTML` por creación DOM;
+- validación semántica de estados en frontend;
+- cambios en etiquetas visibles de estados.
+
+Riesgos pendientes:
+
+- `app.js` sigue usando plantillas HTML amplias;
+- algunos valores dinámicos todavía se renderizan como texto escapado, no como nodos DOM;
+- la lista de estados válidos sigue siendo una regla de negocio compartida con backend.

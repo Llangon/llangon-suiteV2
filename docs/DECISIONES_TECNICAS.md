@@ -272,6 +272,8 @@ La Fase 2C.4 aplica el mismo criterio defensivo a enlaces privados de licitacion
 
 La Fase 2C.5 añade escape explícito a los atributos `data-*` privados generados desde plantillas, conservando el flujo actual pero reduciendo dependencia en que los ids y fechas lleguen siempre limpios.
 
+La Fase 2C.6 centraliza la conversión de estados privados a tokens CSS seguros para que las clases dinámicas no dependan de caracteres arbitrarios de datos.
+
 ## ADR-009 — CSRF incremental para endpoints mutantes
 
 ### Contexto

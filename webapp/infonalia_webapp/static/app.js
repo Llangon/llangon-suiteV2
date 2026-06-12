@@ -221,11 +221,17 @@ function monthStartMonday(date) {
   return first;
 }
 
-function badgeClass(value) {
-  return String(value || "Pendiente")
+function cssClassToken(value, fallback = "Pendiente") {
+  const token = String(value || fallback)
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replaceAll(" ", "-");
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return token || fallback;
+}
+
+function badgeClass(value) {
+  return cssClassToken(value, "Pendiente");
 }
 
 function estadoLabel(value) {

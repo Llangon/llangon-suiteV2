@@ -130,6 +130,17 @@ def test_private_app_escapes_dynamic_data_attributes() -> None:
     assert 'data-email-preview-id="${escapeHtml(item.id)}"' in script
 
 
+def test_private_app_sanitizes_dynamic_css_class_tokens() -> None:
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert "function cssClassToken" in script
+    assert "function badgeClass" in script
+    assert 'return cssClassToken(value, "Pendiente");' in script
+    assert ".replace(/[^a-zA-Z0-9_-]+/g, \"-\")" in script
+    assert ".replace(/^-+|-+$/g, \"\")" in script
+    assert ".replaceAll(\" \", \"-\")" not in script
+
+
 def test_session_cookie_contains_expected_attributes() -> None:
     cookie = build_session_cookie("session", "token", max_age=60, secure=False)
 
