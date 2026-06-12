@@ -2035,3 +2035,23 @@ Fuera de esta fase:
 - no se cambian endpoints ni respuestas JSON;
 - no se cambia SQLite;
 - no se cambia frontend ni Firebase.
+
+## Fase 3G — Extraccion de carga de entorno
+
+La Fase 3G separa lectura de `.env` y variables obligatorias de `app.py`.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/environment.py`;
+- se mueve `load_env_file()`;
+- se mueve `required_env()`;
+- `app.py` conserva el mismo momento de carga con `load_env_file(ENV_PATH)`;
+- se anaden tests directos de parseo, expansion y variables obligatorias.
+
+Fuera de esta fase:
+
+- no se cambian variables de entorno;
+- no se cambian valores por defecto;
+- no se cambian endpoints ni respuestas JSON;
+- no se cambia SQLite;
+- no se cambia frontend ni Firebase.

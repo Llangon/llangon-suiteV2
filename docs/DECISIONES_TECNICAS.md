@@ -793,3 +793,20 @@ Mover la firma/verificacion de tokens y PBKDF2 a `webapp/infonalia_webapp/auth_c
 - Se mantiene el formato de token y hash existente.
 - No se cambian cookies, sesiones, endpoints ni respuestas.
 - No se cambia SQLite ni frontend.
+
+## ADR-039 — Extraer carga de entorno
+
+### Contexto
+
+`app.py` cargaba directamente el `.env` local y validaba variables obligatorias durante el arranque del modulo. Esa logica es pequena, pero conviene aislarla para reducir acoplamiento de configuracion.
+
+### Decisión
+
+Mover `load_env_file()` y `required_env()` a `webapp/infonalia_webapp/environment.py`. El modulo no ejecuta carga al importarse; `app.py` sigue llamando `load_env_file(ENV_PATH)`.
+
+### Consecuencias
+
+- La carga de entorno queda testeada sin importar `app.py`.
+- Se conserva el orden de carga actual.
+- No se cambian nombres de variables ni valores por defecto.
+- No se cambian endpoints ni comportamiento visible.
