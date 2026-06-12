@@ -1271,5 +1271,35 @@ Fuera de esta fase:
 Riesgos pendientes:
 
 - `app.js` sigue renderizando muchas vistas con `innerHTML`;
-- otros atributos `data-*` se escapan como HTML, pero todavía no hay una auditoría completa de coerción de identificadores;
+- los atributos `data-*` más usados quedan endurecidos después en Fase 2C.5, pero todavía no hay una auditoría completa de coerción de identificadores;
 - si en el futuro se admiten URLs no web por necesidad funcional, deberán tener validación explícita y tests propios.
+
+## Fase 2C.5 — Escape explícito de atributos dinámicos privados
+
+La Fase 2C.5 revisa los atributos `data-*` privados que se generan dentro de plantillas HTML en `app.js`.
+
+Cambios aplicados:
+
+- los ids de días, licitaciones y noticias se escapan antes de interpolarse en `data-*`;
+- la fecha dinámica del calendario se escapa antes de interpolarse en `data-calendar-date`;
+- se mantiene el comportamiento actual de eventos porque el DOM entrega los mismos valores para ids numéricos y fechas normales;
+- se añade un test estático que evita volver a interpolar `${item.id}`, `${dia.id}` o `${key}` directamente en atributos sensibles.
+
+Ámbito:
+
+- botones de días Infonalia;
+- calendario;
+- botones de noticias privadas;
+- botones de acciones de licitaciones.
+
+Fuera de esta fase:
+
+- conversión de renderizado `innerHTML` a creación DOM nodo a nodo;
+- validación semántica de ids en el frontend;
+- cambios de endpoints o respuestas JSON.
+
+Riesgos pendientes:
+
+- `app.js` sigue usando `innerHTML` como mecanismo principal de render;
+- algunas clases CSS dinámicas proceden de helpers propios y deberán revisarse en otra fase;
+- la validación real de permisos e ids sigue perteneciendo al backend.

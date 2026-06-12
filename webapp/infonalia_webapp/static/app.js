@@ -533,8 +533,8 @@ function renderDays() {
         </div>
 
         <div class="card-actions">
-          <button class="primary" data-open-dia="${dia.id}" data-title="${escapeHtml(dia.titulo)}">Abrir revisión</button>
-          ${isAdmin() ? `<button class="danger" data-delete-dia="${dia.id}" data-title="${escapeHtml(dia.titulo)}">Borrar día</button>` : ""}
+          <button class="primary" data-open-dia="${escapeHtml(dia.id)}" data-title="${escapeHtml(dia.titulo)}">Abrir revisión</button>
+          ${isAdmin() ? `<button class="danger" data-delete-dia="${escapeHtml(dia.id)}" data-title="${escapeHtml(dia.titulo)}">Borrar día</button>` : ""}
         </div>
       </article>
     `;
@@ -807,7 +807,7 @@ function renderCalendar() {
     ].filter(Boolean).join(" ");
 
     cells.push(`
-      <article class="${classes}" data-calendar-date="${key}">
+      <article class="${classes}" data-calendar-date="${escapeHtml(key)}">
         <div class="calendar-day-head">
           <strong>${current.getDate()}</strong>
           ${dayItems.length ? `<span>${dayItems.length}</span>` : ""}
@@ -912,7 +912,7 @@ function renderCalendarDayPanel(items, key) {
               <div class="links">
                 ${enlacePerfil ? `<a href="${escapeHtml(enlacePerfil)}" target="_blank" rel="noreferrer">Perfil</a>` : ""}
                 ${enlaceInfonalia ? `<a href="${escapeHtml(enlaceInfonalia)}" target="_blank" rel="noreferrer">Infonalia</a>` : ""}
-                ${isAdmin() ? `<button type="button" data-calendar-edit="${item.id}">Editar</button>` : ""}
+                ${isAdmin() ? `<button type="button" data-calendar-edit="${escapeHtml(item.id)}">Editar</button>` : ""}
               </div>
             </article>
           `;
@@ -1020,8 +1020,8 @@ function renderNewsAdmin() {
       </div>
       <div class="card-actions">
         <a class="ghost" href="/noticias/${encodeURIComponent(item.slug)}" target="_blank" rel="noreferrer">Ver</a>
-        <button data-edit-news="${item.id}">Editar</button>
-        <button class="danger" data-delete-news="${item.id}">Eliminar</button>
+        <button data-edit-news="${escapeHtml(item.id)}">Editar</button>
+        <button class="danger" data-delete-news="${escapeHtml(item.id)}">Eliminar</button>
       </div>
     </article>
   `).join("");
@@ -1341,19 +1341,19 @@ function renderCard(item) {
 
           <div class="card-actions state-actions">
             ${showActions ? stateActions.map((estado) => `
-              <button class="${item.estado === estado ? "active-state" : ""}" data-id="${item.id}" data-estado="${escapeHtml(estado)}">${escapeHtml(estadoLabel(estado))}</button>
+              <button class="${item.estado === estado ? "active-state" : ""}" data-id="${escapeHtml(item.id)}" data-estado="${escapeHtml(estado)}">${escapeHtml(estadoLabel(estado))}</button>
             `).join("") : ""}
             ${showFooterState ? `<span class="badge footer-state ${badgeClass(item.estado)}">${escapeHtml(estadoLabel(item.estado))}</span>` : ""}
           </div>
         </div>
 
         <div class="card-side-actions">
-          ${isAdmin() ? `<button class="download-button" data-download-id="${item.id}">Descargar ficheros</button>` : ""}
-          <button data-preview-id="${item.id}">Vista preliminar por IA</button>
-          ${isAdmin() ? `<button data-edit-id="${item.id}">Editar</button>` : ""}
-          ${isAdmin() ? `<button data-duplicate-id="${item.id}">Duplicar</button>` : ""}
-          ${isAdmin() ? `<button class="danger" data-delete-id="${item.id}">Borrar</button>` : ""}
-          <button class="expand-button ${expanded ? "active-state" : ""}" data-toggle-details="${item.id}">
+          ${isAdmin() ? `<button class="download-button" data-download-id="${escapeHtml(item.id)}">Descargar ficheros</button>` : ""}
+          <button data-preview-id="${escapeHtml(item.id)}">Vista preliminar por IA</button>
+          ${isAdmin() ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""}
+          ${isAdmin() ? `<button data-duplicate-id="${escapeHtml(item.id)}">Duplicar</button>` : ""}
+          ${isAdmin() ? `<button class="danger" data-delete-id="${escapeHtml(item.id)}">Borrar</button>` : ""}
+          <button class="expand-button ${expanded ? "active-state" : ""}" data-toggle-details="${escapeHtml(item.id)}">
             ${expanded ? "Ocultar detalles" : "Ver detalles"}
           </button>
         </div>
@@ -1379,7 +1379,7 @@ function renderExpandedCard(item, detail) {
             <p class="eyebrow">Vista preliminar por IA</p>
             <h3>${preview ? escapeHtml(preview.cabecera?.Expediente || item.expediente) : "Resumen pendiente"}</h3>
           </div>
-          <button data-email-preview-id="${item.id}" ${preview ? "" : "disabled"}>Recibir por email</button>
+          <button data-email-preview-id="${escapeHtml(item.id)}" ${preview ? "" : "disabled"}>Recibir por email</button>
         </div>
         ${preview ? renderPreview(preview) : `<div class="empty">Pulsa “Vista preliminar por IA” para generar el resumen.</div>`}
       </section>

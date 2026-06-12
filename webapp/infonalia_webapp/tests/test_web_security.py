@@ -118,6 +118,18 @@ def test_private_app_normalize_url_rejects_unsafe_schemes() -> None:
     assert 'startsWith("mailto:")' not in script
 
 
+def test_private_app_escapes_dynamic_data_attributes() -> None:
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert not re.search(r'data-[a-z0-9-]+="\$\{(?:item|dia)\.id\}"', script)
+    assert 'data-calendar-date="${key}"' not in script
+    assert 'data-open-dia="${escapeHtml(dia.id)}"' in script
+    assert 'data-calendar-date="${escapeHtml(key)}"' in script
+    assert 'data-id="${escapeHtml(item.id)}"' in script
+    assert 'data-download-id="${escapeHtml(item.id)}"' in script
+    assert 'data-email-preview-id="${escapeHtml(item.id)}"' in script
+
+
 def test_session_cookie_contains_expected_attributes() -> None:
     cookie = build_session_cookie("session", "token", max_age=60, secure=False)
 

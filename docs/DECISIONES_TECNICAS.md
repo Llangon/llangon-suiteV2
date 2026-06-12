@@ -270,6 +270,8 @@ La Fase 2C.3 endurece el helper de botones de la web pública para que los `href
 
 La Fase 2C.4 aplica el mismo criterio defensivo a enlaces privados de licitaciones: `normalizeUrl()` deja de propagar esquemas no web y oculta valores ambiguos antes de interpolarlos en plantillas.
 
+La Fase 2C.5 añade escape explícito a los atributos `data-*` privados generados desde plantillas, conservando el flujo actual pero reduciendo dependencia en que los ids y fechas lleguen siempre limpios.
+
 ## ADR-009 — CSRF incremental para endpoints mutantes
 
 ### Contexto
