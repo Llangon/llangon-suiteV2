@@ -46,7 +46,7 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
 
     applied = run_migrations(conn, now=lambda: "2026-06-12T10:00:00")
 
-    assert applied == ["0001_baseline_schema", "0002_download_jobs"]
+    assert applied == ["0001_baseline_schema", "0002_download_jobs", "0003_import_history"]
     assert table_exists(conn, MIGRATIONS_TABLE)
     rows = conn.execute(
         f"SELECT version, description, applied_at FROM {MIGRATIONS_TABLE}"
@@ -62,8 +62,15 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
             "Tabla preparatoria para jobs de descarga",
             "2026-06-12T10:00:00",
         ),
+        (
+            "0003_import_history",
+            "Tablas preparatorias para historial de importaciones",
+            "2026-06-12T10:00:00",
+        ),
     ]
     assert table_exists(conn, "download_jobs")
+    assert table_exists(conn, "import_runs")
+    assert table_exists(conn, "import_results")
 
 
 def test_run_migrations_is_idempotent() -> None:
@@ -72,6 +79,7 @@ def test_run_migrations_is_idempotent() -> None:
     assert run_migrations(conn, now=lambda: "2026-06-12T10:00:00") == [
         "0001_baseline_schema",
         "0002_download_jobs",
+        "0003_import_history",
     ]
     assert run_migrations(conn, now=lambda: "2026-06-12T10:05:00") == []
 
@@ -79,6 +87,7 @@ def test_run_migrations_is_idempotent() -> None:
     assert rows == [
         ("0001_baseline_schema", "2026-06-12T10:00:00"),
         ("0002_download_jobs", "2026-06-12T10:00:00"),
+        ("0003_import_history", "2026-06-12T10:00:00"),
     ]
 
 
@@ -137,6 +146,71 @@ def test_download_jobs_migration_schema_is_idempotent() -> None:
         "idx_download_jobs_status",
         "idx_download_jobs_created",
     } <= indexes
+
+
+def test_import_history_migration_schema_is_idempotent() -> None:
+    conn = sqlite3.connect(":memory:")
+
+    run_migrations(conn, now=lambda: "2026-06-12T10:00:00")
+    run_migrations(conn, now=lambda: "2026-06-12T10:05:00")
+
+    run_columns = {
+        row[1]: row[2]
+        for row in conn.execute("PRAGMA table_info(import_runs)").fetchall()
+    }
+    assert run_columns == {
+        "id": "INTEGER",
+        "source_name": "TEXT",
+        "source_type": "TEXT",
+        "mode": "TEXT",
+        "started_at": "TEXT",
+        "finished_at": "TEXT",
+        "status": "TEXT",
+        "triggered_by": "TEXT",
+        "input_name": "TEXT",
+        "input_hash": "TEXT",
+        "new_count": "INTEGER",
+        "updated_count": "INTEGER",
+        "duplicate_count": "INTEGER",
+        "error_count": "INTEGER",
+        "notes": "TEXT",
+        "created_at": "TEXT",
+        "updated_at": "TEXT",
+    }
+    result_columns = {
+        row[1]: row[2]
+        for row in conn.execute("PRAGMA table_info(import_results)").fetchall()
+    }
+    assert result_columns == {
+        "id": "INTEGER",
+        "import_run_id": "INTEGER",
+        "source_name": "TEXT",
+        "external_id": "TEXT",
+        "fingerprint": "TEXT",
+        "licitacion_id": "INTEGER",
+        "status": "TEXT",
+        "error_message": "TEXT",
+        "raw_payload": "TEXT",
+        "created_at": "TEXT",
+    }
+    run_indexes = {
+        row[1]
+        for row in conn.execute("PRAGMA index_list(import_runs)").fetchall()
+    }
+    result_indexes = {
+        row[1]
+        for row in conn.execute("PRAGMA index_list(import_results)").fetchall()
+    }
+    assert {
+        "idx_import_runs_source_started",
+        "idx_import_runs_status",
+    } <= run_indexes
+    assert {
+        "idx_import_results_run",
+        "idx_import_results_licitacion",
+        "idx_import_results_source_external",
+        "idx_import_results_fingerprint",
+    } <= result_indexes
 
 
 def test_init_db_runs_migrations_on_temporary_database_only() -> None:

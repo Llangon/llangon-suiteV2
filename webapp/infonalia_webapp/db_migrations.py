@@ -44,6 +44,58 @@ def _download_jobs_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_download_jobs_created ON download_jobs(created_at)")
 
 
+def _import_history_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS import_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_name TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL,
+            triggered_by TEXT,
+            input_name TEXT,
+            input_hash TEXT,
+            new_count INTEGER NOT NULL DEFAULT 0,
+            updated_count INTEGER NOT NULL DEFAULT 0,
+            duplicate_count INTEGER NOT NULL DEFAULT 0,
+            error_count INTEGER NOT NULL DEFAULT 0,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS import_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            import_run_id INTEGER NOT NULL,
+            source_name TEXT NOT NULL,
+            external_id TEXT,
+            fingerprint TEXT,
+            licitacion_id INTEGER,
+            status TEXT NOT NULL,
+            error_message TEXT,
+            raw_payload TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (import_run_id) REFERENCES import_runs(id),
+            FOREIGN KEY (licitacion_id) REFERENCES licitaciones(id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_import_runs_source_started ON import_runs(source_name, started_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_import_runs_status ON import_runs(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_import_results_run ON import_results(import_run_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_import_results_licitacion ON import_results(licitacion_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_import_results_source_external ON import_results(source_name, external_id)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_import_results_fingerprint ON import_results(fingerprint)")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version="0001_baseline_schema",
@@ -54,6 +106,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version="0002_download_jobs",
         description="Tabla preparatoria para jobs de descarga",
         apply=_download_jobs_schema,
+    ),
+    Migration(
+        version="0003_import_history",
+        description="Tablas preparatorias para historial de importaciones",
+        apply=_import_history_schema,
     ),
 )
 

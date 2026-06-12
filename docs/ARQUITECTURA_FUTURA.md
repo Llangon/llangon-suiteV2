@@ -1890,3 +1890,24 @@ Fuera de esta fase:
 - no se cambian endpoints ni respuestas JSON;
 - no se implementa Dropbox real;
 - no se cambia frontend ni Firebase.
+
+## Fase 2Z — Tablas preparatorias de historial de importaciones
+
+La Fase 2Z prepara SQLite para auditar importaciones futuras sin conectar los flujos CSV o MSG actuales.
+
+Cambios aplicados:
+
+- se anade la migracion `0003_import_history`;
+- se crea `import_runs` para ejecuciones de importacion;
+- se crea `import_results` para resultados por candidato;
+- se anaden indices por fuente, estado, ejecucion, licitacion, identificador externo y fingerprint;
+- se amplian tests de migraciones para verificar esquema e idempotencia.
+
+Fuera de esta fase:
+
+- no se registra todavia ninguna importacion real;
+- no se cambia `POST /api/import/csv`;
+- no se cambia `POST /api/import/msg`;
+- no se cambian endpoints ni respuestas JSON;
+- no se implementa PLACE real;
+- no se cambia frontend ni Firebase.

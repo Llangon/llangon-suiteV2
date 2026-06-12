@@ -674,3 +674,20 @@ Anadir la migracion `0002_download_jobs` con la tabla `download_jobs` y sus indi
 - No se cambia `api_download_licitacion()`.
 - No se cambian endpoints, respuestas JSON ni frontend.
 - No se implementa Dropbox real.
+
+## ADR-032 — Preparar historial de importaciones
+
+### Contexto
+
+Las importaciones CSV y MSG devuelven resultados al momento, pero no queda un historial persistente de ejecuciones, conteos, duplicados o errores por candidato.
+
+### Decisión
+
+Anadir la migracion `0003_import_history` con las tablas `import_runs` e `import_results`. La estructura sigue el modelo conceptual documentado y solo prepara persistencia futura.
+
+### Consecuencias
+
+- Hay base para auditar importaciones y sincronizaciones futuras.
+- No se conectan todavia CSV ni MSG a estas tablas.
+- No se cambian endpoints, respuestas JSON ni frontend.
+- No se implementan fuentes reales nuevas como PLACE.
