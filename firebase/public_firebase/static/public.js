@@ -149,8 +149,21 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function safeHref(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "#";
+  if (text.startsWith("//")) return "#";
+  if (text.startsWith("/") || text.startsWith("#")) return text;
+  try {
+    const url = new URL(text, window.location.origin);
+    return ["http:", "https:"].includes(url.protocol) ? text : "#";
+  } catch {
+    return "#";
+  }
+}
+
 function button(label, href, variant = "button-primary") {
-  return `<a class="button-link ${variant}" href="${href}">${label}</a>`;
+  return `<a class="button-link ${escapeHtml(variant)}" href="${escapeHtml(safeHref(href))}">${escapeHtml(label)}</a>`;
 }
 
 function sectionTitle(kicker, title, text) {

@@ -1200,7 +1200,7 @@ Cambios aplicados:
 
 Fuera de esta fase:
 
-- revisión XSS profunda del render público con `innerHTML`;
+- revisión XSS profunda del render público con `innerHTML`, parcialmente endurecida después en Fase 2C.3;
 - integración de noticias públicas desde una API real en Firebase;
 - HTTPS/proxy de la app privada.
 
@@ -1209,3 +1209,34 @@ Riesgos pendientes:
 - `public.js` sigue usando `innerHTML` para montar páginas desde plantillas internas; requiere auditoría XSS específica antes de aceptar contenido dinámico rico;
 - la web Firebase intenta cargar `/api/public/noticias` en el mismo origen y cae a lista vacía si no existe API;
 - emails HTML siguen usando estilos inline por compatibilidad con clientes de correo.
+
+## Fase 2C.3 — Endurecimiento XSS mínimo en web pública
+
+La Fase 2C.3 revisa el punto dinámico más sensible del render público tras activar CSP: los enlaces generados por el helper `button()` dentro de plantillas inyectadas con `innerHTML`.
+
+Cambios aplicados:
+
+- `public.js` y `firebase/public_firebase/static/public.js` añaden `safeHref()`;
+- el helper solo permite rutas relativas, anclas y URLs `http`/`https`;
+- esquemas peligrosos como `javascript:` o valores vacíos se degradan a `#`;
+- el texto del enlace, la variante CSS y el `href` se escapan antes de entrar en la plantilla HTML;
+- se añade un test de seguridad que evita volver a interpolar `href` sin escape.
+
+Ámbito:
+
+- web pública servida por `webapp/infonalia_webapp`;
+- hosting estático `firebase/public_firebase`;
+- enlace dinámico de zona privada y botones públicos generados desde plantillas internas.
+
+Fuera de esta fase:
+
+- eliminación completa de `innerHTML` en la web pública;
+- auditoría profunda de todos los renders privados de `app.js`;
+- noticias Markdown seguro;
+- cambios de esquema SQLite.
+
+Riesgos pendientes:
+
+- `public.js` sigue renderizando plantillas completas con `innerHTML`;
+- los arrays de contenido público son constantes locales, pero si en el futuro pasan a ser editables deberán escapar todos los campos antes de renderizarse;
+- la app privada sigue necesitando una fase específica de revisión XSS en `app.js`.

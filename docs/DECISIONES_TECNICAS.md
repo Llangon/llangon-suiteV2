@@ -266,6 +266,8 @@ La Fase 2C.1 aplica CSP estricta solo a respuestas privadas después de auditar 
 
 La Fase 2C.2 extiende CSP a la web pública y Firebase después de eliminar el bootstrap inline de `PRIVATE_APP_URL` y sustituirlo por `data-private-app-url`.
 
+La Fase 2C.3 endurece el helper de botones de la web pública para que los `href` dinámicos se escapen y se limiten a rutas relativas, anclas o URLs `http`/`https`, reduciendo riesgo XSS mientras siga existiendo render con `innerHTML`.
+
 ## ADR-009 — CSRF incremental para endpoints mutantes
 
 ### Contexto

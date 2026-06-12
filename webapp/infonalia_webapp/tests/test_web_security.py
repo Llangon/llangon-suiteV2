@@ -96,6 +96,17 @@ def test_firebase_hosting_headers_include_public_csp() -> None:
     assert header_map["Referrer-Policy"] == "same-origin"
 
 
+def test_public_js_escapes_dynamic_button_hrefs() -> None:
+    for path in (STATIC_ROOT / "public.js", FIREBASE_ROOT / "static" / "public.js"):
+        script = path.read_text(encoding="utf-8")
+        assert "function safeHref" in script
+        assert 'if (text.startsWith("//")) return "#";' in script
+        assert '["http:", "https:"]' in script
+        assert 'href="${escapeHtml(safeHref(href))}"' in script
+        assert ">${escapeHtml(label)}</a>" in script
+        assert 'href="${href}"' not in script
+
+
 def test_session_cookie_contains_expected_attributes() -> None:
     cookie = build_session_cookie("session", "token", max_age=60, secure=False)
 
