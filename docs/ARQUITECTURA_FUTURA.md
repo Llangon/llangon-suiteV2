@@ -1850,3 +1850,23 @@ Fuera de esta fase:
 - no se ejecutan descargadores reales en tests;
 - no se cambian endpoints;
 - no se cambia frontend ni Firebase.
+
+## Fase 2X — Noticias Markdown conectadas de forma compatible
+
+La Fase 2X conecta el renderer Markdown seguro al flujo de noticias sin migracion SQLite.
+
+Cambios aplicados:
+
+- `news_to_dict()` mantiene `content` y anade `contentHtml`;
+- `contentHtml` se genera con `SafeMarkdownRenderer`;
+- el frontend publico usa `contentHtml` si existe;
+- el fallback de texto escapado se conserva para placeholders y datos sin HTML;
+- se aplica el mismo fallback compatible en la copia Firebase.
+
+Fuera de esta fase:
+
+- no se cambia SQLite;
+- no se renombra `content`;
+- no se eliminan campos JSON existentes;
+- no se anade editor visual;
+- no se cambia el origen de datos de Firebase.

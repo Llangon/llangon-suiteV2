@@ -8,12 +8,15 @@ from typing import Any
 try:
     from .formatting import format_datetime_es
     from .normalization import clean_text
+    from .safe_markdown import SafeMarkdownRenderer
 except ImportError:
     from formatting import format_datetime_es
     from normalization import clean_text
+    from safe_markdown import SafeMarkdownRenderer
 
 
 NEWS_STATUSES = {"draft", "published", "archived"}
+NEWS_RENDERER = SafeMarkdownRenderer()
 
 
 def slugify(value: object) -> str:
@@ -30,12 +33,14 @@ def normalize_news_status(value: object) -> str:
 
 
 def news_to_dict(row: Any) -> dict:
+    content = row["content"]
     return {
         "id": row["id"],
         "title": row["title"],
         "slug": row["slug"],
         "excerpt": row["excerpt"],
-        "content": row["content"],
+        "content": content,
+        "contentHtml": NEWS_RENDERER.render_markdown(content),
         "category": row["category"],
         "tags": row["tags"],
         "featuredImage": row["featured_image"],

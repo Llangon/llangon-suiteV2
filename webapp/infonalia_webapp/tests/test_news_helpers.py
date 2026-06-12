@@ -41,7 +41,7 @@ def test_news_to_dict_preserves_public_shape() -> None:
         "title": "Titulo",
         "slug": "titulo",
         "excerpt": "Resumen",
-        "content": "Contenido",
+        "content": "Contenido con **negrita** y <script>alert(1)</script> [malo](javascript:alert(1))",
         "category": "Categoria",
         "tags": '["uno"]',
         "featured_image": "https://example.test/image.jpg",
@@ -60,7 +60,8 @@ def test_news_to_dict_preserves_public_shape() -> None:
         "title": "Titulo",
         "slug": "titulo",
         "excerpt": "Resumen",
-        "content": "Contenido",
+        "content": "Contenido con **negrita** y <script>alert(1)</script> [malo](javascript:alert(1))",
+        "contentHtml": "<p>Contenido con <strong>negrita</strong> y &lt;script&gt;alert(1)&lt;/script&gt; malo)</p>",
         "category": "Categoria",
         "tags": '["uno"]',
         "featuredImage": "https://example.test/image.jpg",
@@ -72,3 +73,5 @@ def test_news_to_dict_preserves_public_shape() -> None:
         "updatedAt": "2026-06-12T10:00:00",
         "author": "Infonalia",
     }
+    assert "<script" not in item["contentHtml"].lower()
+    assert "javascript:" not in item["contentHtml"].lower()

@@ -641,3 +641,19 @@ Generar `.infonalia_manifest.json` dentro de la carpeta destino despues de una d
 - Las descargas exitosas quedan inventariadas.
 - No se cambia la respuesta JSON ni SQLite.
 - Si falla la creacion del manifest, no se marca `ruta_carpeta` como correcta.
+
+## ADR-030 — Publicar HTML Markdown sanitizado como campo compatible
+
+### Contexto
+
+Ya existe `SafeMarkdownRenderer`, pero las noticias publicas seguian renderizando `content` como texto plano. Cambiar SQLite o sustituir el campo `content` aumentaria riesgo.
+
+### Decisión
+
+Mantener `content` como fuente y anadir `contentHtml` a `news_to_dict()`, generado con `SafeMarkdownRenderer`. El frontend publico usa `contentHtml` cuando llega desde la API y conserva el fallback escapado para placeholders o datos sin HTML sanitizado.
+
+### Consecuencias
+
+- Las noticias pueden mostrar Markdown seguro sin migracion SQLite.
+- Los campos existentes no se eliminan.
+- Firebase conserva fallback si no hay API en su origen.

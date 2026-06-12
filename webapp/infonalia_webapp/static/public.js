@@ -344,9 +344,15 @@ function newsSection(compact = false) {
   `;
 }
 
+function newsBodyHtml(item) {
+  const trustedHtml = String(item.contentHtml || "").trim();
+  if (trustedHtml) return trustedHtml;
+  const paragraphs = String(item.content || "").split(/\n+/).filter(Boolean);
+  return paragraphs.length ? paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("") : `<p>Contenido pendiente de completar.</p>`;
+}
+
 function newsDetailPage(slug) {
   const item = visibleNews().find((news) => news.slug === slug) || placeholderNews.find((news) => news.slug === slug) || placeholderNews[0];
-  const paragraphs = String(item.content || "").split(/\n+/).filter(Boolean);
   return `
     <section class="public-section">
       <div class="section-inner">
@@ -354,7 +360,7 @@ function newsDetailPage(slug) {
         <h1>${escapeHtml(item.title)}</h1>
         <p class="lead">${escapeHtml(item.excerpt)}</p>
         <div class="legal-box">
-          ${paragraphs.length ? paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("") : `<p>Contenido pendiente de completar.</p>`}
+          ${newsBodyHtml(item)}
           ${publicNews && publicNews.length ? "" : "<p>Las noticias reales se publicarán desde la gestión privada de LLANGON WEB APP.</p>"}
         </div>
         <div class="section-actions">${button("Volver a noticias", "/noticias", "button-secondary")}</div>
