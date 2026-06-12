@@ -2138,3 +2138,22 @@ Fuera de esta fase:
 - no se cambia importacion MSG visible;
 - no se cambian endpoints ni respuestas JSON;
 - no se cambia SQLite, frontend ni Firebase.
+
+## Fase 3L — Extraccion de payload IA
+
+La Fase 3L separa la construccion de la vista previa IA de la lectura SQLite.
+
+Cambios aplicados:
+
+- se mueve el armado del payload a `ai_preview_helpers.py`;
+- `app.py` conserva `build_ai_preview_payload()` como fachada;
+- se inyectan `generated_at` y detector de plataforma;
+- se anaden tests del formato JSON generado.
+
+Fuera de esta fase:
+
+- no se cambia el endpoint de preview IA;
+- no se cambia el envio de email;
+- no se cambia el texto renderizado de preview;
+- no se cambia SQLite;
+- no se cambia frontend ni Firebase.

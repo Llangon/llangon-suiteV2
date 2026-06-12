@@ -878,3 +878,20 @@ Mover esos helpers a `webapp/infonalia_webapp/pdf_enrichment.py` y dejar en `app
 - Se mantiene el comportamiento de importacion MSG.
 - No se implementan nuevos descargadores.
 - No se cambian endpoints, SQLite, frontend ni Firebase.
+
+## ADR-044 — Mover armado de payload IA
+
+### Contexto
+
+`app.py` seguia armando la vista previa IA despues de leer la licitacion desde SQLite. La construccion del JSON depende de helpers puros ya existentes y puede probarse sin abrir base de datos.
+
+### Decisión
+
+Mover el armado del payload a `build_preview_payload()` dentro de `webapp/infonalia_webapp/ai_preview_helpers.py`. `app.py` conserva `build_ai_preview_payload()` como fachada que lee SQLite e inyecta fecha actual y detector de plataforma.
+
+### Consecuencias
+
+- El contrato del payload IA queda testeado directamente.
+- Se mantiene el JSON de preview y email.
+- No se cambian endpoints ni permisos.
+- No se cambia SQLite, frontend ni Firebase.

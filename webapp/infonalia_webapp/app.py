@@ -213,16 +213,12 @@ except ImportError:
 
 try:
     from .ai_preview_helpers import (
-        extract_centros_from_text,
-        extract_keyword_context,
-        extract_lotes_from_text,
+        build_preview_payload,
         preview_payload_to_text,
     )
 except ImportError:
     from ai_preview_helpers import (
-        extract_centros_from_text,
-        extract_keyword_context,
-        extract_lotes_from_text,
+        build_preview_payload,
         preview_payload_to_text,
     )
 
@@ -1160,59 +1156,12 @@ def build_ai_preview_payload(licitacion_id: int) -> dict:
         if not row:
             raise ValueError("Licitación no encontrada")
 
-    objeto = clean_text(row["objeto"])
-    text_excerpt = objeto
-    lotes = extract_lotes_from_text(objeto)
-    criterios = extract_keyword_context(
-        text_excerpt,
-        ["criterios de adjudicación", "criterios adjudicación", "precio", "calidad"],
+    return build_preview_payload(
+        row,
+        licitacion_id=licitacion_id,
+        generated_at=now_iso(),
+        detect_platform=detectar_plataforma,
     )
-    ejecucion = extract_keyword_context(
-        text_excerpt,
-        ["condiciones especiales de ejecución", "criterios especiales de ejecución", "condición especial"],
-    )
-    centros = extract_centros_from_text(row, text_excerpt)
-
-    fecha_limite = " ".join(
-        part for part in [format_date_es(row["fecha_limite"]), clean_text(row["hora_limite"])] if part
-    )
-    cabecera = {
-        "Expediente": clean_text(row["expediente"]),
-        "Objeto": objeto,
-        "Organismo": clean_text(row["organismo"]),
-        "Provincia": clean_text(row["provincia"]),
-        "Tipo": clean_text(row["tipo"]),
-        "Presupuesto": f"{float(row['presupuesto']):,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".") if row["presupuesto"] is not None else "",
-        "Fecha límite": fecha_limite,
-        "Plataforma": clean_text(row["plataforma"]) or detectar_plataforma(clean_text(row["enlace_perfil"])),
-    }
-
-    summary_parts = []
-    if cabecera["Tipo"]:
-        summary_parts.append(f"Contrato de {cabecera['Tipo'].lower()}")
-    if cabecera["Organismo"]:
-        summary_parts.append(f"promovido por {cabecera['Organismo']}")
-    if cabecera["Fecha límite"]:
-        summary_parts.append(f"con presentación hasta {cabecera['Fecha límite']}")
-    resumen = " ".join(summary_parts)
-    if resumen:
-        resumen += "."
-    else:
-        resumen = "No hay datos suficientes para generar un resumen automático fiable."
-
-    generated_at = now_iso()
-    return {
-        "licitacion_id": licitacion_id,
-        "generated_at": generated_at,
-        "generated_at_formatted": format_datetime_es(generated_at),
-        "cabecera": cabecera,
-        "centros": centros,
-        "lotes": lotes,
-        "criterios_adjudicacion": criterios,
-        "criterios_ejecucion": ejecucion,
-        "resumen": resumen,
-        "nota": "Resumen automático orientativo generado con los datos ya guardados en la ficha.",
-    }
 
 
 def notification_recipients(usuario_destino: str | None) -> list[str]:
