@@ -545,3 +545,19 @@ Mover `extract_lotes_from_text()`, `extract_keyword_context()`, `extract_centros
 - Se reduce otra parte del monolito sin cambiar comportamiento.
 - Las reglas de extraccion IA quedan testeadas de forma aislada.
 - SQLite, endpoints y envio de email quedan fuera de esta fase.
+
+## ADR-024 — Extraer render puro de notificaciones
+
+### Contexto
+
+Las notificaciones mezclan tres fronteras: destinatarios desde SQLite, envio SMTP y render/parseo de contenido. La parte de render y parseo puede probarse sin base de datos, red ni filesystem.
+
+### Decisión
+
+Mover `notification_body_parts()`, `parse_day_review_notification()` y el HTML base a `webapp/infonalia_webapp/notification_rendering.py`. Mantener en `app.py` la resolucion de destinatarios, SMTP, logo, escritura SQLite y una envoltura que pasa `PLATFORM_URL` ya cargada desde `.env`.
+
+### Consecuencias
+
+- Se reduce otra parte del monolito sin cambiar comportamiento.
+- El HTML de notificacion queda probado de forma aislada.
+- Envio real de email, logo embebido y persistencia quedan fuera de esta fase.

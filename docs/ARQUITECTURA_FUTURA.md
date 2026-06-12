@@ -1717,3 +1717,24 @@ Fuera de esta fase:
 - no se mueven handlers HTTP;
 - no se cambia frontend;
 - no se cambia Firebase.
+
+## Fase 2R — Extraccion de render puro de notificaciones
+
+La Fase 2R continua el refactor incremental de `app.py` separando parseo y HTML de notificaciones.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/notification_rendering.py`;
+- se mueven `notification_body_parts()`, `parse_day_review_notification()` y el constructor HTML puro;
+- `app.py` conserva `render_notification_email_html()` como envoltura para pasar `PLATFORM_URL` y fecha actual;
+- se anaden tests puros para parseo, detalles y HTML.
+
+Fuera de esta fase:
+
+- no se cambia SMTP;
+- no se cambia el logo embebido;
+- no se cambia SQLite;
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambia frontend;
+- no se cambia Firebase.
