@@ -46,6 +46,7 @@ firebase/public_firebase/.firebaserc
 *.log
 *.bak
 *.tmp
+.local_backups/
 *.zip
 *.7z
 *.rar

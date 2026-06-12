@@ -141,6 +141,11 @@ except ImportError:
     )
 
 try:
+    from .db_migrations import run_migrations
+except ImportError:
+    from db_migrations import run_migrations
+
+try:
     from .web_security import (
         DEFAULT_LOGIN_MAX_ATTEMPTS,
         DEFAULT_LOGIN_WINDOW_SECONDS,
@@ -566,6 +571,7 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_usuarios_role ON usuarios(role)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_noticias_status ON noticias(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_noticias_published ON noticias(published_at)")
+        run_migrations(conn)
         seed_users_and_settings(conn)
 
 

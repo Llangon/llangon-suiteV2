@@ -561,3 +561,19 @@ Mover `notification_body_parts()`, `parse_day_review_notification()` y el HTML b
 - Se reduce otra parte del monolito sin cambiar comportamiento.
 - El HTML de notificacion queda probado de forma aislada.
 - Envio real de email, logo embebido y persistencia quedan fuera de esta fase.
+
+## ADR-025 — Introducir migraciones SQLite versionadas
+
+### Contexto
+
+SQLite seguia evolucionando desde `init_db()` mediante `CREATE TABLE IF NOT EXISTS`, `ensure_column()` e indices idempotentes. Antes de cambios de esquema mayores faltaba una tabla versionada que permitiera saber que migraciones se han aplicado.
+
+### Decisión
+
+Crear `webapp/infonalia_webapp/db_migrations.py` con tabla `schema_migrations`, runner idempotente y migracion baseline `0001_baseline_schema`. `init_db()` conserva la creacion historica del esquema y despues ejecuta el runner para registrar el baseline.
+
+### Consecuencias
+
+- Existe una base minima para futuras migraciones versionadas.
+- La migracion inicial no transforma datos ni cambia endpoints.
+- Antes de esta fase se crea backup local ignorado en `.local_backups/`.

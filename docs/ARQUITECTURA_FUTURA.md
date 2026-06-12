@@ -1738,3 +1738,29 @@ Fuera de esta fase:
 - no se cambian respuestas JSON;
 - no se cambia frontend;
 - no se cambia Firebase.
+
+## Fase 2S — Migraciones SQLite versionadas
+
+La Fase 2S introduce la base minima de migraciones SQLite.
+
+Preparacion:
+
+- se confirma que `.local_backups/` queda ignorado;
+- se crea backup local de `webapp/infonalia_webapp/data/infonalia.db` antes de integrar migraciones.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/db_migrations.py`;
+- se introduce la tabla `schema_migrations`;
+- se registra la migracion baseline `0001_baseline_schema`;
+- `init_db()` ejecuta el runner despues de asegurar el esquema historico;
+- se anaden tests con SQLite temporal para idempotencia, duplicados, fallo no registrado e integracion con `init_db()`.
+
+Fuera de esta fase:
+
+- no se transforman datos existentes;
+- no se eliminan ni renombran columnas;
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambia frontend;
+- no se cambia Firebase.
