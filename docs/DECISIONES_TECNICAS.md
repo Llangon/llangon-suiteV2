@@ -513,3 +513,19 @@ Mover esos helpers a `webapp/infonalia_webapp/news_helpers.py` y reimportarlos d
 - Se reduce otra parte del monolito sin cambiar comportamiento.
 - El contrato actual de noticias queda probado de forma aislada.
 - Markdown seguro y cambios de esquema quedan fuera de esta fase.
+
+## ADR-022 — Extraer parsing textual MSG/PDF desde app.py
+
+### Contexto
+
+Algunos helpers usados por importacion MSG y enriquecimiento PDF solo parsean texto: extraen campos tras dos puntos, fechas, tipo de contrato y hora limite. No descargan, no ejecutan `pdftotext` y no escriben en SQLite.
+
+### Decisión
+
+Mover esos helpers a `webapp/infonalia_webapp/msg_parsing.py` y reimportarlos desde `app.py`. Mantener `parse_msg_body()`, `enrich_from_infonalia_pdf()` e `import_msg_content()` en `app.py` porque combinan reglas de importacion, red/subproceso o persistencia.
+
+### Consecuencias
+
+- Se reduce otra parte del monolito sin cambiar comportamiento.
+- El parsing textual queda probado de forma aislada.
+- Descarga PDF, lectura MSG y escritura SQLite quedan fuera de esta fase.

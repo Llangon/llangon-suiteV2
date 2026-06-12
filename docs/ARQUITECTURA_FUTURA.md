@@ -1671,3 +1671,27 @@ Fuera de esta fase:
 - no se toca `InfonaliaHandler`;
 - no se cambia frontend;
 - no se cambia Firebase.
+
+## Fase 2P — Extraccion de parsing textual MSG/PDF
+
+La Fase 2P continua el refactor incremental de `app.py` con helpers que solo parsean texto ya disponible.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/msg_parsing.py`;
+- se mueven `extraer_despues_de_dos_puntos()`, `extract_msg_date()`, `extraer_fecha_msg()`, `extract_tipo_contrato()` y `extract_hora_limite_from_text()`;
+- `app.py` importa esos nombres y los conserva como fachada para llamadas existentes;
+- `parse_msg_body()`, `enrich_from_infonalia_pdf()` e `import_msg_content()` se mantienen en `app.py`;
+- se anaden tests puros para reglas actuales de extraccion.
+
+Fuera de esta fase:
+
+- no se ejecuta red real;
+- no se ejecuta `pdftotext`;
+- no se leen MSG reales;
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambia SQLite;
+- no se mueven handlers HTTP;
+- no se cambia frontend;
+- no se cambia Firebase.
