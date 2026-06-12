@@ -46,7 +46,7 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
 
     applied = run_migrations(conn, now=lambda: "2026-06-12T10:00:00")
 
-    assert applied == ["0001_baseline_schema"]
+    assert applied == ["0001_baseline_schema", "0002_download_jobs"]
     assert table_exists(conn, MIGRATIONS_TABLE)
     rows = conn.execute(
         f"SELECT version, description, applied_at FROM {MIGRATIONS_TABLE}"
@@ -56,18 +56,30 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
             "0001_baseline_schema",
             "Baseline del esquema historico gestionado por init_db",
             "2026-06-12T10:00:00",
-        )
+        ),
+        (
+            "0002_download_jobs",
+            "Tabla preparatoria para jobs de descarga",
+            "2026-06-12T10:00:00",
+        ),
     ]
+    assert table_exists(conn, "download_jobs")
 
 
 def test_run_migrations_is_idempotent() -> None:
     conn = sqlite3.connect(":memory:")
 
-    assert run_migrations(conn, now=lambda: "2026-06-12T10:00:00") == ["0001_baseline_schema"]
+    assert run_migrations(conn, now=lambda: "2026-06-12T10:00:00") == [
+        "0001_baseline_schema",
+        "0002_download_jobs",
+    ]
     assert run_migrations(conn, now=lambda: "2026-06-12T10:05:00") == []
 
     rows = conn.execute(f"SELECT version, applied_at FROM {MIGRATIONS_TABLE}").fetchall()
-    assert rows == [("0001_baseline_schema", "2026-06-12T10:00:00")]
+    assert rows == [
+        ("0001_baseline_schema", "2026-06-12T10:00:00"),
+        ("0002_download_jobs", "2026-06-12T10:00:00"),
+    ]
 
 
 def test_validate_migrations_rejects_duplicate_versions() -> None:
@@ -91,6 +103,40 @@ def test_failed_migration_is_not_recorded() -> None:
         )
 
     assert applied_migration_versions(conn) == set()
+
+
+def test_download_jobs_migration_schema_is_idempotent() -> None:
+    conn = sqlite3.connect(":memory:")
+
+    run_migrations(conn, now=lambda: "2026-06-12T10:00:00")
+    run_migrations(conn, now=lambda: "2026-06-12T10:05:00")
+
+    columns = {
+        row[1]: row[2]
+        for row in conn.execute("PRAGMA table_info(download_jobs)").fetchall()
+    }
+    assert columns == {
+        "id": "INTEGER",
+        "licitacion_id": "INTEGER",
+        "status": "TEXT",
+        "storage_backend": "TEXT",
+        "storage_uri": "TEXT",
+        "file_manifest": "TEXT",
+        "error_message": "TEXT",
+        "created_at": "TEXT",
+        "started_at": "TEXT",
+        "finished_at": "TEXT",
+        "updated_at": "TEXT",
+    }
+    indexes = {
+        row[1]
+        for row in conn.execute("PRAGMA index_list(download_jobs)").fetchall()
+    }
+    assert {
+        "idx_download_jobs_licitacion",
+        "idx_download_jobs_status",
+        "idx_download_jobs_created",
+    } <= indexes
 
 
 def test_init_db_runs_migrations_on_temporary_database_only() -> None:

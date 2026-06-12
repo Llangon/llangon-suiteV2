@@ -657,3 +657,20 @@ Mantener `content` como fuente y anadir `contentHtml` a `news_to_dict()`, genera
 - Las noticias pueden mostrar Markdown seguro sin migracion SQLite.
 - Los campos existentes no se eliminan.
 - Firebase conserva fallback si no hay API en su origen.
+
+## ADR-031 — Preparar tabla download_jobs
+
+### Contexto
+
+Las descargas correctas ya generan un manifest local, pero SQLite no tenia una tabla preparada para registrar ejecuciones o una futura cola asincrona.
+
+### Decisión
+
+Anadir la migracion `0002_download_jobs` con la tabla `download_jobs` y sus indices por licitacion, estado y fecha de creacion. La migracion es idempotente y solo prepara estructura.
+
+### Consecuencias
+
+- Hay base para jobs de descarga futuros.
+- No se cambia `api_download_licitacion()`.
+- No se cambian endpoints, respuestas JSON ni frontend.
+- No se implementa Dropbox real.

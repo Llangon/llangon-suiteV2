@@ -1870,3 +1870,23 @@ Fuera de esta fase:
 - no se eliminan campos JSON existentes;
 - no se anade editor visual;
 - no se cambia el origen de datos de Firebase.
+
+## Fase 2Y — Tabla preparatoria download_jobs
+
+La Fase 2Y prepara SQLite para registrar jobs de descarga futuros sin activar una cola real.
+
+Cambios aplicados:
+
+- se anade la migracion `0002_download_jobs`;
+- se crea la tabla `download_jobs`;
+- se guardan licitacion, estado, backend, URI, manifest, error y marcas temporales;
+- se anaden indices por licitacion, estado y fecha de creacion;
+- se amplian tests de migraciones para verificar esquema e idempotencia.
+
+Fuera de esta fase:
+
+- no se implementan jobs reales;
+- no se cambia `api_download_licitacion()`;
+- no se cambian endpoints ni respuestas JSON;
+- no se implementa Dropbox real;
+- no se cambia frontend ni Firebase.
