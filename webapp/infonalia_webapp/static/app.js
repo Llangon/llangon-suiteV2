@@ -1051,7 +1051,7 @@ async function saveNews(event) {
   };
   const response = await fetch(id ? `/api/news/${id}` : "/api/news", {
     method: id ? "PATCH" : "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
     body: JSON.stringify(payload),
   });
   const result = await response.json().catch(() => ({}));
@@ -1068,7 +1068,7 @@ async function saveNews(event) {
 
 async function deleteNews(id) {
   if (!confirm("¿Eliminar esta noticia?")) return;
-  const response = await fetch(`/api/news/${id}`, { method: "DELETE" });
+  const response = await fetch(`/api/news/${id}`, { method: "DELETE", headers: csrfHeaders() });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
     alert(result.error || "No se pudo eliminar la noticia.");
@@ -1170,7 +1170,7 @@ async function saveUserConfig(event) {
 
   const response = await fetch(editing ? `/api/config/users/${encodeURIComponent(editing)}` : "/api/config/users", {
     method: editing ? "PATCH" : "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
     body: JSON.stringify(payload),
   });
   const result = await response.json().catch(() => ({}));
@@ -1185,7 +1185,10 @@ async function saveUserConfig(event) {
 
 async function deleteUserConfig(username) {
   if (!confirm("¿Seguro que quieres dar de baja este usuario?")) return;
-  const response = await fetch(`/api/config/users/${encodeURIComponent(username)}`, { method: "DELETE" });
+  const response = await fetch(`/api/config/users/${encodeURIComponent(username)}`, {
+    method: "DELETE",
+    headers: csrfHeaders(),
+  });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
     alert(result.error || "No se pudo dar de baja el usuario.");
@@ -1215,7 +1218,7 @@ function settingsPayload() {
 async function saveSettingsPayload() {
   const response = await fetch("/api/config/settings", {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
     body: JSON.stringify(settingsPayload()),
   });
   const result = await response.json().catch(() => ({}));
@@ -1256,7 +1259,7 @@ async function testSmtpConfig() {
     await saveSettingsPayload();
     settingsResult.className = "import-result";
     settingsResult.textContent = "Configuración guardada. Probando envío SMTP...";
-    const response = await fetch("/api/config/test-smtp", { method: "POST" });
+    const response = await fetch("/api/config/test-smtp", { method: "POST", headers: csrfHeaders() });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
       settingsResult.className = "import-result error";
@@ -1404,7 +1407,7 @@ function renderPreview(preview) {
 async function updateEstado(id, estado) {
   const response = await fetch(`/api/licitaciones/${id}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
     body: JSON.stringify({ estado }),
   });
   const result = await response.json().catch(() => ({}));
@@ -1428,7 +1431,7 @@ async function markDayReviewed() {
   reviewDayButton.textContent = loadingText;
   let success = false;
   try {
-    const response = await fetch(endpoint, { method: "POST" });
+    const response = await fetch(endpoint, { method: "POST", headers: csrfHeaders() });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
       alert(result.error || "No se pudo actualizar la marca de revisión.");
@@ -1448,7 +1451,10 @@ async function sendDayToNuria() {
   sendNuriaButton.disabled = true;
   sendNuriaButton.textContent = "Enviando...";
   try {
-    const response = await fetch(`/api/dias/${appState.currentDiaId}/enviar-nuria`, { method: "POST" });
+    const response = await fetch(`/api/dias/${appState.currentDiaId}/enviar-nuria`, {
+      method: "POST",
+      headers: csrfHeaders(),
+    });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
       alert(result.error || "No se pudo enviar el día a revisión.");
@@ -1507,7 +1513,7 @@ async function generatePreview(id, button) {
     appState.cardDetails[id] = {};
   }
   try {
-    const response = await fetch(`/api/licitaciones/${id}/ia-preview`, { method: "POST" });
+    const response = await fetch(`/api/licitaciones/${id}/ia-preview`, { method: "POST", headers: csrfHeaders() });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
       alert(result.error || "No se pudo generar la vista preliminar.");
@@ -1526,7 +1532,10 @@ async function emailPreview(id, button) {
   button.disabled = true;
   button.textContent = "Enviando...";
   try {
-    const response = await fetch(`/api/licitaciones/${id}/ia-preview/email`, { method: "POST" });
+    const response = await fetch(`/api/licitaciones/${id}/ia-preview/email`, {
+      method: "POST",
+      headers: csrfHeaders(),
+    });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
       alert(result.error || "No se pudo enviar la vista preliminar.");
@@ -1582,7 +1591,7 @@ function openDuplicateEditor(id) {
 async function deleteLicitacion(id) {
   if (!confirm("¿Seguro que quieres borrar esta licitación?")) return;
 
-  const response = await fetch(`/api/licitaciones/${id}`, { method: "DELETE" });
+  const response = await fetch(`/api/licitaciones/${id}`, { method: "DELETE", headers: csrfHeaders() });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
     alert(result.error || "No se pudo borrar la licitación.");
@@ -1599,7 +1608,7 @@ async function deleteDia(id, title) {
   );
   if ((confirmation || "").trim() !== "Borrar") return;
 
-  const response = await fetch(`/api/dias/${id}`, { method: "DELETE" });
+  const response = await fetch(`/api/dias/${id}`, { method: "DELETE", headers: csrfHeaders() });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
     alert(result.error || "No se pudo borrar el día Infonalia.");
@@ -1806,7 +1815,7 @@ form.addEventListener("submit", async (event) => {
 
   const response = await fetch(id ? `/api/licitaciones/${id}` : "/api/licitaciones", {
     method: id ? "PATCH" : "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
     body: JSON.stringify(data),
   });
 

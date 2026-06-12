@@ -1060,3 +1060,60 @@ Riesgos pendientes:
 - logout sigue siendo GET;
 - HTTPS/proxy y CSP estricta siguen pendientes;
 - `app.py` sigue siendo monolítico y la extensión de CSRF debe continuar por fases pequeñas.
+
+## Fase 2B.3 — CSRF en mutaciones privadas restantes
+
+La Fase 2B.3 extiende la protección CSRF al resto de endpoints mutantes del panel privado, manteniendo una allowlist explícita y sin convertirlo en una validación opaca sobre cualquier ruta.
+
+Endpoints protegidos adicionalmente:
+
+- `POST /api/licitaciones`;
+- `PATCH /api/licitaciones/{id}`;
+- `DELETE /api/licitaciones/{id}`;
+- `POST /api/licitaciones/{id}/ia-preview`;
+- `POST /api/licitaciones/{id}/ia-preview/email`;
+- `POST /api/dias/{id}/revisado`;
+- `POST /api/dias/{id}/desmarcar-revisado`;
+- `POST /api/dias/{id}/enviar-nuria`;
+- `DELETE /api/dias/{id}`;
+- `POST /api/config/users`;
+- `PATCH /api/config/users/{username}`;
+- `DELETE /api/config/users/{username}`;
+- `PATCH /api/config/settings`;
+- `POST /api/config/test-smtp`;
+- `POST /api/news`;
+- `PATCH /api/news/{id}`;
+- `DELETE /api/news/{id}`.
+
+La protección previa de 2B.2 se mantiene para:
+
+- `POST /api/import/csv`;
+- `POST /api/import/msg`;
+- `POST /api/licitaciones/{id}/descargar`.
+
+Frontend:
+
+- `app.js` añade `X-CSRF-Token` a todas las llamadas mutantes privadas existentes;
+- las llamadas GET no cambian;
+- no se modifica la UX;
+- no se toca Firebase ni la web pública.
+
+Backend:
+
+- `do_POST()`, `do_PATCH()` y `do_DELETE()` validan CSRF solo si la ruta está en la allowlist de mutaciones privadas;
+- si falta el token o no coincide, se devuelve `403 Forbidden`;
+- rutas desconocidas no se convierten en error CSRF: siguen respondiendo `404 Not Found`.
+
+Endpoints excluidos:
+
+- `POST /login`, porque no hay sesión autenticada previa y ya existe rate limiting;
+- `GET /logout`, porque sigue siendo GET y requiere una decisión separada;
+- endpoints GET privados de lectura;
+- endpoints públicos y Firebase.
+
+Riesgos pendientes:
+
+- `GET /logout` sigue pendiente de migración o revisión;
+- CSRF no sustituye HTTPS/proxy ni CSP estricta;
+- si aparece XSS, el token en memoria del frontend podría quedar comprometido;
+- `app.py` sigue monolítico y conviene no mezclar esta protección con refactors grandes.

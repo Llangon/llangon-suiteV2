@@ -2544,6 +2544,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if not self.current_user():
             self.send_json({"error": "No autorizado"}, HTTPStatus.UNAUTHORIZED)
             return
+        if self.csrf_required_for_path("PATCH", path) and not self.require_csrf_token():
+            return
 
         if path.startswith("/api/licitaciones/"):
             licitacion_id = path.removeprefix("/api/licitaciones/").strip("/")
@@ -2571,6 +2573,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         if not self.current_user():
             self.send_json({"error": "No autorizado"}, HTTPStatus.UNAUTHORIZED)
+            return
+        if self.csrf_required_for_path("DELETE", path) and not self.require_csrf_token():
             return
 
         if path.startswith("/api/licitaciones/"):
@@ -2630,11 +2634,45 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         return user
 
     def csrf_required_for_path(self, method: str, path: str) -> bool:
-        if method.upper() != "POST":
+        method = method.upper()
+        if method == "POST":
+            if path in {
+                "/api/licitaciones",
+                "/api/config/users",
+                "/api/config/test-smtp",
+                "/api/news",
+                "/api/import/csv",
+                "/api/import/msg",
+            }:
+                return True
+            if path.startswith("/api/dias/") and (
+                path.endswith("/revisado")
+                or path.endswith("/enviar-nuria")
+                or path.endswith("/desmarcar-revisado")
+            ):
+                return True
+            if path.startswith("/api/licitaciones/") and (
+                path.endswith("/descargar")
+                or path.endswith("/ia-preview")
+                or path.endswith("/ia-preview/email")
+            ):
+                return True
             return False
-        if path in {"/api/import/csv", "/api/import/msg"}:
-            return True
-        return path.startswith("/api/licitaciones/") and path.endswith("/descargar")
+        if method == "PATCH":
+            return (
+                path.startswith("/api/licitaciones/")
+                or path.startswith("/api/config/users/")
+                or path == "/api/config/settings"
+                or path.startswith("/api/news/")
+            )
+        if method == "DELETE":
+            return (
+                path.startswith("/api/licitaciones/")
+                or path.startswith("/api/dias/")
+                or path.startswith("/api/config/users/")
+                or path.startswith("/api/news/")
+            )
+        return False
 
     def require_csrf_token(self) -> bool:
         user = self.current_user()
