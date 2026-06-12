@@ -946,3 +946,20 @@ Mover esa normalizacion a `build_news_payload()` en `webapp/infonalia_webapp/new
 - Se mantiene el CRUD de noticias y sus respuestas.
 - No se cambia render Markdown ni contenido HTML.
 - No se cambia SQLite, frontend ni Firebase.
+
+## ADR-048 — Extraer payload público de configuración
+
+### Contexto
+
+`app.py` construia directamente la respuesta de configuracion administrativa, incluyendo la mascara `smtp_password_set` para no exponer la contraseña SMTP.
+
+### Decisión
+
+Mover esa construccion a `config_payload()` y `public_settings_payload()` dentro de `webapp/infonalia_webapp/user_settings.py`. El handler conserva su metodo `config_payload()` como envoltorio.
+
+### Consecuencias
+
+- La forma publica de configuracion queda testeada sin handler.
+- Se mantiene oculta la contraseña SMTP.
+- Se mantienen usuarios y settings en la misma respuesta.
+- No se cambian endpoints, SQLite, frontend ni Firebase.

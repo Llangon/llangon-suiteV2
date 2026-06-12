@@ -26,6 +26,26 @@ def user_row_to_dict(row: sqlite3.Row | None, include_password: bool = False) ->
     return item
 
 
+def public_settings_payload(settings: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "maintenance_mode": settings.get("maintenance_mode", "0"),
+        "smtp_host": settings.get("smtp_host", ""),
+        "smtp_port": settings.get("smtp_port", "587"),
+        "smtp_user": settings.get("smtp_user", ""),
+        "smtp_from": settings.get("smtp_from", ""),
+        "smtp_tls": settings.get("smtp_tls", "1"),
+        "smtp_ssl": settings.get("smtp_ssl", "0"),
+        "smtp_password_set": bool(clean_text(settings.get("smtp_password"))),
+    }
+
+
+def config_payload(users: list[dict], settings: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "users": users,
+        "settings": public_settings_payload(settings),
+    }
+
+
 def seed_users_and_settings(
     conn: sqlite3.Connection,
     users: Mapping[str, Mapping[str, object]],

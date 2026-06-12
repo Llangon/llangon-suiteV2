@@ -28,12 +28,14 @@ except ImportError:
 
 try:
     from .user_settings import (
+        config_payload as settings_config_payload,
         seed_users_and_settings as seed_user_settings,
         update_settings as update_settings_values,
         user_row_to_dict,
     )
 except ImportError:
     from user_settings import (
+        config_payload as settings_config_payload,
         seed_users_and_settings as seed_user_settings,
         update_settings as update_settings_values,
         user_row_to_dict,
@@ -1592,20 +1594,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
     def config_payload(self) -> dict:
         settings = get_settings()
-        public_settings = {
-            "maintenance_mode": settings.get("maintenance_mode", "0"),
-            "smtp_host": settings.get("smtp_host", ""),
-            "smtp_port": settings.get("smtp_port", "587"),
-            "smtp_user": settings.get("smtp_user", ""),
-            "smtp_from": settings.get("smtp_from", ""),
-            "smtp_tls": settings.get("smtp_tls", "1"),
-            "smtp_ssl": settings.get("smtp_ssl", "0"),
-            "smtp_password_set": bool(clean_text(settings.get("smtp_password"))),
-        }
-        return {
-            "users": list_user_records(active_only=False),
-            "settings": public_settings,
-        }
+        return settings_config_payload(list_user_records(active_only=False), settings)
 
     def api_get_config(self) -> None:
         if not self.require_admin():

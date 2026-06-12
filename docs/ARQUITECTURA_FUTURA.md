@@ -2220,3 +2220,23 @@ Fuera de esta fase:
 - no se cambian permisos;
 - no se anaden migraciones;
 - no se cambia frontend ni Firebase.
+
+## Fase 3P — Extraccion de payload de configuración
+
+La Fase 3P separa la respuesta publica de configuracion administrativa.
+
+Cambios aplicados:
+
+- se anade `public_settings_payload()` en `user_settings.py`;
+- se anade `config_payload()` en `user_settings.py`;
+- se mantiene `smtp_password_set` sin exponer `smtp_password`;
+- `app.py` conserva su metodo `config_payload()` como envoltorio;
+- se anaden tests directos de defaults y ocultacion de contraseña.
+
+Fuera de esta fase:
+
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambian permisos;
+- no se anaden migraciones;
+- no se cambia frontend ni Firebase.

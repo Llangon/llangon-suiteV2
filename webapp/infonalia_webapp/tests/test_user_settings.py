@@ -4,7 +4,13 @@ import importlib
 import sqlite3
 import sys
 
-from webapp.infonalia_webapp.user_settings import seed_users_and_settings, update_settings, user_row_to_dict
+from webapp.infonalia_webapp.user_settings import (
+    config_payload,
+    public_settings_payload,
+    seed_users_and_settings,
+    update_settings,
+    user_row_to_dict,
+)
 
 
 def make_conn() -> sqlite3.Connection:
@@ -107,6 +113,49 @@ def test_user_row_to_dict_hides_password_by_default() -> None:
         "updated_at": "updated",
     }
     assert private["password_hash"] == "hash"
+
+
+def test_public_settings_payload_preserves_current_public_shape() -> None:
+    payload = public_settings_payload(
+        {
+            "maintenance_mode": "1",
+            "smtp_host": "smtp.example.test",
+            "smtp_port": "2525",
+            "smtp_user": "user",
+            "smtp_password": "secret",
+        }
+    )
+
+    assert payload == {
+        "maintenance_mode": "1",
+        "smtp_host": "smtp.example.test",
+        "smtp_port": "2525",
+        "smtp_user": "user",
+        "smtp_from": "",
+        "smtp_tls": "1",
+        "smtp_ssl": "0",
+        "smtp_password_set": True,
+    }
+
+
+def test_config_payload_combines_users_and_public_settings_without_password() -> None:
+    users = [{"username": "admin"}]
+
+    payload = config_payload(users, {"smtp_password": ""})
+
+    assert payload == {
+        "users": users,
+        "settings": {
+            "maintenance_mode": "0",
+            "smtp_host": "",
+            "smtp_port": "587",
+            "smtp_user": "",
+            "smtp_from": "",
+            "smtp_tls": "1",
+            "smtp_ssl": "0",
+            "smtp_password_set": False,
+        },
+    }
 
 
 def test_update_settings_upserts_values_with_timestamp() -> None:
