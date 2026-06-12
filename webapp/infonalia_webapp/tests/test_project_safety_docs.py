@@ -111,3 +111,40 @@ def test_markdown_news_precheck_keeps_implementation_out_of_scope() -> None:
         "No se cambia Firebase",
     ):
         assert item in text
+
+
+def test_sqlite_migration_precheck_documents_current_schema() -> None:
+    text = (DOCS_ROOT / "PRECHECK_SQLITE_MIGRACIONES.md").read_text(encoding="utf-8")
+
+    for item in (
+        "DB_PATH",
+        "db()",
+        "db_session()",
+        "init_db()",
+        "ensure_column()",
+        "seed_users_and_settings()",
+        "infonalia_dias",
+        "licitaciones",
+        "notificaciones",
+        "usuarios",
+        "app_settings",
+        "noticias",
+        "idx_licitaciones_estado",
+        "idx_noticias_published",
+        "schema_migrations",
+    ):
+        assert item in text
+
+
+def test_sqlite_migration_precheck_keeps_implementation_out_of_scope() -> None:
+    text = (DOCS_ROOT / "PRECHECK_SQLITE_MIGRACIONES.md").read_text(encoding="utf-8")
+
+    for item in (
+        "No se cambia SQLite",
+        "No se implementan migraciones",
+        "No se toca `app.py`",
+        "No se modifica la base productiva",
+        "SQLite temporal",
+        "No se usan datos reales",
+    ):
+        assert item in text

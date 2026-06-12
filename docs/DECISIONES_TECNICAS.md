@@ -369,3 +369,19 @@ Crear `docs/PRECHECK_NOTICIAS_MARKDOWN.md` y cubrirlo con tests documentales. El
 - La futura fase Markdown parte de un mapa verificable.
 - HTML libre sigue descartado.
 - SQLite y frontend se mantienen sin cambios hasta que exista plan de migracion y render seguro.
+
+## ADR-013 — Precheck antes de SQLite y migraciones
+
+### Contexto
+
+SQLite sigue siendo la persistencia de la app interna. El esquema se crea y evoluciona desde `init_db()` con cambios aditivos, pero todavia no existe tabla de migraciones, runner versionado ni estrategia de rollback documentada.
+
+### Decisión
+
+Crear `docs/PRECHECK_SQLITE_MIGRACIONES.md` y cubrirlo con tests documentales. El precheck no modifica la base productiva ni implementa migraciones; solo fija estado actual, invariantes, riesgos y orden seguro antes de introducir `schema_migrations` o cambios de esquema.
+
+### Consecuencias
+
+- La futura fase de migraciones parte de un mapa verificable.
+- Los tests siguen obligados a usar SQLite temporal.
+- Cualquier cambio de esquema queda pendiente de backup, plan de rollback y tests especificos.

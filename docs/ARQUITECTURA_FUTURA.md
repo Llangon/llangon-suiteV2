@@ -1452,3 +1452,27 @@ Fuera de esta fase:
 - no se cambia `api_update_news()`;
 - no se cambia `public.js`;
 - no se cambia Firebase.
+
+## Fase 2G — Precheck SQLite y migraciones
+
+La Fase 2G prepara el terreno para migraciones SQLite formales sin implementarlas.
+
+Cambios aplicados:
+
+- se crea `docs/PRECHECK_SQLITE_MIGRACIONES.md`;
+- se inventaria la persistencia actual: `DB_PATH`, `db()`, `db_session()`, `init_db()`, `ensure_column()` y `seed_users_and_settings()`;
+- se listan tablas e indices actuales;
+- se documenta que el esquema evoluciona hoy con `CREATE TABLE IF NOT EXISTS`, `ensure_column()` y `CREATE INDEX IF NOT EXISTS`;
+- se fijan invariantes para no tocar la SQLite productiva desde tests;
+- se enumeran riesgos antes de introducir `schema_migrations` o migraciones versionadas;
+- se anade test documental para asegurar que el precheck cubre piezas clave.
+
+Fuera de esta fase:
+
+- no se cambia SQLite;
+- no se implementan migraciones;
+- no se crea `schema_migrations`;
+- no se toca `app.py`;
+- no se modifica la base productiva;
+- no se cambian endpoints;
+- no se cambian respuestas JSON.
