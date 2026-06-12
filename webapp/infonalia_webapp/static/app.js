@@ -236,12 +236,14 @@ function normalizeUrl(value) {
   const url = String(value ?? "").trim();
   if (!url) return "";
   const lower = url.toLowerCase();
-  if (lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("mailto:")) {
+  if (lower.startsWith("http://") || lower.startsWith("https://")) {
     return url;
   }
-  if (url.startsWith("//")) return `https:${url}`;
+  if (url.startsWith("//")) return "";
+  if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return "";
+  if (url.startsWith("/") || url.startsWith("#")) return url;
   if (/^[a-z0-9.-]+\.[a-z]{2,}([/:?#].*)?$/i.test(url)) return `https://${url}`;
-  return url;
+  return "";
 }
 
 function applyRoleUi() {

@@ -1174,6 +1174,7 @@ Fuera de esta fase:
 Riesgos pendientes:
 
 - la app privada sigue usando `innerHTML` para renderizar vistas; aunque los datos se escapan en los puntos principales, conviene revisar XSS con una fase específica;
+- los enlaces dinámicos del panel privado quedan endurecidos después en Fase 2C.4;
 - CSP pública queda resuelta en Fase 2C.2;
 - HTTPS/proxy sigue pendiente para exposición real fuera de LAN/local.
 
@@ -1240,3 +1241,35 @@ Riesgos pendientes:
 - `public.js` sigue renderizando plantillas completas con `innerHTML`;
 - los arrays de contenido público son constantes locales, pero si en el futuro pasan a ser editables deberán escapar todos los campos antes de renderizarse;
 - la app privada sigue necesitando una fase específica de revisión XSS en `app.js`.
+
+## Fase 2C.4 — Endurecimiento XSS mínimo en enlaces privados
+
+La Fase 2C.4 revisa los enlaces dinámicos del panel privado que se insertan en plantillas con `innerHTML`, especialmente `enlace_perfil` y `enlace_infonalia`.
+
+Cambios aplicados:
+
+- `normalizeUrl()` solo conserva URLs `http`/`https`;
+- los dominios sin protocolo siguen normalizándose a `https://`;
+- rutas relativas y anclas internas siguen permitidas;
+- valores con esquemas explícitos no web, como `javascript:`, `data:`, `mailto:` o `file:`, se descartan;
+- URLs protocol-relative `//...` se descartan para evitar ambigüedad;
+- se añade un test estático de seguridad que fija esta política.
+
+Ámbito:
+
+- enlaces de perfil e Infonalia en tarjetas de licitación;
+- enlaces equivalentes del panel de calendario;
+- render privado actual sin tocar endpoints ni SQLite.
+
+Fuera de esta fase:
+
+- eliminación completa de `innerHTML` en `app.js`;
+- auditoría profunda de todos los componentes privados;
+- sanitización Markdown;
+- cambios de persistencia.
+
+Riesgos pendientes:
+
+- `app.js` sigue renderizando muchas vistas con `innerHTML`;
+- otros atributos `data-*` se escapan como HTML, pero todavía no hay una auditoría completa de coerción de identificadores;
+- si en el futuro se admiten URLs no web por necesidad funcional, deberán tener validación explícita y tests propios.

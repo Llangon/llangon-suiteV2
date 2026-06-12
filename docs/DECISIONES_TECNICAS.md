@@ -268,6 +268,8 @@ La Fase 2C.2 extiende CSP a la web pública y Firebase después de eliminar el b
 
 La Fase 2C.3 endurece el helper de botones de la web pública para que los `href` dinámicos se escapen y se limiten a rutas relativas, anclas o URLs `http`/`https`, reduciendo riesgo XSS mientras siga existiendo render con `innerHTML`.
 
+La Fase 2C.4 aplica el mismo criterio defensivo a enlaces privados de licitaciones: `normalizeUrl()` deja de propagar esquemas no web y oculta valores ambiguos antes de interpolarlos en plantillas.
+
 ## ADR-009 — CSRF incremental para endpoints mutantes
 
 ### Contexto

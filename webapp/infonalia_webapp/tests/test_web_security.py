@@ -107,6 +107,17 @@ def test_public_js_escapes_dynamic_button_hrefs() -> None:
         assert 'href="${href}"' not in script
 
 
+def test_private_app_normalize_url_rejects_unsafe_schemes() -> None:
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert "function normalizeUrl" in script
+    assert 'lower.startsWith("http://") || lower.startsWith("https://")' in script
+    assert 'if (url.startsWith("//")) return "";' in script
+    assert 'if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return "";' in script
+    assert 'return `https://${url}`;' in script
+    assert 'startsWith("mailto:")' not in script
+
+
 def test_session_cookie_contains_expected_attributes() -> None:
     cookie = build_session_cookie("session", "token", max_age=60, secure=False)
 
