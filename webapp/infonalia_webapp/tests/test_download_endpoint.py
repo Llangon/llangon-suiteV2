@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime
@@ -162,6 +163,11 @@ def test_download_endpoint_success_updates_ruta_carpeta_with_mocked_subprocess()
         assert ruta_carpeta == payload["ruta_carpeta"]
         assert Path(payload["carpeta"], "HTTP.url").exists()
         assert Path(payload["carpeta"], "documento-ficticio.pdf").exists()
+        manifest_path = Path(payload["carpeta"], ".infonalia_manifest.json")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest["schema"] == "infonalia.download_manifest.v1"
+        assert manifest["source_url"] == "https://example.test/licitacion/1"
+        assert sorted(item["path"] for item in manifest["files"]) == ["HTTP.url", "documento-ficticio.pdf"]
         assert calls[0]["capture_output"] is True
         assert calls[0]["text"] is True
         assert calls[0]["timeout"] == app.MAX_DOWNLOAD_RUNTIME_SECONDS

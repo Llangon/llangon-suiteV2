@@ -625,3 +625,19 @@ Hacer que `InfonaliaHandler.csrf_required_for_path()` delegue primero en `is_csr
 - La decision central vive en `csrf.py`.
 - Las excepciones de login, GET y API publica se conservan.
 - No se cambian endpoints, frontend ni respuestas JSON esperadas.
+
+## ADR-029 — Generar manifest local tras descarga correcta
+
+### Contexto
+
+El flujo de descarga validaba carpeta y limites, pero no dejaba inventario de ficheros. `LocalStorageBackend` ya permite escribir objetos locales seguros, asi que se puede crear un manifest sin cambiar respuestas ni esquema.
+
+### Decisión
+
+Generar `.infonalia_manifest.json` dentro de la carpeta destino despues de una descarga correcta y antes de actualizar `ruta_carpeta`. El manifest se escribe con `LocalStorageBackend`, incluye rutas relativas, URI local, tamano y checksum, y se ignora en el escaneo de limites por ser fichero interno controlado.
+
+### Consecuencias
+
+- Las descargas exitosas quedan inventariadas.
+- No se cambia la respuesta JSON ni SQLite.
+- Si falla la creacion del manifest, no se marca `ruta_carpeta` como correcta.

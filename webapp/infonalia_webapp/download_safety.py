@@ -9,6 +9,7 @@ MAX_DOWNLOAD_RUNTIME_SECONDS = 900
 MAX_DOWNLOAD_TOTAL_BYTES = 500 * 1024 * 1024
 MAX_DOWNLOAD_FILE_COUNT = 500
 MAX_CAPTURED_OUTPUT_CHARS = 20000
+INTERNAL_DOWNLOAD_FILENAMES = frozenset({".infonalia_manifest.json"})
 
 
 class DownloadSafetyError(ValueError):
@@ -121,6 +122,8 @@ def scan_download_folder(folder: str | Path) -> DownloadFolderSummary:
 
     for item in folder_path.rglob("*"):
         if not item.is_file():
+            continue
+        if item.name in INTERNAL_DOWNLOAD_FILENAMES:
             continue
         file_count += 1
         total_bytes += item.stat().st_size

@@ -146,6 +146,11 @@ except ImportError:
     from db_migrations import run_migrations
 
 try:
+    from .local_storage import LocalStorageError, write_local_manifest
+except ImportError:
+    from local_storage import LocalStorageError, write_local_manifest
+
+try:
     from .web_security import (
         DEFAULT_LOGIN_MAX_ATTEMPTS,
         DEFAULT_LOGIN_WINDOW_SECONDS,
@@ -1399,6 +1404,18 @@ def write_http_url(folder: Path, url: str) -> None:
         "[InternetShortcut]\n" f"URL={url}\n",
         encoding="utf-8",
     )
+
+
+def storage_root_for_destination(destination: Path, allowed_roots: list[Path]) -> Path:
+    resolved_destination = destination.resolve(strict=False)
+    for root in allowed_roots:
+        resolved_root = Path(root).resolve(strict=False)
+        try:
+            resolved_destination.relative_to(resolved_root)
+            return resolved_root
+        except ValueError:
+            continue
+    raise LocalStorageError("La carpeta de destino queda fuera del almacenamiento local permitido.")
 
 
 def build_ai_preview_payload(licitacion_id: int) -> dict:
@@ -3039,12 +3056,27 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 max_total_bytes=MAX_DOWNLOAD_TOTAL_BYTES,
                 max_file_count=MAX_DOWNLOAD_FILE_COUNT,
             )
+            storage_root = storage_root_for_destination(destino, allowed_destination_roots)
+            write_local_manifest(storage_root, destino, source_url=url)
         except DownloadSafetyError as exc:
             self.send_json(
                 {
                     "ok": False,
                     "codigo": completed.returncode,
                     "error": str(exc),
+                    "carpeta": str(destino),
+                    "ruta_carpeta": ruta_guardada,
+                    "salida": salida,
+                },
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+        except (LocalStorageError, OSError) as exc:
+            self.send_json(
+                {
+                    "ok": False,
+                    "codigo": completed.returncode,
+                    "error": f"No se pudo crear el manifiesto de descarga: {exc}",
                     "carpeta": str(destino),
                     "ruta_carpeta": ruta_guardada,
                     "salida": salida,

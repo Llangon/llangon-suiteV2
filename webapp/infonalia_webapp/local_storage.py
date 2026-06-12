@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
+from collections.abc import Callable
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
-from .core.models import StorageBackendName, StorageObject, StorageObjectType
+try:
+    from .core.models import StorageBackendName, StorageObject, StorageObjectType
+except ImportError:
+    from core.models import StorageBackendName, StorageObject, StorageObjectType
+
+
+MANIFEST_FILENAME = ".infonalia_manifest.json"
 
 
 class LocalStorageError(ValueError):
@@ -102,3 +111,79 @@ class LocalStorageBackend:
     def get_display_path(self, uri: str) -> str:
         _, path = self._resolve(uri)
         return str(path)
+
+
+def local_uri_for_path(root: Path | str, path: Path | str) -> str:
+    root_path = Path(root).resolve()
+    target_path = Path(path).resolve()
+    try:
+        relative = target_path.relative_to(root_path)
+    except ValueError as exc:
+        raise LocalStorageError("Local path escapes storage root") from exc
+    if not relative.parts:
+        raise LocalStorageError("Local storage URI cannot point to root")
+    return f"local://{PurePosixPath(*relative.parts).as_posix()}"
+
+
+def file_storage_object(root: Path | str, path: Path | str) -> StorageObject:
+    target_path = Path(path)
+    digest = hashlib.sha256(target_path.read_bytes()).hexdigest()
+    return StorageObject(
+        backend_name=StorageBackendName.local,
+        uri=local_uri_for_path(root, target_path),
+        display_path=str(target_path),
+        object_type=StorageObjectType.file,
+        size_bytes=target_path.stat().st_size,
+        checksum=digest,
+    )
+
+
+def build_local_manifest(
+    root: Path | str,
+    folder: Path | str,
+    *,
+    source_url: str = "",
+    generated_at: Callable[[], str] | None = None,
+) -> dict:
+    root_path = Path(root).resolve()
+    folder_path = Path(folder).resolve()
+    local_uri_for_path(root_path, folder_path / MANIFEST_FILENAME)
+    timestamp = generated_at() if generated_at else datetime.now().replace(microsecond=0).isoformat()
+    files = []
+
+    for item in sorted(folder_path.rglob("*")):
+        if not item.is_file() or item.name == MANIFEST_FILENAME:
+            continue
+        stored = file_storage_object(root_path, item)
+        relative = PurePosixPath(*item.resolve().relative_to(folder_path).parts).as_posix()
+        files.append(
+            {
+                "path": relative,
+                "uri": stored.uri,
+                "size_bytes": stored.size_bytes,
+                "checksum": stored.checksum,
+            }
+        )
+
+    return {
+        "schema": "infonalia.download_manifest.v1",
+        "backend": StorageBackendName.local.value,
+        "folder_uri": local_uri_for_path(root_path, folder_path),
+        "display_path": str(folder_path),
+        "source_url": source_url,
+        "generated_at": timestamp,
+        "files": files,
+    }
+
+
+def write_local_manifest(
+    root: Path | str,
+    folder: Path | str,
+    *,
+    source_url: str = "",
+    generated_at: Callable[[], str] | None = None,
+) -> StorageObject:
+    manifest = build_local_manifest(root, folder, source_url=source_url, generated_at=generated_at)
+    content = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+    manifest_uri = local_uri_for_path(root, Path(folder) / MANIFEST_FILENAME)
+    return LocalStorageBackend(root).save_stream(BytesIO(content), manifest_uri)

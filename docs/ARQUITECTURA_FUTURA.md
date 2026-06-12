@@ -1829,3 +1829,24 @@ Fuera de esta fase:
 - no se cambia frontend;
 - no se cambia Firebase;
 - no se toca SQLite.
+
+## Fase 2W — Manifest local en descargas correctas
+
+La Fase 2W conecta el StorageBackend local con el flujo real de descarga sin cambiar la API.
+
+Cambios aplicados:
+
+- tras una descarga correcta se genera `.infonalia_manifest.json`;
+- el manifest incluye esquema, backend, URI de carpeta, URL origen y ficheros con ruta relativa, URI, tamano y checksum;
+- el manifest se escribe mediante `LocalStorageBackend`;
+- el escaneo de limites ignora el manifest interno para que no altere el conteo de ficheros descargados;
+- `ruta_carpeta` solo se actualiza si el manifest se crea correctamente.
+
+Fuera de esta fase:
+
+- no se cambia la respuesta JSON;
+- no se cambia SQLite;
+- no se implementa Dropbox;
+- no se ejecutan descargadores reales en tests;
+- no se cambian endpoints;
+- no se cambia frontend ni Firebase.

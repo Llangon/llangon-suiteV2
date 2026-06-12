@@ -87,6 +87,7 @@ def test_scan_download_folder_with_few_files_passes_limits() -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
         root = Path(tmp_dir)
         (root / "a.txt").write_text("abc", encoding="utf-8")
+        (root / ".infonalia_manifest.json").write_text("{}", encoding="utf-8")
         (root / "nested").mkdir()
         (root / "nested" / "b.txt").write_text("def", encoding="utf-8")
 
