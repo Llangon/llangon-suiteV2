@@ -120,6 +120,23 @@ except ImportError:
     )
 
 try:
+    from .infonalia_days import (
+        day_row_to_dict,
+        get_or_create_day,
+        is_nuria_update_pending as day_nuria_update_pending,
+        mark_day_nuria_dirty,
+        refresh_day_status,
+    )
+except ImportError:
+    from infonalia_days import (
+        day_row_to_dict,
+        get_or_create_day,
+        is_nuria_update_pending as day_nuria_update_pending,
+        mark_day_nuria_dirty,
+        refresh_day_status,
+    )
+
+try:
     from .licitation_records import licitation_row_to_dict
 except ImportError:
     from licitation_records import licitation_row_to_dict
@@ -714,126 +731,25 @@ def folder_path_for_storage(value: object, dropbox_root: Path | None = None) -> 
 
 
 def get_or_create_dia(conn: sqlite3.Connection, fecha_infonalia: str) -> int:
-    fecha = clean_text(fecha_infonalia) or "sin-fecha"
-    row = conn.execute("SELECT id FROM infonalia_dias WHERE fecha = ?", (fecha,)).fetchone()
-    if row:
-        return int(row["id"])
-
-    timestamp = now_iso()
-    title_date = "sin fecha" if fecha == "sin-fecha" else format_date_es(fecha)
-    cur = conn.execute(
-        """
-        INSERT INTO infonalia_dias (fecha, titulo, estado, created_at, updated_at)
-        VALUES (?, ?, 'Importado', ?, ?)
-        """,
-        (fecha, f"Infonalia {title_date}", timestamp, timestamp),
-    )
-    return int(cur.lastrowid)
+    return get_or_create_day(conn, fecha_infonalia, now=now_iso)
 
 
 def is_nuria_update_pending(row: sqlite3.Row | dict | None) -> bool:
-    if not row:
-        return False
-    dirty_at = clean_text(row_get(row, "nuria_dirty_at"))
-    sent_at = clean_text(row_get(row, "enviado_nuria_at"))
-    return bool(dirty_at and (not sent_at or dirty_at >= sent_at))
+    return day_nuria_update_pending(row)
 
 
 def mark_dia_nuria_dirty(conn: sqlite3.Connection, dia_id: int | None, timestamp: str | None = None) -> None:
     if not dia_id:
         return
-    timestamp = timestamp or now_iso()
-    conn.execute(
-        "UPDATE infonalia_dias SET nuria_dirty_at = ?, updated_at = ? WHERE id = ?",
-        (timestamp, timestamp, dia_id),
-    )
+    mark_day_nuria_dirty(conn, dia_id, timestamp=timestamp or now_iso())
 
 
 def refresh_dia_estado(conn: sqlite3.Connection, dia_id: int) -> None:
-    day = conn.execute("SELECT * FROM infonalia_dias WHERE id = ?", (dia_id,)).fetchone()
-    rows = conn.execute(
-        """
-        SELECT estado, COUNT(*) AS total
-        FROM licitaciones
-        WHERE infonalia_dia_id = ?
-        GROUP BY estado
-        """,
-        (dia_id,),
-    ).fetchall()
-    counts = {row["estado"]: row["total"] for row in rows}
-    total = sum(counts.values())
-    pendientes = counts.get("Pendiente", 0)
-    pendientes_nuria = counts.get("Pendiente Nuria", 0)
-    decisiones_nuria = counts.get("Descartar", 0) + counts.get("Descargar", 0) + counts.get("Hacer", 0)
-    enviado_nuria_at = clean_text(day["enviado_nuria_at"]) if day and "enviado_nuria_at" in day.keys() else ""
-    reviewed_at = clean_text(day["reviewed_at"]) if day and "reviewed_at" in day.keys() else ""
-    nuria_pending_update = is_nuria_update_pending(day)
-
-    if total == 0:
-        estado = "Importado"
-    elif pendientes > 0:
-        estado = "En filtrado interno"
-    elif reviewed_at and not nuria_pending_update:
-        estado = "Completado"
-    elif nuria_pending_update and enviado_nuria_at:
-        estado = "Cambios pendientes para Nuria"
-    elif not enviado_nuria_at and (pendientes_nuria > 0 or decisiones_nuria > 0):
-        estado = "Listo para enviar a Nuria"
-    elif pendientes_nuria > 0 and enviado_nuria_at:
-        estado = "Pendiente de revisión Nuria"
-    elif decisiones_nuria > 0:
-        estado = "Revisión parcial"
-    else:
-        estado = "Completado"
-
-    conn.execute(
-        "UPDATE infonalia_dias SET estado = ?, updated_at = ? WHERE id = ?",
-        (estado, now_iso(), dia_id),
-    )
+    refresh_day_status(conn, dia_id, timestamp=now_iso())
 
 
 def dia_to_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
-    counts_rows = conn.execute(
-        """
-        SELECT estado, COUNT(*) AS total
-        FROM licitaciones
-        WHERE infonalia_dia_id = ?
-        GROUP BY estado
-        """,
-        (row["id"],),
-    ).fetchall()
-    counts = {count_row["estado"]: count_row["total"] for count_row in counts_rows}
-    total = sum(counts.values())
-    decisiones_nuria = counts.get("Descartar", 0) + counts.get("Descargar", 0) + counts.get("Hacer", 0)
-    nuria_total = counts.get("Pendiente Nuria", 0) + decisiones_nuria
-    nuria_pending_update = is_nuria_update_pending(row)
-    return {
-        "id": row["id"],
-        "fecha": row["fecha"],
-        "fecha_formateada": format_date_es(row["fecha"]),
-        "titulo": row["titulo"],
-        "estado": row["estado"],
-        "total": total,
-        "total_nuria": nuria_total,
-        "pendientes": counts.get("Pendiente", 0),
-        "descartadas_mi": counts.get("Descartada por mí", 0),
-        "pendientes_nuria": counts.get("Pendiente Nuria", 0),
-        "decisiones_nuria": decisiones_nuria,
-        "descartadas_nuria": counts.get("Descartar", 0),
-        "solo_descargar": counts.get("Descargar", 0),
-        "preparar_licitacion": counts.get("Hacer", 0),
-        "descargadas": 0,
-        "enviado_nuria_at": row["enviado_nuria_at"] if "enviado_nuria_at" in row.keys() else "",
-        "fecha_envio_nuria": format_datetime_es(row["enviado_nuria_at"]) if "enviado_nuria_at" in row.keys() else "",
-        "nuria_dirty_at": row["nuria_dirty_at"] if "nuria_dirty_at" in row.keys() else "",
-        "fecha_cambio_nuria": format_datetime_es(row["nuria_dirty_at"]) if "nuria_dirty_at" in row.keys() else "",
-        "nuria_pending_update": nuria_pending_update,
-        "reviewed_at": row["reviewed_at"] if "reviewed_at" in row.keys() else "",
-        "fecha_revision": format_datetime_es(row["reviewed_at"]) if "reviewed_at" in row.keys() else "",
-        "counts": counts,
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-    }
+    return day_row_to_dict(conn, row)
 
 
 def insert_payload(conn: sqlite3.Connection, payload: dict[str, object], dia_id: int | None = None) -> str:

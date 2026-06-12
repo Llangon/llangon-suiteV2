@@ -844,3 +844,20 @@ Mover la conversion parametrizable a `webapp/infonalia_webapp/licitation_records
 - Se mantienen los nombres de campos y normalizaciones actuales.
 - No se cambian endpoints ni respuestas JSON.
 - No se cambia SQLite, frontend ni Firebase.
+
+## ADR-042 — Extraer helpers de días Infonalia
+
+### Contexto
+
+`app.py` mantenia la creacion de dias Infonalia, la maquina de estados del envio a Nuria y la serializacion de dias junto al enrutado HTTP. Es logica SQLite acotada y testeable en memoria.
+
+### Decisión
+
+Mover esa logica a `webapp/infonalia_webapp/infonalia_days.py` y mantener en `app.py` envoltorios compatibles para inyectar `now_iso()`.
+
+### Consecuencias
+
+- Las reglas de estado de dias quedan cubiertas por tests directos.
+- Se mantiene el formato JSON de `/api/dias`.
+- No se cambian endpoints ni consultas productivas.
+- No se anaden migraciones ni se cambia frontend/Firebase.

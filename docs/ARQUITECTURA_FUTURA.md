@@ -2094,3 +2094,25 @@ Fuera de esta fase:
 - no se cambian respuestas JSON;
 - no se cambian consultas SQLite ni migraciones;
 - no se cambia frontend ni Firebase.
+
+## Fase 3J — Extraccion de días Infonalia
+
+La Fase 3J separa helpers SQLite de dias Infonalia y su estado de revision.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/infonalia_days.py`;
+- se mueve la creacion/reutilizacion de dias;
+- se mueve la regla de cambios pendientes para Nuria;
+- se mueve el refresco de estado del dia;
+- se mueve la serializacion de dia para API;
+- `app.py` conserva envoltorios compatibles;
+- se anaden tests directos en SQLite en memoria.
+
+Fuera de esta fase:
+
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se anaden migraciones;
+- no se toca la base de datos productiva;
+- no se cambia frontend ni Firebase.
