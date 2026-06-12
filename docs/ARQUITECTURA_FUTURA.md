@@ -947,3 +947,62 @@ Pendiente:
 - CSP estricta queda pendiente hasta revisar scripts y estilos inline;
 - el rate limiting en memoria no es distribuido;
 - esto no sustituye una revisión de seguridad completa antes de exposición pública.
+
+## Fase 2B.1 — Mapa CSRF y estrategia
+
+La Fase 2B.1 prepara CSRF sin activarlo todavía. No cambia `app.py`, no cambia frontend, no cambia URLs, no cambia respuestas JSON y no modifica SQLite. El objetivo es dejar inventariados los endpoints de riesgo y crear helpers puros testeables para la integración posterior.
+
+### Mapa de endpoints mutantes o sensibles
+
+| Método | Ruta | Función backend | Llamada frontend | Auth | Admin | Efecto | CSRF | Motivo |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| POST | `/login` | `handle_login()` | formulario de login | No | No | crea cookie de sesión si las credenciales son válidas | No en 2B.2 inicial | Queda fuera inicialmente porque no hay sesión autenticada previa y ya tiene rate limiting. Revisar login CSRF más adelante si cambia el flujo. |
+| GET | `/logout` | ruta directa en `do_GET()` | enlace `/logout` en `index.html` | No se comprueba antes de limpiar | No | borra cookie de sesión | No mientras siga siendo GET | Las reglas de esta fase no protegen GET. Riesgo pendiente: estudiar migración futura a POST con CSRF. |
+| POST | `/api/licitaciones` | `api_create_licitacion()` | submit del editor en `app.js` | Sí | Sí | inserta licitación y puede crear/actualizar día Infonalia | Sí | Endpoint autenticado mutante con escritura SQLite. |
+| PATCH | `/api/licitaciones/{id}` | `api_update_licitacion()` | `updateEstado()` y submit del editor | Sí | Admin completo; Nuria limitado a estado | actualiza licitación, estado y estado del día | Sí | Endpoint autenticado mutante con escritura SQLite. |
+| DELETE | `/api/licitaciones/{id}` | `api_delete_licitacion()` | `deleteLicitacion()` | Sí | Sí | borra licitación y recalcula día | Sí | Endpoint autenticado mutante destructivo. |
+| POST | `/api/licitaciones/{id}/descargar` | `api_download_licitacion()` | `downloadLicitacion()` | Sí | Sí | crea carpeta, escribe `HTTP.url`, ejecuta descargador y actualiza `ruta_carpeta` | Sí | Descarga es mutante: escribe ficheros, ejecuta `subprocess` y modifica SQLite. |
+| POST | `/api/licitaciones/{id}/ia-preview` | `api_generate_ai_preview()` | `generatePreview()` | Sí | No | genera una vista previa interna; no persiste datos | Sí | Aunque no escribe SQLite, es un POST autenticado con coste y lógica interna. Se protege por regla general de métodos mutantes. |
+| POST | `/api/licitaciones/{id}/ia-preview/email` | `api_send_ai_preview_email()` | `emailPreview()` | Sí | No | crea notificación y puede enviar email | Sí | Endpoint autenticado con escritura SQLite y posible efecto externo SMTP. |
+| POST | `/api/import/csv` | `api_import_csv()` | submit del importador CSV | Sí | Sí | importa filas y crea/actualiza licitaciones y días | Sí | Endpoint autenticado mutante con subida de fichero y escritura SQLite. |
+| POST | `/api/import/msg` | `api_import_msg()` | submit del importador MSG | Sí | Sí | importa MSG, puede usar temporales, enriquecer PDF, crear/actualizar licitaciones y días | Sí | Endpoint autenticado mutante con subida de fichero; puede escribir temporales, usar red/subproceso en enriquecimiento y modificar SQLite. |
+| POST | `/api/dias/{id}/revisado` | `api_mark_dia_revisado()` | `markDayReviewed()` | Sí | No | marca día como revisado y puede crear notificación/email | Sí | Endpoint autenticado mutante con escritura SQLite. |
+| POST | `/api/dias/{id}/desmarcar-revisado` | `api_unmark_dia_revisado()` | `markDayReviewed()` | Sí | Sí | desmarca revisión y recalcula estado | Sí | Endpoint autenticado mutante con escritura SQLite. |
+| POST | `/api/dias/{id}/enviar-nuria` | `api_send_dia_to_nuria()` | `sendDayToNuria()` | Sí | Sí | marca día como enviado a Nuria, crea notificación y puede enviar email | Sí | Endpoint autenticado mutante con escritura SQLite y posible efecto SMTP. |
+| DELETE | `/api/dias/{id}` | `api_delete_dia()` | `deleteDia()` | Sí | Sí | borra día y sus licitaciones | Sí | Endpoint autenticado mutante destructivo. |
+| POST | `/api/config/users` | `api_create_user()` | `saveUserConfig()` | Sí | Sí | crea usuario | Sí | Endpoint autenticado mutante de configuración y credenciales. |
+| PATCH | `/api/config/users/{username}` | `api_update_user()` | `saveUserConfig()` | Sí | Sí | actualiza rol, email, activo o contraseña | Sí | Endpoint autenticado mutante de configuración y credenciales. |
+| DELETE | `/api/config/users/{username}` | `api_delete_user()` | `deleteUserConfig()` | Sí | Sí | desactiva usuario | Sí | Endpoint autenticado mutante de configuración de acceso. |
+| PATCH | `/api/config/settings` | `api_update_settings()` | `saveSettingsPayload()` | Sí | Sí | actualiza mantenimiento y SMTP | Sí | Endpoint autenticado mutante de configuración global. |
+| POST | `/api/config/test-smtp` | `api_test_smtp()` | `testSmtpConfig()` | Sí | Sí | envía correo de prueba | Sí | Endpoint autenticado con efecto externo SMTP. |
+| POST | `/api/news` | `api_create_news()` | `saveNews()` | Sí | Admin o editor | crea noticia | Sí | Endpoint autenticado mutante con escritura SQLite. |
+| PATCH | `/api/news/{id}` | `api_update_news()` | `saveNews()` | Sí | Admin o editor | actualiza noticia | Sí | Endpoint autenticado mutante con escritura SQLite. |
+| DELETE | `/api/news/{id}` | `api_delete_news()` | `deleteNews()` | Sí | Admin o editor | borra noticia | Sí | Endpoint autenticado mutante destructivo. |
+| GET | `/api/public/noticias` | `api_public_news()` | `public.js` y Firebase `public.js` | No | No | lectura pública de noticias publicadas | No | Endpoint público de solo lectura; protegerlo rompería la web pública/Firebase. |
+
+Endpoints GET privados como `/api/me`, `/api/dias`, `/api/licitaciones`, `/api/notificaciones`, `/api/config`, `/api/news` y `/api/health` no deben requerir CSRF porque son lecturas. Si alguno empieza a modificar estado en el futuro, deberá pasar a método mutante y entrar en esta tabla.
+
+### Protección prevista para 2B.2
+
+Se protegerán todos los endpoints autenticados con `POST`, `PUT`, `PATCH` o `DELETE`, con estas excepciones iniciales:
+
+- `POST /login`: excluido inicialmente por no tener sesión previa y por tener rate limiting.
+- rutas bajo `/api/public/`: excluidas para no romper web pública ni Firebase; actualmente son GET de lectura.
+- `GET /logout`: no se protege mientras siga siendo GET, pero queda marcado como riesgo pendiente.
+
+### Estrategia de token
+
+- Generación: `generate_csrf_token()` con `secrets.token_urlsafe(32)`.
+- Almacenamiento previsto: añadir el token al payload firmado de sesión en una fase posterior, junto a usuario, rol e `iat`.
+- Entrega al frontend: devolver el token en `/api/me` o en un bootstrap privado equivalente después de login.
+- Envío desde frontend: incluirlo en cada petición mutante autenticada mediante header `X-CSRF-Token`.
+- Validación backend: comparar el token esperado de la sesión con el token recibido usando `hmac.compare_digest`.
+- Código HTTP previsto: `403 Forbidden` con JSON de error cuando falte el token o no coincida.
+
+### Riesgos pendientes
+
+- CSRF aún no está activo; esta fase solo prepara mapa, estrategia y helpers puros.
+- `GET /logout` limpia sesión con un enlace normal; conviene estudiar convertirlo a `POST /logout` en una fase posterior.
+- La integración frontend/backend debe hacerse de forma incremental para no romper importación, descargas, noticias ni Firebase.
+- Si hay XSS, el token expuesto al frontend también quedaría comprometido; por eso CSP estricta sigue pendiente.
+- HTTPS/proxy sigue pendiente para cualquier exposición fuera de entorno local/LAN.

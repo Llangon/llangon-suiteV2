@@ -259,3 +259,48 @@ No se implementa CSRF ni CSP estricta en esta fase.
 - Activar `Secure` siempre: descartado porque rompería login en HTTP local.
 - Añadir Redis u otro rate limiter distribuido: descartado por complejidad y porque la app sigue siendo local/LAN.
 - Aplicar CSP estricta ahora: descartado hasta revisar scripts y estilos inline.
+
+## ADR-009 — CSRF incremental para endpoints mutantes
+
+### Contexto
+
+La app privada ya tiene login, roles, cookies `HttpOnly` con `SameSite=Lax`, cabeceras básicas y rate limiting de login. Aun así, mientras existan endpoints autenticados que modifican estado mediante `POST`, `PATCH` o `DELETE`, sigue pendiente una protección CSRF explícita antes de exponer la app fuera de un entorno local/LAN controlado.
+
+Los endpoints sensibles incluyen importación CSV/MSG, descargas, creación y edición de licitaciones, cambios de estado, gestión de noticias, usuarios, configuración SMTP y notificaciones. También existe un `GET /logout` que limpia la sesión y debe revisarse aparte.
+
+### Decisión
+
+Adoptar CSRF de forma incremental:
+
+- esta fase solo crea helpers puros y documenta el mapa de endpoints;
+- no se activa todavía ninguna validación en `app.py`;
+- no se cambia frontend en esta fase;
+- no se protegen endpoints GET;
+- `POST /login` queda fuera inicialmente porque no tiene sesión autenticada previa y ya cuenta con rate limiting;
+- la prioridad de 2B.2 serán los endpoints autenticados mutantes;
+- el token se generará con `secrets.token_urlsafe(32)` y se validará con `hmac.compare_digest`;
+- la integración prevista enviará el token desde el frontend en un header como `X-CSRF-Token`;
+- ante token ausente o inválido se prevé responder `403 Forbidden`.
+
+### Consecuencias
+
+- La app mantiene el comportamiento actual durante 2B.1.
+- Existe una base testeada para integrar CSRF sin mezclarla con refactors de `app.py`.
+- La siguiente fase podrá activar protección por grupos de endpoints y validar cada flujo.
+- La web pública y Firebase no se rompen porque los endpoints públicos de lectura quedan excluidos.
+
+### Riesgos
+
+- CSRF sigue sin estar activo hasta 2B.2.
+- `GET /logout` seguirá siendo vulnerable a cierre de sesión inducido hasta que se convierta o gestione explícitamente.
+- Si se entrega el token al frontend, un XSS podría leerlo; CSP estricta y revisión de renderizado siguen pendientes.
+- Un despliegue sin HTTPS/proxy correcto seguiría teniendo riesgos de transporte aunque CSRF esté activo.
+- `app.py` sigue siendo monolítico y la integración debe ser cuidadosa para no cambiar respuestas existentes.
+
+### Alternativas descartadas
+
+- Activar CSRF directamente en esta fase: descartado para no tocar endpoints reales ni frontend.
+- Proteger todos los GET: descartado porque rompe semántica HTTP y la regla de esta fase.
+- Exigir CSRF en `/api/public/noticias`: descartado porque es lectura pública y rompería la web pública/Firebase.
+- Crear una dependencia externa para CSRF: descartado porque los helpers necesarios caben en librería estándar.
+- Usar solo `SameSite=Lax` como defensa final: descartado porque reduce riesgo, pero no sustituye un token CSRF en endpoints mutantes autenticados.
