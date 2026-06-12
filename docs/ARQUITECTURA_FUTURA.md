@@ -1786,3 +1786,26 @@ Fuera de esta fase:
 - no se cambia SQLite;
 - no se cambia `ruta_carpeta`;
 - no se cambian endpoints ni respuestas JSON.
+
+## Fase 2U — Renderer Markdown seguro aislado
+
+La Fase 2U introduce una implementacion aislada del contrato `NewsRenderer`.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/safe_markdown.py`;
+- se implementa `SafeMarkdownRenderer`;
+- se soportan titulos, parrafos, listas, negrita, cursiva y enlaces `http/https`;
+- se escapa HTML crudo;
+- se eliminan scripts, estilos, iframes, eventos inline y enlaces no seguros;
+- se anaden tests hostiles para `script`, `onclick`, `javascript:` e imagenes Markdown.
+
+Fuera de esta fase:
+
+- no se cambia SQLite;
+- no se cambia `content`;
+- no se cambia `api_public_news()`;
+- no se cambia `api_create_news()`;
+- no se cambia `api_update_news()`;
+- no se cambia `public.js`;
+- no se cambia Firebase.

@@ -593,3 +593,19 @@ Crear `webapp/infonalia_webapp/local_storage.py` con `LocalStorageBackend`. Acep
 - Hay una base local para conectar descargas en una fase posterior.
 - No se implementa Dropbox ni se cambia `api_download_licitacion()`.
 - No se cambia SQLite ni `ruta_carpeta`.
+
+## ADR-027 — Implementar renderer Markdown seguro aislado
+
+### Contexto
+
+El contrato `NewsRenderer` existia, pero no habia implementacion. Conectar Markdown directamente a la UI o a SQLite seria arriesgado sin una capa que escape HTML crudo y filtre enlaces.
+
+### Decisión
+
+Crear `webapp/infonalia_webapp/safe_markdown.py` con `SafeMarkdownRenderer`. Es un renderer limitado: soporta titulos, parrafos, listas, negrita, cursiva y enlaces `http/https`; no permite HTML libre, scripts, iframes, eventos inline ni enlaces `javascript:`.
+
+### Consecuencias
+
+- Existe una base probada para noticias Markdown seguro.
+- No se cambia todavia la tabla `noticias`, el frontend ni las respuestas JSON actuales.
+- No se anaden dependencias externas.
