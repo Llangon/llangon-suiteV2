@@ -28,6 +28,29 @@ from urllib import request as urlrequest
 from urllib.parse import parse_qs, unquote, urlparse
 
 try:
+    from .web_security import (
+        DEFAULT_LOGIN_MAX_ATTEMPTS,
+        DEFAULT_LOGIN_WINDOW_SECONDS,
+        LoginRateLimiter,
+        build_clear_cookie,
+        build_security_headers,
+        build_session_cookie,
+        get_client_ip,
+        normalize_login_key,
+    )
+except ImportError:
+    from web_security import (
+        DEFAULT_LOGIN_MAX_ATTEMPTS,
+        DEFAULT_LOGIN_WINDOW_SECONDS,
+        LoginRateLimiter,
+        build_clear_cookie,
+        build_security_headers,
+        build_session_cookie,
+        get_client_ip,
+        normalize_login_key,
+    )
+
+try:
     from .download_safety import (
         MAX_CAPTURED_OUTPUT_CHARS,
         MAX_DOWNLOAD_FILE_COUNT,
@@ -146,8 +169,16 @@ SMTP_PASSWORD = os.environ.get("INFONALIA_SMTP_PASSWORD", "")
 SMTP_FROM = os.environ.get("INFONALIA_SMTP_FROM", SMTP_USER or ADMIN_EMAIL or REVIEWER_EMAIL)
 SMTP_USE_SSL = os.environ.get("INFONALIA_SMTP_SSL", "0") == "1"
 SMTP_USE_TLS = os.environ.get("INFONALIA_SMTP_TLS", "1") != "0"
+COOKIE_SECURE = os.environ.get("INFONALIA_COOKIE_SECURE", "0") == "1"
 SESSION_COOKIE = "infonalia_session"
 SESSION_MAX_AGE_SECONDS = 60 * 60 * 10
+LOGIN_RATE_LIMITER = LoginRateLimiter(
+    max_attempts=int(os.environ.get("INFONALIA_LOGIN_MAX_ATTEMPTS", str(DEFAULT_LOGIN_MAX_ATTEMPTS)) or DEFAULT_LOGIN_MAX_ATTEMPTS),
+    window_seconds=int(
+        os.environ.get("INFONALIA_LOGIN_WINDOW_SECONDS", str(DEFAULT_LOGIN_WINDOW_SECONDS))
+        or DEFAULT_LOGIN_WINDOW_SECONDS
+    ),
+)
 
 
 ESTADOS_ORDEN = [
@@ -2392,7 +2423,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.redirect("/login", clear_cookie=True)
             return
         if path.startswith("/static/"):
-            self.send_file(STATIC_ROOT / unquote(path.removeprefix("/static/")))
+            self.send_file(STATIC_ROOT / unquote(path.removeprefix("/static/")), is_private=False)
             return
         if path == "/api/public/noticias":
             self.api_public_news()
@@ -2596,14 +2627,21 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             username = str(data.get("username", ""))
             password = str(data.get("password", ""))
 
+        login_key = normalize_login_key(get_client_ip(self), username)
+        if LOGIN_RATE_LIMITER.is_limited(login_key):
+            self.redirect("/login?error=rate")
+            return
+
         user = get_user_record(username, include_password=True)
         if user and user.get("active") and verify_password(user.get("password_hash"), password):
             if maintenance_mode_enabled() and user.get("role") != "admin":
                 self.redirect("/login?error=maintenance")
                 return
+            LOGIN_RATE_LIMITER.clear(login_key)
             token = make_token(username, str(user["role"]))
             self.redirect("/app", cookie=token)
         else:
+            LOGIN_RATE_LIMITER.record_failure(login_key)
             self.redirect("/login?error=1")
 
     def api_me(self) -> None:
@@ -3870,12 +3908,13 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         private_url = clean_text(os.environ.get("NEXT_PUBLIC_PRIVATE_APP_URL")) or "/login"
         body = path.read_text(encoding="utf-8").replace("__PRIVATE_APP_URL__", html.escape(private_url)).encode("utf-8")
         self.send_response(HTTPStatus.OK)
+        self.send_security_headers(is_private=False)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
-    def send_file(self, path: Path) -> None:
+    def send_file(self, path: Path, is_private: bool = True) -> None:
         resolved = path.resolve()
         if not str(resolved).startswith(str(STATIC_ROOT.resolve())):
             self.send_error(HTTPStatus.FORBIDDEN, "Acceso no permitido")
@@ -3887,6 +3926,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         content_type, _ = mimetypes.guess_type(str(resolved))
         body = resolved.read_bytes()
         self.send_response(HTTPStatus.OK)
+        self.send_security_headers(is_private=is_private)
         self.send_header("Content-Type", content_type or "application/octet-stream")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -3895,23 +3935,34 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
     def send_json(self, payload: object, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
+        self.send_security_headers(is_private=True)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
+    def send_security_headers(self, is_private: bool = True) -> None:
+        for name, value in build_security_headers(is_private=is_private).items():
+            self.send_header(name, value)
+
     def redirect(self, location: str, cookie: str | None = None, clear_cookie: bool = False) -> None:
         self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_security_headers(is_private=True)
         self.send_header("Location", location)
         if cookie:
             self.send_header(
                 "Set-Cookie",
-                f"{SESSION_COOKIE}={cookie}; HttpOnly; SameSite=Lax; Path=/; Max-Age={SESSION_MAX_AGE_SECONDS}",
+                build_session_cookie(
+                    SESSION_COOKIE,
+                    cookie,
+                    max_age=SESSION_MAX_AGE_SECONDS,
+                    secure=COOKIE_SECURE,
+                ),
             )
         if clear_cookie:
             self.send_header(
                 "Set-Cookie",
-                f"{SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
+                build_clear_cookie(SESSION_COOKIE, secure=COOKIE_SECURE),
             )
         self.end_headers()
 

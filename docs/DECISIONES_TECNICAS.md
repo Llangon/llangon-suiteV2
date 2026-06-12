@@ -218,3 +218,44 @@ Esta fase añade:
 - Implementar fuentes reales ya: descartado porque primero hace falta estabilizar el contrato.
 - Crear una capa de almacenamiento real ya: descartado porque Dropbox y jobs todavía no deben ejecutarse.
 - Mantener solo documentación sin código: descartado en esta fase porque ya se necesita una base testeable mínima.
+
+## ADR-008 — Endurecimiento web incremental antes de exponer la app
+
+### Contexto
+
+La app privada sigue pensada para uso local o LAN controlada. Aun así, antes de cualquier despliegue más amplio conviene reducir riesgos básicos: cabeceras ausentes, cookies construidas manualmente y falta de limitación de intentos de login.
+
+No existe todavía una revisión completa de seguridad web, no hay CSRF y no se ha decidido una estrategia final de HTTPS/proxy.
+
+### Decisión
+
+Aplicar endurecimiento incremental y conservador:
+
+- cabeceras de seguridad básicas en respuestas comunes;
+- construcción centralizada de cookies de sesión;
+- `Secure` configurable para no romper HTTP local;
+- rate limiting simple en memoria para login fallido;
+- tests puros y funcionales mínimos para evitar regresiones.
+
+No se implementa CSRF ni CSP estricta en esta fase.
+
+### Consecuencias
+
+- La app reduce riesgos básicos sin cambiar URLs ni flujos normales.
+- El login correcto, logout y sesiones deben seguir funcionando igual.
+- El rate limiting protege frente a intentos repetidos simples en entorno local/LAN.
+- La configuración sigue siendo compatible con HTTP local.
+
+### Riesgos
+
+- El rate limiting en memoria se pierde al reiniciar la app y no sirve para varios procesos.
+- Sin HTTPS, la cookie no debe marcarse `Secure` en local, pero eso no protege transporte.
+- Sin CSRF, las acciones autenticadas siguen necesitando una fase posterior de protección.
+- Una CSP estricta podría romper la interfaz si se aplica sin auditoría.
+
+### Alternativas descartadas
+
+- Implementar CSRF ahora: descartado para mantener la fase pequeña y no tocar formularios/frontend.
+- Activar `Secure` siempre: descartado porque rompería login en HTTP local.
+- Añadir Redis u otro rate limiter distribuido: descartado por complejidad y porque la app sigue siendo local/LAN.
+- Aplicar CSP estricta ahora: descartado hasta revisar scripts y estilos inline.

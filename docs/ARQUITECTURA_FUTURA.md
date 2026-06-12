@@ -910,3 +910,40 @@ Pendiente:
 - no hay manifest completo de ficheros;
 - no hay `DownloadJob` persistente;
 - los límites de tamaño y número de ficheros siguen comprobándose después de que el proceso termine.
+
+## Fase 2A — Seguridad web básica
+
+La Fase 2A añade endurecimiento web básico para uso local/LAN controlado. No significa que la aplicación quede lista para Internet.
+
+Cabeceras añadidas:
+
+- `X-Content-Type-Options: nosniff`;
+- `X-Frame-Options: DENY`;
+- `Referrer-Policy: same-origin`;
+- `Cache-Control: no-store` en respuestas privadas;
+- `Permissions-Policy` conservadora para cámara, micrófono y geolocalización.
+
+Las cabeceras se aplican desde los métodos comunes de respuesta del handler. Los assets estáticos reciben cabeceras de seguridad básicas, pero no `Cache-Control: no-store`, para no degradar innecesariamente CSS, JS o imágenes.
+
+Cookies:
+
+- la cookie de sesión mantiene el nombre `infonalia_session`;
+- se centraliza su construcción;
+- incluye `HttpOnly`, `SameSite=Lax` y `Path=/`;
+- `Secure` queda configurable mediante `INFONALIA_COOKIE_SECURE=1`, pero por defecto permanece desactivado para no romper login en HTTP local.
+
+Rate limiting de login:
+
+- se añade limitación en memoria por IP y usuario normalizado;
+- valores por defecto: 5 intentos fallidos durante 5 minutos;
+- se puede ajustar con `INFONALIA_LOGIN_MAX_ATTEMPTS` e `INFONALIA_LOGIN_WINDOW_SECONDS`;
+- al superar el límite se redirige a `/login?error=rate`;
+- un login correcto limpia los intentos fallidos de esa combinación IP/usuario.
+
+Pendiente:
+
+- CSRF queda para Fase 2B;
+- HTTPS/proxy queda pendiente para despliegue real;
+- CSP estricta queda pendiente hasta revisar scripts y estilos inline;
+- el rate limiting en memoria no es distribuido;
+- esto no sustituye una revisión de seguridad completa antes de exposición pública.
