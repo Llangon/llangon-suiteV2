@@ -337,3 +337,19 @@ Mantener una puerta de control versionada en `docs/CHECKPOINTS_PELIGROSOS.md` y 
 - Los comandos minimos de verificacion quedan visibles.
 - Los tests fallaran si se elimina la cobertura documental basica.
 - No sustituye el analisis tecnico de cada fase concreta.
+
+## ADR-011 — Precheck antes de StorageBackend
+
+### Contexto
+
+El flujo de descarga actual mezcla seleccion de destino, escritura de `HTTP.url`, ejecucion de descargadores y actualizacion de `ruta_carpeta`. Antes de introducir `StorageBackend`, conviene inventariar ese flujo y fijar invariantes.
+
+### Decisión
+
+Crear `docs/PRECHECK_STORAGEBACKEND.md` y cubrirlo con tests documentales. El precheck no implementa almacenamiento nuevo; solo deja visible que piezas deben preservarse y que riesgos deben resolverse antes de LocalStorage, Dropbox o DownloadJob.
+
+### Consecuencias
+
+- La futura fase StorageBackend parte de un mapa verificable.
+- Se reduce el riesgo de romper `ruta_carpeta` o descargas actuales.
+- Dropbox real sigue fuera hasta que exista una transicion local probada.

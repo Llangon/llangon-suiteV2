@@ -39,3 +39,36 @@ def test_dangerous_checkpoint_doc_requires_verification_and_local_commit() -> No
     assert "No hacer push" in text
     assert "Crear commit local" in text
     assert "no usar datos reales" in text.lower()
+
+
+def test_storagebackend_precheck_documents_current_download_flow() -> None:
+    text = (DOCS_ROOT / "PRECHECK_STORAGEBACKEND.md").read_text(encoding="utf-8")
+
+    for item in (
+        "api_download_licitacion()",
+        "resolve_destination_folder()",
+        "write_http_url()",
+        "validate_resolved_destination()",
+        "validate_download_folder_limits()",
+        "subprocess.run()",
+        "DOWNLOAD_ROOT",
+        "LAUNCHER_PATH",
+        "MAX_DOWNLOAD_RUNTIME_SECONDS",
+        "ruta_carpeta",
+        "HTTP.url",
+    ):
+        assert item in text
+
+
+def test_storagebackend_precheck_keeps_implementation_out_of_scope() -> None:
+    text = (DOCS_ROOT / "PRECHECK_STORAGEBACKEND.md").read_text(encoding="utf-8")
+
+    for item in (
+        "No se implementa `StorageBackend`",
+        "No se implementa Dropbox",
+        "No se crea `DownloadJob`",
+        "No se cambia SQLite",
+        "No se toca `api_download_licitacion()`",
+        "No se ejecutan descargadores reales",
+    ):
+        assert item in text

@@ -1402,3 +1402,26 @@ Fuera de esta fase:
 - no se implementa StorageBackend;
 - no se implementan noticias Markdown;
 - no se refactoriza `app.py`.
+
+## Fase 2E — Precheck StorageBackend
+
+La Fase 2E prepara el terreno para un futuro StorageBackend sin implementarlo.
+
+Cambios aplicados:
+
+- se crea `docs/PRECHECK_STORAGEBACKEND.md`;
+- se inventaria el flujo actual de `POST /api/licitaciones/{id}/descargar`;
+- se listan funciones, constantes y scripts implicados;
+- se documentan invariantes que no deben romperse;
+- se enumeran riesgos actuales;
+- se deja una estrategia recomendada antes de implementar LocalStorage o Dropbox;
+- se anade test documental para asegurar que el precheck cubre las piezas clave.
+
+Fuera de esta fase:
+
+- no se implementa `StorageBackend`;
+- no se implementa Dropbox;
+- no se crea `DownloadJob`;
+- no se cambia SQLite;
+- no se toca `api_download_licitacion()`;
+- no se ejecutan descargadores reales.
