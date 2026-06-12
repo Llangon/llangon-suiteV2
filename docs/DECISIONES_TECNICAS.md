@@ -776,3 +776,20 @@ Mover la logica parametrizable a `webapp/infonalia_webapp/storage_paths.py` y ma
 - `app.py` conserva nombres compatibles para los flujos actuales.
 - No se cambia Dropbox real ni se anade backend nuevo.
 - No se cambian endpoints ni respuestas JSON.
+
+## ADR-038 — Extraer criptografía de sesión y contraseñas
+
+### Contexto
+
+`app.py` mantenia firma de tokens de sesion y hashing PBKDF2 de contrasenas junto al enrutado y SQLite. Es una pieza sensible pero aislable con tests propios.
+
+### Decisión
+
+Mover la firma/verificacion de tokens y PBKDF2 a `webapp/infonalia_webapp/auth_crypto.py`. `app.py` conserva envoltorios para usar la clave local y mantener nombres compatibles.
+
+### Consecuencias
+
+- La criptografia queda testeada sin importar `app.py`.
+- Se mantiene el formato de token y hash existente.
+- No se cambian cookies, sesiones, endpoints ni respuestas.
+- No se cambia SQLite ni frontend.

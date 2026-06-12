@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import base64
 import hashlib
-import hmac
 import html
 import json
 import mimetypes
@@ -23,6 +21,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib import request as urlrequest
 from urllib.parse import parse_qs, unquote, urlparse
+
+try:
+    from .auth_crypto import (
+        encode_token_payload as encode_signed_token_payload,
+        hash_password,
+        make_session_token,
+        read_session_token,
+        verify_password,
+    )
+except ImportError:
+    from auth_crypto import (
+        encode_token_payload as encode_signed_token_payload,
+        hash_password,
+        make_session_token,
+        read_session_token,
+        verify_password,
+    )
 
 try:
     from .audit_records import (
@@ -421,10 +436,7 @@ def get_secret() -> bytes:
 
 
 def encode_token_payload(payload: dict) -> str:
-    raw_payload = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    encoded_payload = base64.urlsafe_b64encode(raw_payload).decode("ascii").rstrip("=")
-    signature = hmac.new(get_secret(), encoded_payload.encode("ascii"), hashlib.sha256).hexdigest()
-    return f"{encoded_payload}.{signature}"
+    return encode_signed_token_payload(payload, get_secret())
 
 
 def make_token(
@@ -433,34 +445,18 @@ def make_token(
     csrf_token: str | None = None,
     issued_at: int | None = None,
 ) -> str:
-    payload = {
-        "u": username,
-        "r": role,
-        "iat": int(time.time()) if issued_at is None else int(issued_at),
-        "csrf": csrf_token or generate_csrf_token(),
-    }
-    return encode_token_payload(payload)
+    return make_session_token(
+        username,
+        role,
+        get_secret(),
+        csrf_token=csrf_token,
+        issued_at=issued_at,
+        csrf_token_factory=generate_csrf_token,
+    )
 
 
 def read_token(token: str | None) -> dict | None:
-    if not token or "." not in token:
-        return None
-
-    encoded_payload, signature = token.rsplit(".", 1)
-    expected = hmac.new(get_secret(), encoded_payload.encode("ascii"), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature, expected):
-        return None
-
-    try:
-        padded = encoded_payload + ("=" * (-len(encoded_payload) % 4))
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
-    except Exception:
-        return None
-
-    issued_at = int(payload.get("iat", 0))
-    if issued_at + SESSION_MAX_AGE_SECONDS < int(time.time()):
-        return None
-    return payload
+    return read_session_token(token, get_secret(), SESSION_MAX_AGE_SECONDS)
 
 
 def db() -> sqlite3.Connection:
@@ -610,37 +606,6 @@ def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition:
     columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-
-
-def hash_password(password: str) -> str:
-    salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac(
-        "sha256",
-        clean_text(password).encode("utf-8"),
-        salt.encode("ascii"),
-        120_000,
-    ).hex()
-    return f"pbkdf2_sha256${salt}${digest}"
-
-
-def verify_password(stored: object, password: object) -> bool:
-    stored_text = clean_text(stored)
-    password_text = clean_text(password)
-    if not stored_text:
-        return False
-    if stored_text.startswith("pbkdf2_sha256$"):
-        try:
-            _, salt, digest = stored_text.split("$", 2)
-        except ValueError:
-            return False
-        candidate = hashlib.pbkdf2_hmac(
-            "sha256",
-            password_text.encode("utf-8"),
-            salt.encode("ascii"),
-            120_000,
-        ).hex()
-        return hmac.compare_digest(candidate, digest)
-    return hmac.compare_digest(stored_text, password_text)
 
 
 def seed_users_and_settings(conn: sqlite3.Connection) -> None:

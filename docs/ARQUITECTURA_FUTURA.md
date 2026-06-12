@@ -2015,3 +2015,23 @@ Fuera de esta fase:
 - no se implementa Dropbox API;
 - no se cambia SQLite;
 - no se cambia frontend ni Firebase.
+
+## Fase 3F — Extraccion de criptografía de sesión
+
+La Fase 3F separa firma de tokens y hashing de contrasenas de `app.py`.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/auth_crypto.py`;
+- se mueve firma y lectura de tokens firmados;
+- se mueve hashing/verificacion PBKDF2;
+- `app.py` mantiene envoltorios para `get_secret()`, `make_token()`, `read_token()` y compatibilidad;
+- se anaden tests directos de token, expiracion, tampering y contrasenas.
+
+Fuera de esta fase:
+
+- no se cambian cookies;
+- no se cambian sesiones visibles;
+- no se cambian endpoints ni respuestas JSON;
+- no se cambia SQLite;
+- no se cambia frontend ni Firebase.
