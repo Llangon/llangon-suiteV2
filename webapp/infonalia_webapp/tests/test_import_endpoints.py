@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import io
 import os
+import sys
 import tempfile
 from contextlib import contextmanager
 from http import HTTPStatus
@@ -210,6 +211,54 @@ def test_csv_import_route_accepts_small_valid_csv_with_csrf() -> None:
         assert status == HTTPStatus.OK
         assert payload["importadas"] == 1
         assert payload["dias"] == 1
+
+
+def test_msg_import_content_records_import_history_with_fake_msg(monkeypatch) -> None:
+    app = load_app_module()
+
+    class FakeMessage:
+        date = "12/06/2026"
+        body = """
+        Ref. Infonalia: 123
+        Perfil del contratante: https://example.test/perfil
+        Expediente: MSG-001
+        Organismo: Organismo MSG
+        Resumen del objeto: Servicio MSG ficticio
+        Provincia: Madrid
+        Plazo presentacion: 30/06/2026
+        Presupuesto: 1234,56
+        """
+
+        def __init__(self, _path: str) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setitem(sys.modules, "extract_msg", type("FakeExtractMsg", (), {"Message": FakeMessage}))
+
+    with temporary_app_database(app):
+        payload = app.import_msg_content(b"msg ficticio", enrich_pdf=False, triggered_by="admin_test")
+
+        assert payload["importadas"] == 1
+        assert payload["actualizadas"] == 0
+        assert payload["omitidas"] == 0
+        assert payload["fecha_infonalia"] == "2026-06-12"
+
+        runs = get_import_runs(app)
+        assert len(runs) == 1
+        assert runs[0]["source_name"] == "email_infonalia"
+        assert runs[0]["source_type"] == "email_infonalia"
+        assert runs[0]["status"] == "completed"
+        assert runs[0]["triggered_by"] == "admin_test"
+        assert runs[0]["new_count"] == 1
+
+        results = get_import_results(app, runs[0]["id"])
+        assert len(results) == 1
+        assert results[0]["source_name"] == "email_infonalia"
+        assert results[0]["external_id"] == "MSG-001"
+        assert results[0]["status"] == "inserted"
+        assert "Servicio MSG ficticio" in results[0]["raw_payload"]
 
 
 def test_csv_import_route_rejects_missing_csrf_before_importing() -> None:
