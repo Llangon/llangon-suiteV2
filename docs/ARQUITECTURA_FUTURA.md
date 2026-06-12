@@ -1375,3 +1375,30 @@ Riesgos pendientes:
 - `innerHTML` sigue presente y debe tratarse como deuda técnica controlada;
 - los tests estáticos no sustituyen una auditoría manual completa;
 - cualquier nueva funcionalidad que acepte HTML enriquecido debe esperar a la fase de Markdown seguro con sanitizador.
+
+## Fase 2D — Puerta previa a checkpoints peligrosos
+
+La Fase 2D documenta y testea una puerta comun antes de entrar en cambios de alto riesgo.
+
+Motivo:
+
+- las siguientes fases probables pueden tocar SQLite, migraciones, CSRF global, StorageBackend, noticias Markdown o refactor de `app.py`;
+- esas areas pueden romper datos, seguridad, endpoints o flujos operativos;
+- conviene tener una checklist versionada antes de empezar cualquiera de ellas.
+
+Cambios aplicados:
+
+- se crea `docs/CHECKPOINTS_PELIGROSOS.md`;
+- se enumeran las seis areas de alto riesgo;
+- se fijan checks minimos antes de commit;
+- se documenta que no se debe hacer push desde el checkpoint;
+- se anade un test que garantiza que la puerta conserva temas y comandos minimos.
+
+Fuera de esta fase:
+
+- no se toca SQLite;
+- no se crean migraciones;
+- no se cambia CSRF;
+- no se implementa StorageBackend;
+- no se implementan noticias Markdown;
+- no se refactoriza `app.py`.

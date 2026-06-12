@@ -320,3 +320,20 @@ Adoptar CSRF de forma incremental:
 - Exigir CSRF en `/api/public/noticias`: descartado porque es lectura pública y rompería la web pública/Firebase.
 - Crear una dependencia externa para CSRF: descartado porque los helpers necesarios caben en librería estándar.
 - Usar solo `SameSite=Lax` como defensa final: descartado porque reduce riesgo, pero no sustituye un token CSRF en endpoints mutantes autenticados.
+
+## ADR-010 — Puerta de control para checkpoints peligrosos
+
+### Contexto
+
+Las siguientes evoluciones probables incluyen SQLite, migraciones, CSRF global, StorageBackend, noticias Markdown y refactor de `app.py`. Todas pueden afectar datos, seguridad o contratos de la app.
+
+### Decisión
+
+Mantener una puerta de control versionada en `docs/CHECKPOINTS_PELIGROSOS.md` y cubrirla con tests. Antes de cualquier checkpoint peligroso se revisan riesgos, se ejecutan checks completos y se crea commit local si todo pasa. No se hace push desde el checkpoint.
+
+### Consecuencias
+
+- Las fases de alto riesgo tienen una checklist comun.
+- Los comandos minimos de verificacion quedan visibles.
+- Los tests fallaran si se elimina la cobertura documental basica.
+- No sustituye el analisis tecnico de cada fase concreta.
