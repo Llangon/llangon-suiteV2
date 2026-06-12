@@ -1335,3 +1335,43 @@ Riesgos pendientes:
 - `app.js` sigue usando plantillas HTML amplias;
 - algunos valores dinámicos todavía se renderizan como texto escapado, no como nodos DOM;
 - la lista de estados válidos sigue siendo una regla de negocio compartida con backend.
+
+## Fase 2C.7 — Cierre de auditoría XSS incremental privada
+
+La Fase 2C.7 no elimina todavía `innerHTML`, pero cierra la primera ronda de endurecimiento XSS incremental del panel privado con una guarda automática.
+
+Cobertura acumulada:
+
+- Fase 2C.1: CSP privada estricta sin `unsafe-inline` ni `unsafe-eval`;
+- Fase 2C.4: enlaces privados filtrados por `normalizeUrl()`;
+- Fase 2C.5: escape explícito de ids y fechas en atributos `data-*`;
+- Fase 2C.6: tokens CSS dinámicos centralizados y limitados;
+- Fase 2C.7: test estático contra patrones HTML peligrosos obvios en `app.js`.
+
+Guarda añadida:
+
+- `app.js` no debe usar `insertAdjacentHTML`;
+- `app.js` no debe usar `outerHTML`;
+- `app.js` no debe usar `document.write`;
+- `app.js` no debe contener literales `javascript:`;
+- `app.js` no debe incluir plantillas `<script>` ni `<style>`;
+- `app.js` no debe incluir atributos inline tipo `onclick=`.
+
+Ámbito:
+
+- panel privado actual;
+- renderizado JavaScript existente;
+- prevención de regresiones obvias mientras se mantenga `innerHTML`.
+
+Fuera de esta fase:
+
+- refactor de `app.js` a creación DOM segura;
+- eliminación completa de `innerHTML`;
+- sanitización de Markdown;
+- validación semántica de todos los payloads en frontend.
+
+Riesgos pendientes:
+
+- `innerHTML` sigue presente y debe tratarse como deuda técnica controlada;
+- los tests estáticos no sustituyen una auditoría manual completa;
+- cualquier nueva funcionalidad que acepte HTML enriquecido debe esperar a la fase de Markdown seguro con sanitizador.

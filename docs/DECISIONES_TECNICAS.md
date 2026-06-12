@@ -274,6 +274,8 @@ La Fase 2C.5 añade escape explícito a los atributos `data-*` privados generado
 
 La Fase 2C.6 centraliza la conversión de estados privados a tokens CSS seguros para que las clases dinámicas no dependan de caracteres arbitrarios de datos.
 
+La Fase 2C.7 cierra la primera ronda de auditoría XSS privada con una guarda estática contra patrones HTML peligrosos obvios mientras se planifica una futura reducción de `innerHTML`.
+
 ## ADR-009 — CSRF incremental para endpoints mutantes
 
 ### Contexto

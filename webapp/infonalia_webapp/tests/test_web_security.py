@@ -141,6 +141,19 @@ def test_private_app_sanitizes_dynamic_css_class_tokens() -> None:
     assert ".replaceAll(\" \", \"-\")" not in script
 
 
+def test_private_app_has_no_obvious_html_injection_patterns() -> None:
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    lowered = script.lower()
+
+    assert "insertadjacenthtml" not in lowered
+    assert "outerhtml" not in lowered
+    assert "document.write" not in lowered
+    assert "javascript:" not in lowered
+    assert not re.search(r"<script\b", script, re.IGNORECASE)
+    assert not re.search(r"<style\b", script, re.IGNORECASE)
+    assert not re.search(r"<[^>]+\son[a-z]+\s*=", script, re.IGNORECASE)
+
+
 def test_session_cookie_contains_expected_attributes() -> None:
     cookie = build_session_cookie("session", "token", max_age=60, secure=False)
 
