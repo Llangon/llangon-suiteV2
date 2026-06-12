@@ -1006,3 +1006,57 @@ Se protegerán todos los endpoints autenticados con `POST`, `PUT`, `PATCH` o `DE
 - La integración frontend/backend debe hacerse de forma incremental para no romper importación, descargas, noticias ni Firebase.
 - Si hay XSS, el token expuesto al frontend también quedaría comprometido; por eso CSP estricta sigue pendiente.
 - HTTPS/proxy sigue pendiente para cualquier exposición fuera de entorno local/LAN.
+
+## Fase 2B.2 — CSRF en importaciones y descarga
+
+La Fase 2B.2 activa CSRF de forma mínima y limitada. No protege todavía todos los endpoints mutantes; solo cubre los flujos críticos que ya tenían tests funcionales recientes.
+
+Endpoints protegidos:
+
+- `POST /api/import/csv`;
+- `POST /api/import/msg`;
+- `POST /api/licitaciones/{id}/descargar`.
+
+Endpoints aún no protegidos:
+
+- creación, edición y borrado manual de licitaciones;
+- cambios de estado y acciones sobre días Infonalia;
+- usuarios y configuración;
+- noticias;
+- vista previa IA y envío de vista previa por email;
+- `GET /logout`, que sigue pendiente de revisión porque es GET.
+
+Sesión y token:
+
+- la app mantiene la cookie `infonalia_session`;
+- la sesión sigue siendo una cookie firmada, no una sesión server-side nueva;
+- el token CSRF se guarda dentro del payload firmado de la cookie;
+- el login genera un token nuevo;
+- las sesiones antiguas sin token reciben uno perezosamente y se refrescan con `Set-Cookie`;
+- el token no se guarda en SQLite.
+
+Entrega al frontend:
+
+- `/api/me` devuelve `csrf_token` solo para usuario autenticado;
+- `app.js` lo guarda en memoria dentro de `appState.csrfToken`;
+- no se usa `localStorage`;
+- no se expone token en páginas públicas ni Firebase.
+
+Envío del token:
+
+- el frontend añade `X-CSRF-Token` solo en importación CSV, importación MSG y descarga de licitación;
+- no se modifica la UX;
+- no se cambian URLs;
+- no se cambian nombres de campos `FormData`.
+
+Respuesta ante fallo:
+
+- si falta el token o no coincide, el backend devuelve `403 Forbidden`;
+- con token válido, los flujos mantienen su comportamiento previo.
+
+Riesgos pendientes:
+
+- el resto de endpoints mutantes sigue sin CSRF;
+- logout sigue siendo GET;
+- HTTPS/proxy y CSP estricta siguen pendientes;
+- `app.py` sigue siendo monolítico y la extensión de CSRF debe continuar por fases pequeñas.

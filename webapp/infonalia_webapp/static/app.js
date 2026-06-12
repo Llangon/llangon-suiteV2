@@ -1,5 +1,6 @@
 const appState = {
   user: null,
+  csrfToken: "",
   dias: [],
   items: [],
   estados: [],
@@ -264,8 +265,13 @@ async function loadMe() {
   }
   const data = await response.json();
   appState.user = data;
+  appState.csrfToken = data.csrf_token || "";
   Object.assign(estadoLabels, data.labels || {});
   applyRoleUi();
+}
+
+function csrfHeaders() {
+  return appState.csrfToken ? { "X-CSRF-Token": appState.csrfToken } : {};
 }
 
 function setActiveNav(section) {
@@ -1461,7 +1467,10 @@ async function downloadLicitacion(id, button) {
   button.textContent = "Descargando...";
 
   try {
-    const response = await fetch(`/api/licitaciones/${id}/descargar`, { method: "POST" });
+    const response = await fetch(`/api/licitaciones/${id}/descargar`, {
+      method: "POST",
+      headers: csrfHeaders(),
+    });
     const result = await response.json();
     if (!response.ok) {
       alert(result.error || result.salida || "No se pudo completar la descarga.");
@@ -1856,6 +1865,7 @@ importForm.addEventListener("submit", async (event) => {
   try {
     const response = await fetch(endpoint, {
       method: "POST",
+      headers: csrfHeaders(),
       body: formData,
     });
     const result = await response.json();

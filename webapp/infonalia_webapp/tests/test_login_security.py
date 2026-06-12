@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 from contextlib import contextmanager
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from urllib.parse import urlencode
 
 from webapp.infonalia_webapp.tests.test_import_endpoints import (
@@ -56,6 +57,12 @@ def last_header(handler, name: str) -> str:
     return ""
 
 
+def session_cookie_value(handler) -> str:
+    cookie = SimpleCookie(last_header(handler, "Set-Cookie"))
+    morsel = cookie.get("infonalia_session")
+    return morsel.value if morsel else ""
+
+
 def test_repeated_failed_login_is_rate_limited_with_temp_db() -> None:
     app = load_app_module()
     existed_before = PRODUCTIVE_DB_PATH.exists()
@@ -98,4 +105,31 @@ def test_successful_login_clears_failed_attempts_and_sets_cookie() -> None:
         assert "HttpOnly" in last_header(success, "Set-Cookie")
         assert "SameSite=Lax" in last_header(success, "Set-Cookie")
         assert "Path=/" in last_header(success, "Set-Cookie")
+        payload = app.read_token(session_cookie_value(success))
+        assert payload
+        assert payload["csrf"]
         assert limiter.is_limited(login_key) is False
+
+
+def test_current_user_lazily_adds_csrf_to_old_signed_session() -> None:
+    app = load_app_module()
+
+    with temporary_app_database(app):
+        old_token = app.encode_token_payload(
+            {
+                "u": "admin_test",
+                "r": "admin",
+                "iat": int(app.time.time()),
+            }
+        )
+        handler = object.__new__(app.InfonaliaHandler)
+        handler.headers = {"Cookie": f"{app.SESSION_COOKIE}={old_token}"}
+
+        user = handler.current_user()
+
+        assert user
+        assert user["csrf_token"]
+        refreshed_cookie = getattr(handler, "_pending_session_cookie", "")
+        assert refreshed_cookie
+        refreshed_payload = app.read_token(refreshed_cookie)
+        assert refreshed_payload["csrf"] == user["csrf_token"]

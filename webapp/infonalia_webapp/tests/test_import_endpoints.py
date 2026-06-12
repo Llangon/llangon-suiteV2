@@ -13,6 +13,7 @@ from types import ModuleType
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 APP_MODULE_NAME = "webapp.infonalia_webapp.app"
 PRODUCTIVE_DB_PATH = REPOSITORY_ROOT / "webapp" / "infonalia_webapp" / "data" / "infonalia.db"
+VALID_CSRF_TOKEN = "csrf-test-token"
 
 
 def load_app_module() -> ModuleType:
@@ -64,14 +65,31 @@ def make_multipart_body(field_name: str, filename: str, content: bytes) -> tuple
     return body, f"multipart/form-data; boundary={boundary}"
 
 
-def make_handler(app: ModuleType, body: bytes, content_type: str, content_length: int | None = None):
+def make_handler(
+    app: ModuleType,
+    body: bytes,
+    content_type: str,
+    content_length: int | None = None,
+    *,
+    path: str = "/api/import/csv",
+    csrf_token: str | None = None,
+):
     handler = object.__new__(app.InfonaliaHandler)
     handler.headers = {
         "Content-Type": content_type,
         "Content-Length": str(len(body) if content_length is None else content_length),
     }
+    if csrf_token is not None:
+        handler.headers[app.CSRF_HEADER] = csrf_token
+    handler.path = path
     handler.rfile = io.BytesIO(body)
     handler.responses = []
+    handler.current_user = lambda: {
+        "username": "admin_test",
+        "role": "admin",
+        "display_name": "Admin Test",
+        "csrf_token": VALID_CSRF_TOKEN,
+    }
     handler.require_admin = lambda: True
 
     def send_json(payload: object, status: HTTPStatus = HTTPStatus.OK) -> None:
@@ -136,6 +154,51 @@ def test_csv_import_endpoint_accepts_small_valid_csv_with_temp_db() -> None:
         assert PRODUCTIVE_DB_PATH.stat().st_mtime_ns == stat_before
 
 
+def test_csv_import_route_accepts_small_valid_csv_with_csrf() -> None:
+    app = load_app_module()
+    body, content_type = make_multipart_body("csv_file", "licitaciones.csv", valid_csv_bytes())
+
+    with temporary_app_database(app):
+        handler = make_handler(
+            app,
+            body,
+            content_type,
+            path="/api/import/csv",
+            csrf_token=VALID_CSRF_TOKEN,
+        )
+
+        handler.do_POST()
+
+        status, payload = handler.responses[-1]
+        assert status == HTTPStatus.OK
+        assert payload["importadas"] == 1
+        assert payload["dias"] == 1
+
+
+def test_csv_import_route_rejects_missing_csrf_before_importing() -> None:
+    app = load_app_module()
+    body, content_type = make_multipart_body("csv_file", "licitaciones.csv", valid_csv_bytes())
+    handler = make_handler(app, body, content_type, path="/api/import/csv")
+
+    handler.do_POST()
+
+    status, payload = handler.responses[-1]
+    assert status == HTTPStatus.FORBIDDEN
+    assert "CSRF" in payload["error"]
+
+
+def test_csv_import_route_rejects_invalid_csrf_before_importing() -> None:
+    app = load_app_module()
+    body, content_type = make_multipart_body("csv_file", "licitaciones.csv", valid_csv_bytes())
+    handler = make_handler(app, body, content_type, path="/api/import/csv", csrf_token="wrong-token")
+
+    handler.do_POST()
+
+    status, payload = handler.responses[-1]
+    assert status == HTTPStatus.FORBIDDEN
+    assert "CSRF" in payload["error"]
+
+
 def test_csv_import_endpoint_rejects_wrong_extension() -> None:
     app = load_app_module()
     body, content_type = make_multipart_body("csv_file", "licitaciones.exe", valid_csv_bytes())
@@ -182,6 +245,48 @@ def test_msg_import_endpoint_rejects_wrong_extension_without_parsing_msg() -> No
     status, payload = handler.responses[-1]
     assert status == HTTPStatus.BAD_REQUEST
     assert "Extension" in payload["error"]
+
+
+def test_msg_import_route_with_valid_csrf_reaches_extension_validation() -> None:
+    app = load_app_module()
+    body, content_type = make_multipart_body("msg_file", "licitaciones.exe", b"msg ficticio")
+    handler = make_handler(
+        app,
+        body,
+        content_type,
+        path="/api/import/msg",
+        csrf_token=VALID_CSRF_TOKEN,
+    )
+
+    handler.do_POST()
+
+    status, payload = handler.responses[-1]
+    assert status == HTTPStatus.BAD_REQUEST
+    assert "Extension" in payload["error"]
+
+
+def test_msg_import_route_rejects_missing_csrf_before_validation() -> None:
+    app = load_app_module()
+    body, content_type = make_multipart_body("msg_file", "licitaciones.exe", b"msg ficticio")
+    handler = make_handler(app, body, content_type, path="/api/import/msg")
+
+    handler.do_POST()
+
+    status, payload = handler.responses[-1]
+    assert status == HTTPStatus.FORBIDDEN
+    assert "CSRF" in payload["error"]
+
+
+def test_msg_import_route_rejects_invalid_csrf_before_validation() -> None:
+    app = load_app_module()
+    body, content_type = make_multipart_body("msg_file", "licitaciones.exe", b"msg ficticio")
+    handler = make_handler(app, body, content_type, path="/api/import/msg", csrf_token="wrong-token")
+
+    handler.do_POST()
+
+    status, payload = handler.responses[-1]
+    assert status == HTTPStatus.FORBIDDEN
+    assert "CSRF" in payload["error"]
 
 
 def test_msg_import_endpoint_rejects_unsafe_filename_without_parsing_msg() -> None:

@@ -28,6 +28,11 @@ from urllib import request as urlrequest
 from urllib.parse import parse_qs, unquote, urlparse
 
 try:
+    from .csrf import generate_csrf_token, validate_csrf_token
+except ImportError:
+    from csrf import generate_csrf_token, validate_csrf_token
+
+try:
     from .web_security import (
         DEFAULT_LOGIN_MAX_ATTEMPTS,
         DEFAULT_LOGIN_WINDOW_SECONDS,
@@ -172,6 +177,7 @@ SMTP_USE_TLS = os.environ.get("INFONALIA_SMTP_TLS", "1") != "0"
 COOKIE_SECURE = os.environ.get("INFONALIA_COOKIE_SECURE", "0") == "1"
 SESSION_COOKIE = "infonalia_session"
 SESSION_MAX_AGE_SECONDS = 60 * 60 * 10
+CSRF_HEADER = "X-CSRF-Token"
 LOGIN_RATE_LIMITER = LoginRateLimiter(
     max_attempts=int(os.environ.get("INFONALIA_LOGIN_MAX_ATTEMPTS", str(DEFAULT_LOGIN_MAX_ATTEMPTS)) or DEFAULT_LOGIN_MAX_ATTEMPTS),
     window_seconds=int(
@@ -337,16 +343,26 @@ def get_secret() -> bytes:
     return SECRET_PATH.read_text(encoding="utf-8").strip().encode("utf-8")
 
 
-def make_token(username: str, role: str) -> str:
-    payload = {
-        "u": username,
-        "r": role,
-        "iat": int(time.time()),
-    }
+def encode_token_payload(payload: dict) -> str:
     raw_payload = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     encoded_payload = base64.urlsafe_b64encode(raw_payload).decode("ascii").rstrip("=")
     signature = hmac.new(get_secret(), encoded_payload.encode("ascii"), hashlib.sha256).hexdigest()
     return f"{encoded_payload}.{signature}"
+
+
+def make_token(
+    username: str,
+    role: str,
+    csrf_token: str | None = None,
+    issued_at: int | None = None,
+) -> str:
+    payload = {
+        "u": username,
+        "r": role,
+        "iat": int(time.time()) if issued_at is None else int(issued_at),
+        "csrf": csrf_token or generate_csrf_token(),
+    }
+    return encode_token_payload(payload)
 
 
 def read_token(token: str | None) -> dict | None:
@@ -2467,6 +2483,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if not self.current_user():
             self.send_json({"error": "No autorizado"}, HTTPStatus.UNAUTHORIZED)
             return
+        if self.csrf_required_for_path("POST", path) and not self.require_csrf_token():
+            return
 
         if path == "/api/licitaciones":
             self.api_create_licitacion()
@@ -2580,18 +2598,52 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND, "No encontrado")
 
     def current_user(self) -> dict | None:
+        if hasattr(self, "_current_user_cache"):
+            return self._current_user_cache
+
         cookie = SimpleCookie(self.headers.get("Cookie"))
         token = cookie.get(SESSION_COOKIE)
         payload = read_token(token.value if token else None)
         if not payload:
+            self._current_user_cache = None
             return None
         username = str(payload.get("u", ""))
         user = get_user_record(username)
         if not user or not user.get("active"):
+            self._current_user_cache = None
             return None
         if maintenance_mode_enabled() and user.get("role") != "admin":
+            self._current_user_cache = None
             return None
+        csrf_token = str(payload.get("csrf") or "")
+        if not csrf_token:
+            csrf_token = generate_csrf_token()
+            self._pending_session_cookie = make_token(
+                username,
+                str(user["role"]),
+                csrf_token=csrf_token,
+                issued_at=int(payload.get("iat", int(time.time()))),
+            )
+        user = dict(user)
+        user["csrf_token"] = csrf_token
+        self._current_user_cache = user
         return user
+
+    def csrf_required_for_path(self, method: str, path: str) -> bool:
+        if method.upper() != "POST":
+            return False
+        if path in {"/api/import/csv", "/api/import/msg"}:
+            return True
+        return path.startswith("/api/licitaciones/") and path.endswith("/descargar")
+
+    def require_csrf_token(self) -> bool:
+        user = self.current_user()
+        expected = str(user.get("csrf_token") or "") if user else None
+        provided = self.headers.get(CSRF_HEADER)
+        if validate_csrf_token(expected, provided):
+            return True
+        self.send_json({"error": "CSRF token invalido"}, HTTPStatus.FORBIDDEN)
+        return False
 
     def is_admin(self) -> bool:
         user = self.current_user()
@@ -2654,6 +2706,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "username": user["username"],
                 "role": user["role"],
                 "display_name": user["display_name"],
+                "csrf_token": user.get("csrf_token", ""),
                 "maintenance_mode": maintenance_mode_enabled(),
                 "labels": ESTADO_LABELS,
                 "nuria_estados": NURIA_ESTADOS,
@@ -3927,6 +3980,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         body = resolved.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_security_headers(is_private=is_private)
+        self.send_pending_session_cookie()
         self.send_header("Content-Type", content_type or "application/octet-stream")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -3936,6 +3990,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_security_headers(is_private=True)
+        self.send_pending_session_cookie()
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -3944,6 +3999,21 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
     def send_security_headers(self, is_private: bool = True) -> None:
         for name, value in build_security_headers(is_private=is_private).items():
             self.send_header(name, value)
+
+    def send_pending_session_cookie(self) -> None:
+        cookie = getattr(self, "_pending_session_cookie", None)
+        if not cookie:
+            return
+        self.send_header(
+            "Set-Cookie",
+            build_session_cookie(
+                SESSION_COOKIE,
+                cookie,
+                max_age=SESSION_MAX_AGE_SECONDS,
+                secure=COOKIE_SECURE,
+            ),
+        )
+        self._pending_session_cookie = None
 
     def redirect(self, location: str, cookie: str | None = None, clear_cookie: bool = False) -> None:
         self.send_response(HTTPStatus.SEE_OTHER)

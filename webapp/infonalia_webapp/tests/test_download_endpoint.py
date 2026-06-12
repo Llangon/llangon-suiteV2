@@ -9,6 +9,7 @@ from types import ModuleType, SimpleNamespace
 
 from webapp.infonalia_webapp.tests.test_import_endpoints import (
     PRODUCTIVE_DB_PATH,
+    VALID_CSRF_TOKEN,
     load_app_module,
 )
 
@@ -40,10 +41,24 @@ def temporary_download_app(app: ModuleType):
             app.find_dropbox_root = old_find_dropbox_root
 
 
-def make_download_handler(app: ModuleType):
+def make_download_handler(
+    app: ModuleType,
+    *,
+    path: str = "/api/licitaciones/1/descargar",
+    csrf_token: str | None = None,
+):
     handler = object.__new__(app.InfonaliaHandler)
     handler.headers = {}
+    if csrf_token is not None:
+        handler.headers[app.CSRF_HEADER] = csrf_token
+    handler.path = path
     handler.responses = []
+    handler.current_user = lambda: {
+        "username": "admin_test",
+        "role": "admin",
+        "display_name": "Admin Test",
+        "csrf_token": VALID_CSRF_TOKEN,
+    }
     handler.require_admin = lambda: True
 
     def send_json(payload: object, status: HTTPStatus = HTTPStatus.OK) -> None:
@@ -155,6 +170,64 @@ def test_download_endpoint_success_updates_ruta_carpeta_with_mocked_subprocess()
     assert PRODUCTIVE_DB_PATH.exists() is existed_before
     if existed_before:
         assert PRODUCTIVE_DB_PATH.stat().st_mtime_ns == stat_before
+
+
+def test_download_route_success_with_valid_csrf_and_mocked_subprocess() -> None:
+    app = load_app_module()
+
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app)
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
+            return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
+
+        handler = make_download_handler(
+            app,
+            path=f"/api/licitaciones/{licitacion_id}/descargar",
+            csrf_token=VALID_CSRF_TOKEN,
+        )
+        with mocked_subprocess_run(app, fake_run):
+            handler.do_POST()
+
+        status, payload = handler.responses[-1]
+        assert status == HTTPStatus.OK
+        assert payload["ok"] is True
+        assert get_ruta_carpeta(app, licitacion_id) == payload["ruta_carpeta"]
+
+
+def test_download_route_rejects_missing_csrf_before_subprocess() -> None:
+    app = load_app_module()
+
+    def fake_run(args, cwd, capture_output, text, timeout):
+        raise AssertionError("subprocess.run must not be called without CSRF")
+
+    handler = make_download_handler(app, path="/api/licitaciones/123/descargar")
+    with mocked_subprocess_run(app, fake_run):
+        handler.do_POST()
+
+    status, payload = handler.responses[-1]
+    assert status == HTTPStatus.FORBIDDEN
+    assert "CSRF" in payload["error"]
+
+
+def test_download_route_rejects_invalid_csrf_before_subprocess() -> None:
+    app = load_app_module()
+
+    def fake_run(args, cwd, capture_output, text, timeout):
+        raise AssertionError("subprocess.run must not be called with invalid CSRF")
+
+    handler = make_download_handler(
+        app,
+        path="/api/licitaciones/123/descargar",
+        csrf_token="wrong-token",
+    )
+    with mocked_subprocess_run(app, fake_run):
+        handler.do_POST()
+
+    status, payload = handler.responses[-1]
+    assert status == HTTPStatus.FORBIDDEN
+    assert "CSRF" in payload["error"]
 
 
 def test_download_endpoint_failure_does_not_update_ruta_carpeta() -> None:
