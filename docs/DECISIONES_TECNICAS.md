@@ -465,3 +465,19 @@ Mover solo los helpers puros de nombres a `webapp/infonalia_webapp/folder_names.
 - Se reduce otra parte del monolito sin cambiar comportamiento.
 - La logica de nombres queda testeada de forma aislada.
 - La resolucion de rutas y StorageBackend quedan fuera de esta fase.
+
+## ADR-019 — Extraer helpers de URL y plataforma desde app.py
+
+### Contexto
+
+`normalize_url()`, `should_update_url()` y `detectar_plataforma()` son helpers puros usados por importaciones, noticias, licitaciones y descargas. No necesitan servidor, SQLite, red, frontend ni filesystem.
+
+### Decisión
+
+Mover esos helpers a `webapp/infonalia_webapp/url_helpers.py` y reimportarlos desde `app.py` para conservar compatibilidad. Esta fase no endurece ni cambia reglas de URL; solo conserva el comportamiento actual en un contrato puro.
+
+### Consecuencias
+
+- Se reduce otra parte del monolito sin cambiar comportamiento.
+- La deteccion de plataformas queda testeada de forma aislada.
+- Cualquier cambio de seguridad en URLs queda para una fase separada.
