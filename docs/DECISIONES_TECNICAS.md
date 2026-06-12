@@ -609,3 +609,19 @@ Crear `webapp/infonalia_webapp/safe_markdown.py` con `SafeMarkdownRenderer`. Es 
 - Existe una base probada para noticias Markdown seguro.
 - No se cambia todavia la tabla `noticias`, el frontend ni las respuestas JSON actuales.
 - No se anaden dependencias externas.
+
+## ADR-028 — Activar decision CSRF global en app.py
+
+### Contexto
+
+`csrf.py` ya modelaba la politica global: metodos mutantes autenticados requieren token salvo `/login` y prefijos publicos. `app.py` seguia usando una allowlist propia para decidir si una ruta concreta exigia CSRF.
+
+### Decisión
+
+Hacer que `InfonaliaHandler.csrf_required_for_path()` delegue primero en `is_csrf_required()` y despues confirme que la ruta mutante existe. Asi las rutas desconocidas siguen respondiendo `404 Not Found` y no se convierten en error CSRF.
+
+### Consecuencias
+
+- La decision central vive en `csrf.py`.
+- Las excepciones de login, GET y API publica se conservan.
+- No se cambian endpoints, frontend ni respuestas JSON esperadas.

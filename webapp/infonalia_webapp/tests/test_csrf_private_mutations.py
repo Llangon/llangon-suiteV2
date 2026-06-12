@@ -109,3 +109,36 @@ def test_unknown_post_route_is_not_converted_to_csrf_error() -> None:
 
     assert handler.responses == []
     assert handler.errors[-1][0] == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/api/news"),
+        ("PATCH", "/api/news/4"),
+        ("DELETE", "/api/news/4"),
+    ],
+)
+def test_app_csrf_decision_uses_global_policy_for_known_mutations(method, path) -> None:
+    app = load_app_module()
+    handler = make_csrf_handler(app, method, path)
+
+    assert handler.csrf_required_for_path(method, path) is True
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/login"),
+        ("GET", "/api/news"),
+        ("POST", "/api/public/noticias"),
+        ("POST", "/api/unknown"),
+        ("PATCH", "/api/unknown"),
+        ("DELETE", "/api/unknown"),
+    ],
+)
+def test_app_csrf_decision_keeps_global_exceptions_and_unknown_routes(method, path) -> None:
+    app = load_app_module()
+    handler = make_csrf_handler(app, method, path)
+
+    assert handler.csrf_required_for_path(method, path) is False

@@ -25,9 +25,9 @@ from urllib import request as urlrequest
 from urllib.parse import parse_qs, unquote, urlparse
 
 try:
-    from .csrf import generate_csrf_token, validate_csrf_token
+    from .csrf import generate_csrf_token, is_csrf_required, validate_csrf_token
 except ImportError:
-    from csrf import generate_csrf_token, validate_csrf_token
+    from csrf import generate_csrf_token, is_csrf_required, validate_csrf_token
 
 try:
     from .normalization import clean_text, bool_text, parse_date_value, parse_money, parse_time_value
@@ -1859,6 +1859,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         return user
 
     def csrf_required_for_path(self, method: str, path: str) -> bool:
+        method = method.upper()
+        if not is_csrf_required(method, path, authenticated=True):
+            return False
+        return self.is_known_mutating_route(method, path)
+
+    def is_known_mutating_route(self, method: str, path: str) -> bool:
         method = method.upper()
         if method == "POST":
             if path in {

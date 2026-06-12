@@ -1809,3 +1809,23 @@ Fuera de esta fase:
 - no se cambia `api_update_news()`;
 - no se cambia `public.js`;
 - no se cambia Firebase.
+
+## Fase 2V — CSRF global en decision de app.py
+
+La Fase 2V conecta el helper global de CSRF con la decision real de `app.py`.
+
+Cambios aplicados:
+
+- `InfonaliaHandler.csrf_required_for_path()` delega en `is_csrf_required()`;
+- se conserva una verificacion de ruta mutante conocida para no convertir rutas desconocidas en error CSRF;
+- `POST /login`, `GET`, rutas publicas y rutas desconocidas siguen sin requerir CSRF;
+- rutas privadas mutantes conocidas siguen exigiendo `X-CSRF-Token`;
+- se amplian tests de CSRF para cubrir la politica global desde `app.py`.
+
+Fuera de esta fase:
+
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambia frontend;
+- no se cambia Firebase;
+- no se toca SQLite.
