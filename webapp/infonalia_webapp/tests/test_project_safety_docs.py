@@ -148,3 +148,40 @@ def test_sqlite_migration_precheck_keeps_implementation_out_of_scope() -> None:
         "No se usan datos reales",
     ):
         assert item in text
+
+
+def test_csrf_global_precheck_documents_current_surface() -> None:
+    text = (DOCS_ROOT / "PRECHECK_CSRF_GLOBAL.md").read_text(encoding="utf-8")
+
+    for item in (
+        "csrf_required_for_path()",
+        "require_csrf_token()",
+        "is_csrf_required()",
+        "csrfHeaders()",
+        "X-CSRF-Token",
+        "POST /login",
+        "POST /logout",
+        "POST /api/licitaciones",
+        "PATCH /api/config/settings",
+        "DELETE /api/news/{id}",
+        "GET /api/public/noticias",
+        "403 Forbidden",
+        "404 Not Found",
+    ):
+        assert item in text
+
+
+def test_csrf_global_precheck_keeps_implementation_out_of_scope() -> None:
+    text = (DOCS_ROOT / "PRECHECK_CSRF_GLOBAL.md").read_text(encoding="utf-8")
+
+    for item in (
+        "No se activa CSRF global",
+        "No se cambia `csrf_required_for_path()`",
+        "No se cambia `require_csrf_token()`",
+        "No se cambia frontend",
+        "No se cambian endpoints",
+        "No se toca SQLite",
+        "No se cambia Firebase",
+        "No se usan datos reales",
+    ):
+        assert item in text

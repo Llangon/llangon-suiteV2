@@ -385,3 +385,19 @@ Crear `docs/PRECHECK_SQLITE_MIGRACIONES.md` y cubrirlo con tests documentales. E
 - La futura fase de migraciones parte de un mapa verificable.
 - Los tests siguen obligados a usar SQLite temporal.
 - Cualquier cambio de esquema queda pendiente de backup, plan de rollback y tests especificos.
+
+## ADR-014 — Precheck antes de CSRF global
+
+### Contexto
+
+La app ya protege las mutaciones privadas conocidas con una allowlist explicita en `csrf_required_for_path()`. Pasar a una politica global puede reducir omisiones futuras, pero tambien puede romper login, rutas publicas, Firebase o convertir rutas desconocidas en `403 Forbidden`.
+
+### Decisión
+
+Crear `docs/PRECHECK_CSRF_GLOBAL.md` y cubrirlo con tests documentales. El precheck no activa CSRF global; solo fija cobertura actual, excepciones, invariantes y tests minimos antes de sustituir la allowlist.
+
+### Consecuencias
+
+- La futura fase de CSRF global parte de una superficie inventariada.
+- Login, logout, rutas publicas, GET privados y rutas desconocidas quedan identificados como casos sensibles.
+- No se mezcla CSRF global con refactor de `app.py`.

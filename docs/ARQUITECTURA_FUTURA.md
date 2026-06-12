@@ -1476,3 +1476,29 @@ Fuera de esta fase:
 - no se modifica la base productiva;
 - no se cambian endpoints;
 - no se cambian respuestas JSON.
+
+## Fase 2H — Precheck CSRF global
+
+La Fase 2H prepara el terreno para pasar de una allowlist explicita de CSRF a una politica global sin implementarla.
+
+Cambios aplicados:
+
+- se crea `docs/PRECHECK_CSRF_GLOBAL.md`;
+- se inventarian helpers puros de `csrf.py`;
+- se documenta la integracion real en `app.py`: `CSRF_HEADER`, `current_user()`, `require_csrf_token()` y `csrf_required_for_path()`;
+- se listan rutas protegidas, rutas excluidas y rutas que deben seguir devolviendo `404 Not Found`;
+- se documenta como `app.js` recibe el token desde `/api/me` y lo envia mediante `csrfHeaders()`;
+- se fijan invariantes para no romper login, logout, GET privados, rutas publicas ni Firebase;
+- se enumeran riesgos antes de sustituir la allowlist por una politica global;
+- se anade test documental para asegurar que el precheck cubre piezas clave.
+
+Fuera de esta fase:
+
+- no se activa CSRF global;
+- no se cambia `csrf_required_for_path()`;
+- no se cambia `require_csrf_token()`;
+- no se cambia frontend;
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se toca SQLite;
+- no se cambia Firebase.
