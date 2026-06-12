@@ -433,3 +433,19 @@ Mover esas funciones a `webapp/infonalia_webapp/normalization.py` y reimportarla
 - Se reduce una parte pequena del monolito sin cambiar comportamiento.
 - Las funciones quedan testeadas como contrato puro.
 - `app.py` conserva los nombres para tests y llamadas existentes.
+
+## ADR-017 — Extraer formateo puro desde app.py
+
+### Contexto
+
+`format_date_es()` y `format_datetime_es()` son formateadores puros usados por respuestas y textos internos. No necesitan servidor, SQLite, red, frontend ni filesystem.
+
+### Decisión
+
+Mover esos formateadores a `webapp/infonalia_webapp/formatting.py` y reimportarlos desde `app.py` para conservar compatibilidad. El modulo nuevo depende solo de `normalization.clean_text()` y libreria estandar.
+
+### Consecuencias
+
+- Se reduce otra parte pequena del monolito sin cambiar comportamiento.
+- El contrato de formateo queda probado de forma aislada.
+- `app.py` conserva los nombres para llamadas existentes.

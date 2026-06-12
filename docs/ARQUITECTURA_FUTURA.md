@@ -1553,3 +1553,25 @@ Fuera de esta fase:
 - no se cambia frontend;
 - no se cambia Firebase;
 - no se ejecutan descargadores reales.
+
+## Fase 2K — Extraccion de formateo puro
+
+La Fase 2K continua el refactor incremental de `app.py` con otra extraccion pura.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/formatting.py`;
+- se mueven `format_date_es()` y `format_datetime_es()`;
+- `app.py` importa esos nombres y los conserva como fachada para llamadas existentes;
+- se anaden tests puros para confirmar formatos actuales y que importar `formatting.py` no importa `app.py` ni modulos con efectos laterales.
+
+Fuera de esta fase:
+
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambia SQLite;
+- no se mueven handlers HTTP;
+- no se toca `InfonaliaHandler`;
+- no se cambia frontend;
+- no se cambia Firebase;
+- no se ejecutan descargadores reales.

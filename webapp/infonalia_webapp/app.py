@@ -38,6 +38,11 @@ except ImportError:
     from normalization import clean_text, bool_text, parse_date_value, parse_money, parse_time_value
 
 try:
+    from .formatting import format_date_es, format_datetime_es
+except ImportError:
+    from formatting import format_date_es, format_datetime_es
+
+try:
     from .web_security import (
         DEFAULT_LOGIN_MAX_ATTEMPTS,
         DEFAULT_LOGIN_WINDOW_SECONDS,
@@ -988,39 +993,6 @@ def build_payload_from_csv_row(row: dict[str, str], mapping: dict[str, str]) -> 
         "comentario": row_value(row, mapping, "comentario"),
         "ruta_carpeta": row_value(row, mapping, "ruta_carpeta"),
     }
-
-
-def format_date_es(value: object) -> str:
-    text = clean_text(value)
-    try:
-        parsed = datetime.strptime(text, "%Y-%m-%d")
-        return parsed.strftime("%d/%m/%Y")
-    except ValueError:
-        return text or "Sin fecha"
-
-
-def format_datetime_es(value: object) -> str:
-    text = clean_text(value)
-    if not text:
-        return ""
-
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        if "T" not in text and " " not in text:
-            return parsed.strftime("%d/%m/%Y")
-        return parsed.strftime("%d/%m/%Y %H:%M")
-    except ValueError:
-        pass
-
-    for pattern in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
-        try:
-            parsed = datetime.strptime(text, pattern)
-        except ValueError:
-            continue
-        if pattern == "%Y-%m-%d":
-            return parsed.strftime("%d/%m/%Y")
-        return parsed.strftime("%d/%m/%Y %H:%M")
-    return text
 
 
 def get_or_create_dia(conn: sqlite3.Connection, fecha_infonalia: str) -> int:
