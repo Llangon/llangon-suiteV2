@@ -19,7 +19,6 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib import request as urlrequest
 from urllib.parse import parse_qs, unquote, urlparse
 
 try:
@@ -167,6 +166,21 @@ try:
     from .multipart_uploads import extract_multipart_file
 except ImportError:
     from multipart_uploads import extract_multipart_file
+
+try:
+    from .pdf_enrichment import (
+        download_to_path as pdf_download_to_path,
+        enrich_from_pdf_url,
+        find_pdftotext_path,
+        pdf_file_to_text,
+    )
+except ImportError:
+    from pdf_enrichment import (
+        download_to_path as pdf_download_to_path,
+        enrich_from_pdf_url,
+        find_pdftotext_path,
+        pdf_file_to_text,
+    )
 
 try:
     from .storage_paths import (
@@ -988,67 +1002,25 @@ def parse_msg_body(body: str, fecha_infonalia: str, enrich_pdf: bool = True) -> 
 
 
 def find_pdftotext() -> Path | None:
-    configured = clean_text(os.environ.get("INFONALIA_PDFTOTEXT"))
-    candidates = []
-    if configured:
-        candidates.append(Path(configured))
-    candidates.extend(
-        [
-            PROJECT_ROOT / "pdftotext.exe",
-            APP_ROOT / "pdftotext.exe",
-            Path.home() / "Dropbox" / "00000 LLANGON" / "Infonalia" / "pdftotext.exe",
-        ]
-    )
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_file():
-            return candidate
-    return None
+    return find_pdftotext_path(PROJECT_ROOT, APP_ROOT)
 
 
 def download_to_path(url: str, destination: Path) -> bool:
-    try:
-        req = urlrequest.Request(
-            normalize_url(url),
-            headers={"User-Agent": "Mozilla/5.0 InfonaliaWeb"},
-        )
-        with urlrequest.urlopen(req, timeout=30) as response:
-            destination.write_bytes(response.read())
-        return destination.exists() and destination.stat().st_size > 0
-    except Exception:
-        return False
+    return pdf_download_to_path(url, destination)
 
 
 def pdf_to_text(pdf_path: Path) -> str:
-    exe = find_pdftotext()
-    if not exe:
-        return ""
-    txt_path = pdf_path.with_suffix(".txt")
-    try:
-        subprocess.run(
-            [str(exe), "-layout", str(pdf_path), str(txt_path)],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-        if txt_path.exists():
-            return txt_path.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
-        return ""
-    return ""
+    return pdf_file_to_text(pdf_path, find_pdftotext())
 
 
 def enrich_from_infonalia_pdf(url: str, fecha_limite: str) -> dict[str, str]:
-    temp_dir = DATA_ROOT / "tmp_pdf"
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    pdf_path = temp_dir / f"infonalia_{time.time_ns()}.pdf"
-    if not download_to_path(url, pdf_path):
-        return {}
-    texto = pdf_to_text(pdf_path)
-    return {
-        "tipo": extract_tipo_contrato(texto),
-        "hora_limite": extract_hora_limite_from_text(texto, fecha_limite),
-    }
+    return enrich_from_pdf_url(
+        url,
+        fecha_limite,
+        temp_dir=DATA_ROOT / "tmp_pdf",
+        downloader=download_to_path,
+        text_reader=pdf_to_text,
+    )
 
 
 def import_msg_content(

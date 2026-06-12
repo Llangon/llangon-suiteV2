@@ -861,3 +861,20 @@ Mover esa logica a `webapp/infonalia_webapp/infonalia_days.py` y mantener en `ap
 - Se mantiene el formato JSON de `/api/dias`.
 - No se cambian endpoints ni consultas productivas.
 - No se anaden migraciones ni se cambia frontend/Firebase.
+
+## ADR-043 — Extraer enriquecimiento PDF de MSG
+
+### Contexto
+
+`app.py` contenia busqueda de `pdftotext`, descarga temporal de PDF y extraccion de texto para enriquecer importaciones MSG. Es logica de borde que puede probarse con dobles sin ejecutar descargas reales.
+
+### Decisión
+
+Mover esos helpers a `webapp/infonalia_webapp/pdf_enrichment.py` y dejar en `app.py` envoltorios con los nombres actuales para `find_pdftotext()`, `download_to_path()`, `pdf_to_text()` y `enrich_from_infonalia_pdf()`.
+
+### Consecuencias
+
+- El enriquecimiento PDF queda testeado sin red real.
+- Se mantiene el comportamiento de importacion MSG.
+- No se implementan nuevos descargadores.
+- No se cambian endpoints, SQLite, frontend ni Firebase.

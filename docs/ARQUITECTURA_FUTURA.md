@@ -2116,3 +2116,25 @@ Fuera de esta fase:
 - no se anaden migraciones;
 - no se toca la base de datos productiva;
 - no se cambia frontend ni Firebase.
+
+## Fase 3K — Extraccion de enriquecimiento PDF
+
+La Fase 3K separa helpers de enriquecimiento PDF usados por la importacion MSG.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/pdf_enrichment.py`;
+- se mueve la busqueda de `pdftotext.exe`;
+- se mueve la descarga temporal de PDF;
+- se mueve la conversion PDF a texto;
+- se mueve la extraccion de tipo y hora limite desde PDF;
+- `app.py` conserva envoltorios compatibles;
+- se anaden tests con descargador y lector inyectados.
+
+Fuera de esta fase:
+
+- no se ejecutan descargas reales en tests;
+- no se implementan nuevos descargadores;
+- no se cambia importacion MSG visible;
+- no se cambian endpoints ni respuestas JSON;
+- no se cambia SQLite, frontend ni Firebase.
