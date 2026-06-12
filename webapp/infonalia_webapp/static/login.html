@@ -30,15 +30,6 @@
       <p class="muted login-help">He olvidado mi contraseña. Contacte con ASESORES LLANGON, S.L. para restablecer el acceso.</p>
     </form>
   </main>
-  <script>
-    const error = new URLSearchParams(location.search).get("error");
-    if (error) {
-      const el = document.getElementById("login-error");
-      if (error === "maintenance") {
-        el.textContent = "La app está en mantenimiento. Solo pueden entrar administradores.";
-      }
-      el.style.display = "block";
-    }
-  </script>
+  <script src="/static/login.js"></script>
 </body>
 </html>

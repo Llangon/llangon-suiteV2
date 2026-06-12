@@ -9,6 +9,23 @@ DEFAULT_LOGIN_WINDOW_SECONDS = 5 * 60
 DEFAULT_LOGIN_MAX_ATTEMPTS = 5
 
 
+def build_content_security_policy() -> str:
+    return "; ".join(
+        [
+            "default-src 'self'",
+            "script-src 'self'",
+            "style-src 'self'",
+            "img-src 'self' data:",
+            "font-src 'self'",
+            "connect-src 'self'",
+            "object-src 'none'",
+            "base-uri 'self'",
+            "form-action 'self'",
+            "frame-ancestors 'none'",
+        ]
+    )
+
+
 def build_security_headers(is_private: bool = True) -> dict[str, str]:
     headers = {
         "X-Content-Type-Options": "nosniff",
@@ -18,6 +35,7 @@ def build_security_headers(is_private: bool = True) -> dict[str, str]:
     }
     if is_private:
         headers["Cache-Control"] = "no-store"
+        headers["Content-Security-Policy"] = build_content_security_policy()
     return headers
 
 

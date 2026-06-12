@@ -260,6 +260,10 @@ No se implementa CSRF ni CSP estricta en esta fase.
 - Añadir Redis u otro rate limiter distribuido: descartado por complejidad y porque la app sigue siendo local/LAN.
 - Aplicar CSP estricta ahora: descartado hasta revisar scripts y estilos inline.
 
+### Evolución posterior
+
+La Fase 2C.1 aplica CSP estricta solo a respuestas privadas después de auditar `index.html` y `login.html` y mover el script inline de login a `/static/login.js`. La web pública y Firebase quedan fuera de esa política hasta una fase específica.
+
 ## ADR-009 — CSRF incremental para endpoints mutantes
 
 ### Contexto

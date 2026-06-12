@@ -1142,3 +1142,37 @@ Riesgos pendientes:
 - HTTPS/proxy sigue pendiente para exposición fuera de LAN/local;
 - CSP estricta sigue pendiente;
 - `app.py` sigue concentrando enrutado, sesión y respuestas.
+
+## Fase 2C.1 — CSP estricta privada
+
+La Fase 2C.1 añade una política CSP estricta solo a respuestas privadas. No se aplica todavía a la web pública ni a Firebase para evitar mezclar políticas con el render público actual.
+
+Cambios aplicados:
+
+- se añade `Content-Security-Policy` en `build_security_headers(is_private=True)`;
+- la CSP privada usa recursos propios: `default-src 'self'`, `script-src 'self'`, `style-src 'self'`, `connect-src 'self'`, `img-src 'self' data:`, `font-src 'self'`;
+- se bloquean objetos y bases externas con `object-src 'none'` y `base-uri 'self'`;
+- se limita envío de formularios con `form-action 'self'`;
+- se mantiene `frame-ancestors 'none'`, alineado con `X-Frame-Options: DENY`;
+- no se usa `unsafe-inline` ni `unsafe-eval`;
+- el script inline de `login.html` pasa a `/static/login.js`;
+- `index.html` y `login.html` quedan sin scripts inline ni atributos inline.
+
+Ámbito:
+
+- panel privado;
+- login privado;
+- respuestas JSON privadas.
+
+Fuera de esta fase:
+
+- web pública;
+- Firebase;
+- emails HTML, que requieren estilos inline por compatibilidad con clientes de correo;
+- endurecimiento de CSP pública.
+
+Riesgos pendientes:
+
+- la app privada sigue usando `innerHTML` para renderizar vistas; aunque los datos se escapan en los puntos principales, conviene revisar XSS con una fase específica;
+- CSP pública queda pendiente porque `public.html` aún usa bootstrap inline;
+- HTTPS/proxy sigue pendiente para exposición real fuera de LAN/local.
