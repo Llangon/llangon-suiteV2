@@ -2179,3 +2179,24 @@ Fuera de esta fase:
 - no se cambian permisos;
 - no se anaden migraciones;
 - no se cambia frontend ni Firebase.
+
+## Fase 3N — Extraccion de listado de notificaciones
+
+La Fase 3N separa filtros y serializacion del listado de notificaciones.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/notification_records.py`;
+- se mueve la construccion de filtros SQL desde parametros GET;
+- se mueve la serializacion de filas de notificacion;
+- se mueve el contador de notificaciones no leidas;
+- `app.py` conserva la consulta y respuesta del endpoint;
+- se anaden tests directos del alcance y filtros.
+
+Fuera de esta fase:
+
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambian permisos;
+- no se anaden migraciones;
+- no se cambia frontend ni Firebase.

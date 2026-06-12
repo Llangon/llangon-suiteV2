@@ -912,3 +912,20 @@ Crear `webapp/infonalia_webapp/notification_delivery.py` con helpers parametriza
 - Se mantienen mensajes de error y cabeceras del email.
 - Se mantiene el registro de `notificaciones`.
 - No se cambian endpoints, permisos, frontend ni Firebase.
+
+## ADR-046 — Extraer filtros de listado de notificaciones
+
+### Contexto
+
+El endpoint de listado de notificaciones contenia construccion de filtros SQL, serializacion de filas y contador de no leidas dentro del handler HTTP.
+
+### Decisión
+
+Mover esa logica mecanica a `webapp/infonalia_webapp/notification_records.py`. El handler conserva la consulta SQL y la respuesta final.
+
+### Consecuencias
+
+- Los filtros de alcance, busqueda y estado de email quedan testeados sin servidor.
+- Se mantiene la respuesta de `/api/notificaciones`.
+- No se cambian permisos ni endpoints.
+- No se cambia SQLite, frontend ni Firebase.

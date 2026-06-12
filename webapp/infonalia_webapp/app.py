@@ -251,6 +251,11 @@ except ImportError:
     )
 
 try:
+    from .notification_records import notification_items_and_unread, notification_query_filters
+except ImportError:
+    from notification_records import notification_items_and_unread, notification_query_filters
+
+try:
     from .db_migrations import run_migrations
 except ImportError:
     from db_migrations import run_migrations
@@ -1989,37 +1994,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             return
 
         params = parse_qs(query)
-        search = clean_text(params.get("q", [""])[0])
-        usuario_destino = clean_text(params.get("usuario_destino", [""])[0]).lower()
-        usuario_origen = clean_text(params.get("usuario_origen", [""])[0]).lower()
-        email_estado = clean_text(params.get("email_estado", [""])[0])
-        scope = clean_text(params.get("scope", ["mine"])[0])
-
-        where = []
-        values: list[object] = []
-
-        if user.get("role") == "admin" and scope == "all":
-            pass
-        else:
-            destinos = ["", user["username"]]
-            placeholders = ", ".join("?" for _ in destinos)
-            where.append(f"COALESCE(usuario_destino, '') IN ({placeholders})")
-            values.extend(destinos)
-
-        if usuario_destino:
-            where.append("COALESCE(usuario_destino, '') = ?")
-            values.append(usuario_destino)
-        if usuario_origen:
-            where.append("COALESCE(usuario_origen, '') = ?")
-            values.append(usuario_origen)
-        if search:
-            where.append("(asunto LIKE ? OR cuerpo LIKE ?)")
-            like = f"%{search}%"
-            values.extend([like, like])
-        if email_estado == "sent":
-            where.append("email_sent_at IS NOT NULL AND email_sent_at <> ''")
-        elif email_estado == "pending":
-            where.append("(email_sent_at IS NULL OR email_sent_at = '')")
+        where, values = notification_query_filters(params, user)
 
         with db_session() as conn:
             sql = "SELECT * FROM notificaciones"
@@ -2030,14 +2005,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 sql,
                 values,
             ).fetchall()
-            items = []
-            unread = 0
-            for row in rows:
-                item = {key: row[key] for key in row.keys()}
-                item["fecha_hora_formateada"] = format_datetime_es(row["fecha_hora"])
-                if not clean_text(row["read_at"]):
-                    unread += 1
-                items.append(item)
+            items, unread = notification_items_and_unread(rows)
 
         self.send_json({"items": items, "unread": unread, "users": list_user_records(active_only=False)})
 
