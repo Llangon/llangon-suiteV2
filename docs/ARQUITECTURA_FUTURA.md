@@ -1932,3 +1932,25 @@ Fuera de esta fase:
 - no se implementa Dropbox real;
 - no se ejecutan descargadores reales en tests;
 - no se cambia frontend ni Firebase.
+
+## Fase 3B — Registro sincro de importaciones procesadas
+
+La Fase 3B usa `import_runs` e `import_results` para auditar importaciones CSV y MSG sin cambiar la API.
+
+Cambios aplicados:
+
+- CSV crea un `import_run` cuando empieza el procesamiento real;
+- MSG crea un `import_run` cuando empieza el procesamiento real;
+- cada candidato procesado genera un `import_result`;
+- el run se cierra como `completed` con conteos de nuevas, actualizadas, omitidas y errores de expediente;
+- se guarda hash de entrada, usuario, fuente y fingerprint de candidato;
+- se amplian tests funcionales de importacion para validar el registro CSV.
+
+Fuera de esta fase:
+
+- no se cambian respuestas JSON;
+- no se cambian endpoints;
+- no se registran validaciones previas de multipart, extension o tamano;
+- no se implementa PLACE real;
+- no se automatizan importaciones;
+- no se cambia frontend ni Firebase.

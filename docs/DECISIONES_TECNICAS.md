@@ -708,3 +708,20 @@ Crear un job `running` justo antes de ejecutar el descargador local y cerrarlo c
 - Los errores de proceso, timeout, limites o manifest quedan asociados al job.
 - Las validaciones previas que no llegan a ejecutar descarga no crean job.
 - No se implementa cola en segundo plano ni Dropbox real.
+
+## ADR-034 — Registrar importaciones procesadas
+
+### Contexto
+
+Ya existen `import_runs` e `import_results`, pero las importaciones CSV y MSG seguian sin registrar ejecuciones ni resultados por candidato.
+
+### Decisión
+
+Crear un `import_run` al empezar el procesamiento real de CSV o MSG y guardar un `import_result` por candidato procesado. El run se cierra como `completed` con los mismos conteos que ya devolvia la API.
+
+### Consecuencias
+
+- Las importaciones procesadas quedan auditadas sin cambiar respuestas JSON.
+- Se guardan fuente, hash de entrada, usuario, conteos y resultado por candidato.
+- Las validaciones previas de multipart, extension o tamano siguen sin crear registros.
+- No se implementa PLACE ni automatizacion real.

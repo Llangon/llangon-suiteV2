@@ -1034,7 +1034,158 @@ def insert_payload(conn: sqlite3.Connection, payload: dict[str, object], dia_id:
     return "inserted"
 
 
-def import_csv_content(content: bytes) -> dict:
+def licitacion_id_for_payload(conn: sqlite3.Connection, payload: dict[str, object]) -> int | None:
+    expediente = clean_text(payload.get("expediente"))
+    organismo = clean_text(payload.get("organismo"))
+    if not expediente:
+        return None
+    row = conn.execute(
+        """
+        SELECT id FROM licitaciones
+        WHERE expediente = ? AND COALESCE(organismo, '') = ?
+        LIMIT 1
+        """,
+        (expediente, organismo),
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def import_payload_fingerprint(source_name: str, payload: dict[str, object]) -> str:
+    normalized = {
+        "source_name": clean_text(source_name),
+        "expediente": clean_text(payload.get("expediente")),
+        "organismo": clean_text(payload.get("organismo")),
+        "enlace_perfil": clean_text(payload.get("enlace_perfil")),
+        "enlace_infonalia": clean_text(payload.get("enlace_infonalia")),
+    }
+    content = json.dumps(normalized, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def create_import_run(
+    conn: sqlite3.Connection,
+    *,
+    source_name: str,
+    source_type: str,
+    mode: str,
+    input_hash: str,
+    triggered_by: str = "",
+    input_name: str = "",
+    timestamp: str,
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO import_runs (
+            source_name,
+            source_type,
+            mode,
+            started_at,
+            status,
+            triggered_by,
+            input_name,
+            input_hash,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            source_name,
+            source_type,
+            mode,
+            timestamp,
+            "running",
+            triggered_by,
+            input_name,
+            input_hash,
+            timestamp,
+            timestamp,
+        ),
+    )
+    return int(cur.lastrowid)
+
+
+def finish_import_run(
+    conn: sqlite3.Connection,
+    run_id: int,
+    *,
+    status: str,
+    new_count: int,
+    updated_count: int,
+    duplicate_count: int,
+    error_count: int,
+    notes: str = "",
+    timestamp: str,
+) -> None:
+    conn.execute(
+        """
+        UPDATE import_runs
+        SET status = ?,
+            finished_at = ?,
+            new_count = ?,
+            updated_count = ?,
+            duplicate_count = ?,
+            error_count = ?,
+            notes = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            status,
+            timestamp,
+            new_count,
+            updated_count,
+            duplicate_count,
+            error_count,
+            notes,
+            timestamp,
+            run_id,
+        ),
+    )
+
+
+def record_import_result(
+    conn: sqlite3.Connection,
+    *,
+    import_run_id: int,
+    source_name: str,
+    payload: dict[str, object],
+    status: str,
+    licitacion_id: int | None = None,
+    error_message: str = "",
+    timestamp: str,
+) -> None:
+    raw_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    conn.execute(
+        """
+        INSERT INTO import_results (
+            import_run_id,
+            source_name,
+            external_id,
+            fingerprint,
+            licitacion_id,
+            status,
+            error_message,
+            raw_payload,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            import_run_id,
+            source_name,
+            clean_text(payload.get("expediente")),
+            import_payload_fingerprint(source_name, payload),
+            licitacion_id,
+            status,
+            error_message,
+            raw_payload,
+            timestamp,
+        ),
+    )
+
+
+def import_csv_content(content: bytes, *, triggered_by: str = "", input_name: str = "") -> dict:
     rows, headers = read_csv_rows(content)
     mapping = csv_alias_map(headers)
     if "expediente" not in mapping:
@@ -1047,14 +1198,44 @@ def import_csv_content(content: bytes) -> dict:
     touched_days: set[int] = set()
 
     with db_session() as conn:
+        run_timestamp = now_iso()
+        import_run_id = create_import_run(
+            conn,
+            source_name="csv",
+            source_type="csv",
+            mode="manual",
+            input_hash=hashlib.sha256(content).hexdigest(),
+            triggered_by=clean_text(triggered_by),
+            input_name=clean_text(input_name),
+            timestamp=run_timestamp,
+        )
         for row in rows:
             payload = build_payload_from_csv_row(row, mapping)
             if not clean_text(payload.get("expediente")):
                 without_expediente += 1
+                record_import_result(
+                    conn,
+                    import_run_id=import_run_id,
+                    source_name="csv",
+                    payload=payload,
+                    status="skipped",
+                    error_message="Sin expediente",
+                    timestamp=now_iso(),
+                )
                 continue
             dia_id = get_or_create_dia(conn, clean_text(payload.get("fecha_infonalia")))
             touched_days.add(dia_id)
             result = insert_payload(conn, payload, dia_id)
+            licitacion_id = licitacion_id_for_payload(conn, payload)
+            record_import_result(
+                conn,
+                import_run_id=import_run_id,
+                source_name="csv",
+                payload=payload,
+                status=result,
+                licitacion_id=licitacion_id,
+                timestamp=now_iso(),
+            )
             if result == "inserted":
                 imported += 1
                 mark_dia_nuria_dirty(conn, dia_id)
@@ -1065,6 +1246,16 @@ def import_csv_content(content: bytes) -> dict:
                 skipped += 1
         for dia_id in touched_days:
             refresh_dia_estado(conn, dia_id)
+        finish_import_run(
+            conn,
+            import_run_id,
+            status="completed",
+            new_count=imported,
+            updated_count=updated,
+            duplicate_count=skipped,
+            error_count=without_expediente,
+            timestamp=now_iso(),
+        )
 
     return {
         "importadas": imported,
@@ -1217,7 +1408,13 @@ def enrich_from_infonalia_pdf(url: str, fecha_limite: str) -> dict[str, str]:
     }
 
 
-def import_msg_content(content: bytes, enrich_pdf: bool = True) -> dict:
+def import_msg_content(
+    content: bytes,
+    enrich_pdf: bool = True,
+    *,
+    triggered_by: str = "",
+    input_name: str = "",
+) -> dict:
     try:
         import extract_msg
     except ImportError as exc:
@@ -1248,9 +1445,30 @@ def import_msg_content(content: bytes, enrich_pdf: bool = True) -> dict:
     dia_id = None
 
     with db_session() as conn:
+        run_timestamp = now_iso()
+        import_run_id = create_import_run(
+            conn,
+            source_name="email_infonalia",
+            source_type="email_infonalia",
+            mode="manual",
+            input_hash=hashlib.sha256(content).hexdigest(),
+            triggered_by=clean_text(triggered_by),
+            input_name=clean_text(input_name),
+            timestamp=run_timestamp,
+        )
         dia_id = get_or_create_dia(conn, fecha_infonalia)
         for payload in payloads:
             result = insert_payload(conn, payload, dia_id)
+            licitacion_id = licitacion_id_for_payload(conn, payload)
+            record_import_result(
+                conn,
+                import_run_id=import_run_id,
+                source_name="email_infonalia",
+                payload=payload,
+                status=result,
+                licitacion_id=licitacion_id,
+                timestamp=now_iso(),
+            )
             if result == "inserted":
                 imported += 1
                 mark_dia_nuria_dirty(conn, dia_id)
@@ -1260,6 +1478,16 @@ def import_msg_content(content: bytes, enrich_pdf: bool = True) -> dict:
             else:
                 skipped += 1
         refresh_dia_estado(conn, dia_id)
+        finish_import_run(
+            conn,
+            import_run_id,
+            status="completed",
+            new_count=imported,
+            updated_count=updated,
+            duplicate_count=skipped,
+            error_count=0,
+            timestamp=now_iso(),
+        )
 
     return {
         "dias": 1,
@@ -2750,7 +2978,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 allowed_extensions={".csv"},
                 max_upload_bytes=MAX_UPLOAD_BYTES,
             )
-            result = import_csv_content(csv_bytes)
+            user = self.current_user() or {}
+            result = import_csv_content(csv_bytes, triggered_by=clean_text(user.get("username")))
         except RequestTooLarge as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             return
@@ -2784,7 +3013,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 max_upload_bytes=MAX_UPLOAD_BYTES,
             )
             enrich_pdf = b'name="enrich_pdf"' in body
-            result = import_msg_content(msg_bytes, enrich_pdf=enrich_pdf)
+            user = self.current_user() or {}
+            result = import_msg_content(
+                msg_bytes,
+                enrich_pdf=enrich_pdf,
+                triggered_by=clean_text(user.get("username")),
+            )
         except RequestTooLarge as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             return

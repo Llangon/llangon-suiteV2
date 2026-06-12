@@ -106,6 +106,21 @@ def valid_csv_bytes() -> bytes:
     ).encode("utf-8")
 
 
+def get_import_runs(app: ModuleType) -> list[dict]:
+    with app.db_session() as conn:
+        rows = conn.execute("SELECT * FROM import_runs ORDER BY id").fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_import_results(app: ModuleType, import_run_id: int) -> list[dict]:
+    with app.db_session() as conn:
+        rows = conn.execute(
+            "SELECT * FROM import_results WHERE import_run_id = ? ORDER BY id",
+            (import_run_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def test_app_import_does_not_start_server_or_create_productive_db() -> None:
     existed_before = PRODUCTIVE_DB_PATH.exists()
     stat_before = PRODUCTIVE_DB_PATH.stat().st_mtime_ns if existed_before else None
@@ -142,12 +157,34 @@ def test_csv_import_endpoint_accepts_small_valid_csv_with_temp_db() -> None:
 
         with app.db_session() as conn:
             row = conn.execute(
-                "SELECT expediente, objeto, organismo FROM licitaciones WHERE expediente = ?",
+                "SELECT id, expediente, objeto, organismo FROM licitaciones WHERE expediente = ?",
                 ("TEST-001",),
             ).fetchone()
 
         assert row["objeto"] == "Servicio ficticio"
         assert row["organismo"] == "Organismo ficticio"
+        runs = get_import_runs(app)
+        assert len(runs) == 1
+        assert runs[0]["source_name"] == "csv"
+        assert runs[0]["source_type"] == "csv"
+        assert runs[0]["mode"] == "manual"
+        assert runs[0]["status"] == "completed"
+        assert runs[0]["triggered_by"] == "admin_test"
+        assert runs[0]["new_count"] == 1
+        assert runs[0]["updated_count"] == 0
+        assert runs[0]["duplicate_count"] == 0
+        assert runs[0]["error_count"] == 0
+        assert runs[0]["input_hash"]
+        assert runs[0]["started_at"]
+        assert runs[0]["finished_at"]
+        results = get_import_results(app, runs[0]["id"])
+        assert len(results) == 1
+        assert results[0]["source_name"] == "csv"
+        assert results[0]["external_id"] == "TEST-001"
+        assert results[0]["status"] == "inserted"
+        assert results[0]["licitacion_id"] == row["id"]
+        assert results[0]["fingerprint"]
+        assert "Servicio ficticio" in results[0]["raw_payload"]
 
     assert PRODUCTIVE_DB_PATH.exists() is existed_before
     if existed_before:
