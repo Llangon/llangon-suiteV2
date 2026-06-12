@@ -266,7 +266,7 @@ No se implementa CSRF ni CSP estricta en esta fase.
 
 La app privada ya tiene login, roles, cookies `HttpOnly` con `SameSite=Lax`, cabeceras básicas y rate limiting de login. Aun así, mientras existan endpoints autenticados que modifican estado mediante `POST`, `PATCH` o `DELETE`, sigue pendiente una protección CSRF explícita antes de exponer la app fuera de un entorno local/LAN controlado.
 
-Los endpoints sensibles incluyen importación CSV/MSG, descargas, creación y edición de licitaciones, cambios de estado, gestión de noticias, usuarios, configuración SMTP y notificaciones. También existe un `GET /logout` que limpia la sesión y debe revisarse aparte.
+Los endpoints sensibles incluyen importación CSV/MSG, descargas, creación y edición de licitaciones, cambios de estado, gestión de noticias, usuarios, configuración SMTP, notificaciones y cierre de sesión.
 
 ### Decisión
 
@@ -292,7 +292,7 @@ Adoptar CSRF de forma incremental:
 ### Riesgos
 
 - CSRF sigue sin estar activo hasta 2B.2.
-- `GET /logout` seguirá siendo vulnerable a cierre de sesión inducido hasta que se convierta o gestione explícitamente.
+- Desde Fase 2B.4, `GET /logout` ya no limpia sesión y el cierre real usa `POST /logout` con CSRF.
 - Si se entrega el token al frontend, un XSS podría leerlo; CSP estricta y revisión de renderizado siguen pendientes.
 - Un despliegue sin HTTPS/proxy correcto seguiría teniendo riesgos de transporte aunque CSRF esté activo.
 - `app.py` sigue siendo monolítico y la integración debe ser cuidadosa para no cambiar respuestas existentes.

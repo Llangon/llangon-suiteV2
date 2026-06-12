@@ -957,7 +957,7 @@ La Fase 2B.1 prepara CSRF sin activarlo todavía. No cambia `app.py`, no cambia 
 | Método | Ruta | Función backend | Llamada frontend | Auth | Admin | Efecto | CSRF | Motivo |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | POST | `/login` | `handle_login()` | formulario de login | No | No | crea cookie de sesión si las credenciales son válidas | No en 2B.2 inicial | Queda fuera inicialmente porque no hay sesión autenticada previa y ya tiene rate limiting. Revisar login CSRF más adelante si cambia el flujo. |
-| GET | `/logout` | ruta directa en `do_GET()` | enlace `/logout` en `index.html` | No se comprueba antes de limpiar | No | borra cookie de sesión | No mientras siga siendo GET | Las reglas de esta fase no protegen GET. Riesgo pendiente: estudiar migración futura a POST con CSRF. |
+| POST | `/logout` | ruta directa en `do_POST()` | botón `logout-button` en `index.html` y `logout()` en `app.js` | Sí | No | borra cookie de sesión | Sí | El cierre de sesión es mutante y queda protegido con token CSRF. `GET /logout` ya no borra cookie. |
 | POST | `/api/licitaciones` | `api_create_licitacion()` | submit del editor en `app.js` | Sí | Sí | inserta licitación y puede crear/actualizar día Infonalia | Sí | Endpoint autenticado mutante con escritura SQLite. |
 | PATCH | `/api/licitaciones/{id}` | `api_update_licitacion()` | `updateEstado()` y submit del editor | Sí | Admin completo; Nuria limitado a estado | actualiza licitación, estado y estado del día | Sí | Endpoint autenticado mutante con escritura SQLite. |
 | DELETE | `/api/licitaciones/{id}` | `api_delete_licitacion()` | `deleteLicitacion()` | Sí | Sí | borra licitación y recalcula día | Sí | Endpoint autenticado mutante destructivo. |
@@ -988,7 +988,7 @@ Se protegerán todos los endpoints autenticados con `POST`, `PUT`, `PATCH` o `DE
 
 - `POST /login`: excluido inicialmente por no tener sesión previa y por tener rate limiting.
 - rutas bajo `/api/public/`: excluidas para no romper web pública ni Firebase; actualmente son GET de lectura.
-- `GET /logout`: no se protege mientras siga siendo GET, pero queda marcado como riesgo pendiente.
+- `POST /logout`: protegido con CSRF desde Fase 2B.4.
 
 ### Estrategia de token
 
@@ -1002,7 +1002,7 @@ Se protegerán todos los endpoints autenticados con `POST`, `PUT`, `PATCH` o `DE
 ### Riesgos pendientes
 
 - CSRF aún no está activo; esta fase solo prepara mapa, estrategia y helpers puros.
-- `GET /logout` limpia sesión con un enlace normal; conviene estudiar convertirlo a `POST /logout` en una fase posterior.
+- `GET /logout` ya no limpia sesión desde Fase 2B.4.
 - La integración frontend/backend debe hacerse de forma incremental para no romper importación, descargas, noticias ni Firebase.
 - Si hay XSS, el token expuesto al frontend también quedaría comprometido; por eso CSP estricta sigue pendiente.
 - HTTPS/proxy sigue pendiente para cualquier exposición fuera de entorno local/LAN.
@@ -1024,7 +1024,7 @@ Endpoints aún no protegidos:
 - usuarios y configuración;
 - noticias;
 - vista previa IA y envío de vista previa por email;
-- `GET /logout`, que sigue pendiente de revisión porque es GET.
+- `GET /logout`, que ya no limpia sesión desde Fase 2B.4.
 
 Sesión y token:
 
@@ -1057,7 +1057,7 @@ Respuesta ante fallo:
 Riesgos pendientes:
 
 - el resto de endpoints mutantes sigue sin CSRF;
-- logout sigue siendo GET;
+- logout usa `POST /logout` con CSRF desde Fase 2B.4;
 - HTTPS/proxy y CSP estricta siguen pendientes;
 - `app.py` sigue siendo monolítico y la extensión de CSRF debe continuar por fases pequeñas.
 
@@ -1107,13 +1107,38 @@ Backend:
 Endpoints excluidos:
 
 - `POST /login`, porque no hay sesión autenticada previa y ya existe rate limiting;
-- `GET /logout`, porque sigue siendo GET y requiere una decisión separada;
+- `POST /logout`, protegido con CSRF desde Fase 2B.4;
 - endpoints GET privados de lectura;
 - endpoints públicos y Firebase.
 
 Riesgos pendientes:
 
-- `GET /logout` sigue pendiente de migración o revisión;
 - CSRF no sustituye HTTPS/proxy ni CSP estricta;
 - si aparece XSS, el token en memoria del frontend podría quedar comprometido;
 - `app.py` sigue monolítico y conviene no mezclar esta protección con refactors grandes.
+
+## Fase 2B.4 — Logout por POST con CSRF
+
+La Fase 2B.4 elimina el cierre de sesión mediante GET. El objetivo es evitar que una visita inducida a `/logout` pueda borrar la sesión del usuario.
+
+Cambios aplicados:
+
+- `GET /logout` devuelve `405 Method Not Allowed` y no borra cookie;
+- `POST /logout` borra la cookie solo cuando la sesión autenticada presenta `X-CSRF-Token` válido;
+- si la sesión ya no es válida, `POST /logout` limpia la cookie residual y redirige a `/login`;
+- `index.html` cambia el enlace de salida por un botón;
+- `app.js` envía `POST /logout` con el token en memoria;
+- Firebase y páginas públicas no cambian.
+
+Comportamiento esperado:
+
+- pulsar "Salir" mantiene la UX de cierre de sesión y redirige a `/login`;
+- una petición GET externa a `/logout` no cierra sesión;
+- un POST sin token o con token inválido devuelve `403 Forbidden`.
+
+Riesgos pendientes:
+
+- CSRF depende de que no exista XSS que pueda leer el token en memoria;
+- HTTPS/proxy sigue pendiente para exposición fuera de LAN/local;
+- CSP estricta sigue pendiente;
+- `app.py` sigue concentrando enrutado, sesión y respuestas.

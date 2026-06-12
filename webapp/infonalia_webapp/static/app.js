@@ -75,6 +75,7 @@ const testSmtpButton = document.getElementById("test-smtp-button");
 const pageTitle = document.getElementById("page-title");
 const pageKicker = document.getElementById("page-kicker");
 const sessionUser = document.getElementById("session-user");
+const logoutButton = document.getElementById("logout-button");
 
 const estadoOrden = [
   "Pendiente",
@@ -272,6 +273,24 @@ async function loadMe() {
 
 function csrfHeaders() {
   return appState.csrfToken ? { "X-CSRF-Token": appState.csrfToken } : {};
+}
+
+async function logout() {
+  if (logoutButton) logoutButton.disabled = true;
+  try {
+    const response = await fetch("/logout", {
+      method: "POST",
+      headers: csrfHeaders(),
+    });
+    if (!response.ok && !response.redirected) {
+      const result = await response.json().catch(() => ({}));
+      alert(result.error || "No se pudo cerrar la sesión.");
+      return;
+    }
+    location.href = "/login";
+  } finally {
+    if (logoutButton) logoutButton.disabled = false;
+  }
 }
 
 function setActiveNav(section) {
@@ -1634,6 +1653,7 @@ function debounce(fn, delay) {
 document.getElementById("days-button").addEventListener("click", showDaysView);
 document.getElementById("list-button").addEventListener("click", () => showLicitacionesView({ view: "live" }));
 document.getElementById("calendar-button").addEventListener("click", showCalendarView);
+logoutButton?.addEventListener("click", logout);
 document.getElementById("notifications-button").addEventListener("click", showNotificationsView);
 document.getElementById("back-from-notifications").addEventListener("click", backFromNotifications);
 document.getElementById("news-admin-button").addEventListener("click", showNewsAdminView);

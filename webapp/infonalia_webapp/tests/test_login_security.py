@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 
 from webapp.infonalia_webapp.tests.test_import_endpoints import (
     PRODUCTIVE_DB_PATH,
+    VALID_CSRF_TOKEN,
     load_app_module,
     temporary_app_database,
 )
@@ -34,6 +35,41 @@ def make_login_handler(app, username: str, password: str, ip: str = "127.0.0.1")
     handler.client_address = (ip, 12345)
     handler.statuses = []
     handler.headers_sent = []
+
+    def send_response(status):
+        handler.statuses.append(status)
+
+    def send_header(name, value):
+        handler.headers_sent.append((name, value))
+
+    def end_headers():
+        return None
+
+    handler.send_response = send_response
+    handler.send_header = send_header
+    handler.end_headers = end_headers
+    return handler
+
+
+def make_logout_handler(app, method: str, csrf_token: str | None = None, authenticated: bool = True):
+    handler = object.__new__(app.InfonaliaHandler)
+    handler.path = "/logout"
+    handler.headers = {}
+    if csrf_token is not None:
+        handler.headers[app.CSRF_HEADER] = csrf_token
+    handler.statuses = []
+    handler.headers_sent = []
+    handler.wfile = io.BytesIO()
+    handler.current_user = lambda: (
+        {
+            "username": "admin_test",
+            "role": "admin",
+            "display_name": "Admin Test",
+            "csrf_token": VALID_CSRF_TOKEN,
+        }
+        if authenticated
+        else None
+    )
 
     def send_response(status):
         handler.statuses.append(status)
@@ -133,3 +169,48 @@ def test_current_user_lazily_adds_csrf_to_old_signed_session() -> None:
         assert refreshed_cookie
         refreshed_payload = app.read_token(refreshed_cookie)
         assert refreshed_payload["csrf"] == user["csrf_token"]
+
+
+def test_get_logout_does_not_clear_session_cookie() -> None:
+    app = load_app_module()
+    handler = make_logout_handler(app, "GET", authenticated=True)
+
+    handler.do_GET()
+
+    assert handler.statuses[-1] == HTTPStatus.METHOD_NOT_ALLOWED
+    assert last_header(handler, "Set-Cookie") == ""
+
+
+def test_post_logout_with_valid_csrf_clears_session_cookie() -> None:
+    app = load_app_module()
+    handler = make_logout_handler(app, "POST", csrf_token=VALID_CSRF_TOKEN, authenticated=True)
+
+    handler.do_POST()
+
+    assert handler.statuses[-1] == HTTPStatus.SEE_OTHER
+    assert last_header(handler, "Location") == "/login"
+    cookie = last_header(handler, "Set-Cookie")
+    assert "Max-Age=0" in cookie
+    assert "infonalia_session=" in cookie
+
+
+def test_post_logout_without_csrf_is_forbidden_and_keeps_session_cookie() -> None:
+    app = load_app_module()
+    handler = make_logout_handler(app, "POST", authenticated=True)
+
+    handler.do_POST()
+
+    assert handler.statuses[-1] == HTTPStatus.FORBIDDEN
+    assert last_header(handler, "Set-Cookie") == ""
+    assert b"CSRF" in handler.wfile.getvalue()
+
+
+def test_post_logout_without_valid_session_clears_cookie() -> None:
+    app = load_app_module()
+    handler = make_logout_handler(app, "POST", authenticated=False)
+
+    handler.do_POST()
+
+    assert handler.statuses[-1] == HTTPStatus.SEE_OTHER
+    assert last_header(handler, "Location") == "/login"
+    assert "Max-Age=0" in last_header(handler, "Set-Cookie")

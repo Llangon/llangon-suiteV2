@@ -2436,7 +2436,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.send_file(STATIC_ROOT / "login.html")
             return
         if path == "/logout":
-            self.redirect("/login", clear_cookie=True)
+            self.send_json({"error": "Usa POST para cerrar sesión."}, HTTPStatus.METHOD_NOT_ALLOWED)
             return
         if path.startswith("/static/"):
             self.send_file(STATIC_ROOT / unquote(path.removeprefix("/static/")), is_private=False)
@@ -2478,6 +2478,14 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         if path == "/login":
             self.handle_login()
+            return
+        if path == "/logout":
+            if not self.current_user():
+                self.redirect("/login", clear_cookie=True)
+                return
+            if not self.require_csrf_token():
+                return
+            self.redirect("/login", clear_cookie=True)
             return
 
         if not self.current_user():
