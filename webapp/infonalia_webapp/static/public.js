@@ -1,5 +1,6 @@
-const privateUrl = window.PRIVATE_APP_URL && window.PRIVATE_APP_URL !== "__PRIVATE_APP_URL__"
-  ? window.PRIVATE_APP_URL
+const configuredPrivateUrl = document.body?.dataset?.privateAppUrl || "";
+const privateUrl = configuredPrivateUrl && configuredPrivateUrl !== "__PRIVATE_APP_URL__"
+  ? configuredPrivateUrl
   : "/login";
 
 document.querySelectorAll("[data-private-link]").forEach((link) => {

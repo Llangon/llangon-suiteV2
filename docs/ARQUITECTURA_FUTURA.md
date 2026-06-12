@@ -1166,13 +1166,46 @@ Cambios aplicados:
 
 Fuera de esta fase:
 
-- web pública;
-- Firebase;
+- web pública, resuelta después en Fase 2C.2;
+- Firebase, resuelto después en Fase 2C.2;
 - emails HTML, que requieren estilos inline por compatibilidad con clientes de correo;
-- endurecimiento de CSP pública.
+- endurecimiento específico de XSS en render dinámico.
 
 Riesgos pendientes:
 
 - la app privada sigue usando `innerHTML` para renderizar vistas; aunque los datos se escapan en los puntos principales, conviene revisar XSS con una fase específica;
-- CSP pública queda pendiente porque `public.html` aún usa bootstrap inline;
+- CSP pública queda resuelta en Fase 2C.2;
 - HTTPS/proxy sigue pendiente para exposición real fuera de LAN/local.
+
+## Fase 2C.2 — CSP pública y Firebase
+
+La Fase 2C.2 aplica CSP a la web pública servida por la app y al despliegue estático de Firebase.
+
+Cambios aplicados:
+
+- `public.html` deja de usar el script inline `window.PRIVATE_APP_URL`;
+- `firebase/public_firebase/index.html` deja de usar script inline;
+- la URL privada pasa a `data-private-app-url` en el `<body>`;
+- `public.js` lee esa URL desde `document.body.dataset.privateAppUrl`;
+- se añade CSP pública desde `build_security_headers(is_private=False)`;
+- `firebase/public_firebase/firebase.json` añade headers globales de seguridad, incluida la misma CSP pública;
+- la política pública usa recursos propios: `default-src 'self'`, `script-src 'self'`, `style-src 'self'`, `connect-src 'self'`, `img-src 'self'`, `font-src 'self'`;
+- no se usa `unsafe-inline` ni `unsafe-eval`.
+
+Ámbito:
+
+- web pública servida por `webapp/infonalia_webapp`;
+- hosting estático `firebase/public_firebase`;
+- assets públicos propios.
+
+Fuera de esta fase:
+
+- revisión XSS profunda del render público con `innerHTML`;
+- integración de noticias públicas desde una API real en Firebase;
+- HTTPS/proxy de la app privada.
+
+Riesgos pendientes:
+
+- `public.js` sigue usando `innerHTML` para montar páginas desde plantillas internas; requiere auditoría XSS específica antes de aceptar contenido dinámico rico;
+- la web Firebase intenta cargar `/api/public/noticias` en el mismo origen y cae a lista vacía si no existe API;
+- emails HTML siguen usando estilos inline por compatibilidad con clientes de correo.

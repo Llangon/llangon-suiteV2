@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import re
 import sys
 from pathlib import Path
@@ -9,13 +10,16 @@ from webapp.infonalia_webapp.web_security import (
     LoginRateLimiter,
     build_clear_cookie,
     build_content_security_policy,
+    build_public_content_security_policy,
     build_security_headers,
     build_session_cookie,
     normalize_login_key,
 )
 
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 STATIC_ROOT = Path(__file__).resolve().parents[1] / "static"
+FIREBASE_ROOT = REPOSITORY_ROOT / "firebase" / "public_firebase"
 
 
 def test_web_security_import_does_not_import_app_or_side_effect_modules() -> None:
@@ -56,10 +60,10 @@ def test_private_content_security_policy_is_strict_and_self_hosted() -> None:
     assert "unsafe-eval" not in policy
 
 
-def test_public_security_headers_do_not_apply_private_csp_yet() -> None:
+def test_public_security_headers_apply_public_csp_without_private_cache() -> None:
     headers = build_security_headers(is_private=False)
 
-    assert "Content-Security-Policy" not in headers
+    assert headers["Content-Security-Policy"] == build_public_content_security_policy()
     assert "Cache-Control" not in headers
 
 
@@ -69,6 +73,27 @@ def test_private_html_entrypoints_do_not_need_inline_scripts() -> None:
         assert not re.search(r"<script(?!\s+src=)", html)
         assert "<style" not in html
         assert not re.search(r"<[^>]+\son[a-z]+\s*=", html)
+
+
+def test_public_html_entrypoints_do_not_need_inline_scripts() -> None:
+    for path in (STATIC_ROOT / "public.html", FIREBASE_ROOT / "index.html"):
+        html = path.read_text(encoding="utf-8")
+        assert 'data-private-app-url="' in html
+        assert not re.search(r"<script(?!\s+src=)", html)
+        assert "<style" not in html
+        assert not re.search(r"<[^>]+\son[a-z]+\s*=", html)
+
+
+def test_firebase_hosting_headers_include_public_csp() -> None:
+    config = json.loads((FIREBASE_ROOT / "firebase.json").read_text(encoding="utf-8"))
+    headers = config["hosting"]["headers"]
+    global_headers = next(entry["headers"] for entry in headers if entry["source"] == "**")
+    header_map = {entry["key"]: entry["value"] for entry in global_headers}
+
+    assert header_map["Content-Security-Policy"] == build_public_content_security_policy()
+    assert header_map["X-Content-Type-Options"] == "nosniff"
+    assert header_map["X-Frame-Options"] == "DENY"
+    assert header_map["Referrer-Policy"] == "same-origin"
 
 
 def test_session_cookie_contains_expected_attributes() -> None:

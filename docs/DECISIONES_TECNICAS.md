@@ -262,7 +262,9 @@ No se implementa CSRF ni CSP estricta en esta fase.
 
 ### Evolución posterior
 
-La Fase 2C.1 aplica CSP estricta solo a respuestas privadas después de auditar `index.html` y `login.html` y mover el script inline de login a `/static/login.js`. La web pública y Firebase quedan fuera de esa política hasta una fase específica.
+La Fase 2C.1 aplica CSP estricta solo a respuestas privadas después de auditar `index.html` y `login.html` y mover el script inline de login a `/static/login.js`.
+
+La Fase 2C.2 extiende CSP a la web pública y Firebase después de eliminar el bootstrap inline de `PRIVATE_APP_URL` y sustituirlo por `data-private-app-url`.
 
 ## ADR-009 — CSRF incremental para endpoints mutantes
 
