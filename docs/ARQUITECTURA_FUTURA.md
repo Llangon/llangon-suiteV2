@@ -1425,3 +1425,30 @@ Fuera de esta fase:
 - no se cambia SQLite;
 - no se toca `api_download_licitacion()`;
 - no se ejecutan descargadores reales.
+
+## Fase 2F — Precheck noticias Markdown
+
+La Fase 2F prepara el terreno para noticias Markdown seguro sin implementarlo.
+
+Cambios aplicados:
+
+- se crea `docs/PRECHECK_NOTICIAS_MARKDOWN.md`;
+- se inventaria la tabla actual `noticias`;
+- se listan endpoints privados y publicos;
+- se documenta el render privado y publico actual;
+- se documentan contratos futuros `NewsArticle` y `NewsRenderer`;
+- se fijan invariantes para no permitir HTML libre;
+- se enumeran riesgos antes de parser, sanitizador o migracion;
+- se anade test documental para asegurar que el precheck cubre piezas clave.
+
+Fuera de esta fase:
+
+- no se implementa Markdown;
+- no se anade parser Markdown;
+- no se anade sanitizador;
+- no se cambia SQLite;
+- no se cambia `api_public_news()`;
+- no se cambia `api_create_news()`;
+- no se cambia `api_update_news()`;
+- no se cambia `public.js`;
+- no se cambia Firebase.

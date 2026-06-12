@@ -353,3 +353,19 @@ Crear `docs/PRECHECK_STORAGEBACKEND.md` y cubrirlo con tests documentales. El pr
 - La futura fase StorageBackend parte de un mapa verificable.
 - Se reduce el riesgo de romper `ruta_carpeta` o descargas actuales.
 - Dropbox real sigue fuera hasta que exista una transicion local probada.
+
+## ADR-012 — Precheck antes de noticias Markdown
+
+### Contexto
+
+Las noticias actuales guardan texto plano en `content` y se renderizan escapadas en la web publica. La evolucion a Markdown seguro puede introducir parser, sanitizador, cambios de modelo y potencial XSS si se conecta demasiado pronto.
+
+### Decisión
+
+Crear `docs/PRECHECK_NOTICIAS_MARKDOWN.md` y cubrirlo con tests documentales. El precheck no implementa Markdown; solo fija el estado actual, invariantes, riesgos y estrategia minima antes de elegir parser o sanitizador.
+
+### Consecuencias
+
+- La futura fase Markdown parte de un mapa verificable.
+- HTML libre sigue descartado.
+- SQLite y frontend se mantienen sin cambios hasta que exista plan de migracion y render seguro.

@@ -72,3 +72,42 @@ def test_storagebackend_precheck_keeps_implementation_out_of_scope() -> None:
         "No se ejecutan descargadores reales",
     ):
         assert item in text
+
+
+def test_markdown_news_precheck_documents_current_news_flow() -> None:
+    text = (DOCS_ROOT / "PRECHECK_NOTICIAS_MARKDOWN.md").read_text(encoding="utf-8")
+
+    for item in (
+        "noticias",
+        "title",
+        "slug",
+        "content",
+        "featured_image",
+        "api_public_news()",
+        "api_create_news()",
+        "api_update_news()",
+        "GET /api/public/noticias",
+        "POST /api/news",
+        "PATCH /api/news/{id}",
+        "DELETE /api/news/{id}",
+        "public.js",
+        "escapeHtml()",
+        "NewsRenderer",
+        "NewsArticle",
+    ):
+        assert item in text
+
+
+def test_markdown_news_precheck_keeps_implementation_out_of_scope() -> None:
+    text = (DOCS_ROOT / "PRECHECK_NOTICIAS_MARKDOWN.md").read_text(encoding="utf-8")
+
+    for item in (
+        "No se implementa Markdown",
+        "No se anade parser Markdown",
+        "No se anade sanitizador",
+        "No se cambia SQLite",
+        "No se cambia `api_public_news()`",
+        "No se cambia `public.js`",
+        "No se cambia Firebase",
+    ):
+        assert item in text
