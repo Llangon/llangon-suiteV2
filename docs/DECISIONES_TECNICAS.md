@@ -725,3 +725,20 @@ Crear un `import_run` al empezar el procesamiento real de CSV o MSG y guardar un
 - Se guardan fuente, hash de entrada, usuario, conteos y resultado por candidato.
 - Las validaciones previas de multipart, extension o tamano siguen sin crear registros.
 - No se implementa PLACE ni automatizacion real.
+
+## ADR-035 — Extraer helpers de auditoría interna
+
+### Contexto
+
+El registro de descargas e importaciones anadio varios helpers SQLite a `app.py`. Son funciones internas de escritura en tablas de auditoria y no pertenecen al enrutado HTTP.
+
+### Decisión
+
+Mover esos helpers a `webapp/infonalia_webapp/audit_records.py` y dejar `app.py` como consumidor. La extraccion no cambia consultas, endpoints ni respuestas.
+
+### Consecuencias
+
+- `app.py` queda algo mas pequeno.
+- La auditoria de importaciones y descargas tiene un modulo propio testeable.
+- No se cambia SQLite ni se anaden migraciones.
+- No se cambia comportamiento visible.

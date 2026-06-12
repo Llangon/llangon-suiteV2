@@ -1954,3 +1954,23 @@ Fuera de esta fase:
 - no se implementa PLACE real;
 - no se automatizan importaciones;
 - no se cambia frontend ni Firebase.
+
+## Fase 3C — Extraccion de auditoria interna
+
+La Fase 3C reduce acoplamiento de `app.py` moviendo helpers de auditoria a un modulo pequeno.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/audit_records.py`;
+- se mueven helpers de `import_runs`, `import_results` y `download_jobs`;
+- `app.py` conserva las mismas llamadas desde los flujos actuales;
+- se anaden tests directos del modulo nuevo;
+- se mantienen tests funcionales de importacion y descarga.
+
+Fuera de esta fase:
+
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambia SQLite;
+- no se anaden migraciones;
+- no se cambia frontend ni Firebase.
