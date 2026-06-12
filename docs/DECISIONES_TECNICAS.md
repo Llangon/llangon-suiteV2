@@ -759,3 +759,20 @@ Mover `extract_multipart_file()` y el helper de filename a `webapp/infonalia_web
 - Los endpoints de importacion conservan los mismos campos multipart.
 - No se cambian respuestas JSON ni limites.
 - No se cambia frontend ni Firebase.
+
+## ADR-037 — Extraer rutas de almacenamiento local
+
+### Contexto
+
+`app.py` seguia concentrando normalizacion de rutas Dropbox/locales, construccion de carpetas de descarga y escritura de `HTTP.url`. Esa logica pertenece al borde de almacenamiento, no al enrutado HTTP.
+
+### Decisión
+
+Mover la logica parametrizable a `webapp/infonalia_webapp/storage_paths.py` y mantener en `app.py` envoltorios para inyectar `DOWNLOAD_ROOT` y la deteccion de Dropbox local.
+
+### Consecuencias
+
+- Las reglas de rutas quedan testeadas sin importar `app.py`.
+- `app.py` conserva nombres compatibles para los flujos actuales.
+- No se cambia Dropbox real ni se anade backend nuevo.
+- No se cambian endpoints ni respuestas JSON.

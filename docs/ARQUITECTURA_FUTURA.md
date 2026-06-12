@@ -1994,3 +1994,24 @@ Fuera de esta fase:
 - no se cambian limites de subida;
 - no se toca SQLite;
 - no se cambia frontend ni Firebase.
+
+## Fase 3E — Extraccion de rutas de almacenamiento local
+
+La Fase 3E separa helpers de rutas locales/Dropbox sin implementar Dropbox real.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/storage_paths.py`;
+- se mueven normalizacion de rutas relativas y deteccion de rutas internas;
+- se mueven reglas de carpeta Dropbox por defecto;
+- se mueve escritura de `HTTP.url` y seleccion de raiz local;
+- `app.py` mantiene envoltorios para `DOWNLOAD_ROOT` y Dropbox local detectado;
+- se anaden tests directos de rutas.
+
+Fuera de esta fase:
+
+- no se cambia `api_download_licitacion()`;
+- no se cambian respuestas JSON;
+- no se implementa Dropbox API;
+- no se cambia SQLite;
+- no se cambia frontend ni Firebase.
