@@ -449,3 +449,19 @@ Mover esos formateadores a `webapp/infonalia_webapp/formatting.py` y reimportarl
 - Se reduce otra parte pequena del monolito sin cambiar comportamiento.
 - El contrato de formateo queda probado de forma aislada.
 - `app.py` conserva los nombres para llamadas existentes.
+
+## ADR-018 — Extraer nombres de carpeta puros desde app.py
+
+### Contexto
+
+Los helpers de nombres y descriptores de carpeta no necesitan servidor, SQLite, red ni filesystem real. En cambio, los helpers que resuelven rutas con `Path`, Dropbox o `DOWNLOAD_ROOT` pertenecen a una frontera mas sensible y no deben mezclarse con esta extraccion.
+
+### Decisión
+
+Mover solo los helpers puros de nombres a `webapp/infonalia_webapp/folder_names.py` y reimportarlos desde `app.py` para conservar compatibilidad.
+
+### Consecuencias
+
+- Se reduce otra parte del monolito sin cambiar comportamiento.
+- La logica de nombres queda testeada de forma aislada.
+- La resolucion de rutas y StorageBackend quedan fuera de esta fase.

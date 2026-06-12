@@ -1575,3 +1575,27 @@ Fuera de esta fase:
 - no se cambia frontend;
 - no se cambia Firebase;
 - no se ejecutan descargadores reales.
+
+## Fase 2L — Extraccion de nombres de carpeta puros
+
+La Fase 2L continua el refactor incremental de `app.py` con helpers puros de nombres de carpeta.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/folder_names.py`;
+- se mueven `safe_folder_name()`, `folder_text()`, `expediente_folder_text()`, `short_folder_phrase()`, `extract_municipio_from_organismo()`, `extract_residencia_phrase()`, `extract_hospital_phrase()` y `extract_objeto_folder_key()`;
+- `app.py` importa esos nombres y los conserva como fachada para llamadas existentes;
+- se dejan fuera helpers con `Path`, Dropbox o rutas reales para no mezclar este refactor con StorageBackend;
+- se anaden tests puros para confirmar formatos actuales y que importar `folder_names.py` no importa `app.py` ni modulos con efectos laterales.
+
+Fuera de esta fase:
+
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambia SQLite;
+- no se mueven handlers HTTP;
+- no se toca `InfonaliaHandler`;
+- no se cambia StorageBackend;
+- no se cambia frontend;
+- no se cambia Firebase;
+- no se ejecutan descargadores reales.
