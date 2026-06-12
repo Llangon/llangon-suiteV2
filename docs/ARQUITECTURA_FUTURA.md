@@ -2076,3 +2076,21 @@ Fuera de esta fase:
 - no se cambian roles ni usuarios por defecto;
 - no se anaden migraciones;
 - no se cambia frontend ni Firebase.
+
+## Fase 3I — Extraccion de serialización de licitaciones
+
+La Fase 3I separa la conversion de filas de licitaciones usada por las respuestas JSON.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/licitation_records.py`;
+- se mueve la conversion parametrizable de fila a diccionario;
+- `app.py` conserva `row_to_dict()` como envoltorio compatible;
+- se anaden tests directos de serializacion y de importacion sin efectos laterales.
+
+Fuera de esta fase:
+
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambian consultas SQLite ni migraciones;
+- no se cambia frontend ni Firebase.

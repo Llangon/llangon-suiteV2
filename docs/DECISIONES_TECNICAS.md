@@ -827,3 +827,20 @@ Mover esas piezas a `webapp/infonalia_webapp/user_settings.py` y dejar en `app.p
 - Se mantiene el formato JSON de usuarios.
 - Se mantiene la siembra inicial actual.
 - No se cambian endpoints ni respuestas.
+
+## ADR-041 — Extraer serialización de licitaciones
+
+### Contexto
+
+`app.py` seguia conteniendo la conversion de filas SQLite de licitaciones al diccionario usado en respuestas JSON. Esa logica mezcla normalizacion de URLs, plataforma y ruta de carpeta, pero no depende del handler HTTP.
+
+### Decisión
+
+Mover la conversion parametrizable a `webapp/infonalia_webapp/licitation_records.py` y mantener `row_to_dict()` en `app.py` como envoltorio compatible que inyecta los normalizadores existentes.
+
+### Consecuencias
+
+- La serializacion queda testeada sin importar `app.py`.
+- Se mantienen los nombres de campos y normalizaciones actuales.
+- No se cambian endpoints ni respuestas JSON.
+- No se cambia SQLite, frontend ni Firebase.

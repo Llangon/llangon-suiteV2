@@ -120,6 +120,11 @@ except ImportError:
     )
 
 try:
+    from .licitation_records import licitation_row_to_dict
+except ImportError:
+    from licitation_records import licitation_row_to_dict
+
+try:
     from .news_helpers import NEWS_STATUSES, news_to_dict, normalize_news_status, slugify
 except ImportError:
     from news_helpers import NEWS_STATUSES, news_to_dict, normalize_news_status, slugify
@@ -617,13 +622,12 @@ def now_iso() -> str:
 
 
 def row_to_dict(row: sqlite3.Row) -> dict:
-    item = {key: row[key] for key in row.keys()}
-    if not clean_text(item.get("plataforma")):
-        item["plataforma"] = detectar_plataforma(clean_text(item.get("enlace_perfil")))
-    item["enlace_perfil"] = normalize_url(item.get("enlace_perfil"))
-    item["enlace_infonalia"] = normalize_url(item.get("enlace_infonalia"))
-    item["ruta_carpeta"] = folder_path_for_storage(item.get("ruta_carpeta"))
-    return item
+    return licitation_row_to_dict(
+        row,
+        detect_platform=detectar_plataforma,
+        normalize_url_value=normalize_url,
+        normalize_folder_path=folder_path_for_storage,
+    )
 
 
 def get_user_record(username: object, include_password: bool = False) -> dict | None:
