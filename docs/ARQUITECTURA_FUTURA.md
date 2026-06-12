@@ -1623,3 +1623,28 @@ Fuera de esta fase:
 - no se cambia frontend;
 - no se cambia Firebase;
 - no se ejecuta red real.
+
+## Fase 2N — Extraccion de parsing CSV puro
+
+La Fase 2N continua el refactor incremental de `app.py` con el parsing CSV que no escribe en SQLite.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/csv_parsing.py`;
+- se mueven `CSV_ALIASES`, `normalize_key()`, `csv_alias_map()`, `row_value()`, `normalize_estado()`, `decode_csv_bytes()`, `read_csv_rows()` y `build_payload_from_csv_row()`;
+- `app.py` importa esos nombres y los conserva como fachada para llamadas existentes;
+- `import_csv_content()` se mantiene en `app.py` porque crea/actualiza datos en SQLite;
+- se anaden tests puros para alias, estado, lectura de filas y payload CSV;
+- se confirma que importar `csv_parsing.py` no importa `app.py` ni modulos con efectos laterales.
+
+Fuera de esta fase:
+
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambia SQLite;
+- no se cambia `import_csv_content()`;
+- no se mueven handlers HTTP;
+- no se toca `InfonaliaHandler`;
+- no se cambia frontend;
+- no se cambia Firebase;
+- no se usan datos reales.

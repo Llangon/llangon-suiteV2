@@ -481,3 +481,19 @@ Mover esos helpers a `webapp/infonalia_webapp/url_helpers.py` y reimportarlos de
 - Se reduce otra parte del monolito sin cambiar comportamiento.
 - La deteccion de plataformas queda testeada de forma aislada.
 - Cualquier cambio de seguridad en URLs queda para una fase separada.
+
+## ADR-020 — Extraer parsing CSV puro desde app.py
+
+### Contexto
+
+La lectura de bytes CSV, el mapeo de alias, la normalizacion de estado y la construccion de payload son pasos puros. `import_csv_content()` no lo es porque escribe en SQLite y recalcula dias.
+
+### Decisión
+
+Mover solo el parsing CSV puro a `webapp/infonalia_webapp/csv_parsing.py` y reimportarlo desde `app.py` para conservar compatibilidad. Mantener `import_csv_content()` en `app.py` hasta que exista una frontera de persistencia mas clara.
+
+### Consecuencias
+
+- Se reduce otra parte del monolito sin cambiar comportamiento.
+- El contrato de parsing CSV queda probado de forma aislada.
+- La escritura SQLite queda fuera de esta fase.
