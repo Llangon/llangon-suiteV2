@@ -1695,3 +1695,25 @@ Fuera de esta fase:
 - no se mueven handlers HTTP;
 - no se cambia frontend;
 - no se cambia Firebase.
+
+## Fase 2Q — Extraccion de helpers puros de vista previa IA
+
+La Fase 2Q continua el refactor incremental de `app.py` con la parte pura de la vista previa IA.
+
+Cambios aplicados:
+
+- se crea `webapp/infonalia_webapp/ai_preview_helpers.py`;
+- se mueven `extract_lotes_from_text()`, `extract_keyword_context()`, `extract_centros_from_text()` y `preview_payload_to_text()`;
+- `app.py` importa esos nombres y los conserva como fachada para llamadas existentes;
+- `build_ai_preview_payload()` se mantiene en `app.py` porque lee SQLite;
+- se anaden tests puros para las reglas actuales.
+
+Fuera de esta fase:
+
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambia SQLite;
+- no se cambia el envio de email;
+- no se mueven handlers HTTP;
+- no se cambia frontend;
+- no se cambia Firebase.

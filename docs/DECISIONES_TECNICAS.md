@@ -529,3 +529,19 @@ Mover esos helpers a `webapp/infonalia_webapp/msg_parsing.py` y reimportarlos de
 - Se reduce otra parte del monolito sin cambiar comportamiento.
 - El parsing textual queda probado de forma aislada.
 - Descarga PDF, lectura MSG y escritura SQLite quedan fuera de esta fase.
+
+## ADR-023 — Extraer helpers puros de vista previa IA
+
+### Contexto
+
+La vista previa IA mezcla una parte pura de extraccion de texto con otra parte que lee licitaciones desde SQLite y puede enviar notificaciones. La frontera segura es separar solo los helpers de texto y formateo del payload.
+
+### Decisión
+
+Mover `extract_lotes_from_text()`, `extract_keyword_context()`, `extract_centros_from_text()` y `preview_payload_to_text()` a `webapp/infonalia_webapp/ai_preview_helpers.py`. Mantener `build_ai_preview_payload()` y el envio de email en `app.py`.
+
+### Consecuencias
+
+- Se reduce otra parte del monolito sin cambiar comportamiento.
+- Las reglas de extraccion IA quedan testeadas de forma aislada.
+- SQLite, endpoints y envio de email quedan fuera de esta fase.
