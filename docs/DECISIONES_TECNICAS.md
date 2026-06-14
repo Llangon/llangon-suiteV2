@@ -997,19 +997,28 @@ Mover esa normalizacion a `new_user_payload()` y `updated_user_payload()` en `we
 - Se mantienen los mensajes de error actuales.
 - No se cambian endpoints ni permisos.
 - No se cambia SQLite, frontend ni Firebase.
-## ADR-040 — Actuaciones y vencimientos
+## ADR-051 — Actuaciones independientes y multivinculadas
 
-Se introduce el módulo operativo `Actuaciones` para registrar requerimientos, subsanaciones, aclaraciones, garantías, firmas, visitas y otros hitos con plazo asociados a una licitación.
+El primer módulo `Actuaciones` obligaba a crear una actuación dentro de una licitación concreta. Eso impedía registrar tareas generales, avisos internos o actuaciones que afectan a varios expedientes.
 
 Decisión:
-- crear la migración `0004_actuaciones` con la tabla `licitacion_actuaciones`;
-- mantener `licitacion_id` como FK sin `ON DELETE CASCADE`;
+- añadir la migración `0005_actuaciones_multilicitacion`;
+- usar `actuaciones` como tabla principal independiente;
+- usar `actuacion_licitaciones` como puente N:N;
+- usar `actuacion_historial` para trazabilidad básica;
+- permitir actuaciones sin licitación vinculada;
+- permitir actuaciones con varias licitaciones;
+- sustituir el desplegable simple por un selector con búsqueda y checkboxes;
 - bloquear el borrado de licitaciones o días si existen actuaciones abiertas;
-- permitir borrar la licitación solo cuando sus actuaciones están `cerrada` o `cancelada`, limpiando esos registros cerrados para respetar la FK;
-- conservar auditoría de importación y no borrar carpetas, manifests físicos, Dropbox ni backups;
-- usar `responsable_user_id`, `created_by` y `closed_by` como `TEXT` con `username`, porque la tabla actual `usuarios` no tiene columna `id` numérica compatible.
+- permitir borrar licitaciones o días cuando solo haya actuaciones cerradas/canceladas, eliminando solo las filas puente;
+- conservar actuaciones e historial aunque queden sin vínculo.
 
 Avisos:
-- el script `webapp/infonalia_webapp/send_actuaciones_reminders.py --dry-run` permite revisar el resumen sin enviar email;
-- el envío real reutiliza la configuración SMTP existente o `INFONALIA_REMINDER_RECIPIENTS`;
-- esta fase no implementa todavía la Bandeja Hoy, pero deja `/api/actuaciones/resumen` preparado para ella.
+- los avisos incluyen actuaciones sin licitación;
+- si una actuación tiene más de tres licitaciones, el resumen muestra tres y `+N más`;
+- el modo dry-run sigue sin enviar correo real.
+
+Consecuencias:
+- `prioridad`, `responsable_user_id` y `respuesta_resumen` dejan de formar parte funcional del módulo;
+- `created_by`, `closed_by` y `user_id` se guardan como `TEXT` con el `username` actual, porque `usuarios` no tiene id numérico;
+- la futura Bandeja Hoy puede consumir actuaciones independientes, no solo vencimientos asociados a licitaciones.

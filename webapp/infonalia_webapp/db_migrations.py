@@ -20,6 +20,14 @@ def enable_foreign_keys(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
 
 
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
 def _baseline_schema(_: sqlite3.Connection) -> None:
     return None
 
@@ -137,6 +145,160 @@ def _actuaciones_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_actuaciones_prioridad ON licitacion_actuaciones(prioridad)")
 
 
+def _create_actuaciones_multilicitacion_tables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS actuaciones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tipo TEXT NOT NULL,
+            titulo TEXT NOT NULL,
+            descripcion TEXT,
+            estado TEXT NOT NULL DEFAULT 'pendiente',
+            deadline_at TEXT,
+            recordatorio_email INTEGER NOT NULL DEFAULT 1,
+            origen TEXT NOT NULL DEFAULT 'manual',
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            closed_at TEXT,
+            closed_by TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS actuacion_licitaciones (
+            actuacion_id INTEGER NOT NULL,
+            licitacion_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            created_by TEXT,
+            PRIMARY KEY (actuacion_id, licitacion_id),
+            FOREIGN KEY (actuacion_id) REFERENCES actuaciones(id),
+            FOREIGN KEY (licitacion_id) REFERENCES licitaciones(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS actuacion_historial (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            actuacion_id INTEGER NOT NULL,
+            user_id TEXT,
+            event_type TEXT NOT NULL,
+            comentario TEXT,
+            old_value TEXT,
+            new_value TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (actuacion_id) REFERENCES actuaciones(id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_actuaciones_deadline ON actuaciones(deadline_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_actuaciones_estado ON actuaciones(estado)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_actuaciones_tipo ON actuaciones(tipo)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_actuacion_licitaciones_licitacion ON actuacion_licitaciones(licitacion_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_actuacion_licitaciones_actuacion ON actuacion_licitaciones(actuacion_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_actuacion_historial_actuacion ON actuacion_historial(actuacion_id)"
+    )
+
+
+def _actuaciones_multilicitacion_schema(conn: sqlite3.Connection) -> None:
+    legacy_exists = _table_exists(conn, "licitacion_actuaciones")
+    legacy_rows = []
+    if legacy_exists:
+        legacy_columns = [
+            "id",
+            "licitacion_id",
+            "tipo",
+            "titulo",
+            "descripcion",
+            "estado",
+            "deadline_at",
+            "recordatorio_email",
+            "origen",
+            "created_by",
+            "created_at",
+            "updated_at",
+            "closed_at",
+            "closed_by",
+        ]
+        legacy_rows = [
+            dict(zip(legacy_columns, row))
+            for row in conn.execute(
+            """
+            SELECT id, licitacion_id, tipo, titulo, descripcion, estado, deadline_at,
+                   recordatorio_email, origen, created_by, created_at, updated_at,
+                   closed_at, closed_by
+            FROM licitacion_actuaciones
+            ORDER BY id ASC
+            """
+            ).fetchall()
+        ]
+        conn.execute("DROP TABLE IF EXISTS actuacion_historial")
+        conn.execute("DROP TABLE IF EXISTS actuacion_licitaciones")
+        conn.execute("DROP TABLE IF EXISTS actuaciones")
+        conn.execute("DROP TABLE IF EXISTS licitacion_actuaciones")
+
+    _create_actuaciones_multilicitacion_tables(conn)
+
+    if legacy_exists:
+        for row in legacy_rows:
+            conn.execute(
+                """
+                INSERT INTO actuaciones (
+                    id, tipo, titulo, descripcion, estado, deadline_at, recordatorio_email,
+                    origen, created_by, created_at, updated_at, closed_at, closed_by
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["id"],
+                    row["tipo"],
+                    row["titulo"],
+                    row["descripcion"],
+                    row["estado"],
+                    row["deadline_at"],
+                    row["recordatorio_email"],
+                    row["origen"],
+                    row["created_by"],
+                    row["created_at"],
+                    row["updated_at"],
+                    row["closed_at"],
+                    row["closed_by"],
+                ),
+            )
+            if conn.execute("SELECT 1 FROM licitaciones WHERE id = ?", (row["licitacion_id"],)).fetchone():
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO actuacion_licitaciones (
+                        actuacion_id, licitacion_id, created_at, created_by
+                    )
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (row["id"], row["licitacion_id"], row["created_at"], row["created_by"]),
+                )
+            conn.execute(
+                """
+                INSERT INTO actuacion_historial (
+                    actuacion_id, user_id, event_type, comentario, created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    row["id"],
+                    row["created_by"],
+                    "migracion",
+                    "Actuacion migrada a modelo multi-licitacion",
+                    row["updated_at"],
+                ),
+            )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version="0001_baseline_schema",
@@ -157,6 +319,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version="0004_actuaciones",
         description="Tabla operativa para actuaciones y vencimientos",
         apply=_actuaciones_schema,
+    ),
+    Migration(
+        version="0005_actuaciones_multilicitacion",
+        description="Modelo independiente de actuaciones con vinculos multiples e historial",
+        apply=_actuaciones_multilicitacion_schema,
     ),
 )
 

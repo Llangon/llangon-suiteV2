@@ -52,7 +52,6 @@ try:
         ACTUACION_ESTADOS,
         ACTUACION_ESTADOS_ABIERTOS,
         ACTUACION_ESTADOS_CERRADOS,
-        ACTUACION_PRIORIDADES,
         ACTUACION_TIPOS,
         actuacion_payload,
         actuacion_to_dict,
@@ -65,7 +64,6 @@ except ImportError:
         ACTUACION_ESTADOS,
         ACTUACION_ESTADOS_ABIERTOS,
         ACTUACION_ESTADOS_CERRADOS,
-        ACTUACION_PRIORIDADES,
         ACTUACION_TIPOS,
         actuacion_payload,
         actuacion_to_dict,
@@ -695,9 +693,13 @@ def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition:
 
 def actuaciones_select_sql(where: list[str] | None = None) -> str:
     sql = """
-        SELECT a.*, l.expediente, l.organismo
-        FROM licitacion_actuaciones a
-        LEFT JOIN licitaciones l ON l.id = a.licitacion_id
+        SELECT a.*,
+               (
+                   SELECT COUNT(*)
+                   FROM actuacion_licitaciones al_count
+                   WHERE al_count.actuacion_id = a.id
+               ) AS licitaciones_count
+        FROM actuaciones a
     """
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -710,6 +712,188 @@ def get_actuacion_row(conn: sqlite3.Connection, actuacion_id: int) -> sqlite3.Ro
     return rows[0] if rows else None
 
 
+def licitacion_selection_dict(row: sqlite3.Row) -> dict[str, object]:
+    return {
+        "id": row["id"],
+        "expediente": row["expediente"] or "",
+        "organismo": row["organismo"] or "",
+        "objeto": row["objeto"] or "",
+        "fecha_limite": row["fecha_limite"] or "",
+        "hora_limite": row["hora_limite"] or "",
+        "estado": row["estado"] or "",
+        "provincia": row["provincia"] or "",
+        "plataforma": row["plataforma"] or "",
+    }
+
+
+def actuacion_licitaciones(conn: sqlite3.Connection, actuacion_id: int) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT l.id, l.expediente, l.organismo, l.objeto, l.fecha_limite, l.hora_limite,
+               l.estado, l.provincia, l.plataforma
+        FROM actuacion_licitaciones al
+        JOIN licitaciones l ON l.id = al.licitacion_id
+        WHERE al.actuacion_id = ?
+        ORDER BY l.expediente ASC, l.id ASC
+        """,
+        (actuacion_id,),
+    ).fetchall()
+    return [licitacion_selection_dict(row) for row in rows]
+
+
+def actuacion_historial(conn: sqlite3.Connection, actuacion_id: int) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, actuacion_id, user_id, event_type, comentario, old_value, new_value, created_at
+        FROM actuacion_historial
+        WHERE actuacion_id = ?
+        ORDER BY created_at ASC, id ASC
+        """,
+        (actuacion_id,),
+    ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "actuacion_id": row["actuacion_id"],
+            "user_id": row["user_id"] or "",
+            "event_type": row["event_type"],
+            "comentario": row["comentario"] or "",
+            "old_value": row["old_value"] or "",
+            "new_value": row["new_value"] or "",
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def actuacion_response(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    include_historial: bool = False,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    return actuacion_to_dict(
+        row,
+        licitaciones=actuacion_licitaciones(conn, int(row["id"])),
+        historial=actuacion_historial(conn, int(row["id"])) if include_historial else [],
+        now=now,
+    )
+
+
+def normalize_licitacion_ids(value: object) -> list[int]:
+    if value is None or value == "":
+        return []
+    if not isinstance(value, list):
+        raise ValueError("licitacion_ids debe ser una lista.")
+    normalized: list[int] = []
+    seen: set[int] = set()
+    for raw in value:
+        try:
+            licitacion_id = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("licitacion_ids contiene un id no valido.") from exc
+        if licitacion_id <= 0:
+            raise ValueError("licitacion_ids contiene un id no valido.")
+        if licitacion_id not in seen:
+            normalized.append(licitacion_id)
+            seen.add(licitacion_id)
+    return normalized
+
+
+def validate_licitacion_ids(conn: sqlite3.Connection, licitacion_ids: list[int]) -> list[int]:
+    if not licitacion_ids:
+        return []
+    placeholders = ",".join("?" for _ in licitacion_ids)
+    existing = {
+        int(row["id"])
+        for row in conn.execute(
+            f"SELECT id FROM licitaciones WHERE id IN ({placeholders})",
+            licitacion_ids,
+        ).fetchall()
+    }
+    missing = [str(licitacion_id) for licitacion_id in licitacion_ids if licitacion_id not in existing]
+    if missing:
+        raise ValueError(f"Licitaciones vinculadas no encontradas: {', '.join(missing)}")
+    return licitacion_ids
+
+
+def current_actuacion_licitacion_ids(conn: sqlite3.Connection, actuacion_id: int) -> list[int]:
+    rows = conn.execute(
+        "SELECT licitacion_id FROM actuacion_licitaciones WHERE actuacion_id = ? ORDER BY licitacion_id ASC",
+        (actuacion_id,),
+    ).fetchall()
+    return [int(row["licitacion_id"]) for row in rows]
+
+
+def record_actuacion_event(
+    conn: sqlite3.Connection,
+    actuacion_id: int,
+    *,
+    user_id: str,
+    event_type: str,
+    comentario: str = "",
+    old_value: object = "",
+    new_value: object = "",
+    timestamp: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO actuacion_historial (
+            actuacion_id, user_id, event_type, comentario, old_value, new_value, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            actuacion_id,
+            user_id,
+            event_type,
+            comentario,
+            str(old_value or ""),
+            str(new_value or ""),
+            timestamp or now_iso(),
+        ),
+    )
+
+
+def set_actuacion_licitaciones(
+    conn: sqlite3.Connection,
+    actuacion_id: int,
+    licitacion_ids: list[int],
+    *,
+    user_id: str,
+    timestamp: str,
+    record_event: bool = True,
+) -> bool:
+    valid_ids = validate_licitacion_ids(conn, licitacion_ids)
+    old_ids = current_actuacion_licitacion_ids(conn, actuacion_id)
+    if old_ids == sorted(valid_ids):
+        return False
+    conn.execute("DELETE FROM actuacion_licitaciones WHERE actuacion_id = ?", (actuacion_id,))
+    for licitacion_id in valid_ids:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO actuacion_licitaciones (
+                actuacion_id, licitacion_id, created_at, created_by
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (actuacion_id, licitacion_id, timestamp, user_id),
+        )
+    if record_event:
+        record_actuacion_event(
+            conn,
+            actuacion_id,
+            user_id=user_id,
+            event_type="licitaciones",
+            comentario="Cambio de licitaciones vinculadas",
+            old_value=",".join(str(item) for item in old_ids),
+            new_value=",".join(str(item) for item in sorted(valid_ids)),
+            timestamp=timestamp,
+        )
+    return True
+
+
 def open_actuaciones_count(conn: sqlite3.Connection, licitacion_ids: list[int]) -> int:
     if not licitacion_ids:
         return 0
@@ -717,10 +901,11 @@ def open_actuaciones_count(conn: sqlite3.Connection, licitacion_ids: list[int]) 
     estado_placeholders = ",".join("?" for _ in ACTUACION_ESTADOS_ABIERTOS)
     row = conn.execute(
         f"""
-        SELECT COUNT(*) AS total
-        FROM licitacion_actuaciones
-        WHERE licitacion_id IN ({placeholders})
-          AND estado IN ({estado_placeholders})
+        SELECT COUNT(DISTINCT a.id) AS total
+        FROM actuaciones a
+        JOIN actuacion_licitaciones al ON al.actuacion_id = a.id
+        WHERE al.licitacion_id IN ({placeholders})
+          AND a.estado IN ({estado_placeholders})
         """,
         [*licitacion_ids, *sorted(ACTUACION_ESTADOS_ABIERTOS)],
     ).fetchone()
@@ -739,14 +924,9 @@ def delete_licitacion_dependents(conn: sqlite3.Connection, licitacion_ids: list[
         f"UPDATE import_results SET licitacion_id = NULL WHERE licitacion_id IN ({placeholders})",
         licitacion_ids,
     )
-    estado_placeholders = ",".join("?" for _ in ACTUACION_ESTADOS_CERRADOS)
     conn.execute(
-        f"""
-        DELETE FROM licitacion_actuaciones
-        WHERE licitacion_id IN ({placeholders})
-          AND estado IN ({estado_placeholders})
-        """,
-        [*licitacion_ids, *sorted(ACTUACION_ESTADOS_CERRADOS)],
+        f"DELETE FROM actuacion_licitaciones WHERE licitacion_id IN ({placeholders})",
+        licitacion_ids,
     )
 
 
@@ -1382,12 +1562,20 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_me()
         elif path == "/api/dias":
             self.api_list_dias()
+        elif path == "/api/licitaciones/search":
+            self.api_search_licitaciones(parsed.query)
         elif path == "/api/licitaciones":
             self.api_list_licitaciones(parsed.query)
         elif path == "/api/actuaciones":
             self.api_list_actuaciones(parsed.query)
         elif path == "/api/actuaciones/resumen":
             self.api_actuaciones_resumen()
+        elif path.startswith("/api/actuaciones/"):
+            actuacion_id = path.removeprefix("/api/actuaciones/").strip("/")
+            if not actuacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_get_actuacion(int(actuacion_id))
         elif path == "/api/notificaciones":
             self.api_list_notificaciones(parsed.query)
         elif path == "/api/config":
@@ -1427,6 +1615,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_test_smtp()
         elif path == "/api/news":
             self.api_create_news()
+        elif path == "/api/actuaciones":
+            self.api_create_actuacion()
         elif path == "/api/import/msg":
             self.api_import_msg()
         elif path == "/api/import/csv":
@@ -1473,6 +1663,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_create_actuacion(int(licitacion_id))
+        elif path.startswith("/api/actuaciones/") and path.endswith("/historial"):
+            actuacion_id = path.removeprefix("/api/actuaciones/").removesuffix("/historial").strip("/")
+            if not actuacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_add_actuacion_historial(int(actuacion_id))
         elif path.startswith("/api/actuaciones/") and path.endswith("/cerrar"):
             actuacion_id = path.removeprefix("/api/actuaciones/").removesuffix("/cerrar").strip("/")
             if not actuacion_id.isdigit():
@@ -1601,6 +1797,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if method == "POST":
             if path in {
                 "/api/licitaciones",
+                "/api/actuaciones",
                 "/api/config/users",
                 "/api/config/test-smtp",
                 "/api/news",
@@ -1624,6 +1821,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/actuaciones/") and (
                 path.endswith("/cerrar")
                 or path.endswith("/cancelar")
+                or path.endswith("/historial")
             ):
                 return True
             return False
@@ -2195,13 +2393,14 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     for row in conn.execute(
                         f"""
                         SELECT
-                            licitacion_id,
-                            COUNT(*) AS total_abiertas,
-                            SUM(CASE WHEN deadline_at IS NOT NULL AND deadline_at <> '' AND deadline_at < ? THEN 1 ELSE 0 END) AS vencidas
-                        FROM licitacion_actuaciones
-                        WHERE licitacion_id IN ({placeholders})
-                          AND estado IN ({estado_placeholders})
-                        GROUP BY licitacion_id
+                            al.licitacion_id,
+                            COUNT(DISTINCT a.id) AS total_abiertas,
+                            SUM(CASE WHEN a.deadline_at IS NOT NULL AND a.deadline_at <> '' AND a.deadline_at < ? THEN 1 ELSE 0 END) AS vencidas
+                        FROM actuacion_licitaciones al
+                        JOIN actuaciones a ON a.id = al.actuacion_id
+                        WHERE al.licitacion_id IN ({placeholders})
+                          AND a.estado IN ({estado_placeholders})
+                        GROUP BY al.licitacion_id
                         """,
                         [now_iso(), *licitacion_ids, *sorted(ACTUACION_ESTADOS_ABIERTOS)],
                     )
@@ -2269,8 +2468,61 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def api_search_licitaciones(self, query: str) -> None:
+        params = parse_qs(query)
+        search = clean_text(params.get("q", [""])[0])
+        estado = clean_text(params.get("estado", [""])[0])
+        provincia = clean_text(params.get("provincia", [""])[0])
+        plataforma = clean_text(params.get("plataforma", [""])[0])
+        try:
+            limit = int(params.get("limit", ["50"])[0])
+        except ValueError:
+            limit = 50
+        limit = max(1, min(limit, 200))
+
+        where: list[str] = []
+        values: list[object] = []
+        if search:
+            where.append(
+                """
+                (
+                    expediente LIKE ? OR organismo LIKE ? OR objeto LIKE ? OR provincia LIKE ?
+                    OR estado LIKE ? OR fecha_limite LIKE ? OR plataforma LIKE ?
+                )
+                """
+            )
+            like = f"%{search}%"
+            values.extend([like, like, like, like, like, like, like])
+        if estado:
+            where.append("estado = ?")
+            values.append(estado)
+        if provincia:
+            where.append("provincia LIKE ?")
+            values.append(f"%{provincia}%")
+        if plataforma:
+            where.append("plataforma = ?")
+            values.append(plataforma)
+
+        sql = """
+            SELECT id, expediente, organismo, objeto, fecha_limite, hora_limite,
+                   estado, provincia, plataforma
+            FROM licitaciones
+        """
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += """
+            ORDER BY CASE WHEN fecha_limite IS NULL OR fecha_limite = '' THEN 1 ELSE 0 END ASC,
+                     fecha_limite ASC,
+                     hora_limite ASC,
+                     id DESC
+            LIMIT ?
+        """
+        values.append(limit)
+        with db_session() as conn:
+            rows = conn.execute(sql, values).fetchall()
+        self.send_json({"items": [licitacion_selection_dict(row) for row in rows]})
+
     def api_list_actuaciones(self, query: str) -> None:
-        user = self.current_user() or {}
         params = parse_qs(query)
         where: list[str] = []
         values: list[object] = []
@@ -2278,8 +2530,25 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         estado = clean_text(params.get("estado", [""])[0]).lower()
 
         if licitacion_id.isdigit():
-            where.append("a.licitacion_id = ?")
+            where.append(
+                """
+                EXISTS (
+                    SELECT 1 FROM actuacion_licitaciones al_filter
+                    WHERE al_filter.actuacion_id = a.id
+                      AND al_filter.licitacion_id = ?
+                )
+                """
+            )
             values.append(int(licitacion_id))
+        if clean_text(params.get("sin_licitacion", [""])[0]) == "1":
+            where.append(
+                """
+                NOT EXISTS (
+                    SELECT 1 FROM actuacion_licitaciones al_empty
+                    WHERE al_empty.actuacion_id = a.id
+                )
+                """
+            )
         if estado in ACTUACION_ESTADOS:
             where.append("a.estado = ?")
             values.append(estado)
@@ -2287,17 +2556,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             placeholders = ",".join("?" for _ in ACTUACION_ESTADOS_ABIERTOS)
             where.append(f"a.estado IN ({placeholders})")
             values.extend(sorted(ACTUACION_ESTADOS_ABIERTOS))
-        if clean_text(params.get("responsable", [""])[0]) == "me":
-            where.append("a.responsable_user_id = ?")
-            values.append(user.get("username", ""))
-        if clean_text(params.get("sin_responsable", [""])[0]) == "1":
-            where.append("(a.responsable_user_id IS NULL OR a.responsable_user_id = '')")
 
         current = datetime.now()
         with db_session() as conn:
             rows = conn.execute(actuaciones_select_sql(where), values).fetchall()
+            items = [actuacion_response(conn, row, now=current) for row in rows]
 
-        items = [actuacion_to_dict(row, now=current) for row in rows]
         if clean_text(params.get("vencidas", [""])[0]) == "1":
             items = [item for item in items if item["estado_visual"] == "vencida"]
         if clean_text(params.get("hoy", [""])[0]) == "1":
@@ -2311,8 +2575,6 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "summary": summarize_actuaciones(rows, now=current),
                 "tipos": sorted(ACTUACION_TIPOS),
                 "estados": sorted(ACTUACION_ESTADOS),
-                "prioridades": sorted(ACTUACION_PRIORIDADES),
-                "users": list_user_records(active_only=True),
             }
         )
 
@@ -2326,10 +2588,23 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             ).fetchall()
         self.send_json(summarize_actuaciones(rows, now=current))
 
-    def api_create_actuacion(self, licitacion_id: int) -> None:
+    def api_get_actuacion(self, actuacion_id: int) -> None:
+        with db_session() as conn:
+            row = get_actuacion_row(conn, actuacion_id)
+            if not row:
+                self.send_json({"error": "Actuacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                return
+            item = actuacion_response(conn, row, include_historial=True)
+        self.send_json({"item": item})
+
+    def api_create_actuacion(self, default_licitacion_id: int | None = None) -> None:
         user = self.current_user() or {}
+        username = clean_actuacion_value(user.get("username"))
         try:
             data = self.read_json()
+            if default_licitacion_id is not None and "licitacion_ids" not in data:
+                data["licitacion_ids"] = [default_licitacion_id]
+            licitacion_ids = normalize_licitacion_ids(data.get("licitacion_ids"))
             payload = actuacion_payload(data, now=now_iso)
         except (ValueError, json.JSONDecodeError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
@@ -2337,33 +2612,62 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         timestamp = now_iso()
         with db_session() as conn:
-            licitacion = conn.execute("SELECT id FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
-            if not licitacion:
-                self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
+            try:
+                licitacion_ids = validate_licitacion_ids(conn, licitacion_ids)
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
             payload.update(
                 {
-                    "licitacion_id": licitacion_id,
-                    "created_by": clean_actuacion_value(user.get("username")),
+                    "created_by": username,
                     "created_at": timestamp,
                     "updated_at": timestamp,
                 }
             )
             if payload.get("estado") in ACTUACION_ESTADOS_CERRADOS:
                 payload["closed_at"] = timestamp
-                payload["closed_by"] = clean_actuacion_value(user.get("username"))
+                payload["closed_by"] = username
             columns = ", ".join(payload.keys())
             placeholders = ", ".join("?" for _ in payload)
             cur = conn.execute(
-                f"INSERT INTO licitacion_actuaciones ({columns}) VALUES ({placeholders})",
+                f"INSERT INTO actuaciones ({columns}) VALUES ({placeholders})",
                 list(payload.values()),
             )
-            row = get_actuacion_row(conn, int(cur.lastrowid))
+            actuacion_id = int(cur.lastrowid)
+            set_actuacion_licitaciones(
+                conn,
+                actuacion_id,
+                licitacion_ids,
+                user_id=username,
+                timestamp=timestamp,
+                record_event=False,
+            )
+            record_actuacion_event(
+                conn,
+                actuacion_id,
+                user_id=username,
+                event_type="creacion",
+                comentario="Actuacion creada",
+                timestamp=timestamp,
+            )
+            if licitacion_ids:
+                record_actuacion_event(
+                    conn,
+                    actuacion_id,
+                    user_id=username,
+                    event_type="licitaciones",
+                    comentario="Licitaciones vinculadas al crear la actuacion",
+                    new_value=",".join(str(item) for item in sorted(licitacion_ids)),
+                    timestamp=timestamp,
+                )
+            row = get_actuacion_row(conn, actuacion_id)
+            item = actuacion_response(conn, row, include_historial=True)
 
-        self.send_json({"ok": True, "item": actuacion_to_dict(row)}, HTTPStatus.CREATED)
+        self.send_json({"ok": True, "item": item}, HTTPStatus.CREATED)
 
     def api_update_actuacion(self, actuacion_id: int) -> None:
         user = self.current_user() or {}
+        username = clean_actuacion_value(user.get("username"))
         try:
             data = self.read_json()
         except json.JSONDecodeError as exc:
@@ -2377,22 +2681,60 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 return
             try:
                 payload = actuacion_payload(data, partial=True, existing=existing, now=now_iso)
+                licitacion_ids = normalize_licitacion_ids(data.get("licitacion_ids")) if "licitacion_ids" in data else None
             except ValueError as exc:
                 self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
             if payload.get("estado") in ACTUACION_ESTADOS_CERRADOS and not payload.get("closed_by"):
-                payload["closed_by"] = clean_actuacion_value(user.get("username"))
-            if not payload:
-                self.send_json({"error": "No hay cambios"}, HTTPStatus.BAD_REQUEST)
-                return
+                payload["closed_by"] = username
+            timestamp = clean_actuacion_value(payload.get("updated_at")) or now_iso()
+            old_estado = existing["estado"]
+            old_deadline = existing["deadline_at"] or ""
+            if licitacion_ids is not None:
+                try:
+                    licitacion_ids = validate_licitacion_ids(conn, licitacion_ids)
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                    return
             set_clause = ", ".join(f"{key} = ?" for key in payload)
             conn.execute(
-                f"UPDATE licitacion_actuaciones SET {set_clause} WHERE id = ?",
+                f"UPDATE actuaciones SET {set_clause} WHERE id = ?",
                 list(payload.values()) + [actuacion_id],
             )
+            if "estado" in payload and payload["estado"] != old_estado:
+                record_actuacion_event(
+                    conn,
+                    actuacion_id,
+                    user_id=username,
+                    event_type="estado",
+                    comentario="Cambio de estado",
+                    old_value=old_estado,
+                    new_value=payload["estado"],
+                    timestamp=timestamp,
+                )
+            if "deadline_at" in payload and (payload["deadline_at"] or "") != old_deadline:
+                record_actuacion_event(
+                    conn,
+                    actuacion_id,
+                    user_id=username,
+                    event_type="deadline",
+                    comentario="Cambio de fecha limite",
+                    old_value=old_deadline,
+                    new_value=payload["deadline_at"] or "",
+                    timestamp=timestamp,
+                )
+            if licitacion_ids is not None:
+                set_actuacion_licitaciones(
+                    conn,
+                    actuacion_id,
+                    licitacion_ids,
+                    user_id=username,
+                    timestamp=timestamp,
+                )
             row = get_actuacion_row(conn, actuacion_id)
+            item = actuacion_response(conn, row, include_historial=True)
 
-        self.send_json({"ok": True, "item": actuacion_to_dict(row)})
+        self.send_json({"ok": True, "item": item})
 
     def api_close_actuacion(self, actuacion_id: int) -> None:
         self.api_set_actuacion_closed_state(actuacion_id, "cerrada")
@@ -2409,21 +2751,56 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             if not row:
                 self.send_json({"error": "Actuacion no encontrada"}, HTTPStatus.NOT_FOUND)
                 return
-            if estado == "cancelada" and user.get("role") != "admin":
-                owner = username and username in {row["responsable_user_id"], row["created_by"]}
-                if not owner:
-                    self.send_json({"error": "No tienes permiso para cancelar esta actuacion."}, HTTPStatus.FORBIDDEN)
-                    return
             conn.execute(
                 """
-                UPDATE licitacion_actuaciones
+                UPDATE actuaciones
                 SET estado = ?, closed_at = ?, closed_by = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (estado, timestamp, username, timestamp, actuacion_id),
             )
+            record_actuacion_event(
+                conn,
+                actuacion_id,
+                user_id=username,
+                event_type="cierre" if estado == "cerrada" else "cancelacion",
+                comentario="Actuacion cerrada" if estado == "cerrada" else "Actuacion cancelada",
+                old_value=row["estado"],
+                new_value=estado,
+                timestamp=timestamp,
+            )
             updated = get_actuacion_row(conn, actuacion_id)
-        self.send_json({"ok": True, "item": actuacion_to_dict(updated)})
+            item = actuacion_response(conn, updated, include_historial=True)
+        self.send_json({"ok": True, "item": item})
+
+    def api_add_actuacion_historial(self, actuacion_id: int) -> None:
+        user = self.current_user() or {}
+        username = clean_actuacion_value(user.get("username"))
+        try:
+            data = self.read_json()
+            comentario = clean_actuacion_value(data.get("comentario"))
+        except json.JSONDecodeError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        if not comentario:
+            self.send_json({"error": "El comentario es obligatorio."}, HTTPStatus.BAD_REQUEST)
+            return
+        timestamp = now_iso()
+        with db_session() as conn:
+            row = get_actuacion_row(conn, actuacion_id)
+            if not row:
+                self.send_json({"error": "Actuacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                return
+            record_actuacion_event(
+                conn,
+                actuacion_id,
+                user_id=username,
+                event_type="comentario",
+                comentario=comentario,
+                timestamp=timestamp,
+            )
+            item = actuacion_response(conn, row, include_historial=True)
+        self.send_json({"ok": True, "item": item}, HTTPStatus.CREATED)
 
     def api_create_licitacion(self) -> None:
         if not self.require_admin():
@@ -3065,7 +3442,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 dia_id = row["infonalia_dia_id"]
                 if open_actuaciones_count(conn, [licitacion_id]):
                     self.send_json(
-                        {"error": "No se puede borrar una licitacion con actuaciones abiertas."},
+                        {"error": "No se puede borrar la licitación porque tiene actuaciones abiertas."},
                         HTTPStatus.CONFLICT,
                     )
                     return
@@ -3103,7 +3480,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
                 if open_actuaciones_count(conn, licitacion_ids):
                     self.send_json(
-                        {"error": "No se puede borrar un Dia Infonalia con actuaciones abiertas."},
+                        {"error": "No se puede borrar el día porque contiene licitaciones con actuaciones abiertas."},
                         HTTPStatus.CONFLICT,
                     )
                     return

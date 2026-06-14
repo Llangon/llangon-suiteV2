@@ -15,16 +15,16 @@ def teardown_function() -> None:
     sys.modules.pop("webapp.infonalia_webapp.send_actuaciones_reminders", None)
 
 
-def test_reminder_body_includes_vencidas_hoy_semana_and_sin_responsable() -> None:
+def test_reminder_body_includes_vencidas_hoy_semana_and_sin_licitacion() -> None:
     app = load_app_module()
     with temporary_app_database(app):
         dia_id = insert_dia(app)
         licitacion_id = insert_licitacion(app, dia_id, "REM-001")
         now = datetime.now().replace(microsecond=0)
-        create_actuacion(app, licitacion_id, titulo="Vencida", deadline_at=(now - timedelta(hours=1)).isoformat())
-        create_actuacion(app, licitacion_id, titulo="Hoy", deadline_at=(now + timedelta(minutes=30)).isoformat())
-        create_actuacion(app, licitacion_id, titulo="Semana", deadline_at=(now + timedelta(days=4)).isoformat())
-        create_actuacion(app, licitacion_id, titulo="Sin responsable", responsable_user_id="", deadline_at="")
+        create_actuacion(app, [licitacion_id], titulo="Vencida", deadline_at=(now - timedelta(hours=1)).isoformat())
+        create_actuacion(app, [licitacion_id], titulo="Hoy", deadline_at=(now + timedelta(minutes=30)).isoformat())
+        create_actuacion(app, [licitacion_id], titulo="Semana", deadline_at=(now + timedelta(days=4)).isoformat())
+        create_actuacion(app, None, titulo="Sin licitación", deadline_at="")
         with app.db_session() as conn:
             rows = reminder_rows(conn, now=now)
 
@@ -33,8 +33,34 @@ def test_reminder_body_includes_vencidas_hoy_semana_and_sin_responsable() -> Non
     assert "Vencida" in text
     assert "Hoy" in text
     assert "Semana" in text
-    assert "Sin responsable" in text
+    assert "Sin licitación" in text
     assert "Actuaciones vencidas" in html
+
+
+def test_reminder_body_summarizes_more_than_three_licitaciones() -> None:
+    app = load_app_module()
+    with temporary_app_database(app):
+        dia_id = insert_dia(app)
+        licitacion_ids = [
+            insert_licitacion(app, dia_id, f"REM-MULTI-{index}")
+            for index in range(1, 5)
+        ]
+        now = datetime.now().replace(microsecond=0)
+        create_actuacion(
+            app,
+            licitacion_ids,
+            titulo="Revisión conjunta",
+            deadline_at=(now + timedelta(hours=1)).isoformat(),
+        )
+        with app.db_session() as conn:
+            rows = reminder_rows(conn, now=now)
+
+    text, _html = build_reminder_body(rows, now=now)
+
+    assert "REM-MULTI-1" in text
+    assert "REM-MULTI-2" in text
+    assert "REM-MULTI-3" in text
+    assert "+1 más" in text
 
 
 def test_send_actuaciones_reminders_dry_run_does_not_send(monkeypatch, capsys) -> None:

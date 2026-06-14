@@ -1177,6 +1177,10 @@ dialog::backdrop {
   margin-bottom: 18px;
 }
 
+.dialog-head.slim {
+  margin-bottom: 8px;
+}
+
 .icon-button {
   border-radius: 999px;
   font-size: 24px;
@@ -1198,6 +1202,60 @@ dialog::backdrop {
 .form-grid label:nth-child(14),
 .form-grid label:nth-child(15) {
   grid-column: 1 / -1;
+}
+
+.form-grid .full-field {
+  grid-column: 1 / -1;
+}
+
+.linked-picker {
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  padding: 12px;
+}
+
+.linked-list,
+.selector-results,
+.history-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.linked-item,
+.selector-item,
+.history-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.selector-item {
+  align-items: start;
+  display: grid;
+  gap: 4px 10px;
+  grid-template-columns: auto 1fr;
+}
+
+.selector-item input {
+  margin-top: 4px;
+}
+
+.selector-item small,
+.linked-item small,
+.history-item small {
+  color: var(--muted);
+}
+
+.history-panel {
+  border-top: 1px solid var(--border);
+  margin-top: 14px;
+  padding-top: 14px;
 }
 
 .dialog-actions {

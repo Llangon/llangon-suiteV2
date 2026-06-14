@@ -51,7 +51,13 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
 
     applied = run_migrations(conn, now=lambda: "2026-06-12T10:00:00")
 
-    assert applied == ["0001_baseline_schema", "0002_download_jobs", "0003_import_history", "0004_actuaciones"]
+    assert applied == [
+        "0001_baseline_schema",
+        "0002_download_jobs",
+        "0003_import_history",
+        "0004_actuaciones",
+        "0005_actuaciones_multilicitacion",
+    ]
     assert table_exists(conn, MIGRATIONS_TABLE)
     rows = conn.execute(
         f"SELECT version, description, applied_at FROM {MIGRATIONS_TABLE}"
@@ -77,11 +83,19 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
             "Tabla operativa para actuaciones y vencimientos",
             "2026-06-12T10:00:00",
         ),
+        (
+            "0005_actuaciones_multilicitacion",
+            "Modelo independiente de actuaciones con vinculos multiples e historial",
+            "2026-06-12T10:00:00",
+        ),
     ]
     assert table_exists(conn, "download_jobs")
     assert table_exists(conn, "import_runs")
     assert table_exists(conn, "import_results")
-    assert table_exists(conn, "licitacion_actuaciones")
+    assert table_exists(conn, "actuaciones")
+    assert table_exists(conn, "actuacion_licitaciones")
+    assert table_exists(conn, "actuacion_historial")
+    assert not table_exists(conn, "licitacion_actuaciones")
 
 
 def test_run_migrations_enables_foreign_key_enforcement() -> None:
@@ -102,6 +116,7 @@ def test_run_migrations_is_idempotent() -> None:
         "0002_download_jobs",
         "0003_import_history",
         "0004_actuaciones",
+        "0005_actuaciones_multilicitacion",
     ]
     assert run_migrations(conn, now=lambda: "2026-06-12T10:05:00") == []
 
@@ -111,6 +126,7 @@ def test_run_migrations_is_idempotent() -> None:
         ("0002_download_jobs", "2026-06-12T10:00:00"),
         ("0003_import_history", "2026-06-12T10:00:00"),
         ("0004_actuaciones", "2026-06-12T10:00:00"),
+        ("0005_actuaciones_multilicitacion", "2026-06-12T10:00:00"),
     ]
 
 
@@ -244,21 +260,17 @@ def test_actuaciones_migration_schema_is_idempotent() -> None:
 
     columns = {
         row[1]: row[2]
-        for row in conn.execute("PRAGMA table_info(licitacion_actuaciones)").fetchall()
+        for row in conn.execute("PRAGMA table_info(actuaciones)").fetchall()
     }
     assert columns == {
         "id": "INTEGER",
-        "licitacion_id": "INTEGER",
         "tipo": "TEXT",
         "titulo": "TEXT",
         "descripcion": "TEXT",
         "estado": "TEXT",
-        "prioridad": "TEXT",
-        "responsable_user_id": "TEXT",
         "deadline_at": "TEXT",
         "recordatorio_email": "INTEGER",
         "origen": "TEXT",
-        "respuesta_resumen": "TEXT",
         "created_by": "TEXT",
         "created_at": "TEXT",
         "updated_at": "TEXT",
@@ -267,20 +279,92 @@ def test_actuaciones_migration_schema_is_idempotent() -> None:
     }
     indexes = {
         row[1]
-        for row in conn.execute("PRAGMA index_list(licitacion_actuaciones)").fetchall()
+        for row in conn.execute("PRAGMA index_list(actuaciones)").fetchall()
     }
     assert {
-        "idx_actuaciones_licitacion",
         "idx_actuaciones_estado",
         "idx_actuaciones_deadline",
-        "idx_actuaciones_responsable",
         "idx_actuaciones_tipo",
-        "idx_actuaciones_prioridad",
     } <= indexes
-    fks = conn.execute("PRAGMA foreign_key_list(licitacion_actuaciones)").fetchall()
-    assert [(row[2], row[3], row[4], row[6]) for row in fks] == [
-        ("licitaciones", "licitacion_id", "id", "NO ACTION")
+
+    bridge_columns = {
+        row[1]: row[2]
+        for row in conn.execute("PRAGMA table_info(actuacion_licitaciones)").fetchall()
+    }
+    assert bridge_columns == {
+        "actuacion_id": "INTEGER",
+        "licitacion_id": "INTEGER",
+        "created_at": "TEXT",
+        "created_by": "TEXT",
+    }
+    bridge_indexes = {
+        row[1]
+        for row in conn.execute("PRAGMA index_list(actuacion_licitaciones)").fetchall()
+    }
+    assert {
+        "idx_actuacion_licitaciones_licitacion",
+        "idx_actuacion_licitaciones_actuacion",
+    } <= bridge_indexes
+    bridge_fks = conn.execute("PRAGMA foreign_key_list(actuacion_licitaciones)").fetchall()
+    assert sorted((row[2], row[3], row[4], row[6]) for row in bridge_fks) == [
+        ("actuaciones", "actuacion_id", "id", "NO ACTION"),
+        ("licitaciones", "licitacion_id", "id", "NO ACTION"),
     ]
+
+    history_columns = {
+        row[1]: row[2]
+        for row in conn.execute("PRAGMA table_info(actuacion_historial)").fetchall()
+    }
+    assert history_columns == {
+        "id": "INTEGER",
+        "actuacion_id": "INTEGER",
+        "user_id": "TEXT",
+        "event_type": "TEXT",
+        "comentario": "TEXT",
+        "old_value": "TEXT",
+        "new_value": "TEXT",
+        "created_at": "TEXT",
+    }
+    history_indexes = {
+        row[1]
+        for row in conn.execute("PRAGMA index_list(actuacion_historial)").fetchall()
+    }
+    assert "idx_actuacion_historial_actuacion" in history_indexes
+
+
+def test_actuaciones_multilicitacion_accepts_none_one_and_many_links() -> None:
+    conn = sqlite3.connect(":memory:")
+    enable_foreign_keys(conn)
+    conn.execute("CREATE TABLE licitaciones (id INTEGER PRIMARY KEY, expediente TEXT)")
+    run_migrations(conn, now=lambda: "2026-06-12T10:00:00")
+    conn.executemany(
+        "INSERT INTO licitaciones (id, expediente) VALUES (?, ?)",
+        [(1, "A"), (2, "B")],
+    )
+    conn.execute(
+        """
+        INSERT INTO actuaciones (tipo, titulo, estado, created_at, updated_at)
+        VALUES ('otro', 'Sin vinculo', 'pendiente', '2026-06-12T10:00:00', '2026-06-12T10:00:00')
+        """
+    )
+    cur = conn.execute(
+        """
+        INSERT INTO actuaciones (tipo, titulo, estado, created_at, updated_at)
+        VALUES ('otro', 'Con varios', 'pendiente', '2026-06-12T10:00:00', '2026-06-12T10:00:00')
+        """
+    )
+    actuacion_id = int(cur.lastrowid)
+    conn.executemany(
+        """
+        INSERT INTO actuacion_licitaciones (actuacion_id, licitacion_id, created_at)
+        VALUES (?, ?, '2026-06-12T10:00:00')
+        """,
+        [(actuacion_id, 1), (actuacion_id, 2)],
+    )
+
+    assert conn.execute("SELECT COUNT(*) FROM actuaciones").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM actuacion_licitaciones").fetchone()[0] == 2
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 def test_init_db_runs_migrations_on_temporary_database_only() -> None:

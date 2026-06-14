@@ -2283,17 +2283,21 @@ Fuera de esta fase:
 - no se cambia frontend ni Firebase.
 ## Módulo Actuaciones y vencimientos
 
-El módulo `Actuaciones` registra tareas operativas con plazo vinculadas a licitaciones: requerimientos, subsanaciones, aclaraciones, documentación adicional, garantías, firmas, visitas, aperturas de mesa, recursos, seguimiento y otros hitos.
+El módulo `Actuaciones` registra tareas operativas con plazo: requerimientos, subsanaciones, aclaraciones, documentación adicional, garantías, firmas, visitas, aperturas de mesa, recursos, seguimiento y otros hitos.
 
 Modelo:
-- tabla `licitacion_actuaciones`, creada por la migración `0004_actuaciones`;
+- migración `0005_actuaciones_multilicitacion`;
+- tabla principal `actuaciones`, independiente de licitaciones;
+- tabla puente `actuacion_licitaciones` para permitir cero, una o varias licitaciones vinculadas;
+- tabla `actuacion_historial` para creación, cambios de estado, cambios de fecha, cambios de vínculos, cierre, cancelación y comentarios;
 - estados manuales: `pendiente`, `en_curso`, `respondida`, `cerrada`, `cancelada`;
 - estados visuales calculados: vencida, vence hoy, vence esta semana, sin fecha y cerrada fuera de plazo;
-- prioridades: `normal`, `alta`, `critica`;
-- responsable guardado como `username` en `responsable_user_id`, ya que `usuarios` no tiene `id` numérico.
+- no se usa funcionalmente prioridad, responsable ni resumen de respuesta.
 
 Operativa:
-- API privada autenticada para listar, crear, actualizar, cerrar y cancelar actuaciones;
+- API privada autenticada para buscar licitaciones, listar, crear, consultar detalle, actualizar, cerrar, cancelar y comentar actuaciones;
+- el formulario permite guardar actuaciones sin licitación;
+- la UI usa selector con búsqueda y checkboxes para multivincular licitaciones;
 - resumen `/api/actuaciones/resumen` para futura Bandeja Hoy;
 - frontend privado con vista global, filtros rápidos y formulario de alta/edición;
 - las tarjetas de licitación muestran contador de actuaciones abiertas y aviso si hay vencidas.
@@ -2306,4 +2310,5 @@ Avisos por email:
 Borrado:
 - no se borran carpetas locales, ficheros descargados, manifests físicos, Dropbox ni backups;
 - no se puede borrar una licitación o día si tiene actuaciones abiertas;
-- si todas están cerradas/canceladas, se permite borrar la licitación y limpiar esas actuaciones cerradas para respetar la FK.
+- si todas están cerradas/canceladas, se permite borrar la licitación o día y se limpian solo las filas de `actuacion_licitaciones`;
+- las actuaciones y su histórico se conservan aunque queden sin licitación vinculada.

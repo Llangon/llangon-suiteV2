@@ -27,7 +27,6 @@ ACTUACION_TIPOS = {
 ACTUACION_ESTADOS_ABIERTOS = {"pendiente", "en_curso", "respondida"}
 ACTUACION_ESTADOS_CERRADOS = {"cerrada", "cancelada"}
 ACTUACION_ESTADOS = ACTUACION_ESTADOS_ABIERTOS | ACTUACION_ESTADOS_CERRADOS
-ACTUACION_PRIORIDADES = {"normal", "alta", "critica"}
 
 
 def clean_value(value: object) -> str:
@@ -116,19 +115,12 @@ def actuacion_payload(
         payload["descripcion"] = clean_value(data.get("descripcion"))
     if not partial or "estado" in data:
         payload["estado"] = normalize_choice(data.get("estado"), ACTUACION_ESTADOS, "pendiente")
-    if not partial or "prioridad" in data:
-        payload["prioridad"] = normalize_choice(data.get("prioridad"), ACTUACION_PRIORIDADES, "normal")
-    if not partial or "responsable_user_id" in data:
-        payload["responsable_user_id"] = clean_value(data.get("responsable_user_id")) or None
     if not partial or "deadline_at" in data:
         payload["deadline_at"] = normalize_deadline(data.get("deadline_at"))
     if not partial or "recordatorio_email" in data:
         payload["recordatorio_email"] = bool_int(data.get("recordatorio_email"), default=True)
     if not partial or "origen" in data:
         payload["origen"] = clean_value(data.get("origen")) or "manual"
-    if not partial or "respuesta_resumen" in data:
-        payload["respuesta_resumen"] = clean_value(data.get("respuesta_resumen"))
-
     estado = clean_value(payload.get("estado", existing["estado"] if existing else "pendiente")).lower()
     if estado in ACTUACION_ESTADOS_CERRADOS and existing and not existing["closed_at"]:
         timestamp = now()
@@ -140,28 +132,32 @@ def actuacion_payload(
     return payload
 
 
-def actuacion_to_dict(row: Any, *, now: datetime | None = None) -> dict[str, object]:
+def actuacion_to_dict(
+    row: Any,
+    *,
+    licitaciones: list[dict[str, object]] | None = None,
+    historial: list[dict[str, object]] | None = None,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    linked = licitaciones or []
     return {
         "id": row["id"],
-        "licitacion_id": row["licitacion_id"],
-        "expediente": row["expediente"] if "expediente" in row.keys() else "",
-        "organismo": row["organismo"] if "organismo" in row.keys() else "",
         "tipo": row["tipo"],
         "titulo": row["titulo"],
         "descripcion": row["descripcion"] or "",
         "estado": row["estado"],
         "estado_visual": visual_state(row, now=now),
-        "prioridad": row["prioridad"],
-        "responsable_user_id": row["responsable_user_id"] or "",
         "deadline_at": row["deadline_at"] or "",
         "recordatorio_email": bool(row["recordatorio_email"]),
         "origen": row["origen"],
-        "respuesta_resumen": row["respuesta_resumen"] or "",
         "created_by": row["created_by"] or "",
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "closed_at": row["closed_at"] or "",
         "closed_by": row["closed_by"] or "",
+        "licitaciones": linked,
+        "licitaciones_count": len(linked),
+        "historial": historial or [],
     }
 
 
@@ -170,7 +166,7 @@ def empty_summary() -> dict[str, int]:
         "vencidas": 0,
         "vencen_hoy": 0,
         "vencen_semana": 0,
-        "sin_responsable": 0,
+        "sin_licitacion": 0,
         "total_abiertas": 0,
     }
 
@@ -181,8 +177,9 @@ def summarize_actuaciones(rows: list[Any], *, now: datetime | None = None) -> di
         if not is_open_estado(row["estado"]):
             continue
         summary["total_abiertas"] += 1
-        if not clean_value(row["responsable_user_id"]):
-            summary["sin_responsable"] += 1
+        linked_count = row["licitaciones_count"] if "licitaciones_count" in row.keys() else 0
+        if not int(linked_count or 0):
+            summary["sin_licitacion"] += 1
         state = visual_state(row, now=now)
         if state == "vencida":
             summary["vencidas"] += 1

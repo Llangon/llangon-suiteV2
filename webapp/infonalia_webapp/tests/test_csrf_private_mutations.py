@@ -23,9 +23,11 @@ POST_CASES = [
     ("POST", "/api/licitaciones/9/descargar", "api_download_licitacion", (9,)),
     ("POST", "/api/licitaciones/9/ia-preview/email", "api_send_ai_preview_email", (9,)),
     ("POST", "/api/licitaciones/9/ia-preview", "api_generate_ai_preview", (9,)),
+    ("POST", "/api/actuaciones", "api_create_actuacion", ()),
     ("POST", "/api/licitaciones/9/actuaciones", "api_create_actuacion", (9,)),
     ("POST", "/api/actuaciones/3/cerrar", "api_close_actuacion", (3,)),
     ("POST", "/api/actuaciones/3/cancelar", "api_cancel_actuacion", (3,)),
+    ("POST", "/api/actuaciones/3/historial", "api_add_actuacion_historial", (3,)),
 ]
 
 PATCH_CASES = [

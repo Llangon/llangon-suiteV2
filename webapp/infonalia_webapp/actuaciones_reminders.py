@@ -12,30 +12,62 @@ except ImportError:
     from notification_delivery import build_notification_message, send_notification_email_with_settings
 
 
-def reminder_rows(conn, *, now: datetime | None = None) -> list:
+def linked_licitaciones(conn, actuacion_id: int) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT l.id, l.expediente, l.organismo, l.objeto, l.fecha_limite, l.hora_limite,
+               l.estado, l.provincia, l.plataforma
+        FROM actuacion_licitaciones al
+        JOIN licitaciones l ON l.id = al.licitacion_id
+        WHERE al.actuacion_id = ?
+        ORDER BY l.expediente ASC, l.id ASC
+        """,
+        (actuacion_id,),
+    ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "expediente": row["expediente"] or "",
+            "organismo": row["organismo"] or "",
+            "objeto": row["objeto"] or "",
+            "fecha_limite": row["fecha_limite"] or "",
+            "hora_limite": row["hora_limite"] or "",
+            "estado": row["estado"] or "",
+            "provincia": row["provincia"] or "",
+            "plataforma": row["plataforma"] or "",
+        }
+        for row in rows
+    ]
+
+
+def reminder_rows(conn, *, now: datetime | None = None) -> list[dict]:
     current = now or datetime.now()
     rows = conn.execute(
         """
-        SELECT a.*, l.expediente, l.organismo
-        FROM licitacion_actuaciones a
-        LEFT JOIN licitaciones l ON l.id = a.licitacion_id
+        SELECT a.*,
+               (
+                   SELECT COUNT(*)
+                   FROM actuacion_licitaciones al_count
+                   WHERE al_count.actuacion_id = a.id
+               ) AS licitaciones_count
+        FROM actuaciones a
         WHERE a.recordatorio_email = 1
           AND a.estado IN ('pendiente', 'en_curso', 'respondida')
         ORDER BY CASE WHEN a.deadline_at IS NULL OR a.deadline_at = '' THEN 1 ELSE 0 END ASC,
                  a.deadline_at ASC,
-                 a.prioridad DESC,
                  a.id DESC
         """
     ).fetchall()
-    return [
-        row for row in rows
-        if actuacion_to_dict(row, now=current)["estado_visual"] in {
-            "vencida",
-            "vence_hoy",
-            "vence_esta_semana",
-            "sin_fecha",
-        }
-    ]
+    items = []
+    for row in rows:
+        item = actuacion_to_dict(
+            row,
+            licitaciones=linked_licitaciones(conn, int(row["id"])),
+            now=current,
+        )
+        if item["estado_visual"] in {"vencida", "vence_hoy", "vence_esta_semana", "sin_fecha"}:
+            items.append(item)
+    return items
 
 
 def grouped_reminder_items(rows: list, *, now: datetime | None = None) -> dict[str, list[dict]]:
@@ -44,29 +76,43 @@ def grouped_reminder_items(rows: list, *, now: datetime | None = None) -> dict[s
         "vencidas": [],
         "hoy": [],
         "semana": [],
-        "sin_responsable": [],
+        "sin_licitacion": [],
     }
     for row in rows:
-        item = actuacion_to_dict(row, now=current)
+        item = row if isinstance(row, dict) and "estado_visual" in row else actuacion_to_dict(row, now=current)
         if item["estado_visual"] == "vencida":
             groups["vencidas"].append(item)
         elif item["estado_visual"] == "vence_hoy":
             groups["hoy"].append(item)
         elif item["estado_visual"] == "vence_esta_semana":
             groups["semana"].append(item)
-        if not item["responsable_user_id"]:
-            groups["sin_responsable"].append(item)
+        if not item.get("licitaciones"):
+            groups["sin_licitacion"].append(item)
     return groups
+
+
+def licitaciones_label(item: dict) -> str:
+    licitaciones = item.get("licitaciones") or []
+    if not licitaciones:
+        return "Sin licitación"
+    labels = [
+        licitacion.get("expediente")
+        or licitacion.get("organismo")
+        or f"Licitación {licitacion.get('id')}"
+        for licitacion in licitaciones[:3]
+    ]
+    if len(licitaciones) > 3:
+        labels.append(f"+{len(licitaciones) - 3} más")
+    return ", ".join(str(label) for label in labels)
 
 
 def item_line(item: dict) -> str:
     parts = [
-        f"{item['expediente'] or 'Sin expediente'}",
-        f"{item['organismo'] or 'Sin organismo'}",
         f"{item['titulo']}",
         f"tipo={item['tipo']}",
+        f"estado={item['estado']}",
         f"limite={item['deadline_at'] or 'sin fecha'}",
-        f"responsable={item['responsable_user_id'] or 'sin responsable'}",
+        f"licitaciones={licitaciones_label(item)}",
         f"/app?actuacion_id={item['id']}",
     ]
     return " | ".join(str(part) for part in parts)
@@ -80,14 +126,14 @@ def build_reminder_body(rows: list, *, now: datetime | None = None) -> tuple[str
         ("Actuaciones vencidas", groups["vencidas"]),
         ("Vencen hoy", groups["hoy"]),
         ("Vencen en los proximos 7 dias", groups["semana"]),
-        ("Sin responsable", groups["sin_responsable"]),
+        ("Sin licitación", groups["sin_licitacion"]),
     ]
     text_lines = [
         "Resumen de actuaciones y vencimientos",
         (
             f"Abiertas: {summary['total_abiertas']} | Vencidas: {summary['vencidas']} | "
             f"Hoy: {summary['vencen_hoy']} | Semana: {summary['vencen_semana']} | "
-            f"Sin responsable: {summary['sin_responsable']}"
+            f"Sin licitación: {summary['sin_licitacion']}"
         ),
         "",
     ]
@@ -96,7 +142,7 @@ def build_reminder_body(rows: list, *, now: datetime | None = None) -> tuple[str
         (
             f"<p>Abiertas: {summary['total_abiertas']} | Vencidas: {summary['vencidas']} | "
             f"Hoy: {summary['vencen_hoy']} | Semana: {summary['vencen_semana']} | "
-            f"Sin responsable: {summary['sin_responsable']}</p>"
+            f"Sin licitación: {summary['sin_licitacion']}</p>"
         ),
     ]
     for title, items in sections:

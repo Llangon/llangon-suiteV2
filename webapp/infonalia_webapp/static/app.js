@@ -18,8 +18,9 @@ const appState = {
   newsItems: [],
   actuaciones: [],
   actuacionesSummary: {},
-  actuacionesUsers: [],
-  actuacionLicitaciones: [],
+  actuacionSelectedLicitaciones: [],
+  actuacionSelectorResults: [],
+  actuacionSelectorDraft: new Map(),
   calendarDate: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
   calendarSelectedDate: "",
   nuriaDaysView: "pending",
@@ -62,6 +63,15 @@ const actuacionesFilter = document.getElementById("actuaciones-filter");
 const actuacionDialog = document.getElementById("actuacion-dialog");
 const actuacionForm = document.getElementById("actuacion-form");
 const actuacionFormTitle = document.getElementById("actuacion-form-title");
+const actuacionLicitacionesSummary = document.getElementById("actuacion-licitaciones-summary");
+const actuacionSelectedLicitaciones = document.getElementById("actuacion-selected-licitaciones");
+const actuacionHistoryPanel = document.getElementById("actuacion-history-panel");
+const actuacionHistory = document.getElementById("actuacion-history");
+const actuacionComment = document.getElementById("actuacion-comment");
+const licitacionSelectorDialog = document.getElementById("licitacion-selector-dialog");
+const licitacionSelectorForm = document.getElementById("licitacion-selector-form");
+const licitacionSelectorSearch = document.getElementById("licitacion-selector-search");
+const licitacionSelectorResults = document.getElementById("licitacion-selector-results");
 const notificationsBoard = document.getElementById("notifications-board");
 const newsAdminBoard = document.getElementById("news-admin-board");
 const newsForm = document.getElementById("news-form");
@@ -575,8 +585,7 @@ function actuacionesQueryParams() {
   if (filter === "vencidas") params.set("vencidas", "1");
   if (filter === "hoy") params.set("hoy", "1");
   if (filter === "semana") params.set("semana", "1");
-  if (filter === "mis") params.set("responsable", "me");
-  if (filter === "sin_responsable") params.set("sin_responsable", "1");
+  if (filter === "sin_licitacion") params.set("sin_licitacion", "1");
   if (filter === "cerradas") params.set("estado", "cerrada");
   return params;
 }
@@ -591,7 +600,6 @@ async function loadActuaciones() {
   const data = await response.json();
   appState.actuaciones = data.items || [];
   appState.actuacionesSummary = data.summary || {};
-  appState.actuacionesUsers = data.users || [];
   renderActuacionesSummary();
   renderActuacionesBoard();
 }
@@ -603,7 +611,7 @@ function renderActuacionesSummary() {
     ["Vencidas", summaryData.vencidas || 0],
     ["Hoy", summaryData.vencen_hoy || 0],
     ["Esta semana", summaryData.vencen_semana || 0],
-    ["Sin responsable", summaryData.sin_responsable || 0],
+    ["Sin licitación", summaryData.sin_licitacion || 0],
   ].map(renderMetric).join("");
 }
 
@@ -615,18 +623,35 @@ function renderActuacionesBoard() {
   actuacionesBoard.innerHTML = appState.actuaciones.map(renderActuacionCard).join("");
 }
 
+function licitacionBrief(item) {
+  return item.expediente || item.organismo || item.objeto || `Licitación ${item.id}`;
+}
+
+function linkedLicitacionesText(licitaciones = []) {
+  if (!licitaciones.length) return "Sin licitación";
+  const labels = licitaciones.slice(0, 3).map(licitacionBrief);
+  if (licitaciones.length > 3) labels.push(`+${licitaciones.length - 3} más`);
+  return labels.join(", ");
+}
+
+function linkedLicitacionesCountText(licitaciones = []) {
+  if (!licitaciones.length) return "Sin licitaciones vinculadas";
+  if (licitaciones.length === 1) return "1 licitación vinculada";
+  return `${licitaciones.length} licitaciones vinculadas`;
+}
+
 function renderActuacionCard(item) {
   const deadline = item.deadline_at ? item.deadline_at.replace("T", " ") : "Sin fecha";
-  const responsable = item.responsable_user_id || "Sin responsable";
+  const linked = item.licitaciones || [];
   const canClose = ["pendiente", "en_curso", "respondida"].includes(item.estado);
   return `
     <article class="card compact-card actuacion-card">
       <div class="card-content">
         <div class="card-head">
           <div class="card-title-block">
-            <p class="eyebrow">${escapeHtml(item.expediente || "Licitación")}</p>
+            <p class="eyebrow">${escapeHtml(linkedLicitacionesCountText(linked))}</p>
             <h2>${escapeHtml(item.titulo)}</h2>
-            <p class="card-organismo">${escapeHtml(item.organismo || "")}</p>
+            <p class="card-organismo">${escapeHtml(linkedLicitacionesText(linked))}</p>
           </div>
           <div class="card-flags">
             <span class="due-chip ${escapeHtml(item.estado_visual)}">${escapeHtml(actuacionLabel(actuacionVisualLabels, item.estado_visual))}</span>
@@ -634,9 +659,9 @@ function renderActuacionCard(item) {
           </div>
         </div>
         <div class="details">
-          <div class="detail"><span>Prioridad</span>${escapeHtml(item.prioridad)}</div>
           <div class="detail"><span>Límite</span>${escapeHtml(deadline)}</div>
-          <div class="detail"><span>Responsable</span>${escapeHtml(responsable)}</div>
+          <div class="detail"><span>Estado</span>${escapeHtml(actuacionLabel(actuacionEstadoLabels, item.estado))}</div>
+          <div class="detail"><span>Vínculos</span>${escapeHtml(String(item.licitaciones_count || linked.length || 0))}</div>
         </div>
         ${item.descripcion ? `<p class="muted">${escapeHtml(item.descripcion)}</p>` : ""}
         <div class="card-actions">
@@ -649,76 +674,151 @@ function renderActuacionCard(item) {
   `;
 }
 
-async function ensureActuacionLicitaciones() {
-  if (appState.actuacionLicitaciones?.length) return;
-  const response = await fetch("/api/licitaciones?orden_fecha=asc&vivas=1");
-  if (!response.ok) return;
-  const data = await response.json();
-  appState.actuacionLicitaciones = data.items || [];
+function setSelectedActuacionLicitaciones(items = []) {
+  const unique = new Map();
+  for (const item of items) {
+    if (item?.id) unique.set(String(item.id), item);
+  }
+  appState.actuacionSelectedLicitaciones = [...unique.values()];
+  renderSelectedActuacionLicitaciones();
 }
 
-function fillActuacionFormOptions(selectedLicitacionId = "", selectedUser = "") {
-  const licitacionSelect = actuacionForm.elements.licitacion_select;
-  licitacionSelect.innerHTML = (appState.actuacionLicitaciones || []).map((item) => `
-    <option value="${escapeHtml(item.id)}">${escapeHtml(item.expediente || `Licitación ${item.id}`)} · ${escapeHtml(item.organismo || "")}</option>
+function renderSelectedActuacionLicitaciones() {
+  const selected = appState.actuacionSelectedLicitaciones || [];
+  actuacionLicitacionesSummary.textContent = linkedLicitacionesCountText(selected);
+  if (!selected.length) {
+    actuacionSelectedLicitaciones.innerHTML = `<div class="empty">Sin licitaciones vinculadas.</div>`;
+    return;
+  }
+  actuacionSelectedLicitaciones.innerHTML = selected.map((item) => `
+    <article class="linked-item">
+      <strong>${escapeHtml(licitacionBrief(item))}</strong>
+      <small>${escapeHtml(item.organismo || "")}${item.fecha_limite ? ` · ${escapeHtml(item.fecha_limite)}` : ""}</small>
+      <button type="button" class="ghost" data-remove-selected-licitacion="${escapeHtml(item.id)}">Quitar</button>
+    </article>
   `).join("");
-  if (selectedLicitacionId) licitacionSelect.value = String(selectedLicitacionId);
-  const userSelect = actuacionForm.elements.responsable_user_id;
-  userSelect.innerHTML = `<option value="">Sin responsable</option>${(appState.actuacionesUsers || []).map((user) => `
-    <option value="${escapeHtml(user.username)}">${escapeHtml(user.display_name || user.username)}</option>
-  `).join("")}`;
-  userSelect.value = selectedUser || "";
+}
+
+async function loadLicitacionSelectorResults() {
+  const params = new URLSearchParams();
+  params.set("limit", "100");
+  const search = licitacionSelectorSearch.value.trim();
+  if (search) params.set("q", search);
+  const response = await fetch(`/api/licitaciones/search?${params.toString()}`);
+  if (!response.ok) {
+    licitacionSelectorResults.innerHTML = `<div class="empty">No se pudieron cargar licitaciones.</div>`;
+    return;
+  }
+  const data = await response.json();
+  appState.actuacionSelectorResults = data.items || [];
+  renderLicitacionSelectorResults();
+}
+
+function renderLicitacionSelectorResults() {
+  const results = appState.actuacionSelectorResults || [];
+  if (!results.length) {
+    licitacionSelectorResults.innerHTML = `<div class="empty">No hay licitaciones para esa búsqueda.</div>`;
+    return;
+  }
+  licitacionSelectorResults.innerHTML = results.map((item) => {
+    const checked = appState.actuacionSelectorDraft.has(String(item.id)) ? "checked" : "";
+    return `
+      <label class="selector-item">
+        <input type="checkbox" value="${escapeHtml(item.id)}" ${checked}>
+        <span>
+          <strong>${escapeHtml(licitacionBrief(item))}</strong>
+          <small>${escapeHtml(item.organismo || "Sin organismo")} · ${escapeHtml(item.objeto || "Sin objeto")}</small>
+          <small>${escapeHtml(item.fecha_limite || "Sin fecha")} · ${escapeHtml(item.estado || "")} · ${escapeHtml(item.plataforma || "")}</small>
+        </span>
+      </label>
+    `;
+  }).join("");
+}
+
+async function openLicitacionSelector() {
+  appState.actuacionSelectorDraft = new Map(
+    (appState.actuacionSelectedLicitaciones || []).map((item) => [String(item.id), item])
+  );
+  licitacionSelectorSearch.value = "";
+  await loadLicitacionSelectorResults();
+  licitacionSelectorDialog.showModal();
+}
+
+function commitLicitacionSelection() {
+  setSelectedActuacionLicitaciones([...appState.actuacionSelectorDraft.values()]);
+  licitacionSelectorDialog.close();
+}
+
+function renderActuacionHistory(entries = []) {
+  if (!actuacionForm.elements.id.value) {
+    actuacionHistoryPanel.hidden = true;
+    actuacionHistory.innerHTML = "";
+    return;
+  }
+  actuacionHistoryPanel.hidden = false;
+  if (!entries.length) {
+    actuacionHistory.innerHTML = `<div class="empty">Sin movimientos registrados.</div>`;
+    return;
+  }
+  actuacionHistory.innerHTML = entries.map((entry) => `
+    <article class="history-item">
+      <strong>${escapeHtml(entry.event_type || "evento")}</strong>
+      <small>${escapeHtml(entry.created_at || "")}${entry.user_id ? ` · ${escapeHtml(entry.user_id)}` : ""}</small>
+      ${entry.comentario ? `<p>${escapeHtml(entry.comentario)}</p>` : ""}
+      ${entry.old_value || entry.new_value ? `<small>${escapeHtml(entry.old_value || "vacío")} -> ${escapeHtml(entry.new_value || "vacío")}</small>` : ""}
+    </article>
+  `).join("");
 }
 
 async function openActuacionDialog(licitacionId = "") {
-  await ensureActuacionLicitaciones();
-  if (!appState.actuacionesUsers.length) await loadActuaciones();
   actuacionForm.reset();
   actuacionForm.elements.id.value = "";
-  actuacionForm.elements.licitacion_id.value = licitacionId || "";
   actuacionFormTitle.textContent = "Nueva actuación";
-  fillActuacionFormOptions(licitacionId);
   actuacionForm.elements.recordatorio_email.checked = true;
+  const linked = licitacionId
+    ? appState.items.filter((item) => String(item.id) === String(licitacionId))
+    : [];
+  setSelectedActuacionLicitaciones(linked);
+  renderActuacionHistory([]);
   actuacionDialog.showModal();
 }
 
 async function editActuacion(id) {
-  const item = appState.actuaciones.find((entry) => String(entry.id) === String(id));
-  if (!item) return;
-  await ensureActuacionLicitaciones();
+  const response = await fetch(`/api/actuaciones/${id}`);
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.item) {
+    alert(result.error || "No se pudo cargar la actuación.");
+    return;
+  }
+  const item = result.item;
   actuacionForm.reset();
   actuacionFormTitle.textContent = `Editar ${item.titulo || "actuación"}`;
   actuacionForm.elements.id.value = item.id;
-  actuacionForm.elements.licitacion_id.value = item.licitacion_id;
-  fillActuacionFormOptions(item.licitacion_id, item.responsable_user_id);
   actuacionForm.elements.tipo.value = item.tipo || "otro";
   actuacionForm.elements.titulo.value = item.titulo || "";
   actuacionForm.elements.descripcion.value = item.descripcion || "";
-  actuacionForm.elements.prioridad.value = item.prioridad || "normal";
   actuacionForm.elements.deadline_at.value = toDatetimeLocal(item.deadline_at || "");
   actuacionForm.elements.estado.value = item.estado || "pendiente";
   actuacionForm.elements.recordatorio_email.checked = Boolean(item.recordatorio_email);
-  actuacionForm.elements.respuesta_resumen.value = item.respuesta_resumen || "";
+  setSelectedActuacionLicitaciones(item.licitaciones || []);
+  renderActuacionHistory(item.historial || []);
   actuacionDialog.showModal();
 }
 
 async function saveActuacion(event) {
   event.preventDefault();
   const id = actuacionForm.elements.id.value;
-  const licitacionId = actuacionForm.elements.licitacion_select.value || actuacionForm.elements.licitacion_id.value;
   const payload = {
     tipo: actuacionForm.elements.tipo.value,
     titulo: actuacionForm.elements.titulo.value,
     descripcion: actuacionForm.elements.descripcion.value,
-    prioridad: actuacionForm.elements.prioridad.value,
-    responsable_user_id: actuacionForm.elements.responsable_user_id.value,
     deadline_at: actuacionForm.elements.deadline_at.value,
     estado: actuacionForm.elements.estado.value,
     recordatorio_email: actuacionForm.elements.recordatorio_email.checked,
-    respuesta_resumen: actuacionForm.elements.respuesta_resumen.value,
+    licitacion_ids: (appState.actuacionSelectedLicitaciones || []).map((item) => Number(item.id)),
     origen: "manual",
   };
-  const response = await fetch(id ? `/api/actuaciones/${id}` : `/api/licitaciones/${licitacionId}/actuaciones`, {
+  const response = await fetch(id ? `/api/actuaciones/${id}` : "/api/actuaciones", {
     method: id ? "PATCH" : "POST",
     headers: { "Content-Type": "application/json", ...csrfHeaders() },
     body: JSON.stringify(payload),
@@ -731,6 +831,25 @@ async function saveActuacion(event) {
   actuacionDialog.close();
   await loadActuaciones();
   await loadItems();
+}
+
+async function addActuacionComment() {
+  const id = actuacionForm.elements.id.value;
+  const comentario = actuacionComment.value.trim();
+  if (!id || !comentario) return;
+  const response = await fetch(`/api/actuaciones/${id}/historial`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
+    body: JSON.stringify({ comentario }),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(result.error || "No se pudo añadir el comentario.");
+    return;
+  }
+  actuacionComment.value = "";
+  renderActuacionHistory(result.item?.historial || []);
+  await loadActuaciones();
 }
 
 async function setActuacionClosedState(id, action) {
@@ -1976,6 +2095,37 @@ actuacionesFilter.addEventListener("change", loadActuaciones);
 document.getElementById("new-actuacion-button").addEventListener("click", () => openActuacionDialog());
 document.getElementById("close-actuacion-dialog").addEventListener("click", () => actuacionDialog.close());
 document.getElementById("cancel-actuacion-dialog").addEventListener("click", () => actuacionDialog.close());
+document.getElementById("open-licitacion-selector").addEventListener("click", openLicitacionSelector);
+document.getElementById("close-licitacion-selector").addEventListener("click", () => licitacionSelectorDialog.close());
+document.getElementById("cancel-licitacion-selector").addEventListener("click", () => licitacionSelectorDialog.close());
+document.getElementById("clear-licitacion-selection").addEventListener("click", () => {
+  appState.actuacionSelectorDraft.clear();
+  renderLicitacionSelectorResults();
+});
+document.getElementById("add-actuacion-comment").addEventListener("click", addActuacionComment);
+licitacionSelectorSearch.addEventListener("input", debounce(loadLicitacionSelectorResults, 250));
+licitacionSelectorForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  commitLicitacionSelection();
+});
+licitacionSelectorResults.addEventListener("change", (event) => {
+  const checkbox = event.target.closest("input[type='checkbox']");
+  if (!checkbox) return;
+  const item = (appState.actuacionSelectorResults || []).find((entry) => String(entry.id) === String(checkbox.value));
+  if (!item) return;
+  if (checkbox.checked) {
+    appState.actuacionSelectorDraft.set(String(item.id), item);
+  } else {
+    appState.actuacionSelectorDraft.delete(String(item.id));
+  }
+});
+actuacionSelectedLicitaciones.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-remove-selected-licitacion]");
+  if (!button) return;
+  setSelectedActuacionLicitaciones(
+    (appState.actuacionSelectedLicitaciones || []).filter((item) => String(item.id) !== String(button.dataset.removeSelectedLicitacion))
+  );
+});
 actuacionForm.addEventListener("submit", saveActuacion);
 newsForm.addEventListener("submit", saveNews);
 document.getElementById("reset-news-form").addEventListener("click", resetNewsForm);

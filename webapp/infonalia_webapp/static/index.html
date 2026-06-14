@@ -170,8 +170,7 @@
             <option value="vencidas">Vencidas</option>
             <option value="hoy">Hoy</option>
             <option value="semana">Esta semana</option>
-            <option value="mis">Mis actuaciones</option>
-            <option value="sin_responsable">Sin responsable</option>
+            <option value="sin_licitacion">Sin licitación</option>
             <option value="cerradas">Cerradas</option>
           </select>
         </label>
@@ -439,7 +438,6 @@
   <dialog id="actuacion-dialog">
     <form id="actuacion-form" method="dialog">
       <input type="hidden" name="id">
-      <input type="hidden" name="licitacion_id">
       <div class="dialog-head">
         <div>
           <p class="eyebrow">Actuación</p>
@@ -447,10 +445,15 @@
         </div>
         <button type="button" class="icon-button" id="close-actuacion-dialog">×</button>
       </div>
+      <section class="linked-picker">
+        <div>
+          <p class="eyebrow">Licitaciones vinculadas</p>
+          <strong id="actuacion-licitaciones-summary">Sin licitaciones vinculadas</strong>
+        </div>
+        <button type="button" id="open-licitacion-selector">Seleccionar licitaciones</button>
+      </section>
+      <section id="actuacion-selected-licitaciones" class="linked-list"></section>
       <div class="form-grid">
-        <label>Licitación
-          <select name="licitacion_select" required></select>
-        </label>
         <label>Tipo
           <select name="tipo">
             <option value="requerimiento">Requerimiento</option>
@@ -472,18 +475,6 @@
           </select>
         </label>
         <label>Título<input name="titulo" required></label>
-        <label>Prioridad
-          <select name="prioridad">
-            <option value="normal">Normal</option>
-            <option value="alta">Alta</option>
-            <option value="critica">Crítica</option>
-          </select>
-        </label>
-        <label>Responsable
-          <select name="responsable_user_id">
-            <option value="">Sin responsable</option>
-          </select>
-        </label>
         <label>Fecha/hora límite<input name="deadline_at" type="datetime-local"></label>
         <label>Estado
           <select name="estado">
@@ -498,12 +489,43 @@
           <input name="recordatorio_email" type="checkbox" checked>
           Aviso por email
         </label>
-        <label>Descripción<textarea name="descripcion" rows="3"></textarea></label>
-        <label>Resumen de respuesta<textarea name="respuesta_resumen" rows="2"></textarea></label>
+        <label class="full-field">Descripción<textarea name="descripcion" rows="3"></textarea></label>
       </div>
+      <section class="history-panel" id="actuacion-history-panel" hidden>
+        <div class="dialog-head slim">
+          <div>
+            <p class="eyebrow">Histórico</p>
+            <h3>Actividad</h3>
+          </div>
+        </div>
+        <div id="actuacion-history" class="history-list"></div>
+        <label>Comentario<textarea id="actuacion-comment" rows="2"></textarea></label>
+        <button type="button" id="add-actuacion-comment">Añadir comentario</button>
+      </section>
       <div class="dialog-actions">
         <button type="button" class="ghost" id="cancel-actuacion-dialog">Cancelar</button>
         <button type="submit" class="primary">Guardar actuación</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="licitacion-selector-dialog">
+    <form id="licitacion-selector-form" method="dialog">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">Selector</p>
+          <h2>Seleccionar licitaciones</h2>
+        </div>
+        <button type="button" class="icon-button" id="close-licitacion-selector">×</button>
+      </div>
+      <section class="toolbar">
+        <label>Buscar<input id="licitacion-selector-search" placeholder="Expediente, organismo, objeto, provincia..."></label>
+      </section>
+      <section id="licitacion-selector-results" class="selector-results"></section>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="clear-licitacion-selection">Quitar selección</button>
+        <button type="button" id="cancel-licitacion-selector">Cancelar</button>
+        <button type="submit" class="primary">Guardar selección</button>
       </div>
     </form>
   </dialog>
