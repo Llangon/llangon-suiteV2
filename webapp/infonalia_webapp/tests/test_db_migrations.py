@@ -57,6 +57,7 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
         "0003_import_history",
         "0004_actuaciones",
         "0005_actuaciones_multilicitacion",
+        "0006_agenda_eventos",
     ]
     assert table_exists(conn, MIGRATIONS_TABLE)
     rows = conn.execute(
@@ -88,6 +89,11 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
             "Modelo independiente de actuaciones con vinculos multiples e historial",
             "2026-06-12T10:00:00",
         ),
+        (
+            "0006_agenda_eventos",
+            "Eventos internos para Agenda operativa",
+            "2026-06-12T10:00:00",
+        ),
     ]
     assert table_exists(conn, "download_jobs")
     assert table_exists(conn, "import_runs")
@@ -95,6 +101,7 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
     assert table_exists(conn, "actuaciones")
     assert table_exists(conn, "actuacion_licitaciones")
     assert table_exists(conn, "actuacion_historial")
+    assert table_exists(conn, "agenda_eventos")
     assert not table_exists(conn, "licitacion_actuaciones")
 
 
@@ -117,6 +124,7 @@ def test_run_migrations_is_idempotent() -> None:
         "0003_import_history",
         "0004_actuaciones",
         "0005_actuaciones_multilicitacion",
+        "0006_agenda_eventos",
     ]
     assert run_migrations(conn, now=lambda: "2026-06-12T10:05:00") == []
 
@@ -127,6 +135,7 @@ def test_run_migrations_is_idempotent() -> None:
         ("0003_import_history", "2026-06-12T10:00:00"),
         ("0004_actuaciones", "2026-06-12T10:00:00"),
         ("0005_actuaciones_multilicitacion", "2026-06-12T10:00:00"),
+        ("0006_agenda_eventos", "2026-06-12T10:00:00"),
     ]
 
 
@@ -365,6 +374,39 @@ def test_actuaciones_multilicitacion_accepts_none_one_and_many_links() -> None:
     assert conn.execute("SELECT COUNT(*) FROM actuaciones").fetchone()[0] == 2
     assert conn.execute("SELECT COUNT(*) FROM actuacion_licitaciones").fetchone()[0] == 2
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_agenda_eventos_migration_schema_is_idempotent() -> None:
+    conn = sqlite3.connect(":memory:")
+
+    run_migrations(conn, now=lambda: "2026-06-12T10:00:00")
+    run_migrations(conn, now=lambda: "2026-06-12T10:05:00")
+
+    columns = {
+        row[1]: row[2]
+        for row in conn.execute("PRAGMA table_info(agenda_eventos)").fetchall()
+    }
+    assert columns == {
+        "id": "INTEGER",
+        "titulo": "TEXT",
+        "descripcion": "TEXT",
+        "starts_at": "TEXT",
+        "estado": "TEXT",
+        "created_by": "TEXT",
+        "created_at": "TEXT",
+        "updated_at": "TEXT",
+        "closed_at": "TEXT",
+        "closed_by": "TEXT",
+    }
+    indexes = {
+        row[1]
+        for row in conn.execute("PRAGMA index_list(agenda_eventos)").fetchall()
+    }
+    assert {
+        "idx_agenda_eventos_starts_at",
+        "idx_agenda_eventos_estado",
+        "idx_agenda_eventos_created_by",
+    } <= indexes
 
 
 def test_init_db_runs_migrations_on_temporary_database_only() -> None:

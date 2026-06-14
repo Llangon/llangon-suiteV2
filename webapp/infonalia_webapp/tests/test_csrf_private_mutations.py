@@ -17,6 +17,7 @@ POST_CASES = [
     ("POST", "/api/news", "api_create_news", ()),
     ("POST", "/api/import/msg", "api_import_msg", ()),
     ("POST", "/api/import/csv", "api_import_csv", ()),
+    ("POST", "/api/agenda/eventos", "api_create_agenda_evento", ()),
     ("POST", "/api/dias/7/revisado", "api_mark_dia_revisado", (7,)),
     ("POST", "/api/dias/7/enviar-nuria", "api_send_dia_to_nuria", (7,)),
     ("POST", "/api/dias/7/desmarcar-revisado", "api_unmark_dia_revisado", (7,)),
@@ -28,9 +29,12 @@ POST_CASES = [
     ("POST", "/api/actuaciones/3/cerrar", "api_close_actuacion", (3,)),
     ("POST", "/api/actuaciones/3/cancelar", "api_cancel_actuacion", (3,)),
     ("POST", "/api/actuaciones/3/historial", "api_add_actuacion_historial", (3,)),
+    ("POST", "/api/agenda/eventos/4/cerrar", "api_set_agenda_evento_estado", (4, "cerrado")),
+    ("POST", "/api/agenda/eventos/4/cancelar", "api_set_agenda_evento_estado", (4, "cancelado")),
 ]
 
 PATCH_CASES = [
+    ("PATCH", "/api/agenda/eventos/4", "api_update_agenda_evento", (4,)),
     ("PATCH", "/api/actuaciones/3", "api_update_actuacion", (3,)),
     ("PATCH", "/api/licitaciones/9", "api_update_licitacion", (9,)),
     ("PATCH", "/api/config/users/admin_test", "api_update_user", ("admin_test",)),

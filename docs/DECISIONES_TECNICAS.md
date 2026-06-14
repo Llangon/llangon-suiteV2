@@ -1022,3 +1022,27 @@ Consecuencias:
 - `prioridad`, `responsable_user_id` y `respuesta_resumen` dejan de formar parte funcional del módulo;
 - `created_by`, `closed_by` y `user_id` se guardan como `TEXT` con el `username` actual, porque `usuarios` no tiene id numérico;
 - la futura Bandeja Hoy puede consumir actuaciones independientes, no solo vencimientos asociados a licitaciones.
+
+## ADR-052 — Agenda operativa sobre Calendario
+
+La pantalla `Calendario` era una vista mensual de vencimientos de licitaciones. La necesidad operativa pasa a ser una Agenda que reúna actuaciones, licitaciones y eventos internos abiertos.
+
+Decisión:
+- mantener la sección interna de calendario para evitar cambios de ruta;
+- exponer `GET /api/agenda` como fuente unificada;
+- normalizar eventos con `source_type`, `source_id`, `date`, `datetime`, `is_overdue`, `color_type` y vínculos;
+- añadir `agenda_eventos` mediante la migración `0006_agenda_eventos`;
+- ofrecer vistas Hoy, Semana y Calendario mensual;
+- usar cuatro colores: rojo actuaciones, amarillo licitaciones, azul internos y gris/negro para vencidos abiertos;
+- hacer que el color de vencido prevalezca sobre el tipo.
+
+Reglas:
+- solo aparecen elementos abiertos o vencidos abiertos;
+- cerrados, cancelados, descartados y archivados quedan fuera de Agenda;
+- los eventos internos se pueden crear, editar, cerrar y cancelar desde la pantalla Agenda;
+- las mutaciones de eventos internos requieren CSRF.
+
+Consecuencias:
+- Agenda se convierte en la primera versión práctica de Bandeja Hoy;
+- las licitaciones siguen viviendo en su pantalla principal;
+- los eventos internos son deliberadamente simples y no implementan drag and drop ni sincronización externa.

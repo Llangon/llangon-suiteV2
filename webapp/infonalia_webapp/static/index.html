@@ -21,7 +21,7 @@
         <p class="nav-group-title">Trabajo diario</p>
         <button id="days-button" class="nav-item" data-nav-section="days">Días Infonalia</button>
         <button id="list-button" class="nav-item" data-nav-section="licitaciones">Todas las licitaciones</button>
-        <button id="calendar-button" class="nav-item" data-nav-section="calendar">Calendario</button>
+        <button id="calendar-button" class="nav-item" data-nav-section="calendar">Agenda</button>
         <button id="actuaciones-button" class="nav-item" data-nav-section="actuaciones">Actuaciones</button>
 
         <p class="nav-group-title nav-future-title">Próximos módulos</p>
@@ -110,27 +110,45 @@
     <section id="calendar-section" hidden>
       <div class="section-head">
         <div>
-          <p class="eyebrow">Calendario</p>
-          <h2 id="calendar-month-title">Vencimientos</h2>
+          <p class="eyebrow">Agenda</p>
+          <h2 id="calendar-month-title">Hoy</h2>
         </div>
         <div class="section-actions">
-          <button id="calendar-prev" class="ghost">Mes anterior</button>
+          <button id="calendar-prev" class="ghost">Anterior</button>
           <button id="calendar-today" class="secondary">Hoy</button>
-          <button id="calendar-next" class="ghost">Mes siguiente</button>
+          <button id="calendar-next" class="ghost">Siguiente</button>
+          <button id="new-agenda-event-button" class="primary">Nuevo evento interno</button>
         </div>
       </div>
 
       <section class="toolbar calendar-toolbar">
         <label>
-          Buscar
-          <input id="calendar-search" placeholder="Expediente, organismo, provincia...">
+          Vista
+          <div class="segmented compact">
+            <button type="button" data-agenda-view="today" class="active">Hoy</button>
+            <button type="button" data-agenda-view="week">Semana</button>
+            <button type="button" data-agenda-view="month">Calendario</button>
+          </div>
         </label>
         <label>
-          Estado
+          Buscar
+          <input id="calendar-search" placeholder="Título, expediente, organismo...">
+        </label>
+        <label>
+          Tipo
           <select id="calendar-state-filter">
-            <option>Todos</option>
+            <option value="all">Todos</option>
+            <option value="actuacion">Actuaciones</option>
+            <option value="licitacion">Licitaciones</option>
+            <option value="interno">Internos</option>
           </select>
         </label>
+      </section>
+      <section class="agenda-legend">
+        <span><b class="legend-dot agenda-actuacion"></b> Actuación</span>
+        <span><b class="legend-dot agenda-licitacion"></b> Licitación</span>
+        <span><b class="legend-dot agenda-interno"></b> Interno</span>
+        <span><b class="legend-dot agenda-vencido"></b> Vencido</span>
       </section>
 
       <section class="summary" id="calendar-summary"></section>
@@ -526,6 +544,36 @@
         <button type="button" class="ghost" id="clear-licitacion-selection">Quitar selección</button>
         <button type="button" id="cancel-licitacion-selector">Cancelar</button>
         <button type="submit" class="primary">Guardar selección</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="agenda-event-dialog">
+    <form id="agenda-event-form" method="dialog">
+      <input type="hidden" name="id">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">Agenda</p>
+          <h2 id="agenda-event-form-title">Nuevo evento interno</h2>
+        </div>
+        <button type="button" class="icon-button" id="close-agenda-event-dialog">×</button>
+      </div>
+      <div class="form-grid">
+        <label>Título<input name="titulo" required></label>
+        <label>Fecha y hora<input name="starts_at" type="datetime-local" required></label>
+        <label>Estado
+          <select name="estado">
+            <option value="pendiente">Pendiente</option>
+            <option value="en_curso">En curso</option>
+            <option value="cerrado">Cerrado</option>
+            <option value="cancelado">Cancelado</option>
+          </select>
+        </label>
+        <label class="full-field">Descripción<textarea name="descripcion" rows="3"></textarea></label>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="cancel-agenda-event-dialog">Cancelar</button>
+        <button type="submit" class="primary">Guardar evento</button>
       </div>
     </form>
   </dialog>

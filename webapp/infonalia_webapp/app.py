@@ -14,11 +14,12 @@ import sys
 import time
 from email.message import EmailMessage
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from collections.abc import Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
 try:
@@ -438,6 +439,22 @@ NURIA_ESTADOS = ["Pendiente Nuria", "Descartar", "Descargar", "Hacer"]
 NURIA_ESTADOS_VALIDOS = set(NURIA_ESTADOS)
 NURIA_LICITACIONES_ESTADOS = ["Descargar", "Hacer"]
 CALENDARIO_ESTADOS = ["Pendiente Nuria", "Descargar", "Hacer"]
+AGENDA_EVENTOS_ESTADOS_ABIERTOS = {"pendiente", "en_curso"}
+AGENDA_EVENTOS_ESTADOS_CERRADOS = {"cerrado", "cancelado"}
+AGENDA_EVENTOS_ESTADOS = AGENDA_EVENTOS_ESTADOS_ABIERTOS | AGENDA_EVENTOS_ESTADOS_CERRADOS
+LICITACION_ESTADOS_OCULTOS_AGENDA = {
+    "descartada por mí",
+    "descartar",
+    "descartada",
+    "cancelada",
+    "cancelado",
+    "cerrada",
+    "cerrado",
+    "archivada",
+    "archivado",
+    "completada",
+    "completado",
+}
 
 ESTADO_LABELS = {
     "Pendiente": "Pendiente",
@@ -928,6 +945,280 @@ def delete_licitacion_dependents(conn: sqlite3.Connection, licitacion_ids: list[
         f"DELETE FROM actuacion_licitaciones WHERE licitacion_id IN ({placeholders})",
         licitacion_ids,
     )
+
+
+def agenda_parse_date(value: object, *, fallback: date | None = None) -> date:
+    text = clean_text(value)
+    if not text:
+        return fallback or date.today()
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return fallback or date.today()
+
+
+def agenda_parse_datetime(value: object) -> datetime | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def agenda_datetime_from_date_time(day_value: object, time_value: object = "") -> datetime | None:
+    day = clean_text(day_value)
+    if not day:
+        return None
+    hour = clean_text(time_value) or "23:59"
+    if len(hour) == 5:
+        hour = f"{hour}:00"
+    return agenda_parse_datetime(f"{day}T{hour}")
+
+
+def agenda_week_bounds(day: date) -> tuple[date, date]:
+    start = day - timedelta(days=day.weekday())
+    return start, start + timedelta(days=6)
+
+
+def agenda_is_open_licitacion_estado(estado: object) -> bool:
+    return clean_text(estado).lower() not in LICITACION_ESTADOS_OCULTOS_AGENDA
+
+
+def agenda_color(source_type: str, event_dt: datetime | None, *, current: datetime) -> tuple[bool, str]:
+    is_overdue = bool(event_dt and event_dt < current)
+    return is_overdue, "vencido" if is_overdue else source_type
+
+
+def agenda_base_event(
+    *,
+    source_type: str,
+    source_id: int,
+    title: str,
+    subtitle: str,
+    status: str,
+    event_dt: datetime | None,
+    current: datetime,
+    linked_licitaciones: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    is_overdue, color_type = agenda_color(source_type, event_dt, current=current)
+    today = current.date()
+    return {
+        "id": f"{source_type}:{source_id}",
+        "source_type": source_type,
+        "source_id": source_id,
+        "title": title,
+        "subtitle": subtitle,
+        "date": event_dt.date().isoformat() if event_dt else "",
+        "datetime": event_dt.replace(microsecond=0).isoformat() if event_dt else "",
+        "status": status,
+        "is_overdue": is_overdue,
+        "is_today": bool(event_dt and event_dt.date() == today),
+        "is_open": True,
+        "color_type": color_type,
+        "linked_licitaciones": linked_licitaciones or [],
+    }
+
+
+def agenda_actuacion_events(conn: sqlite3.Connection, *, current: datetime) -> list[dict[str, object]]:
+    placeholders = ",".join("?" for _ in ACTUACION_ESTADOS_ABIERTOS)
+    rows = conn.execute(
+        actuaciones_select_sql([f"a.estado IN ({placeholders})"]),
+        sorted(ACTUACION_ESTADOS_ABIERTOS),
+    ).fetchall()
+    events = []
+    for row in rows:
+        event_dt = agenda_parse_datetime(row["deadline_at"])
+        events.append(
+            agenda_base_event(
+                source_type="actuacion",
+                source_id=int(row["id"]),
+                title=row["titulo"],
+                subtitle=row["descripcion"] or "Actuación sin descripción",
+                status=row["estado"],
+                event_dt=event_dt,
+                current=current,
+                linked_licitaciones=actuacion_licitaciones(conn, int(row["id"])),
+            )
+        )
+    return events
+
+
+def agenda_licitacion_events(conn: sqlite3.Connection, *, current: datetime) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, expediente, objeto, organismo, fecha_limite, hora_limite, estado, provincia, plataforma
+        FROM licitaciones
+        WHERE fecha_limite IS NOT NULL
+          AND fecha_limite <> ''
+        ORDER BY fecha_limite ASC, hora_limite ASC, id ASC
+        """
+    ).fetchall()
+    events = []
+    for row in rows:
+        if not agenda_is_open_licitacion_estado(row["estado"]):
+            continue
+        event_dt = agenda_datetime_from_date_time(row["fecha_limite"], row["hora_limite"])
+        events.append(
+            agenda_base_event(
+                source_type="licitacion",
+                source_id=int(row["id"]),
+                title=row["expediente"] or f"Licitación {row['id']}",
+                subtitle=row["objeto"] or row["organismo"] or "Licitación sin detalle",
+                status=row["estado"],
+                event_dt=event_dt,
+                current=current,
+                linked_licitaciones=[licitacion_selection_dict(row)],
+            )
+        )
+    return events
+
+
+def agenda_interno_events(conn: sqlite3.Connection, *, current: datetime) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, titulo, descripcion, starts_at, estado
+        FROM agenda_eventos
+        WHERE estado IN ('pendiente', 'en_curso')
+        ORDER BY starts_at ASC, id ASC
+        """
+    ).fetchall()
+    return [
+        agenda_base_event(
+            source_type="interno",
+            source_id=int(row["id"]),
+            title=row["titulo"],
+            subtitle=row["descripcion"] or "Evento interno",
+            status=row["estado"],
+            event_dt=agenda_parse_datetime(row["starts_at"]),
+            current=current,
+        )
+        for row in rows
+    ]
+
+
+def agenda_event_in_view(event: dict[str, object], *, view: str, target_date: date, include_overdue: bool) -> bool:
+    event_date_text = clean_text(event.get("date"))
+    event_date = agenda_parse_date(event_date_text, fallback=target_date) if event_date_text else None
+    if bool(event.get("is_overdue")) and include_overdue:
+        return True
+    if view == "today":
+        return event_date is None or event_date == target_date
+    if view == "week":
+        if event_date is None:
+            return False
+        start, end = agenda_week_bounds(target_date)
+        return start <= event_date <= end
+    if view == "month":
+        if event_date is None:
+            return False
+        return event_date.year == target_date.year and event_date.month == target_date.month
+    return False
+
+
+def agenda_summary(events: list[dict[str, object]], *, target_date: date) -> dict[str, int]:
+    start, end = agenda_week_bounds(target_date)
+    summary = {
+        "overdue": 0,
+        "today": 0,
+        "week": 0,
+        "actuaciones": 0,
+        "licitaciones": 0,
+        "internos": 0,
+    }
+    for event in events:
+        source = clean_text(event.get("source_type"))
+        if source == "actuacion":
+            summary["actuaciones"] += 1
+        elif source == "licitacion":
+            summary["licitaciones"] += 1
+        elif source == "interno":
+            summary["internos"] += 1
+        if event.get("is_overdue"):
+            summary["overdue"] += 1
+        event_date_text = clean_text(event.get("date"))
+        if not event_date_text:
+            continue
+        event_date = agenda_parse_date(event_date_text, fallback=target_date)
+        if event_date == target_date:
+            summary["today"] += 1
+        if start <= event_date <= end:
+            summary["week"] += 1
+    return summary
+
+
+def build_agenda_events(
+    conn: sqlite3.Connection,
+    *,
+    view: str,
+    target_date: date,
+    type_filter: str = "all",
+    include_overdue: bool = True,
+    current: datetime | None = None,
+) -> list[dict[str, object]]:
+    current_dt = current or datetime.now()
+    events = [
+        *agenda_actuacion_events(conn, current=current_dt),
+        *agenda_licitacion_events(conn, current=current_dt),
+        *agenda_interno_events(conn, current=current_dt),
+    ]
+    if type_filter in {"actuacion", "licitacion", "interno"}:
+        events = [event for event in events if event["source_type"] == type_filter]
+    filtered = [
+        event for event in events
+        if agenda_event_in_view(event, view=view, target_date=target_date, include_overdue=include_overdue)
+    ]
+    return sorted(filtered, key=lambda event: (event["date"] or "0000-00-00", event["datetime"] or "", event["title"]))
+
+
+def agenda_event_payload(
+    data: dict[str, object],
+    *,
+    partial: bool = False,
+    existing: sqlite3.Row | None = None,
+    now: Callable[[], str] | None = None,
+) -> dict[str, object]:
+    current_timestamp = now or now_iso
+    payload: dict[str, object] = {}
+    if not partial or "titulo" in data:
+        titulo = clean_text(data.get("titulo"))
+        if not titulo:
+            raise ValueError("El título del evento es obligatorio.")
+        payload["titulo"] = titulo
+    if not partial or "descripcion" in data:
+        payload["descripcion"] = clean_text(data.get("descripcion"))
+    if not partial or "starts_at" in data:
+        parsed_starts = agenda_parse_datetime(data.get("starts_at"))
+        if not parsed_starts:
+            raise ValueError("La fecha y hora del evento es obligatoria.")
+        payload["starts_at"] = parsed_starts.replace(second=0, microsecond=0).isoformat()
+    if not partial or "estado" in data:
+        estado = clean_text(data.get("estado")).lower() or "pendiente"
+        payload["estado"] = estado if estado in AGENDA_EVENTOS_ESTADOS else "pendiente"
+    estado = clean_text(payload.get("estado", existing["estado"] if existing else "pendiente")).lower()
+    if estado in AGENDA_EVENTOS_ESTADOS_ABIERTOS:
+        payload["closed_at"] = None
+        payload["closed_by"] = None
+    elif estado in AGENDA_EVENTOS_ESTADOS_CERRADOS and existing and not existing["closed_at"]:
+        payload["closed_at"] = current_timestamp()
+    payload["updated_at"] = current_timestamp()
+    return payload
+
+
+def agenda_evento_to_dict(row: sqlite3.Row) -> dict[str, object]:
+    return {
+        "id": row["id"],
+        "titulo": row["titulo"],
+        "descripcion": row["descripcion"] or "",
+        "starts_at": row["starts_at"],
+        "estado": row["estado"],
+        "created_by": row["created_by"] or "",
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "closed_at": row["closed_at"] or "",
+        "closed_by": row["closed_by"] or "",
+    }
 
 
 def seed_users_and_settings(conn: sqlite3.Connection) -> None:
@@ -1562,6 +1853,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_me()
         elif path == "/api/dias":
             self.api_list_dias()
+        elif path == "/api/agenda":
+            self.api_agenda(parsed.query)
         elif path == "/api/licitaciones/search":
             self.api_search_licitaciones(parsed.query)
         elif path == "/api/licitaciones":
@@ -1615,6 +1908,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_test_smtp()
         elif path == "/api/news":
             self.api_create_news()
+        elif path == "/api/agenda/eventos":
+            self.api_create_agenda_evento()
         elif path == "/api/actuaciones":
             self.api_create_actuacion()
         elif path == "/api/import/msg":
@@ -1681,6 +1976,18 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_cancel_actuacion(int(actuacion_id))
+        elif path.startswith("/api/agenda/eventos/") and path.endswith("/cerrar"):
+            evento_id = path.removeprefix("/api/agenda/eventos/").removesuffix("/cerrar").strip("/")
+            if not evento_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_set_agenda_evento_estado(int(evento_id), "cerrado")
+        elif path.startswith("/api/agenda/eventos/") and path.endswith("/cancelar"):
+            evento_id = path.removeprefix("/api/agenda/eventos/").removesuffix("/cancelar").strip("/")
+            if not evento_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_set_agenda_evento_estado(int(evento_id), "cancelado")
         else:
             self.send_error(HTTPStatus.NOT_FOUND, "No encontrado")
 
@@ -1694,7 +2001,13 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if self.csrf_required_for_path("PATCH", path) and not self.require_csrf_token():
             return
 
-        if path.startswith("/api/actuaciones/"):
+        if path.startswith("/api/agenda/eventos/"):
+            evento_id = path.removeprefix("/api/agenda/eventos/").strip("/")
+            if not evento_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_update_agenda_evento(int(evento_id))
+        elif path.startswith("/api/actuaciones/"):
             actuacion_id = path.removeprefix("/api/actuaciones/").strip("/")
             if not actuacion_id.isdigit():
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
@@ -1798,6 +2111,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             if path in {
                 "/api/licitaciones",
                 "/api/actuaciones",
+                "/api/agenda/eventos",
                 "/api/config/users",
                 "/api/config/test-smtp",
                 "/api/news",
@@ -1824,10 +2138,16 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 or path.endswith("/historial")
             ):
                 return True
+            if path.startswith("/api/agenda/eventos/") and (
+                path.endswith("/cerrar")
+                or path.endswith("/cancelar")
+            ):
+                return True
             return False
         if method == "PATCH":
             return (
-                path.startswith("/api/actuaciones/")
+                path.startswith("/api/agenda/eventos/")
+                or path.startswith("/api/actuaciones/")
                 or path.startswith("/api/licitaciones/")
                 or path.startswith("/api/config/users/")
                 or path == "/api/config/settings"
@@ -2293,6 +2613,115 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 or item["reviewed_at"]
             ]
         self.send_json({"items": items, "estados": DIA_ESTADOS_ORDEN})
+
+    def api_agenda(self, query: str) -> None:
+        params = parse_qs(query)
+        view = clean_text(params.get("view", ["today"])[0]).lower()
+        if view not in {"today", "week", "month"}:
+            view = "today"
+        target_date = agenda_parse_date(params.get("date", [""])[0], fallback=date.today())
+        type_filter = clean_text(params.get("type", ["all"])[0]).lower()
+        if type_filter not in {"all", "actuacion", "licitacion", "interno"}:
+            type_filter = "all"
+        include_overdue = clean_text(params.get("include_overdue", [""])[0]) == "1" or view in {"today", "week"}
+        with db_session() as conn:
+            events = build_agenda_events(
+                conn,
+                view=view,
+                target_date=target_date,
+                type_filter=type_filter,
+                include_overdue=include_overdue,
+            )
+        self.send_json(
+            {
+                "ok": True,
+                "view": view,
+                "date": target_date.isoformat(),
+                "events": events,
+                "summary": agenda_summary(events, target_date=target_date),
+            }
+        )
+
+    def api_create_agenda_evento(self) -> None:
+        user = self.current_user() or {}
+        username = clean_text(user.get("username"))
+        try:
+            data = self.read_json()
+            payload = agenda_event_payload(data)
+        except (ValueError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        timestamp = now_iso()
+        payload.update(
+            {
+                "created_by": username,
+                "created_at": timestamp,
+                "updated_at": timestamp,
+            }
+        )
+        if payload.get("estado") in AGENDA_EVENTOS_ESTADOS_CERRADOS:
+            payload["closed_at"] = timestamp
+            payload["closed_by"] = username
+        columns = ", ".join(payload.keys())
+        placeholders = ", ".join("?" for _ in payload)
+        with db_session() as conn:
+            cur = conn.execute(
+                f"INSERT INTO agenda_eventos ({columns}) VALUES ({placeholders})",
+                list(payload.values()),
+            )
+            row = conn.execute("SELECT * FROM agenda_eventos WHERE id = ?", (int(cur.lastrowid),)).fetchone()
+        self.send_json({"ok": True, "item": agenda_evento_to_dict(row)}, HTTPStatus.CREATED)
+
+    def api_update_agenda_evento(self, evento_id: int) -> None:
+        user = self.current_user() or {}
+        username = clean_text(user.get("username"))
+        try:
+            data = self.read_json()
+        except json.JSONDecodeError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        with db_session() as conn:
+            existing = conn.execute("SELECT * FROM agenda_eventos WHERE id = ?", (evento_id,)).fetchone()
+            if not existing:
+                self.send_json({"error": "Evento interno no encontrado"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                payload = agenda_event_payload(data, partial=True, existing=existing)
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            if payload.get("estado") in AGENDA_EVENTOS_ESTADOS_CERRADOS and not payload.get("closed_by"):
+                payload["closed_by"] = username
+            set_clause = ", ".join(f"{key} = ?" for key in payload)
+            conn.execute(
+                f"UPDATE agenda_eventos SET {set_clause} WHERE id = ?",
+                list(payload.values()) + [evento_id],
+            )
+            row = conn.execute("SELECT * FROM agenda_eventos WHERE id = ?", (evento_id,)).fetchone()
+        self.send_json({"ok": True, "item": agenda_evento_to_dict(row)})
+
+    def api_set_agenda_evento_estado(self, evento_id: int, estado: str) -> None:
+        user = self.current_user() or {}
+        username = clean_text(user.get("username"))
+        if estado not in AGENDA_EVENTOS_ESTADOS_CERRADOS:
+            self.send_json({"error": "Estado no valido"}, HTTPStatus.BAD_REQUEST)
+            return
+        timestamp = now_iso()
+        with db_session() as conn:
+            existing = conn.execute("SELECT * FROM agenda_eventos WHERE id = ?", (evento_id,)).fetchone()
+            if not existing:
+                self.send_json({"error": "Evento interno no encontrado"}, HTTPStatus.NOT_FOUND)
+                return
+            conn.execute(
+                """
+                UPDATE agenda_eventos
+                SET estado = ?, closed_at = ?, closed_by = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (estado, timestamp, username, timestamp, evento_id),
+            )
+            row = conn.execute("SELECT * FROM agenda_eventos WHERE id = ?", (evento_id,)).fetchone()
+        self.send_json({"ok": True, "item": agenda_evento_to_dict(row)})
 
     def api_list_licitaciones(self, query: str) -> None:
         user = self.current_user() or {}

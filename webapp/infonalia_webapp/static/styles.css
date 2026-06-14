@@ -823,7 +823,84 @@ textarea {
 }
 
 .calendar-toolbar {
-  grid-template-columns: 1fr 220px;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(260px, 1fr) 220px;
+}
+
+.agenda-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.agenda-legend span {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 800;
+  gap: 6px;
+}
+
+.legend-dot {
+  border-radius: 999px;
+  display: inline-block;
+  height: 10px;
+  width: 10px;
+}
+
+.legend-dot.agenda-actuacion,
+.agenda-actuacion {
+  border-left-color: var(--red);
+}
+
+.legend-dot.agenda-licitacion,
+.agenda-licitacion {
+  border-left-color: #d99b14;
+}
+
+.legend-dot.agenda-interno,
+.agenda-interno {
+  border-left-color: var(--blue);
+}
+
+.legend-dot.agenda-vencido,
+.agenda-vencido {
+  border-left-color: #1f2937;
+}
+
+.legend-dot.agenda-actuacion {
+  background: var(--red);
+}
+
+.legend-dot.agenda-licitacion {
+  background: #d99b14;
+}
+
+.legend-dot.agenda-interno {
+  background: var(--blue);
+}
+
+.legend-dot.agenda-vencido {
+  background: #1f2937;
+}
+
+.agenda-group {
+  display: grid;
+  gap: 10px;
+}
+
+.agenda-group h3 {
+  font-size: 15px;
+  margin: 0;
+}
+
+.agenda-card {
+  border-left-width: 5px;
+}
+
+.agenda-week-day {
+  min-height: 220px;
 }
 
 .calendar-radar {

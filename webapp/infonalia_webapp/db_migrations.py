@@ -299,6 +299,28 @@ def _actuaciones_multilicitacion_schema(conn: sqlite3.Connection) -> None:
             )
 
 
+def _agenda_eventos_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agenda_eventos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            titulo TEXT NOT NULL,
+            descripcion TEXT,
+            starts_at TEXT NOT NULL,
+            estado TEXT NOT NULL DEFAULT 'pendiente',
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            closed_at TEXT,
+            closed_by TEXT
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_agenda_eventos_starts_at ON agenda_eventos(starts_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_agenda_eventos_estado ON agenda_eventos(estado)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_agenda_eventos_created_by ON agenda_eventos(created_by)")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version="0001_baseline_schema",
@@ -324,6 +346,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version="0005_actuaciones_multilicitacion",
         description="Modelo independiente de actuaciones con vinculos multiples e historial",
         apply=_actuaciones_multilicitacion_schema,
+    ),
+    Migration(
+        version="0006_agenda_eventos",
+        description="Eventos internos para Agenda operativa",
+        apply=_agenda_eventos_schema,
     ),
 )
 

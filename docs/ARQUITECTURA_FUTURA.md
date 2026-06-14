@@ -2312,3 +2312,44 @@ Borrado:
 - no se puede borrar una licitación o día si tiene actuaciones abiertas;
 - si todas están cerradas/canceladas, se permite borrar la licitación o día y se limpian solo las filas de `actuacion_licitaciones`;
 - las actuaciones y su histórico se conservan aunque queden sin licitación vinculada.
+
+## Módulo Agenda
+
+La pantalla `Calendario` evoluciona visualmente a `Agenda`. Mantiene la sección interna para reducir cambios, pero la experiencia se centra en tres vistas:
+
+- Hoy;
+- Semana;
+- Calendario mensual.
+
+La Agenda consume eventos normalizados desde `GET /api/agenda` con origen:
+
+- actuaciones abiertas con `deadline_at`;
+- licitaciones abiertas con `fecha_limite` y `hora_limite`;
+- eventos internos de `agenda_eventos`.
+
+Regla de visibilidad:
+
+- se muestran solo elementos abiertos, vivos o vencidos;
+- no aparecen actuaciones cerradas/canceladas;
+- no aparecen licitaciones descartadas, canceladas, cerradas o archivadas;
+- no aparecen eventos internos cerrados/cancelados.
+
+Colores:
+
+- actuación: rojo;
+- licitación: amarillo;
+- interno: azul;
+- vencido abierto: gris/negro, prevaleciendo sobre el tipo.
+
+Eventos internos:
+
+- tabla `agenda_eventos`, creada por `0006_agenda_eventos`;
+- estados: `pendiente`, `en_curso`, `cerrado`, `cancelado`;
+- endpoints privados mutantes para crear, editar, cerrar y cancelar;
+- protegidos con CSRF.
+
+Relación con Bandeja Hoy:
+
+- Agenda actúa como primera Bandeja Hoy operativa;
+- `GET /api/agenda?view=today` agrupa vencidos abiertos, eventos de hoy y actuaciones sin fecha si existen;
+- las vistas Semana y Calendario reutilizan el mismo modelo unificado.

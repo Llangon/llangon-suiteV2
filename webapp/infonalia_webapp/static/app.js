@@ -15,6 +15,9 @@ const appState = {
   currentDayReviewedAt: "",
   currentDayNuriaTotal: null,
   calendarItems: [],
+  agendaSummary: {},
+  agendaView: "today",
+  agendaType: "all",
   newsItems: [],
   actuaciones: [],
   actuacionesSummary: {},
@@ -57,6 +60,9 @@ const calendarSummary = document.getElementById("calendar-summary");
 const calendarRadar = document.getElementById("calendar-radar");
 const calendarBoard = document.getElementById("calendar-board");
 const calendarDayPanel = document.getElementById("calendar-day-panel");
+const agendaEventDialog = document.getElementById("agenda-event-dialog");
+const agendaEventForm = document.getElementById("agenda-event-form");
+const agendaEventFormTitle = document.getElementById("agenda-event-form-title");
 const actuacionesBoard = document.getElementById("actuaciones-board");
 const actuacionesSummary = document.getElementById("actuaciones-summary");
 const actuacionesFilter = document.getElementById("actuaciones-filter");
@@ -153,6 +159,19 @@ const actuacionVisualLabels = {
   cerrada: "Cerrada",
   cancelada: "Cancelada",
   pendiente: "Pendiente",
+};
+const agendaTypeLabels = {
+  actuacion: "Actuación",
+  licitacion: "Licitación",
+  interno: "Interno",
+  vencido: "Vencido",
+};
+const agendaStatusLabels = {
+  pendiente: "Pendiente",
+  en_curso: "En curso",
+  respondida: "Respondida",
+  cerrado: "Cerrado",
+  cancelado: "Cancelado",
 };
 const editorFields = [
   "id",
@@ -408,7 +427,7 @@ function showCalendarView() {
   if (!appState.calendarSelectedDate) appState.calendarSelectedDate = todayKey;
   appState.lastSection = "calendar";
   setActiveNav("calendar");
-  setPageHeader("Calendario", "Vencimientos");
+  setPageHeader("Agenda", "Hoy / Semana / Calendario");
   daysSection.hidden = true;
   licitacionesSection.hidden = true;
   calendarSection.hidden = false;
@@ -863,6 +882,67 @@ async function setActuacionClosedState(id, action) {
   await loadItems();
 }
 
+function openAgendaEventoDialog(item = null) {
+  agendaEventForm.reset();
+  agendaEventForm.elements.id.value = item?.source_id || item?.id || "";
+  agendaEventFormTitle.textContent = item ? `Editar ${item.title || item.titulo || "evento"}` : "Nuevo evento interno";
+  agendaEventForm.elements.titulo.value = item?.title || item?.titulo || "";
+  agendaEventForm.elements.descripcion.value = item?.subtitle || item?.descripcion || "";
+  agendaEventForm.elements.starts_at.value = toDatetimeLocal(item?.datetime || item?.starts_at || "");
+  agendaEventForm.elements.estado.value = item?.status || item?.estado || "pendiente";
+  agendaEventDialog.showModal();
+}
+
+async function saveAgendaEvento(event) {
+  event.preventDefault();
+  const id = agendaEventForm.elements.id.value;
+  const payload = {
+    titulo: agendaEventForm.elements.titulo.value,
+    descripcion: agendaEventForm.elements.descripcion.value,
+    starts_at: agendaEventForm.elements.starts_at.value,
+    estado: agendaEventForm.elements.estado.value,
+  };
+  const response = await fetch(id ? `/api/agenda/eventos/${id}` : "/api/agenda/eventos", {
+    method: id ? "PATCH" : "POST",
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(result.error || "No se pudo guardar el evento interno.");
+    return;
+  }
+  agendaEventDialog.close();
+  await loadCalendarItems();
+}
+
+async function setAgendaEventoEstado(id, action) {
+  const response = await fetch(`/api/agenda/eventos/${id}/${action}`, { method: "POST", headers: csrfHeaders() });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(result.error || "No se pudo actualizar el evento interno.");
+    return;
+  }
+  await loadCalendarItems();
+}
+
+function openAgendaOrigin(token) {
+  const [sourceType, sourceId] = String(token || "").split(":");
+  if (!sourceType || !sourceId) return;
+  if (sourceType === "licitacion") {
+    openEditEditor(sourceId);
+    return;
+  }
+  if (sourceType === "actuacion") {
+    editActuacion(sourceId);
+    return;
+  }
+  if (sourceType === "interno") {
+    const item = appState.calendarItems.find((entry) => entry.source_type === "interno" && String(entry.source_id) === String(sourceId));
+    openAgendaEventoDialog(item);
+  }
+}
+
 function renderDays() {
   const days = visibleDias();
 
@@ -1071,85 +1151,145 @@ function renderBoard() {
 }
 
 async function loadCalendarItems() {
-  const response = await fetch("/api/licitaciones?orden_fecha=asc&calendario=1");
+  const params = new URLSearchParams();
+  params.set("view", appState.agendaView || "today");
+  params.set("date", appState.calendarSelectedDate || dateKey(new Date()));
+  params.set("type", appState.agendaType || "all");
+  if (appState.agendaView === "month") params.set("include_overdue", "1");
+  const response = await fetch(`/api/agenda?${params.toString()}`);
   if (!response.ok) {
     if (response.status === 401) location.href = "/login";
-    calendarBoard.innerHTML = `<div class="empty">No se pudo cargar el calendario.</div>`;
+    calendarBoard.innerHTML = `<div class="empty">No se pudo cargar la agenda.</div>`;
     calendarRadar.innerHTML = "";
     calendarDayPanel.innerHTML = "";
     return;
   }
 
   const data = await response.json();
-  appState.calendarItems = data.items || [];
+  appState.calendarItems = data.events || [];
+  appState.agendaSummary = data.summary || {};
   renderCalendarStateFilter();
   renderCalendar();
 }
 
 function calendarFilteredItems() {
-  const estado = calendarStateFilter.value || "Todos";
   const q = calendarSearch.value.trim().toLowerCase();
   return appState.calendarItems.filter((item) => {
-    if (estado !== "Todos" && item.estado !== estado) return false;
     if (!q) return true;
     return [
-      item.expediente,
-      item.objeto,
-      item.organismo,
-      item.provincia,
-      item.tipo,
+      item.title,
+      item.subtitle,
+      item.status,
+      item.source_type,
+      ...(item.linked_licitaciones || []).flatMap((licitacion) => [
+        licitacion.expediente,
+        licitacion.organismo,
+        licitacion.objeto,
+        licitacion.provincia,
+      ]),
     ].some((value) => String(value || "").toLowerCase().includes(q));
   });
 }
 
 function renderCalendarStateFilter() {
-  const current = calendarStateFilter.value || "Todos";
-  const present = new Set(appState.calendarItems.map((item) => item.estado).filter(Boolean));
-  const calendarVisibleStates = isAdmin() ? calendarioEstados : nuriaLicitacionesEstados;
-  const options = ["Todos", ...calendarVisibleStates.filter((estado) => present.has(estado))];
-  calendarStateFilter.innerHTML = options
-    .map((estado) => `<option value="${escapeHtml(estado)}">${escapeHtml(estado === "Todos" ? "Todos" : estadoLabel(estado))}</option>`)
-    .join("");
-  calendarStateFilter.value = options.includes(current) ? current : "Todos";
+  calendarStateFilter.value = appState.agendaType || "all";
+  document.querySelectorAll("[data-agenda-view]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.agendaView === appState.agendaView);
+  });
 }
 
 function itemsByDate(items) {
   return items.reduce((groups, item) => {
-    const key = item.fecha_limite || "sin-fecha";
+    const key = item.date || "sin-fecha";
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(item);
     return groups;
   }, new Map());
 }
 
+function addDays(date, amount) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + amount);
+  return next;
+}
+
+function weekStartMonday(date) {
+  const start = new Date(date);
+  const mondayIndex = (start.getDay() + 6) % 7;
+  start.setDate(start.getDate() - mondayIndex);
+  return start;
+}
+
+function agendaEventDate(item) {
+  return item.datetime ? new Date(item.datetime) : parseDate(item.date);
+}
+
+function agendaEventTime(item) {
+  if (!item.datetime) return "";
+  const parsed = new Date(item.datetime);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+}
+
+function agendaTypeLabel(item) {
+  return agendaTypeLabels[item.color_type] || agendaTypeLabels[item.source_type] || item.source_type || "";
+}
+
+function agendaStatusLabel(item) {
+  return agendaStatusLabels[item.status] || estadoLabel(item.status) || item.status || "";
+}
+
+function agendaLinkedText(item) {
+  const linked = item.linked_licitaciones || [];
+  if (!linked.length) return "";
+  const labels = linked.slice(0, 3).map((licitacion) => (
+    licitacion.expediente || licitacion.organismo || `Licitación ${licitacion.id}`
+  ));
+  if (linked.length > 3) labels.push(`+${linked.length - 3} más`);
+  return labels.join(", ");
+}
+
 function renderCalendar() {
   const filtered = calendarFilteredItems();
-  const groups = itemsByDate(filtered);
   const monthDate = appState.calendarDate;
   const today = new Date();
   const todayKey = dateKey(today);
   const selectedKey = appState.calendarSelectedDate || todayKey;
-  const monthItems = filtered.filter((item) => {
-    const parsed = parseDate(item.fecha_limite);
-    return parsed && isSameMonth(parsed, monthDate);
-  });
-  const urgentThisMonth = monthItems.filter((item) => {
-    const days = daysUntil(item.fecha_limite, item.hora_limite);
-    return days !== null && days >= 0 && days <= 7;
-  }).length;
-  const preparing = monthItems.filter((item) => item.estado === "Hacer").length;
-  const withoutDate = filtered.filter((item) => !item.fecha_limite).length;
 
-  calendarMonthTitle.textContent = monthTitle(monthDate);
+  if (appState.agendaView === "today") {
+    calendarMonthTitle.textContent = `Hoy · ${formatDate(selectedKey)}`;
+  } else if (appState.agendaView === "week") {
+    const start = weekStartMonday(parseDate(selectedKey) || today);
+    const end = addDays(start, 6);
+    calendarMonthTitle.textContent = `Semana · ${formatDate(dateKey(start))} - ${formatDate(dateKey(end))}`;
+  } else {
+    calendarMonthTitle.textContent = `Calendario · ${monthTitle(monthDate)}`;
+  }
   calendarSummary.innerHTML = [
-    ["Mes visible", monthItems.length],
-    ["Vencen en 7 días", urgentThisMonth],
-    ["Preparar licitación", preparing],
-    ["Sin fecha límite", withoutDate],
+    ["Vencidos", appState.agendaSummary.overdue || 0],
+    ["Hoy", appState.agendaSummary.today || 0],
+    ["Semana", appState.agendaSummary.week || 0],
+    ["Actuaciones", appState.agendaSummary.actuaciones || 0],
+    ["Licitaciones", appState.agendaSummary.licitaciones || 0],
+    ["Internos", appState.agendaSummary.internos || 0],
   ].map(renderMetric).join("");
 
-  renderCalendarRadar(filtered);
+  if (appState.agendaView === "today") {
+    renderAgendaToday(filtered, selectedKey);
+    return;
+  }
+  if (appState.agendaView === "week") {
+    renderAgendaWeek(filtered, selectedKey);
+    return;
+  }
+  renderAgendaMonth(filtered, selectedKey);
+}
 
+function renderAgendaMonth(items, selectedKey) {
+  const groups = itemsByDate(items);
+  const monthDate = appState.calendarDate;
+  const todayKey = dateKey(new Date());
+  renderCalendarRadar(items);
   const start = monthStartMonday(monthDate);
   const cells = [];
   for (let index = 0; index < 42; index += 1) {
@@ -1157,27 +1297,13 @@ function renderCalendar() {
     current.setDate(start.getDate() + index);
     const key = dateKey(current);
     const dayItems = (groups.get(key) || []).sort(compareCalendarItems);
-    const itemDays = dayItems
-      .map((item) => daysUntil(item.fecha_limite, item.hora_limite))
-      .filter((days) => days !== null);
-    const liveItemDays = itemDays.filter((days) => days >= 0);
-    const remainingDays = liveItemDays.length
-      ? Math.min(...liveItemDays)
-      : itemDays.length
-        ? Math.min(...itemDays)
-        : daysUntil(key);
-    const urgent = dayItems.some((item) => {
-      const days = daysUntil(item.fecha_limite, item.hora_limite);
-      return days !== null && days >= 0 && days <= 2;
-    });
-    const expired = dayItems.length && dayItems.every((item) => daysUntil(item.fecha_limite, item.hora_limite) < 0);
+    const expired = dayItems.some((item) => item.is_overdue);
     const classes = [
       "calendar-day",
       isSameMonth(current, monthDate) ? "" : "not-current",
       key === todayKey ? "today" : "",
       key === selectedKey ? "selected" : "",
       dayItems.length ? "has-items" : "",
-      urgent ? "urgent-day" : "",
       expired ? "expired-day" : "",
     ].filter(Boolean).join(" ");
 
@@ -1191,7 +1317,6 @@ function renderCalendar() {
           ${dayItems.slice(0, 3).map(renderCalendarEvent).join("")}
           ${dayItems.length > 3 ? `<span class="calendar-more">+${dayItems.length - 3} más</span>` : ""}
         </div>
-        ${dayItems.length && remainingDays !== null ? `<div class="calendar-day-foot ${dueClass(remainingDays)}">${escapeHtml(dueLabel(remainingDays))}</div>` : ""}
       </article>
     `);
   }
@@ -1200,61 +1325,105 @@ function renderCalendar() {
 }
 
 function compareCalendarItems(a, b) {
-  const timeA = a.hora_limite || "99:99";
-  const timeB = b.hora_limite || "99:99";
+  const timeA = agendaEventTime(a) || "99:99";
+  const timeB = agendaEventTime(b) || "99:99";
   if (timeA !== timeB) return timeA.localeCompare(timeB);
-  return String(a.expediente || "").localeCompare(String(b.expediente || ""));
+  return String(a.title || "").localeCompare(String(b.title || ""));
 }
 
 function renderCalendarEvent(item) {
-  const stateClass = badgeClass(item.estado);
-  const time = item.hora_limite ? `${item.hora_limite} · ` : "";
+  const time = agendaEventTime(item) ? `${agendaEventTime(item)} · ` : "";
   return `
-    <span class="calendar-event event-${stateClass}">
-      <span>${escapeHtml(time)}${escapeHtml(item.expediente || "Sin expediente")}</span>
+    <span class="calendar-event agenda-${escapeHtml(item.color_type)}">
+      <span>${escapeHtml(time)}${escapeHtml(item.title || "Sin título")}</span>
     </span>
   `;
 }
 
 function renderCalendarRadar(items) {
   const upcoming = items
-    .filter((item) => {
-      const days = daysUntil(item.fecha_limite, item.hora_limite);
-      return days !== null && days >= 0;
-    })
-    .sort((a, b) => {
-      const dateCompare = String(a.fecha_limite || "").localeCompare(String(b.fecha_limite || ""));
-      if (dateCompare) return dateCompare;
-      return compareCalendarItems(a, b);
-    })
+    .filter((item) => item.is_overdue)
+    .sort(compareCalendarItems)
     .slice(0, 8);
 
   if (!upcoming.length) {
-    calendarRadar.innerHTML = `<div class="empty">No hay vencimientos próximos con los filtros actuales.</div>`;
+    calendarRadar.innerHTML = `<div class="empty">No hay vencidos abiertos con los filtros actuales.</div>`;
     return;
   }
 
-  calendarRadar.innerHTML = upcoming.map((item) => {
-    const days = daysUntil(item.fecha_limite, item.hora_limite);
-    return `
-      <article class="radar-card ${dueClass(days)}" data-calendar-date="${escapeHtml(item.fecha_limite)}">
-        <span>${escapeHtml(dueLabel(days))}</span>
-        <strong>${escapeHtml(item.expediente || "Sin expediente")}</strong>
-        <small>${escapeHtml(formatDate(item.fecha_limite))}${item.hora_limite ? ` · ${escapeHtml(item.hora_limite)}` : ""}</small>
+  calendarRadar.innerHTML = upcoming.map(renderAgendaCompactCard).join("");
+}
+
+function renderAgendaToday(items, selectedKey) {
+  const overdue = items.filter((item) => item.is_overdue);
+  const today = items.filter((item) => item.date === selectedKey && !item.is_overdue);
+  const withoutDate = items.filter((item) => !item.date);
+  calendarRadar.innerHTML = [
+    renderAgendaGroup("Vencidos abiertos", overdue),
+    renderAgendaGroup("Hoy", today),
+    renderAgendaGroup("Sin fecha", withoutDate),
+  ].join("");
+  calendarBoard.innerHTML = "";
+  renderCalendarDayPanel([...overdue, ...today, ...withoutDate], selectedKey);
+}
+
+function renderAgendaWeek(items, selectedKey) {
+  const selected = parseDate(selectedKey) || new Date();
+  const start = weekStartMonday(selected);
+  const groups = itemsByDate(items);
+  const overdue = items.filter((item) => item.is_overdue);
+  calendarRadar.innerHTML = renderAgendaGroup("Vencidos abiertos", overdue);
+  const cells = [];
+  for (let index = 0; index < 7; index += 1) {
+    const day = addDays(start, index);
+    const key = dateKey(day);
+    const dayItems = (groups.get(key) || []).sort(compareCalendarItems);
+    cells.push(`
+      <article class="calendar-day agenda-week-day ${key === selectedKey ? "selected" : ""}" data-calendar-date="${escapeHtml(key)}">
+        <div class="calendar-day-head">
+          <strong>${escapeHtml(day.toLocaleDateString("es-ES", { weekday: "short", day: "2-digit" }))}</strong>
+          ${dayItems.length ? `<span>${dayItems.length}</span>` : ""}
+        </div>
+        <div class="calendar-events">
+          ${dayItems.slice(0, 6).map(renderCalendarEvent).join("")}
+          ${dayItems.length > 6 ? `<span class="calendar-more">+${dayItems.length - 6} más</span>` : ""}
+        </div>
       </article>
-    `;
-  }).join("");
+    `);
+  }
+  calendarBoard.innerHTML = cells.join("");
+  renderCalendarDayPanel(groups.get(selectedKey) || [], selectedKey);
+}
+
+function renderAgendaGroup(title, items) {
+  return `
+    <section class="agenda-group">
+      <h3>${escapeHtml(title)}</h3>
+      ${items.length ? items.map(renderAgendaCompactCard).join("") : `<div class="empty">Sin elementos.</div>`}
+    </section>
+  `;
+}
+
+function renderAgendaCompactCard(item) {
+  return `
+    <article class="radar-card agenda-card agenda-${escapeHtml(item.color_type)}" data-calendar-date="${escapeHtml(item.date || "sin-fecha")}">
+      <span>${escapeHtml(agendaTypeLabel(item))}${item.is_overdue ? " · Vencido" : ""}</span>
+      <strong>${escapeHtml(item.title || "Sin título")}</strong>
+      <small>${escapeHtml(item.date ? formatDate(item.date) : "Sin fecha")}${agendaEventTime(item) ? ` · ${escapeHtml(agendaEventTime(item))}` : ""}</small>
+      <small>${escapeHtml(item.subtitle || "")}</small>
+    </article>
+  `;
 }
 
 function renderCalendarDayPanel(items, key) {
-  const dateText = key === "sin-fecha" ? "Sin fecha límite" : formatDate(key);
+  const dateText = key === "sin-fecha" ? "Sin fecha" : formatDate(key);
   const sorted = [...items].sort(compareCalendarItems);
   if (!sorted.length) {
     calendarDayPanel.innerHTML = `
       <div class="panel-sticky">
         <p class="eyebrow">Día seleccionado</p>
         <h3>${escapeHtml(dateText)}</h3>
-        <div class="empty">No hay licitaciones que venzan este día.</div>
+        <div class="empty">No hay eventos este día.</div>
       </div>
     `;
     return;
@@ -1266,28 +1435,26 @@ function renderCalendarDayPanel(items, key) {
       <h3>${escapeHtml(dateText)}</h3>
       <div class="calendar-panel-list">
         ${sorted.map((item) => {
-          const days = daysUntil(item.fecha_limite, item.hora_limite);
-          const enlacePerfil = normalizeUrl(item.enlace_perfil);
-          const enlaceInfonalia = normalizeUrl(item.enlace_infonalia);
+          const linked = agendaLinkedText(item);
           return `
-            <article class="calendar-panel-item">
+            <article class="calendar-panel-item agenda-${escapeHtml(item.color_type)}">
               <div class="calendar-panel-head">
-                <span class="due-chip ${dueClass(days)}">${escapeHtml(dueLabel(days))}</span>
-                <span class="badge ${badgeClass(item.estado)}">${escapeHtml(estadoLabel(item.estado))}</span>
+                <span class="due-chip ${escapeHtml(item.color_type)}">${escapeHtml(agendaTypeLabel(item))}</span>
+                <span class="badge ${badgeClass(item.status)}">${escapeHtml(agendaStatusLabel(item))}</span>
               </div>
-              <h4>${escapeHtml(item.expediente || "Sin expediente")}</h4>
-              <p class="calendar-panel-org">${escapeHtml(item.organismo || "")}</p>
-              <p>${escapeHtml(item.objeto || "Sin objeto informado")}</p>
+              <h4>${escapeHtml(item.title || "Sin título")}</h4>
+              <p class="calendar-panel-org">${escapeHtml(item.source_type || "")}</p>
+              <p>${escapeHtml(item.subtitle || "")}</p>
+              ${linked ? `<p>${escapeHtml(linked)}</p>` : ""}
               <div class="calendar-panel-meta">
-                ${item.hora_limite ? `<span>${escapeHtml(item.hora_limite)}</span>` : ""}
-                ${item.tipo ? `<span>${escapeHtml(item.tipo)}</span>` : ""}
-                ${item.presupuesto ? `<span>${escapeHtml(formatMoney(item.presupuesto))}</span>` : ""}
-                ${item.provincia ? `<span>${escapeHtml(item.provincia)}</span>` : ""}
+                ${item.date ? `<span>${escapeHtml(formatDate(item.date))}</span>` : `<span>Sin fecha</span>`}
+                ${agendaEventTime(item) ? `<span>${escapeHtml(agendaEventTime(item))}</span>` : ""}
+                ${item.is_overdue ? `<span>Vencido abierto</span>` : ""}
               </div>
               <div class="links">
-                ${enlacePerfil ? `<a href="${escapeHtml(enlacePerfil)}" target="_blank" rel="noreferrer">Perfil</a>` : ""}
-                ${enlaceInfonalia ? `<a href="${escapeHtml(enlaceInfonalia)}" target="_blank" rel="noreferrer">Infonalia</a>` : ""}
-                ${isAdmin() ? `<button type="button" data-calendar-edit="${escapeHtml(item.id)}">Editar</button>` : ""}
+                <button type="button" data-agenda-open="${escapeHtml(item.source_type)}:${escapeHtml(item.source_id)}">Abrir origen</button>
+                ${item.source_type === "interno" ? `<button type="button" data-agenda-close="${escapeHtml(item.source_id)}">Cerrar</button>` : ""}
+                ${item.source_type === "interno" ? `<button type="button" class="danger" data-agenda-cancel="${escapeHtml(item.source_id)}">Cancelar</button>` : ""}
               </div>
             </article>
           `;
@@ -1956,7 +2123,10 @@ function openCreateEditor() {
 }
 
 function openEditEditor(id) {
-  const item = [...appState.items, ...appState.calendarItems].find((entry) => String(entry.id) === String(id));
+  let item = [...appState.items, ...appState.calendarItems].find((entry) => (
+    String(entry.id) === String(id) || String(entry.source_id || "") === String(id)
+  ));
+  if (item?.source_type === "licitacion") item = item.linked_licitaciones?.[0] || item;
   if (!item) return;
 
   form.reset();
@@ -2070,23 +2240,46 @@ stateFilter.addEventListener("change", loadItems);
 dateOrder.addEventListener("change", loadItems);
 searchInput.addEventListener("input", debounce(loadItems, 250));
 calendarSearch.addEventListener("input", debounce(renderCalendar, 250));
-calendarStateFilter.addEventListener("change", renderCalendar);
+calendarStateFilter.addEventListener("change", () => {
+  appState.agendaType = calendarStateFilter.value || "all";
+  loadCalendarItems();
+});
+document.querySelectorAll("[data-agenda-view]").forEach((button) => {
+  button.addEventListener("click", () => {
+    appState.agendaView = button.dataset.agendaView || "today";
+    const selected = parseDate(appState.calendarSelectedDate) || new Date();
+    appState.calendarDate = new Date(selected.getFullYear(), selected.getMonth(), 1);
+    loadCalendarItems();
+  });
+});
 document.getElementById("calendar-prev").addEventListener("click", () => {
-  appState.calendarDate = addMonths(appState.calendarDate, -1);
-  appState.calendarSelectedDate = dateKey(appState.calendarDate);
-  renderCalendar();
+  const selected = parseDate(appState.calendarSelectedDate) || new Date();
+  const next = appState.agendaView === "month"
+    ? addMonths(appState.calendarDate, -1)
+    : addDays(selected, appState.agendaView === "week" ? -7 : -1);
+  appState.calendarDate = new Date(next.getFullYear(), next.getMonth(), 1);
+  appState.calendarSelectedDate = dateKey(next);
+  loadCalendarItems();
 });
 document.getElementById("calendar-next").addEventListener("click", () => {
-  appState.calendarDate = addMonths(appState.calendarDate, 1);
-  appState.calendarSelectedDate = dateKey(appState.calendarDate);
-  renderCalendar();
+  const selected = parseDate(appState.calendarSelectedDate) || new Date();
+  const next = appState.agendaView === "month"
+    ? addMonths(appState.calendarDate, 1)
+    : addDays(selected, appState.agendaView === "week" ? 7 : 1);
+  appState.calendarDate = new Date(next.getFullYear(), next.getMonth(), 1);
+  appState.calendarSelectedDate = dateKey(next);
+  loadCalendarItems();
 });
 document.getElementById("calendar-today").addEventListener("click", () => {
   const today = new Date();
   appState.calendarDate = new Date(today.getFullYear(), today.getMonth(), 1);
   appState.calendarSelectedDate = dateKey(today);
-  renderCalendar();
+  loadCalendarItems();
 });
+document.getElementById("new-agenda-event-button").addEventListener("click", () => openAgendaEventoDialog());
+document.getElementById("close-agenda-event-dialog").addEventListener("click", () => agendaEventDialog.close());
+document.getElementById("cancel-agenda-event-dialog").addEventListener("click", () => agendaEventDialog.close());
+agendaEventForm.addEventListener("submit", saveAgendaEvento);
 notificationSearch.addEventListener("input", debounce(loadNotifications, 250));
 notificationScope.addEventListener("change", loadNotifications);
 notificationDestination.addEventListener("change", loadNotifications);
@@ -2245,7 +2438,9 @@ calendarBoard.addEventListener("click", (event) => {
   const day = event.target.closest("[data-calendar-date]");
   if (!day) return;
   appState.calendarSelectedDate = day.dataset.calendarDate;
-  renderCalendar();
+  const parsed = parseDate(day.dataset.calendarDate);
+  if (parsed) appState.calendarDate = new Date(parsed.getFullYear(), parsed.getMonth(), 1);
+  loadCalendarItems();
 });
 
 calendarRadar.addEventListener("click", (event) => {
@@ -2254,13 +2449,23 @@ calendarRadar.addEventListener("click", (event) => {
   const parsed = parseDate(day.dataset.calendarDate);
   if (parsed) appState.calendarDate = new Date(parsed.getFullYear(), parsed.getMonth(), 1);
   appState.calendarSelectedDate = day.dataset.calendarDate;
-  renderCalendar();
+  loadCalendarItems();
 });
 
 calendarDayPanel.addEventListener("click", (event) => {
-  const editButton = event.target.closest("button[data-calendar-edit]");
-  if (editButton) {
-    openEditEditor(editButton.dataset.calendarEdit);
+  const openButton = event.target.closest("button[data-agenda-open]");
+  if (openButton) {
+    openAgendaOrigin(openButton.dataset.agendaOpen);
+    return;
+  }
+  const closeButton = event.target.closest("button[data-agenda-close]");
+  if (closeButton) {
+    setAgendaEventoEstado(closeButton.dataset.agendaClose, "cerrar");
+    return;
+  }
+  const cancelButton = event.target.closest("button[data-agenda-cancel]");
+  if (cancelButton) {
+    setAgendaEventoEstado(cancelButton.dataset.agendaCancel, "cancelar");
   }
 });
 
