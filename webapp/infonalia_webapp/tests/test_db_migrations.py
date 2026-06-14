@@ -14,6 +14,7 @@ from webapp.infonalia_webapp.db_migrations import (
     MIGRATIONS_TABLE,
     Migration,
     applied_migration_versions,
+    enable_foreign_keys,
     run_migrations,
     validate_migrations,
 )
@@ -39,6 +40,10 @@ def table_exists(conn: sqlite3.Connection, name: str) -> bool:
         (name,),
     ).fetchone()
     return row is not None
+
+
+def foreign_keys_enabled(conn: sqlite3.Connection) -> bool:
+    return conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
 
 
 def test_run_migrations_creates_table_and_records_baseline() -> None:
@@ -71,6 +76,16 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
     assert table_exists(conn, "download_jobs")
     assert table_exists(conn, "import_runs")
     assert table_exists(conn, "import_results")
+
+
+def test_run_migrations_enables_foreign_key_enforcement() -> None:
+    conn = sqlite3.connect(":memory:")
+
+    assert not foreign_keys_enabled(conn)
+
+    run_migrations(conn, now=lambda: "2026-06-12T10:00:00")
+
+    assert foreign_keys_enabled(conn)
 
 
 def test_run_migrations_is_idempotent() -> None:
@@ -228,10 +243,12 @@ def test_init_db_runs_migrations_on_temporary_database_only() -> None:
         app.DB_PATH = app.DATA_ROOT / "infonalia.db"
         try:
             app.init_db()
-            conn = sqlite3.connect(app.DB_PATH)
+            conn = app.db()
             try:
+                assert foreign_keys_enabled(conn)
                 assert table_exists(conn, MIGRATIONS_TABLE)
                 assert applied_migration_versions(conn) == {migration.version for migration in MIGRATIONS}
+                assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
             finally:
                 conn.close()
         finally:
@@ -242,3 +259,11 @@ def test_init_db_runs_migrations_on_temporary_database_only() -> None:
     assert PRODUCTIVE_DB_PATH.exists() is existed_before
     if existed_before:
         assert PRODUCTIVE_DB_PATH.stat().st_mtime_ns == stat_before
+
+
+def test_enable_foreign_keys_helper_sets_sqlite_pragma() -> None:
+    conn = sqlite3.connect(":memory:")
+
+    enable_foreign_keys(conn)
+
+    assert foreign_keys_enabled(conn)

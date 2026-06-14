@@ -264,9 +264,9 @@ except ImportError:
     from notification_records import notification_items_and_unread, notification_query_filters
 
 try:
-    from .db_migrations import run_migrations
+    from .db_migrations import enable_foreign_keys, run_migrations
 except ImportError:
-    from db_migrations import run_migrations
+    from db_migrations import enable_foreign_keys, run_migrations
 
 try:
     from .local_storage import LocalStorageError, local_uri_for_path, write_local_manifest
@@ -516,6 +516,7 @@ def read_token(token: str | None) -> dict | None:
 def db() -> sqlite3.Connection:
     ensure_data_dir()
     conn = sqlite3.connect(DB_PATH)
+    enable_foreign_keys(conn)
     conn.row_factory = sqlite3.Row
     return conn
 

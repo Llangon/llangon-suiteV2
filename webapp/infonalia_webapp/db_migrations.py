@@ -16,6 +16,10 @@ class Migration:
     apply: Callable[[sqlite3.Connection], None]
 
 
+def enable_foreign_keys(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA foreign_keys = ON")
+
+
 def _baseline_schema(_: sqlite3.Connection) -> None:
     return None
 
@@ -163,6 +167,7 @@ def run_migrations(
     *,
     now: Callable[[], str] = migration_timestamp,
 ) -> list[str]:
+    enable_foreign_keys(conn)
     items = validate_migrations(migrations)
     ensure_migrations_table(conn)
     applied = applied_migration_versions(conn)
