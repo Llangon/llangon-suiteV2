@@ -527,6 +527,9 @@ def db_session():
     try:
         yield conn
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -661,6 +664,20 @@ def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition:
     columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def delete_licitacion_dependents(conn: sqlite3.Connection, licitacion_ids: list[int]) -> None:
+    if not licitacion_ids:
+        return
+    placeholders = ",".join("?" for _ in licitacion_ids)
+    conn.execute(
+        f"DELETE FROM download_jobs WHERE licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
+    conn.execute(
+        f"UPDATE import_results SET licitacion_id = NULL WHERE licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
 
 
 def seed_users_and_settings(conn: sqlite3.Connection) -> None:
@@ -2771,26 +2788,37 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if not self.require_admin():
             return
 
-        with db_session() as conn:
-            day = conn.execute("SELECT * FROM infonalia_dias WHERE id = ?", (dia_id,)).fetchone()
-            if not day:
-                self.send_json({"error": "Dia Infonalia no encontrado"}, HTTPStatus.NOT_FOUND)
-                return
+        try:
+            with db_session() as conn:
+                day = conn.execute("SELECT * FROM infonalia_dias WHERE id = ?", (dia_id,)).fetchone()
+                if not day:
+                    self.send_json({"error": "Dia Infonalia no encontrado"}, HTTPStatus.NOT_FOUND)
+                    return
 
-            licitacion_rows = conn.execute(
-                "SELECT id FROM licitaciones WHERE infonalia_dia_id = ?",
-                (dia_id,),
-            ).fetchall()
-            licitacion_ids = [int(row["id"]) for row in licitacion_rows]
+                licitacion_rows = conn.execute(
+                    "SELECT id FROM licitaciones WHERE infonalia_dia_id = ?",
+                    (dia_id,),
+                ).fetchall()
+                licitacion_ids = [int(row["id"]) for row in licitacion_rows]
 
-            if licitacion_ids:
-                placeholders = ",".join("?" for _ in licitacion_ids)
+                delete_licitacion_dependents(conn, licitacion_ids)
+                if licitacion_ids:
+                    placeholders = ",".join("?" for _ in licitacion_ids)
+                    conn.execute(
+                        f"DELETE FROM licitaciones WHERE id IN ({placeholders})",
+                        licitacion_ids,
+                    )
                 conn.execute(
-                    f"DELETE FROM licitaciones WHERE id IN ({placeholders})",
-                    licitacion_ids,
+                    "DELETE FROM infonalia_dias WHERE id = ?",
+                    (dia_id,),
                 )
-
-            conn.execute("DELETE FROM infonalia_dias WHERE id = ?", (dia_id,))
+        except sqlite3.IntegrityError as exc:
+            print(f"No se pudo borrar Dia Infonalia {dia_id}: {exc}", file=sys.stderr)
+            self.send_json(
+                {"error": "No se pudo borrar el Dia Infonalia por datos relacionados"},
+                HTTPStatus.CONFLICT,
+            )
+            return
 
         self.send_json(
             {
