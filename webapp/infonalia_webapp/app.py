@@ -48,6 +48,33 @@ except ImportError:
     )
 
 try:
+    from .actuaciones import (
+        ACTUACION_ESTADOS,
+        ACTUACION_ESTADOS_ABIERTOS,
+        ACTUACION_ESTADOS_CERRADOS,
+        ACTUACION_PRIORIDADES,
+        ACTUACION_TIPOS,
+        actuacion_payload,
+        actuacion_to_dict,
+        clean_value as clean_actuacion_value,
+        summarize_actuaciones,
+        visual_state as actuacion_visual_state,
+    )
+except ImportError:
+    from actuaciones import (
+        ACTUACION_ESTADOS,
+        ACTUACION_ESTADOS_ABIERTOS,
+        ACTUACION_ESTADOS_CERRADOS,
+        ACTUACION_PRIORIDADES,
+        ACTUACION_TIPOS,
+        actuacion_payload,
+        actuacion_to_dict,
+        clean_value as clean_actuacion_value,
+        summarize_actuaciones,
+        visual_state as actuacion_visual_state,
+    )
+
+try:
     from .auth_crypto import (
         encode_token_payload as encode_signed_token_payload,
         hash_password,
@@ -666,6 +693,40 @@ def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+def actuaciones_select_sql(where: list[str] | None = None) -> str:
+    sql = """
+        SELECT a.*, l.expediente, l.organismo
+        FROM licitacion_actuaciones a
+        LEFT JOIN licitaciones l ON l.id = a.licitacion_id
+    """
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY CASE WHEN a.deadline_at IS NULL OR a.deadline_at = '' THEN 1 ELSE 0 END ASC, a.deadline_at ASC, a.id DESC"
+    return sql
+
+
+def get_actuacion_row(conn: sqlite3.Connection, actuacion_id: int) -> sqlite3.Row | None:
+    rows = conn.execute(actuaciones_select_sql(["a.id = ?"]), (actuacion_id,)).fetchall()
+    return rows[0] if rows else None
+
+
+def open_actuaciones_count(conn: sqlite3.Connection, licitacion_ids: list[int]) -> int:
+    if not licitacion_ids:
+        return 0
+    placeholders = ",".join("?" for _ in licitacion_ids)
+    estado_placeholders = ",".join("?" for _ in ACTUACION_ESTADOS_ABIERTOS)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS total
+        FROM licitacion_actuaciones
+        WHERE licitacion_id IN ({placeholders})
+          AND estado IN ({estado_placeholders})
+        """,
+        [*licitacion_ids, *sorted(ACTUACION_ESTADOS_ABIERTOS)],
+    ).fetchone()
+    return int(row["total"] if row else 0)
+
+
 def delete_licitacion_dependents(conn: sqlite3.Connection, licitacion_ids: list[int]) -> None:
     if not licitacion_ids:
         return
@@ -677,6 +738,15 @@ def delete_licitacion_dependents(conn: sqlite3.Connection, licitacion_ids: list[
     conn.execute(
         f"UPDATE import_results SET licitacion_id = NULL WHERE licitacion_id IN ({placeholders})",
         licitacion_ids,
+    )
+    estado_placeholders = ",".join("?" for _ in ACTUACION_ESTADOS_CERRADOS)
+    conn.execute(
+        f"""
+        DELETE FROM licitacion_actuaciones
+        WHERE licitacion_id IN ({placeholders})
+          AND estado IN ({estado_placeholders})
+        """,
+        [*licitacion_ids, *sorted(ACTUACION_ESTADOS_CERRADOS)],
     )
 
 
@@ -1314,6 +1384,10 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_list_dias()
         elif path == "/api/licitaciones":
             self.api_list_licitaciones(parsed.query)
+        elif path == "/api/actuaciones":
+            self.api_list_actuaciones(parsed.query)
+        elif path == "/api/actuaciones/resumen":
+            self.api_actuaciones_resumen()
         elif path == "/api/notificaciones":
             self.api_list_notificaciones(parsed.query)
         elif path == "/api/config":
@@ -1393,6 +1467,24 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_generate_ai_preview(int(licitacion_id))
+        elif path.startswith("/api/licitaciones/") and path.endswith("/actuaciones"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/actuaciones").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_create_actuacion(int(licitacion_id))
+        elif path.startswith("/api/actuaciones/") and path.endswith("/cerrar"):
+            actuacion_id = path.removeprefix("/api/actuaciones/").removesuffix("/cerrar").strip("/")
+            if not actuacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_close_actuacion(int(actuacion_id))
+        elif path.startswith("/api/actuaciones/") and path.endswith("/cancelar"):
+            actuacion_id = path.removeprefix("/api/actuaciones/").removesuffix("/cancelar").strip("/")
+            if not actuacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_cancel_actuacion(int(actuacion_id))
         else:
             self.send_error(HTTPStatus.NOT_FOUND, "No encontrado")
 
@@ -1406,7 +1498,13 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if self.csrf_required_for_path("PATCH", path) and not self.require_csrf_token():
             return
 
-        if path.startswith("/api/licitaciones/"):
+        if path.startswith("/api/actuaciones/"):
+            actuacion_id = path.removeprefix("/api/actuaciones/").strip("/")
+            if not actuacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_update_actuacion(int(actuacion_id))
+        elif path.startswith("/api/licitaciones/"):
             licitacion_id = path.removeprefix("/api/licitaciones/").strip("/")
             if not licitacion_id.isdigit():
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
@@ -1520,12 +1618,19 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 path.endswith("/descargar")
                 or path.endswith("/ia-preview")
                 or path.endswith("/ia-preview/email")
+                or path.endswith("/actuaciones")
+            ):
+                return True
+            if path.startswith("/api/actuaciones/") and (
+                path.endswith("/cerrar")
+                or path.endswith("/cancelar")
             ):
                 return True
             return False
         if method == "PATCH":
             return (
-                path.startswith("/api/licitaciones/")
+                path.startswith("/api/actuaciones/")
+                or path.startswith("/api/licitaciones/")
                 or path.startswith("/api/config/users/")
                 or path == "/api/config/settings"
                 or path.startswith("/api/news/")
@@ -2081,6 +2186,30 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         with db_session() as conn:
             rows = [row_to_dict(row) for row in conn.execute(sql, values)]
+            if rows:
+                licitacion_ids = [int(row["id"]) for row in rows]
+                placeholders = ",".join("?" for _ in licitacion_ids)
+                estado_placeholders = ",".join("?" for _ in ACTUACION_ESTADOS_ABIERTOS)
+                counts = {
+                    row["licitacion_id"]: row
+                    for row in conn.execute(
+                        f"""
+                        SELECT
+                            licitacion_id,
+                            COUNT(*) AS total_abiertas,
+                            SUM(CASE WHEN deadline_at IS NOT NULL AND deadline_at <> '' AND deadline_at < ? THEN 1 ELSE 0 END) AS vencidas
+                        FROM licitacion_actuaciones
+                        WHERE licitacion_id IN ({placeholders})
+                          AND estado IN ({estado_placeholders})
+                        GROUP BY licitacion_id
+                        """,
+                        [now_iso(), *licitacion_ids, *sorted(ACTUACION_ESTADOS_ABIERTOS)],
+                    )
+                }
+                for row in rows:
+                    count_row = counts.get(row["id"])
+                    row["actuaciones_abiertas"] = int(count_row["total_abiertas"] if count_row else 0)
+                    row["actuaciones_vencidas"] = int(count_row["vencidas"] if count_row and count_row["vencidas"] else 0)
             totals = {
                 row["estado"]: row["total"]
                 for row in conn.execute(totals_sql, values)
@@ -2139,6 +2268,162 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "day_nuria_total": day_nuria_total,
             }
         )
+
+    def api_list_actuaciones(self, query: str) -> None:
+        user = self.current_user() or {}
+        params = parse_qs(query)
+        where: list[str] = []
+        values: list[object] = []
+        licitacion_id = clean_text(params.get("licitacion_id", [""])[0])
+        estado = clean_text(params.get("estado", [""])[0]).lower()
+
+        if licitacion_id.isdigit():
+            where.append("a.licitacion_id = ?")
+            values.append(int(licitacion_id))
+        if estado in ACTUACION_ESTADOS:
+            where.append("a.estado = ?")
+            values.append(estado)
+        if clean_text(params.get("abiertas", [""])[0]) == "1":
+            placeholders = ",".join("?" for _ in ACTUACION_ESTADOS_ABIERTOS)
+            where.append(f"a.estado IN ({placeholders})")
+            values.extend(sorted(ACTUACION_ESTADOS_ABIERTOS))
+        if clean_text(params.get("responsable", [""])[0]) == "me":
+            where.append("a.responsable_user_id = ?")
+            values.append(user.get("username", ""))
+        if clean_text(params.get("sin_responsable", [""])[0]) == "1":
+            where.append("(a.responsable_user_id IS NULL OR a.responsable_user_id = '')")
+
+        current = datetime.now()
+        with db_session() as conn:
+            rows = conn.execute(actuaciones_select_sql(where), values).fetchall()
+
+        items = [actuacion_to_dict(row, now=current) for row in rows]
+        if clean_text(params.get("vencidas", [""])[0]) == "1":
+            items = [item for item in items if item["estado_visual"] == "vencida"]
+        if clean_text(params.get("hoy", [""])[0]) == "1":
+            items = [item for item in items if item["estado_visual"] == "vence_hoy"]
+        if clean_text(params.get("semana", [""])[0]) == "1":
+            items = [item for item in items if item["estado_visual"] == "vence_esta_semana"]
+
+        self.send_json(
+            {
+                "items": items,
+                "summary": summarize_actuaciones(rows, now=current),
+                "tipos": sorted(ACTUACION_TIPOS),
+                "estados": sorted(ACTUACION_ESTADOS),
+                "prioridades": sorted(ACTUACION_PRIORIDADES),
+                "users": list_user_records(active_only=True),
+            }
+        )
+
+    def api_actuaciones_resumen(self) -> None:
+        current = datetime.now()
+        placeholders = ",".join("?" for _ in ACTUACION_ESTADOS_ABIERTOS)
+        with db_session() as conn:
+            rows = conn.execute(
+                actuaciones_select_sql([f"a.estado IN ({placeholders})"]),
+                sorted(ACTUACION_ESTADOS_ABIERTOS),
+            ).fetchall()
+        self.send_json(summarize_actuaciones(rows, now=current))
+
+    def api_create_actuacion(self, licitacion_id: int) -> None:
+        user = self.current_user() or {}
+        try:
+            data = self.read_json()
+            payload = actuacion_payload(data, now=now_iso)
+        except (ValueError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        timestamp = now_iso()
+        with db_session() as conn:
+            licitacion = conn.execute("SELECT id FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+            if not licitacion:
+                self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                return
+            payload.update(
+                {
+                    "licitacion_id": licitacion_id,
+                    "created_by": clean_actuacion_value(user.get("username")),
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                }
+            )
+            if payload.get("estado") in ACTUACION_ESTADOS_CERRADOS:
+                payload["closed_at"] = timestamp
+                payload["closed_by"] = clean_actuacion_value(user.get("username"))
+            columns = ", ".join(payload.keys())
+            placeholders = ", ".join("?" for _ in payload)
+            cur = conn.execute(
+                f"INSERT INTO licitacion_actuaciones ({columns}) VALUES ({placeholders})",
+                list(payload.values()),
+            )
+            row = get_actuacion_row(conn, int(cur.lastrowid))
+
+        self.send_json({"ok": True, "item": actuacion_to_dict(row)}, HTTPStatus.CREATED)
+
+    def api_update_actuacion(self, actuacion_id: int) -> None:
+        user = self.current_user() or {}
+        try:
+            data = self.read_json()
+        except json.JSONDecodeError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        with db_session() as conn:
+            existing = get_actuacion_row(conn, actuacion_id)
+            if not existing:
+                self.send_json({"error": "Actuacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                payload = actuacion_payload(data, partial=True, existing=existing, now=now_iso)
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            if payload.get("estado") in ACTUACION_ESTADOS_CERRADOS and not payload.get("closed_by"):
+                payload["closed_by"] = clean_actuacion_value(user.get("username"))
+            if not payload:
+                self.send_json({"error": "No hay cambios"}, HTTPStatus.BAD_REQUEST)
+                return
+            set_clause = ", ".join(f"{key} = ?" for key in payload)
+            conn.execute(
+                f"UPDATE licitacion_actuaciones SET {set_clause} WHERE id = ?",
+                list(payload.values()) + [actuacion_id],
+            )
+            row = get_actuacion_row(conn, actuacion_id)
+
+        self.send_json({"ok": True, "item": actuacion_to_dict(row)})
+
+    def api_close_actuacion(self, actuacion_id: int) -> None:
+        self.api_set_actuacion_closed_state(actuacion_id, "cerrada")
+
+    def api_cancel_actuacion(self, actuacion_id: int) -> None:
+        self.api_set_actuacion_closed_state(actuacion_id, "cancelada")
+
+    def api_set_actuacion_closed_state(self, actuacion_id: int, estado: str) -> None:
+        user = self.current_user() or {}
+        username = clean_actuacion_value(user.get("username"))
+        timestamp = now_iso()
+        with db_session() as conn:
+            row = get_actuacion_row(conn, actuacion_id)
+            if not row:
+                self.send_json({"error": "Actuacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                return
+            if estado == "cancelada" and user.get("role") != "admin":
+                owner = username and username in {row["responsable_user_id"], row["created_by"]}
+                if not owner:
+                    self.send_json({"error": "No tienes permiso para cancelar esta actuacion."}, HTTPStatus.FORBIDDEN)
+                    return
+            conn.execute(
+                """
+                UPDATE licitacion_actuaciones
+                SET estado = ?, closed_at = ?, closed_by = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (estado, timestamp, username, timestamp, actuacion_id),
+            )
+            updated = get_actuacion_row(conn, actuacion_id)
+        self.send_json({"ok": True, "item": actuacion_to_dict(updated)})
 
     def api_create_licitacion(self) -> None:
         if not self.require_admin():
@@ -2778,6 +3063,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
                     return
                 dia_id = row["infonalia_dia_id"]
+                if open_actuaciones_count(conn, [licitacion_id]):
+                    self.send_json(
+                        {"error": "No se puede borrar una licitacion con actuaciones abiertas."},
+                        HTTPStatus.CONFLICT,
+                    )
+                    return
                 delete_licitacion_dependents(conn, [licitacion_id])
                 conn.execute("DELETE FROM licitaciones WHERE id = ?", (licitacion_id,))
                 if dia_id:
@@ -2810,6 +3101,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 ).fetchall()
                 licitacion_ids = [int(row["id"]) for row in licitacion_rows]
 
+                if open_actuaciones_count(conn, licitacion_ids):
+                    self.send_json(
+                        {"error": "No se puede borrar un Dia Infonalia con actuaciones abiertas."},
+                        HTTPStatus.CONFLICT,
+                    )
+                    return
                 delete_licitacion_dependents(conn, licitacion_ids)
                 if licitacion_ids:
                     placeholders = ",".join("?" for _ in licitacion_ids)

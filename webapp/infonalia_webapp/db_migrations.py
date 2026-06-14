@@ -100,6 +100,43 @@ def _import_history_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_import_results_fingerprint ON import_results(fingerprint)")
 
 
+def _actuaciones_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS licitacion_actuaciones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            licitacion_id INTEGER NOT NULL,
+            tipo TEXT NOT NULL,
+            titulo TEXT NOT NULL,
+            descripcion TEXT,
+            estado TEXT NOT NULL DEFAULT 'pendiente',
+            prioridad TEXT NOT NULL DEFAULT 'normal',
+            responsable_user_id TEXT,
+            deadline_at TEXT,
+            recordatorio_email INTEGER NOT NULL DEFAULT 1,
+            origen TEXT NOT NULL DEFAULT 'manual',
+            respuesta_resumen TEXT,
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            closed_at TEXT,
+            closed_by TEXT,
+            FOREIGN KEY (licitacion_id) REFERENCES licitaciones(id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_actuaciones_licitacion ON licitacion_actuaciones(licitacion_id)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_actuaciones_estado ON licitacion_actuaciones(estado)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_actuaciones_deadline ON licitacion_actuaciones(deadline_at)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_actuaciones_responsable ON licitacion_actuaciones(responsable_user_id)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_actuaciones_tipo ON licitacion_actuaciones(tipo)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_actuaciones_prioridad ON licitacion_actuaciones(prioridad)")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version="0001_baseline_schema",
@@ -115,6 +152,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version="0003_import_history",
         description="Tablas preparatorias para historial de importaciones",
         apply=_import_history_schema,
+    ),
+    Migration(
+        version="0004_actuaciones",
+        description="Tabla operativa para actuaciones y vencimientos",
+        apply=_actuaciones_schema,
     ),
 )
 

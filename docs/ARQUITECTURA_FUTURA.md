@@ -2281,3 +2281,29 @@ Fuera de esta fase:
 - no se cambian permisos;
 - no se anaden migraciones;
 - no se cambia frontend ni Firebase.
+## Módulo Actuaciones y vencimientos
+
+El módulo `Actuaciones` registra tareas operativas con plazo vinculadas a licitaciones: requerimientos, subsanaciones, aclaraciones, documentación adicional, garantías, firmas, visitas, aperturas de mesa, recursos, seguimiento y otros hitos.
+
+Modelo:
+- tabla `licitacion_actuaciones`, creada por la migración `0004_actuaciones`;
+- estados manuales: `pendiente`, `en_curso`, `respondida`, `cerrada`, `cancelada`;
+- estados visuales calculados: vencida, vence hoy, vence esta semana, sin fecha y cerrada fuera de plazo;
+- prioridades: `normal`, `alta`, `critica`;
+- responsable guardado como `username` en `responsable_user_id`, ya que `usuarios` no tiene `id` numérico.
+
+Operativa:
+- API privada autenticada para listar, crear, actualizar, cerrar y cancelar actuaciones;
+- resumen `/api/actuaciones/resumen` para futura Bandeja Hoy;
+- frontend privado con vista global, filtros rápidos y formulario de alta/edición;
+- las tarjetas de licitación muestran contador de actuaciones abiertas y aviso si hay vencidas.
+
+Avisos por email:
+- script manual: `python webapp/infonalia_webapp/send_actuaciones_reminders.py --dry-run`;
+- el modo dry-run no envía email;
+- el envío real usa SMTP existente y destinatarios desde `INFONALIA_REMINDER_RECIPIENTS` o emails de usuarios activos.
+
+Borrado:
+- no se borran carpetas locales, ficheros descargados, manifests físicos, Dropbox ni backups;
+- no se puede borrar una licitación o día si tiene actuaciones abiertas;
+- si todas están cerradas/canceladas, se permite borrar la licitación y limpiar esas actuaciones cerradas para respetar la FK.

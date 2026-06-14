@@ -997,3 +997,19 @@ Mover esa normalizacion a `new_user_payload()` y `updated_user_payload()` en `we
 - Se mantienen los mensajes de error actuales.
 - No se cambian endpoints ni permisos.
 - No se cambia SQLite, frontend ni Firebase.
+## ADR-040 — Actuaciones y vencimientos
+
+Se introduce el módulo operativo `Actuaciones` para registrar requerimientos, subsanaciones, aclaraciones, garantías, firmas, visitas y otros hitos con plazo asociados a una licitación.
+
+Decisión:
+- crear la migración `0004_actuaciones` con la tabla `licitacion_actuaciones`;
+- mantener `licitacion_id` como FK sin `ON DELETE CASCADE`;
+- bloquear el borrado de licitaciones o días si existen actuaciones abiertas;
+- permitir borrar la licitación solo cuando sus actuaciones están `cerrada` o `cancelada`, limpiando esos registros cerrados para respetar la FK;
+- conservar auditoría de importación y no borrar carpetas, manifests físicos, Dropbox ni backups;
+- usar `responsable_user_id`, `created_by` y `closed_by` como `TEXT` con `username`, porque la tabla actual `usuarios` no tiene columna `id` numérica compatible.
+
+Avisos:
+- el script `webapp/infonalia_webapp/send_actuaciones_reminders.py --dry-run` permite revisar el resumen sin enviar email;
+- el envío real reutiliza la configuración SMTP existente o `INFONALIA_REMINDER_RECIPIENTS`;
+- esta fase no implementa todavía la Bandeja Hoy, pero deja `/api/actuaciones/resumen` preparado para ella.

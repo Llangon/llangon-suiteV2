@@ -16,6 +16,10 @@ const appState = {
   currentDayNuriaTotal: null,
   calendarItems: [],
   newsItems: [],
+  actuaciones: [],
+  actuacionesSummary: {},
+  actuacionesUsers: [],
+  actuacionLicitaciones: [],
   calendarDate: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
   calendarSelectedDate: "",
   nuriaDaysView: "pending",
@@ -29,6 +33,7 @@ const appState = {
 const daysSection = document.getElementById("days-section");
 const licitacionesSection = document.getElementById("licitaciones-section");
 const calendarSection = document.getElementById("calendar-section");
+const actuacionesSection = document.getElementById("actuaciones-section");
 const notificationsSection = document.getElementById("notifications-section");
 const newsAdminSection = document.getElementById("news-admin-section");
 const configSection = document.getElementById("config-section");
@@ -51,6 +56,12 @@ const calendarSummary = document.getElementById("calendar-summary");
 const calendarRadar = document.getElementById("calendar-radar");
 const calendarBoard = document.getElementById("calendar-board");
 const calendarDayPanel = document.getElementById("calendar-day-panel");
+const actuacionesBoard = document.getElementById("actuaciones-board");
+const actuacionesSummary = document.getElementById("actuaciones-summary");
+const actuacionesFilter = document.getElementById("actuaciones-filter");
+const actuacionDialog = document.getElementById("actuacion-dialog");
+const actuacionForm = document.getElementById("actuacion-form");
+const actuacionFormTitle = document.getElementById("actuacion-form-title");
 const notificationsBoard = document.getElementById("notifications-board");
 const newsAdminBoard = document.getElementById("news-admin-board");
 const newsForm = document.getElementById("news-form");
@@ -98,6 +109,41 @@ const estadoLabels = {
 const nuriaEstados = ["Pendiente Nuria", "Descartar", "Descargar", "Hacer"];
 const nuriaLicitacionesEstados = ["Descargar", "Hacer"];
 const calendarioEstados = ["Pendiente Nuria", "Descargar", "Hacer"];
+const actuacionTipoLabels = {
+  requerimiento: "Requerimiento",
+  subsanacion: "Subsanación",
+  aclaracion: "Aclaración",
+  documentacion_adicional: "Documentación adicional",
+  justificacion_baja: "Justificación baja",
+  garantia_definitiva: "Garantía definitiva",
+  firma_contrato: "Firma contrato",
+  presentacion_oferta: "Presentación oferta",
+  visita_tecnica: "Visita técnica",
+  apertura_mesa: "Apertura mesa",
+  consulta_organo: "Consulta órgano",
+  recurso_alegaciones: "Recurso / alegaciones",
+  revision_interna: "Revisión interna",
+  comunicacion_cliente: "Comunicación cliente",
+  seguimiento: "Seguimiento",
+  otro: "Otro",
+};
+const actuacionEstadoLabels = {
+  pendiente: "Pendiente",
+  en_curso: "En curso",
+  respondida: "Respondida",
+  cerrada: "Cerrada",
+  cancelada: "Cancelada",
+};
+const actuacionVisualLabels = {
+  vencida: "Vencida",
+  vence_hoy: "Vence hoy",
+  vence_esta_semana: "Esta semana",
+  sin_fecha: "Sin fecha",
+  cerrada_fuera_de_plazo: "Cerrada fuera de plazo",
+  cerrada: "Cerrada",
+  cancelada: "Cancelada",
+  pendiente: "Pendiente",
+};
 const editorFields = [
   "id",
   "expediente",
@@ -321,6 +367,7 @@ function showDaysView() {
   daysSection.hidden = false;
   licitacionesSection.hidden = true;
   calendarSection.hidden = true;
+  actuacionesSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   configSection.hidden = true;
@@ -338,6 +385,7 @@ function showLicitacionesView({ diaId = "", title = "Todas las licitaciones", vi
   daysSection.hidden = true;
   licitacionesSection.hidden = false;
   calendarSection.hidden = true;
+  actuacionesSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   configSection.hidden = true;
@@ -354,10 +402,25 @@ function showCalendarView() {
   daysSection.hidden = true;
   licitacionesSection.hidden = true;
   calendarSection.hidden = false;
+  actuacionesSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   configSection.hidden = true;
   loadCalendarItems();
+}
+
+function showActuacionesView() {
+  appState.lastSection = "actuaciones";
+  setActiveNav("actuaciones");
+  setPageHeader("Actuaciones", "Actuaciones y vencimientos");
+  daysSection.hidden = true;
+  licitacionesSection.hidden = true;
+  calendarSection.hidden = true;
+  actuacionesSection.hidden = false;
+  notificationsSection.hidden = true;
+  newsAdminSection.hidden = true;
+  configSection.hidden = true;
+  loadActuaciones();
 }
 
 function showNotificationsView() {
@@ -366,6 +429,7 @@ function showNotificationsView() {
   daysSection.hidden = true;
   licitacionesSection.hidden = true;
   calendarSection.hidden = true;
+  actuacionesSection.hidden = true;
   notificationsSection.hidden = false;
   newsAdminSection.hidden = true;
   configSection.hidden = true;
@@ -380,6 +444,7 @@ function showNewsAdminView() {
   daysSection.hidden = true;
   licitacionesSection.hidden = true;
   calendarSection.hidden = true;
+  actuacionesSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = false;
   configSection.hidden = true;
@@ -394,6 +459,7 @@ function showConfigView() {
   daysSection.hidden = true;
   licitacionesSection.hidden = true;
   calendarSection.hidden = true;
+  actuacionesSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   configSection.hidden = false;
@@ -401,6 +467,10 @@ function showConfigView() {
 }
 
 function backFromNotifications() {
+  if (appState.lastSection === "actuaciones") {
+    showActuacionesView();
+    return;
+  }
   if (appState.lastSection === "calendar") {
     showCalendarView();
     return;
@@ -492,6 +562,186 @@ function renderDaysSummary() {
 
 function renderMetric([label, value]) {
   return `<article class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`;
+}
+
+function actuacionLabel(map, value) {
+  return map[value] || value || "";
+}
+
+function actuacionesQueryParams() {
+  const params = new URLSearchParams();
+  const filter = actuacionesFilter.value || "abiertas";
+  if (filter === "abiertas") params.set("abiertas", "1");
+  if (filter === "vencidas") params.set("vencidas", "1");
+  if (filter === "hoy") params.set("hoy", "1");
+  if (filter === "semana") params.set("semana", "1");
+  if (filter === "mis") params.set("responsable", "me");
+  if (filter === "sin_responsable") params.set("sin_responsable", "1");
+  if (filter === "cerradas") params.set("estado", "cerrada");
+  return params;
+}
+
+async function loadActuaciones() {
+  const params = actuacionesQueryParams();
+  const response = await fetch(`/api/actuaciones?${params.toString()}`);
+  if (!response.ok) {
+    actuacionesBoard.innerHTML = `<div class="empty">No se pudieron cargar las actuaciones.</div>`;
+    return;
+  }
+  const data = await response.json();
+  appState.actuaciones = data.items || [];
+  appState.actuacionesSummary = data.summary || {};
+  appState.actuacionesUsers = data.users || [];
+  renderActuacionesSummary();
+  renderActuacionesBoard();
+}
+
+function renderActuacionesSummary() {
+  const summaryData = appState.actuacionesSummary || {};
+  actuacionesSummary.innerHTML = [
+    ["Abiertas", summaryData.total_abiertas || 0],
+    ["Vencidas", summaryData.vencidas || 0],
+    ["Hoy", summaryData.vencen_hoy || 0],
+    ["Esta semana", summaryData.vencen_semana || 0],
+    ["Sin responsable", summaryData.sin_responsable || 0],
+  ].map(renderMetric).join("");
+}
+
+function renderActuacionesBoard() {
+  if (!appState.actuaciones.length) {
+    actuacionesBoard.innerHTML = `<div class="empty">No hay actuaciones para esta vista.</div>`;
+    return;
+  }
+  actuacionesBoard.innerHTML = appState.actuaciones.map(renderActuacionCard).join("");
+}
+
+function renderActuacionCard(item) {
+  const deadline = item.deadline_at ? item.deadline_at.replace("T", " ") : "Sin fecha";
+  const responsable = item.responsable_user_id || "Sin responsable";
+  const canClose = ["pendiente", "en_curso", "respondida"].includes(item.estado);
+  return `
+    <article class="card compact-card actuacion-card">
+      <div class="card-content">
+        <div class="card-head">
+          <div class="card-title-block">
+            <p class="eyebrow">${escapeHtml(item.expediente || "Licitación")}</p>
+            <h2>${escapeHtml(item.titulo)}</h2>
+            <p class="card-organismo">${escapeHtml(item.organismo || "")}</p>
+          </div>
+          <div class="card-flags">
+            <span class="due-chip ${escapeHtml(item.estado_visual)}">${escapeHtml(actuacionLabel(actuacionVisualLabels, item.estado_visual))}</span>
+            <span class="province-chip">${escapeHtml(actuacionLabel(actuacionTipoLabels, item.tipo))}</span>
+          </div>
+        </div>
+        <div class="details">
+          <div class="detail"><span>Prioridad</span>${escapeHtml(item.prioridad)}</div>
+          <div class="detail"><span>Límite</span>${escapeHtml(deadline)}</div>
+          <div class="detail"><span>Responsable</span>${escapeHtml(responsable)}</div>
+        </div>
+        ${item.descripcion ? `<p class="muted">${escapeHtml(item.descripcion)}</p>` : ""}
+        <div class="card-actions">
+          <button data-edit-actuacion="${escapeHtml(item.id)}">Editar</button>
+          ${canClose ? `<button data-close-actuacion="${escapeHtml(item.id)}">Cerrar</button>` : ""}
+          ${canClose ? `<button class="danger" data-cancel-actuacion="${escapeHtml(item.id)}">Cancelar</button>` : ""}
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+async function ensureActuacionLicitaciones() {
+  if (appState.actuacionLicitaciones?.length) return;
+  const response = await fetch("/api/licitaciones?orden_fecha=asc&vivas=1");
+  if (!response.ok) return;
+  const data = await response.json();
+  appState.actuacionLicitaciones = data.items || [];
+}
+
+function fillActuacionFormOptions(selectedLicitacionId = "", selectedUser = "") {
+  const licitacionSelect = actuacionForm.elements.licitacion_select;
+  licitacionSelect.innerHTML = (appState.actuacionLicitaciones || []).map((item) => `
+    <option value="${escapeHtml(item.id)}">${escapeHtml(item.expediente || `Licitación ${item.id}`)} · ${escapeHtml(item.organismo || "")}</option>
+  `).join("");
+  if (selectedLicitacionId) licitacionSelect.value = String(selectedLicitacionId);
+  const userSelect = actuacionForm.elements.responsable_user_id;
+  userSelect.innerHTML = `<option value="">Sin responsable</option>${(appState.actuacionesUsers || []).map((user) => `
+    <option value="${escapeHtml(user.username)}">${escapeHtml(user.display_name || user.username)}</option>
+  `).join("")}`;
+  userSelect.value = selectedUser || "";
+}
+
+async function openActuacionDialog(licitacionId = "") {
+  await ensureActuacionLicitaciones();
+  if (!appState.actuacionesUsers.length) await loadActuaciones();
+  actuacionForm.reset();
+  actuacionForm.elements.id.value = "";
+  actuacionForm.elements.licitacion_id.value = licitacionId || "";
+  actuacionFormTitle.textContent = "Nueva actuación";
+  fillActuacionFormOptions(licitacionId);
+  actuacionForm.elements.recordatorio_email.checked = true;
+  actuacionDialog.showModal();
+}
+
+async function editActuacion(id) {
+  const item = appState.actuaciones.find((entry) => String(entry.id) === String(id));
+  if (!item) return;
+  await ensureActuacionLicitaciones();
+  actuacionForm.reset();
+  actuacionFormTitle.textContent = `Editar ${item.titulo || "actuación"}`;
+  actuacionForm.elements.id.value = item.id;
+  actuacionForm.elements.licitacion_id.value = item.licitacion_id;
+  fillActuacionFormOptions(item.licitacion_id, item.responsable_user_id);
+  actuacionForm.elements.tipo.value = item.tipo || "otro";
+  actuacionForm.elements.titulo.value = item.titulo || "";
+  actuacionForm.elements.descripcion.value = item.descripcion || "";
+  actuacionForm.elements.prioridad.value = item.prioridad || "normal";
+  actuacionForm.elements.deadline_at.value = toDatetimeLocal(item.deadline_at || "");
+  actuacionForm.elements.estado.value = item.estado || "pendiente";
+  actuacionForm.elements.recordatorio_email.checked = Boolean(item.recordatorio_email);
+  actuacionForm.elements.respuesta_resumen.value = item.respuesta_resumen || "";
+  actuacionDialog.showModal();
+}
+
+async function saveActuacion(event) {
+  event.preventDefault();
+  const id = actuacionForm.elements.id.value;
+  const licitacionId = actuacionForm.elements.licitacion_select.value || actuacionForm.elements.licitacion_id.value;
+  const payload = {
+    tipo: actuacionForm.elements.tipo.value,
+    titulo: actuacionForm.elements.titulo.value,
+    descripcion: actuacionForm.elements.descripcion.value,
+    prioridad: actuacionForm.elements.prioridad.value,
+    responsable_user_id: actuacionForm.elements.responsable_user_id.value,
+    deadline_at: actuacionForm.elements.deadline_at.value,
+    estado: actuacionForm.elements.estado.value,
+    recordatorio_email: actuacionForm.elements.recordatorio_email.checked,
+    respuesta_resumen: actuacionForm.elements.respuesta_resumen.value,
+    origen: "manual",
+  };
+  const response = await fetch(id ? `/api/actuaciones/${id}` : `/api/licitaciones/${licitacionId}/actuaciones`, {
+    method: id ? "PATCH" : "POST",
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(result.error || "No se pudo guardar la actuación.");
+    return;
+  }
+  actuacionDialog.close();
+  await loadActuaciones();
+  await loadItems();
+}
+
+async function setActuacionClosedState(id, action) {
+  const response = await fetch(`/api/actuaciones/${id}/${action}`, { method: "POST", headers: csrfHeaders() });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(result.error || "No se pudo actualizar la actuación.");
+    return;
+  }
+  await loadActuaciones();
+  await loadItems();
 }
 
 function renderDays() {
@@ -1333,6 +1583,7 @@ function renderCard(item) {
             </div>
             <div class="card-flags">
               ${dueText ? `<span class="due-chip ${dueClass(remainingDays)}">${escapeHtml(dueText)}</span>` : ""}
+              ${Number(item.actuaciones_abiertas || 0) ? `<span class="due-chip ${Number(item.actuaciones_vencidas || 0) ? "expired" : "soon"}">${escapeHtml(item.actuaciones_abiertas)} actuaciones</span>` : ""}
               ${item.provincia ? `<span class="province-chip">${escapeHtml(item.provincia)}</span>` : ""}
             </div>
           </div>
@@ -1357,6 +1608,7 @@ function renderCard(item) {
           ${isAdmin() ? `<button class="download-button" data-download-id="${escapeHtml(item.id)}">Descargar ficheros</button>` : ""}
           <button data-preview-id="${escapeHtml(item.id)}">Vista preliminar por IA</button>
           ${isAdmin() ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""}
+          <button data-new-actuacion-id="${escapeHtml(item.id)}">Nueva actuación</button>
           ${isAdmin() ? `<button data-duplicate-id="${escapeHtml(item.id)}">Duplicar</button>` : ""}
           ${isAdmin() ? `<button class="danger" data-delete-id="${escapeHtml(item.id)}">Borrar</button>` : ""}
           <button class="expand-button ${expanded ? "active-state" : ""}" data-toggle-details="${escapeHtml(item.id)}">
@@ -1661,6 +1913,7 @@ function debounce(fn, delay) {
 document.getElementById("days-button").addEventListener("click", showDaysView);
 document.getElementById("list-button").addEventListener("click", () => showLicitacionesView({ view: "live" }));
 document.getElementById("calendar-button").addEventListener("click", showCalendarView);
+document.getElementById("actuaciones-button").addEventListener("click", showActuacionesView);
 logoutButton?.addEventListener("click", logout);
 document.getElementById("notifications-button").addEventListener("click", showNotificationsView);
 document.getElementById("back-from-notifications").addEventListener("click", backFromNotifications);
@@ -1719,6 +1972,11 @@ notificationSearch.addEventListener("input", debounce(loadNotifications, 250));
 notificationScope.addEventListener("change", loadNotifications);
 notificationDestination.addEventListener("change", loadNotifications);
 notificationEmailState.addEventListener("change", loadNotifications);
+actuacionesFilter.addEventListener("change", loadActuaciones);
+document.getElementById("new-actuacion-button").addEventListener("click", () => openActuacionDialog());
+document.getElementById("close-actuacion-dialog").addEventListener("click", () => actuacionDialog.close());
+document.getElementById("cancel-actuacion-dialog").addEventListener("click", () => actuacionDialog.close());
+actuacionForm.addEventListener("submit", saveActuacion);
 newsForm.addEventListener("submit", saveNews);
 document.getElementById("reset-news-form").addEventListener("click", resetNewsForm);
 userConfigForm.addEventListener("submit", saveUserConfig);
@@ -1799,6 +2057,12 @@ board.addEventListener("click", (event) => {
     return;
   }
 
+  const newActuacionButton = event.target.closest("button[data-new-actuacion-id]");
+  if (newActuacionButton) {
+    openActuacionDialog(newActuacionButton.dataset.newActuacionId);
+    return;
+  }
+
   const deleteButton = event.target.closest("button[data-delete-id]");
   if (deleteButton) {
     deleteLicitacion(deleteButton.dataset.deleteId);
@@ -1808,6 +2072,23 @@ board.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-id]");
   if (!button) return;
   updateEstado(button.dataset.id, button.dataset.estado);
+});
+
+actuacionesBoard.addEventListener("click", (event) => {
+  const editButton = event.target.closest("button[data-edit-actuacion]");
+  if (editButton) {
+    editActuacion(editButton.dataset.editActuacion);
+    return;
+  }
+  const closeButton = event.target.closest("button[data-close-actuacion]");
+  if (closeButton) {
+    setActuacionClosedState(closeButton.dataset.closeActuacion, "cerrar");
+    return;
+  }
+  const cancelButton = event.target.closest("button[data-cancel-actuacion]");
+  if (cancelButton) {
+    setActuacionClosedState(cancelButton.dataset.cancelActuacion, "cancelar");
+  }
 });
 
 calendarBoard.addEventListener("click", (event) => {

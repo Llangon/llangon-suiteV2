@@ -51,7 +51,7 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
 
     applied = run_migrations(conn, now=lambda: "2026-06-12T10:00:00")
 
-    assert applied == ["0001_baseline_schema", "0002_download_jobs", "0003_import_history"]
+    assert applied == ["0001_baseline_schema", "0002_download_jobs", "0003_import_history", "0004_actuaciones"]
     assert table_exists(conn, MIGRATIONS_TABLE)
     rows = conn.execute(
         f"SELECT version, description, applied_at FROM {MIGRATIONS_TABLE}"
@@ -72,10 +72,16 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
             "Tablas preparatorias para historial de importaciones",
             "2026-06-12T10:00:00",
         ),
+        (
+            "0004_actuaciones",
+            "Tabla operativa para actuaciones y vencimientos",
+            "2026-06-12T10:00:00",
+        ),
     ]
     assert table_exists(conn, "download_jobs")
     assert table_exists(conn, "import_runs")
     assert table_exists(conn, "import_results")
+    assert table_exists(conn, "licitacion_actuaciones")
 
 
 def test_run_migrations_enables_foreign_key_enforcement() -> None:
@@ -95,6 +101,7 @@ def test_run_migrations_is_idempotent() -> None:
         "0001_baseline_schema",
         "0002_download_jobs",
         "0003_import_history",
+        "0004_actuaciones",
     ]
     assert run_migrations(conn, now=lambda: "2026-06-12T10:05:00") == []
 
@@ -103,6 +110,7 @@ def test_run_migrations_is_idempotent() -> None:
         ("0001_baseline_schema", "2026-06-12T10:00:00"),
         ("0002_download_jobs", "2026-06-12T10:00:00"),
         ("0003_import_history", "2026-06-12T10:00:00"),
+        ("0004_actuaciones", "2026-06-12T10:00:00"),
     ]
 
 
@@ -226,6 +234,53 @@ def test_import_history_migration_schema_is_idempotent() -> None:
         "idx_import_results_source_external",
         "idx_import_results_fingerprint",
     } <= result_indexes
+
+
+def test_actuaciones_migration_schema_is_idempotent() -> None:
+    conn = sqlite3.connect(":memory:")
+
+    run_migrations(conn, now=lambda: "2026-06-12T10:00:00")
+    run_migrations(conn, now=lambda: "2026-06-12T10:05:00")
+
+    columns = {
+        row[1]: row[2]
+        for row in conn.execute("PRAGMA table_info(licitacion_actuaciones)").fetchall()
+    }
+    assert columns == {
+        "id": "INTEGER",
+        "licitacion_id": "INTEGER",
+        "tipo": "TEXT",
+        "titulo": "TEXT",
+        "descripcion": "TEXT",
+        "estado": "TEXT",
+        "prioridad": "TEXT",
+        "responsable_user_id": "TEXT",
+        "deadline_at": "TEXT",
+        "recordatorio_email": "INTEGER",
+        "origen": "TEXT",
+        "respuesta_resumen": "TEXT",
+        "created_by": "TEXT",
+        "created_at": "TEXT",
+        "updated_at": "TEXT",
+        "closed_at": "TEXT",
+        "closed_by": "TEXT",
+    }
+    indexes = {
+        row[1]
+        for row in conn.execute("PRAGMA index_list(licitacion_actuaciones)").fetchall()
+    }
+    assert {
+        "idx_actuaciones_licitacion",
+        "idx_actuaciones_estado",
+        "idx_actuaciones_deadline",
+        "idx_actuaciones_responsable",
+        "idx_actuaciones_tipo",
+        "idx_actuaciones_prioridad",
+    } <= indexes
+    fks = conn.execute("PRAGMA foreign_key_list(licitacion_actuaciones)").fetchall()
+    assert [(row[2], row[3], row[4], row[6]) for row in fks] == [
+        ("licitaciones", "licitacion_id", "id", "NO ACTION")
+    ]
 
 
 def test_init_db_runs_migrations_on_temporary_database_only() -> None:
