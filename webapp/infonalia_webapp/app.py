@@ -2771,16 +2771,25 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if not self.require_admin():
             return
 
-        with db_session() as conn:
-            row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
-            if not row:
-                self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
-                return
-            dia_id = row["infonalia_dia_id"]
-            conn.execute("DELETE FROM licitaciones WHERE id = ?", (licitacion_id,))
-            if dia_id:
-                mark_dia_nuria_dirty(conn, int(dia_id))
-                refresh_dia_estado(conn, int(dia_id))
+        try:
+            with db_session() as conn:
+                row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+                if not row:
+                    self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                    return
+                dia_id = row["infonalia_dia_id"]
+                delete_licitacion_dependents(conn, [licitacion_id])
+                conn.execute("DELETE FROM licitaciones WHERE id = ?", (licitacion_id,))
+                if dia_id:
+                    mark_dia_nuria_dirty(conn, int(dia_id))
+                    refresh_dia_estado(conn, int(dia_id))
+        except sqlite3.IntegrityError as exc:
+            print(f"No se pudo borrar licitacion {licitacion_id}: {exc}", file=sys.stderr)
+            self.send_json(
+                {"error": "No se pudo borrar la licitacion por datos relacionados"},
+                HTTPStatus.CONFLICT,
+            )
+            return
 
         self.send_json({"ok": True})
 
