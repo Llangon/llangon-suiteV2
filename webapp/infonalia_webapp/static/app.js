@@ -166,6 +166,7 @@ const agendaTypeLabels = {
   interno: "Interno",
   vencido: "Vencido",
 };
+const agendaColorTypes = new Set(["actuacion", "licitacion", "interno", "vencido"]);
 const agendaStatusLabels = {
   pendiente: "Pendiente",
   en_curso: "En curso",
@@ -1232,11 +1233,20 @@ function agendaEventTime(item) {
 }
 
 function agendaTypeLabel(item) {
-  return agendaTypeLabels[item.color_type] || agendaTypeLabels[item.source_type] || item.source_type || "";
+  return agendaTypeLabels[agendaColorType(item)] || agendaTypeLabels[item.source_type] || item.source_type || "";
 }
 
 function agendaStatusLabel(item) {
   return agendaStatusLabels[item.status] || estadoLabel(item.status) || item.status || "";
+}
+
+function agendaColorType(item) {
+  const rawColor = item && item.is_overdue ? "vencido" : String(item?.color_type || item?.source_type || "").toLowerCase();
+  return agendaColorTypes.has(rawColor) ? rawColor : "interno";
+}
+
+function agendaEventClass(item) {
+  return `agenda-event--${agendaColorType(item)}`;
 }
 
 function agendaLinkedText(item) {
@@ -1333,8 +1343,10 @@ function compareCalendarItems(a, b) {
 
 function renderCalendarEvent(item) {
   const time = agendaEventTime(item) ? `${agendaEventTime(item)} · ` : "";
+  const colorClass = agendaEventClass(item);
   return `
-    <span class="calendar-event agenda-${escapeHtml(item.color_type)}">
+    <span class="calendar-event ${colorClass}">
+      <b class="agenda-event-dot ${colorClass}"></b>
       <span>${escapeHtml(time)}${escapeHtml(item.title || "Sin título")}</span>
     </span>
   `;
@@ -1405,9 +1417,10 @@ function renderAgendaGroup(title, items) {
 }
 
 function renderAgendaCompactCard(item) {
+  const colorClass = agendaEventClass(item);
   return `
-    <article class="radar-card agenda-card agenda-${escapeHtml(item.color_type)}" data-calendar-date="${escapeHtml(item.date || "sin-fecha")}">
-      <span>${escapeHtml(agendaTypeLabel(item))}${item.is_overdue ? " · Vencido" : ""}</span>
+    <article class="radar-card agenda-card ${colorClass}" data-calendar-date="${escapeHtml(item.date || "sin-fecha")}">
+      <span><b class="agenda-event-dot ${colorClass}"></b>${escapeHtml(agendaTypeLabel(item))}${item.is_overdue ? " · Vencido" : ""}</span>
       <strong>${escapeHtml(item.title || "Sin título")}</strong>
       <small>${escapeHtml(item.date ? formatDate(item.date) : "Sin fecha")}${agendaEventTime(item) ? ` · ${escapeHtml(agendaEventTime(item))}` : ""}</small>
       <small>${escapeHtml(item.subtitle || "")}</small>
@@ -1436,10 +1449,11 @@ function renderCalendarDayPanel(items, key) {
       <div class="calendar-panel-list">
         ${sorted.map((item) => {
           const linked = agendaLinkedText(item);
+          const colorClass = agendaEventClass(item);
           return `
-            <article class="calendar-panel-item agenda-${escapeHtml(item.color_type)}">
+            <article class="calendar-panel-item ${colorClass}">
               <div class="calendar-panel-head">
-                <span class="due-chip ${escapeHtml(item.color_type)}">${escapeHtml(agendaTypeLabel(item))}</span>
+                <span class="due-chip ${colorClass}"><b class="agenda-event-dot ${colorClass}"></b>${escapeHtml(agendaTypeLabel(item))}</span>
                 <span class="badge ${badgeClass(item.status)}">${escapeHtml(agendaStatusLabel(item))}</span>
               </div>
               <h4>${escapeHtml(item.title || "Sin título")}</h4>

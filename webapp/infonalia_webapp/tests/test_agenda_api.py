@@ -85,6 +85,45 @@ def test_agenda_today_returns_open_overdue_and_today_events() -> None:
     assert overdue["is_overdue"] is True
 
 
+def test_agenda_color_type_contract_and_hidden_closed_items() -> None:
+    app = load_app_module()
+    current = datetime(2026, 6, 14, 12, 0, 0)
+    with temporary_app_database(app):
+        dia_id = insert_dia(app)
+        licitacion_open = insert_licitacion(app, dia_id, "AGENDA-LIC-COLOR")
+        licitacion_overdue = insert_licitacion(app, dia_id, "AGENDA-LIC-VENCIDA")
+        licitacion_discarded = insert_licitacion(app, dia_id, "AGENDA-LIC-DESCARTADA")
+        set_licitacion_deadline(app, licitacion_open, fecha="2026-06-14", hora="18:00", estado="Hacer")
+        set_licitacion_deadline(app, licitacion_overdue, fecha="2026-06-14", hora="09:00", estado="Hacer")
+        set_licitacion_deadline(app, licitacion_discarded, fecha="2026-06-14", hora="18:00", estado="Descartar")
+        create_actuacion(app, None, titulo="Actuación color", deadline_at="2026-06-14T18:00:00")
+        create_actuacion(app, None, titulo="Actuación vencida", deadline_at="2026-06-14T09:00:00")
+        create_actuacion(app, None, titulo="Actuación cerrada color", estado="cerrada", deadline_at="2026-06-14T18:00:00")
+        create_internal_event(app, titulo="Interno color", starts_at="2026-06-14T18:00:00")
+        create_internal_event(app, titulo="Interno vencido color", starts_at="2026-06-14T09:00:00")
+        create_internal_event(app, titulo="Interno cancelado color", starts_at="2026-06-14T18:00:00", estado="cancelado")
+
+        with app.db_session() as conn:
+            events = app.build_agenda_events(
+                conn,
+                view="today",
+                target_date=current.date(),
+                include_overdue=True,
+                current=current,
+            )
+
+    colors = {event["title"]: event["color_type"] for event in events}
+    assert colors["Actuación color"] == "actuacion"
+    assert colors["AGENDA-LIC-COLOR"] == "licitacion"
+    assert colors["Interno color"] == "interno"
+    assert colors["Actuación vencida"] == "vencido"
+    assert colors["AGENDA-LIC-VENCIDA"] == "vencido"
+    assert colors["Interno vencido color"] == "vencido"
+    assert "Actuación cerrada color" not in colors
+    assert "AGENDA-LIC-DESCARTADA" not in colors
+    assert "Interno cancelado color" not in colors
+
+
 def test_agenda_week_month_and_type_filters() -> None:
     app = load_app_module()
     with temporary_app_database(app):

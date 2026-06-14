@@ -849,40 +849,57 @@ textarea {
   width: 10px;
 }
 
-.legend-dot.agenda-actuacion,
-.agenda-actuacion {
-  border-left-color: var(--red);
+.agenda-event--actuacion {
+  --agenda-color: var(--red);
+  --agenda-soft: var(--red-soft);
 }
 
-.legend-dot.agenda-licitacion,
-.agenda-licitacion {
-  border-left-color: #d99b14;
+.agenda-event--licitacion {
+  --agenda-color: #b77905;
+  --agenda-soft: #fff4cc;
 }
 
-.legend-dot.agenda-interno,
-.agenda-interno {
-  border-left-color: var(--blue);
+.agenda-event--interno {
+  --agenda-color: var(--blue);
+  --agenda-soft: var(--blue-soft);
 }
 
-.legend-dot.agenda-vencido,
-.agenda-vencido {
-  border-left-color: #1f2937;
+.agenda-event--vencido {
+  --agenda-color: #1f2937;
+  --agenda-soft: #eef2f6;
 }
 
-.legend-dot.agenda-actuacion {
+.agenda-event--actuacion,
+.agenda-event--licitacion,
+.agenda-event--interno,
+.agenda-event--vencido {
+  border-left-color: var(--agenda-color);
+}
+
+.agenda-dot--actuacion {
   background: var(--red);
 }
 
-.legend-dot.agenda-licitacion {
-  background: #d99b14;
+.agenda-dot--licitacion {
+  background: #b77905;
 }
 
-.legend-dot.agenda-interno {
+.agenda-dot--interno {
   background: var(--blue);
 }
 
-.legend-dot.agenda-vencido {
+.agenda-dot--vencido {
   background: #1f2937;
+}
+
+.agenda-event-dot {
+  background: var(--agenda-color);
+  border-radius: 999px;
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 8px;
+  margin-right: 6px;
+  width: 8px;
 }
 
 .agenda-group {
@@ -896,6 +913,7 @@ textarea {
 }
 
 .agenda-card {
+  background: linear-gradient(90deg, var(--agenda-soft, #ffffff), #ffffff 46%);
   border-left-width: 5px;
 }
 
@@ -1037,9 +1055,11 @@ textarea {
   border-left: 4px solid var(--blue);
   border-radius: 6px;
   color: var(--text);
-  display: block;
+  display: flex;
+  align-items: center;
   font-size: 12px;
   font-weight: 800;
+  gap: 0;
   line-height: 1.2;
   overflow: hidden;
   padding: 5px 6px;
@@ -1047,14 +1067,9 @@ textarea {
   white-space: nowrap;
 }
 
-.calendar-event.event-Hacer,
-.calendar-event.event-Descargar {
-  border-left-color: var(--green);
-}
-
-.calendar-event.event-Descartar,
-.calendar-event.event-Descartada-por-mi {
-  border-left-color: var(--red);
+.calendar-event span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .calendar-more {
@@ -1096,6 +1111,7 @@ textarea {
 
 .calendar-panel-item {
   border: 1px solid var(--line);
+  border-left: 5px solid var(--agenda-color, var(--line));
   border-radius: 8px;
   padding: 12px;
 }
@@ -1146,6 +1162,19 @@ textarea {
 
 .calendar-panel .links button {
   padding: 6px 9px;
+}
+
+.due-chip.agenda-event--actuacion,
+.due-chip.agenda-event--licitacion,
+.due-chip.agenda-event--interno,
+.due-chip.agenda-event--vencido {
+  align-items: center;
+  background: var(--agenda-soft);
+  border-color: var(--agenda-color);
+  color: var(--agenda-color);
+  display: inline-flex;
+  gap: 0;
+  text-align: left;
 }
 
 .notification-meta {
