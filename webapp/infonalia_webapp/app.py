@@ -29,17 +29,21 @@ except ImportError:
 try:
     from .user_settings import (
         config_payload as settings_config_payload,
+        new_user_payload,
         seed_users_and_settings as seed_user_settings,
         settings_update_payload,
         update_settings as update_settings_values,
+        updated_user_payload,
         user_row_to_dict,
     )
 except ImportError:
     from user_settings import (
         config_payload as settings_config_payload,
+        new_user_payload,
         seed_users_and_settings as seed_user_settings,
         settings_update_payload,
         update_settings as update_settings_values,
+        updated_user_payload,
         user_row_to_dict,
     )
 
@@ -1746,21 +1750,10 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             return
 
         data = self.read_json()
-        username = clean_text(data.get("username")).lower()
-        password = clean_text(data.get("password"))
-        role = clean_text(data.get("role")) or "nuria"
-        display_name = clean_text(data.get("display_name")) or username
-        email = clean_text(data.get("email"))
-        active = 1 if data.get("active", True) else 0
-
-        if not re.fullmatch(r"[a-zA-Z0-9_.-]{3,40}", username):
-            self.send_json({"error": "Usuario no valido. Usa 3-40 letras, numeros, punto, guion o guion bajo."}, HTTPStatus.BAD_REQUEST)
-            return
-        if not password:
-            self.send_json({"error": "La contraseña es obligatoria."}, HTTPStatus.BAD_REQUEST)
-            return
-        if role not in {"admin", "nuria"}:
-            self.send_json({"error": "Rol no valido."}, HTTPStatus.BAD_REQUEST)
+        try:
+            payload = new_user_payload(data)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
 
         timestamp = now_iso()
@@ -1781,12 +1774,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        username,
-                        hash_password(password),
-                        role,
-                        display_name,
-                        email,
-                        active,
+                        payload["username"],
+                        hash_password(payload["password"]),
+                        payload["role"],
+                        payload["display_name"],
+                        payload["email"],
+                        payload["active"],
                         timestamp,
                         timestamp,
                     ),
@@ -1811,12 +1804,14 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Usuario no encontrado."}, HTTPStatus.NOT_FOUND)
                 return
 
-            role = clean_text(data.get("role", row["role"])) or row["role"]
-            if role not in {"admin", "nuria"}:
-                self.send_json({"error": "Rol no valido."}, HTTPStatus.BAD_REQUEST)
+            try:
+                payload = updated_user_payload(data, row, username=username)
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
 
-            active = 1 if data.get("active", bool(row["active"])) else 0
+            role = payload["role"]
+            active = payload["active"]
             if username == current.get("username") and not active:
                 self.send_json({"error": "No puedes desactivar tu propio usuario."}, HTTPStatus.BAD_REQUEST)
                 return
@@ -1834,13 +1829,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": "Debe quedar al menos un administrador activo."}, HTTPStatus.BAD_REQUEST)
                     return
 
-            updates = {
-                "role": role,
-                "display_name": clean_text(data.get("display_name", row["display_name"])) or username,
-                "email": clean_text(data.get("email", row["email"])),
-                "active": active,
-                "updated_at": now_iso(),
-            }
+            updates = dict(payload)
+            updates["updated_at"] = now_iso()
             password = clean_text(data.get("password"))
             if password:
                 updates["password_hash"] = hash_password(password)

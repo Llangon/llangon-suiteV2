@@ -7,9 +7,11 @@ import sys
 from webapp.infonalia_webapp.user_settings import (
     config_payload,
     public_settings_payload,
+    new_user_payload,
     seed_users_and_settings,
     settings_update_payload,
     update_settings,
+    updated_user_payload,
     user_row_to_dict,
 )
 
@@ -114,6 +116,80 @@ def test_user_row_to_dict_hides_password_by_default() -> None:
         "updated_at": "updated",
     }
     assert private["password_hash"] == "hash"
+
+
+def test_new_user_payload_preserves_current_normalization() -> None:
+    payload = new_user_payload(
+        {
+            "username": " Nuevo.Admin ",
+            "password": " secret ",
+            "role": "",
+            "display_name": "",
+            "email": " admin@example.test ",
+            "active": False,
+        }
+    )
+
+    assert payload == {
+        "username": "nuevo.admin",
+        "password": "secret",
+        "role": "nuria",
+        "display_name": "nuevo.admin",
+        "email": "admin@example.test",
+        "active": 0,
+    }
+
+
+def test_new_user_payload_preserves_current_validation_errors() -> None:
+    cases = [
+        ({}, "Usuario no valido. Usa 3-40 letras, numeros, punto, guion o guion bajo."),
+        ({"username": "ab", "password": "x"}, "Usuario no valido. Usa 3-40 letras, numeros, punto, guion o guion bajo."),
+        ({"username": "valid-user"}, "La contraseña es obligatoria."),
+        ({"username": "valid-user", "password": "x", "role": "editor"}, "Rol no valido."),
+    ]
+
+    for data, message in cases:
+        try:
+            new_user_payload(data)
+        except ValueError as exc:
+            assert str(exc) == message
+        else:
+            raise AssertionError(f"accepted invalid user payload: {data!r}")
+
+
+def test_updated_user_payload_preserves_current_defaults() -> None:
+    row = {
+        "role": "admin",
+        "display_name": "Admin Actual",
+        "email": "old@example.test",
+        "active": 1,
+    }
+
+    assert updated_user_payload({}, row, username="admin") == {
+        "role": "admin",
+        "display_name": "Admin Actual",
+        "email": "old@example.test",
+        "active": 1,
+    }
+    assert updated_user_payload(
+        {"role": "nuria", "display_name": " ", "email": " new@example.test ", "active": False},
+        row,
+        username="admin",
+    ) == {
+        "role": "nuria",
+        "display_name": "admin",
+        "email": "new@example.test",
+        "active": 0,
+    }
+
+
+def test_updated_user_payload_rejects_invalid_role() -> None:
+    try:
+        updated_user_payload({"role": "editor"}, {"role": "admin", "display_name": "Admin", "email": "", "active": 1}, username="admin")
+    except ValueError as exc:
+        assert str(exc) == "Rol no valido."
+    else:
+        raise AssertionError("accepted invalid role")
 
 
 def test_public_settings_payload_preserves_current_public_shape() -> None:

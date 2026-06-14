@@ -980,3 +980,20 @@ Mover esa normalizacion a `settings_update_payload()` en `webapp/infonalia_webap
 - Se mantienen los mismos campos permitidos.
 - Se mantiene la regla de limpiar o actualizar contraseña SMTP.
 - No se cambian endpoints, SQLite, frontend ni Firebase.
+
+## ADR-050 — Extraer payload de usuarios
+
+### Contexto
+
+`app.py` normalizaba directamente los datos de alta y edicion de usuarios antes de aplicar las comprobaciones de seguridad y escribir en SQLite.
+
+### Decisión
+
+Mover esa normalizacion a `new_user_payload()` y `updated_user_payload()` en `webapp/infonalia_webapp/user_settings.py`. El handler mantiene las reglas de ultimo administrador y auto-desactivacion.
+
+### Consecuencias
+
+- La validacion basica de usuarios queda testeada sin handler.
+- Se mantienen los mensajes de error actuales.
+- No se cambian endpoints ni permisos.
+- No se cambia SQLite, frontend ni Firebase.

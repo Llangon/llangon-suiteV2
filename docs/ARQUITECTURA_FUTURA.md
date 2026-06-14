@@ -2261,3 +2261,23 @@ Fuera de esta fase:
 - no se cambian permisos;
 - no se anaden migraciones;
 - no se cambia frontend ni Firebase.
+
+## Fase 3R — Extraccion de payload de usuarios
+
+La Fase 3R separa la normalizacion de altas y ediciones de usuarios.
+
+Cambios aplicados:
+
+- se anade `new_user_payload()` en `user_settings.py`;
+- se anade `updated_user_payload()` en `user_settings.py`;
+- se mantiene en `app.py` la regla de ultimo administrador;
+- se mantiene en `app.py` la regla de no auto-desactivarse;
+- se anaden tests directos de validacion y normalizacion.
+
+Fuera de esta fase:
+
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambian permisos;
+- no se anaden migraciones;
+- no se cambia frontend ni Firebase.

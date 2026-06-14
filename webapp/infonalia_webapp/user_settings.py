@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Callable, Mapping
 
@@ -19,6 +20,8 @@ SETTINGS_UPDATE_KEYS = {
     "smtp_ssl",
 }
 BOOLEAN_SETTINGS = {"maintenance_mode", "smtp_tls", "smtp_ssl"}
+USER_ROLES = {"admin", "nuria"}
+USERNAME_PATTERN = re.compile(r"[a-zA-Z0-9_.-]{3,40}")
 
 
 def user_row_to_dict(row: sqlite3.Row | None, include_password: bool = False) -> dict | None:
@@ -36,6 +39,44 @@ def user_row_to_dict(row: sqlite3.Row | None, include_password: bool = False) ->
     if include_password:
         item["password_hash"] = row["password_hash"]
     return item
+
+
+def new_user_payload(data: Mapping[str, object]) -> dict[str, object]:
+    username = clean_text(data.get("username")).lower()
+    password = clean_text(data.get("password"))
+    role = clean_text(data.get("role")) or "nuria"
+    display_name = clean_text(data.get("display_name")) or username
+    email = clean_text(data.get("email"))
+    active = 1 if data.get("active", True) else 0
+
+    if not USERNAME_PATTERN.fullmatch(username):
+        raise ValueError("Usuario no valido. Usa 3-40 letras, numeros, punto, guion o guion bajo.")
+    if not password:
+        raise ValueError("La contraseña es obligatoria.")
+    if role not in USER_ROLES:
+        raise ValueError("Rol no valido.")
+
+    return {
+        "username": username,
+        "password": password,
+        "role": role,
+        "display_name": display_name,
+        "email": email,
+        "active": active,
+    }
+
+
+def updated_user_payload(data: Mapping[str, object], row: Mapping[str, object], *, username: str) -> dict[str, object]:
+    role = clean_text(data.get("role", row["role"])) or clean_text(row["role"])
+    if role not in USER_ROLES:
+        raise ValueError("Rol no valido.")
+
+    return {
+        "role": role,
+        "display_name": clean_text(data.get("display_name", row["display_name"])) or username,
+        "email": clean_text(data.get("email", row["email"])),
+        "active": 1 if data.get("active", bool(row["active"])) else 0,
+    }
 
 
 def public_settings_payload(settings: Mapping[str, object]) -> dict[str, object]:
