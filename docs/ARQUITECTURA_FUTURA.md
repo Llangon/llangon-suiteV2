@@ -2240,3 +2240,24 @@ Fuera de esta fase:
 - no se cambian permisos;
 - no se anaden migraciones;
 - no se cambia frontend ni Firebase.
+
+## Fase 3Q — Extraccion de normalización de settings
+
+La Fase 3Q separa la normalizacion de updates de configuracion administrativa.
+
+Cambios aplicados:
+
+- se anade `settings_update_payload()` en `user_settings.py`;
+- se mueve validacion de `smtp_port`;
+- se mueve normalizacion de flags booleanos;
+- se mueve actualizacion/limpieza de contraseña SMTP;
+- `app.py` conserva el endpoint y el mensaje de error actual;
+- se anaden tests directos de normalizacion.
+
+Fuera de esta fase:
+
+- no se cambian endpoints;
+- no se cambian respuestas JSON;
+- no se cambian permisos;
+- no se anaden migraciones;
+- no se cambia frontend ni Firebase.

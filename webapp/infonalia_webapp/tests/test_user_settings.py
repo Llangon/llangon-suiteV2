@@ -8,6 +8,7 @@ from webapp.infonalia_webapp.user_settings import (
     config_payload,
     public_settings_payload,
     seed_users_and_settings,
+    settings_update_payload,
     update_settings,
     user_row_to_dict,
 )
@@ -156,6 +157,48 @@ def test_config_payload_combines_users_and_public_settings_without_password() ->
             "smtp_password_set": False,
         },
     }
+
+
+def test_settings_update_payload_preserves_current_normalization() -> None:
+    updates = settings_update_payload(
+        {
+            "maintenance_mode": "yes",
+            "smtp_host": " smtp.example.test ",
+            "smtp_port": " 2525 ",
+            "smtp_user": "user",
+            "smtp_tls": "0",
+            "smtp_ssl": "on",
+            "smtp_password": " secret ",
+            "ignored": "value",
+        }
+    )
+
+    assert updates == {
+        "maintenance_mode": "1",
+        "smtp_host": " smtp.example.test ",
+        "smtp_port": "2525",
+        "smtp_user": "user",
+        "smtp_tls": "0",
+        "smtp_ssl": "1",
+        "smtp_password": "secret",
+    }
+
+
+def test_settings_update_payload_preserves_password_clear_rule() -> None:
+    assert settings_update_payload({"clear_smtp_password": True}) == {"smtp_password": ""}
+    assert settings_update_payload({"smtp_password": " nuevo ", "clear_smtp_password": True}) == {
+        "smtp_password": "nuevo"
+    }
+
+
+def test_settings_update_payload_rejects_invalid_smtp_port() -> None:
+    for value in ["", "0", "-1", "abc"]:
+        try:
+            settings_update_payload({"smtp_port": value})
+        except ValueError as exc:
+            assert str(exc) == "Puerto SMTP no valido."
+        else:
+            raise AssertionError(f"accepted invalid port: {value!r}")
 
 
 def test_update_settings_upserts_values_with_timestamp() -> None:

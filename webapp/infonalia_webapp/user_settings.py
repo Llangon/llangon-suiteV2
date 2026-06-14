@@ -4,9 +4,21 @@ import sqlite3
 from collections.abc import Callable, Mapping
 
 try:
-    from .normalization import clean_text
+    from .normalization import bool_text, clean_text
 except ImportError:
-    from normalization import clean_text
+    from normalization import bool_text, clean_text
+
+
+SETTINGS_UPDATE_KEYS = {
+    "maintenance_mode",
+    "smtp_host",
+    "smtp_port",
+    "smtp_user",
+    "smtp_from",
+    "smtp_tls",
+    "smtp_ssl",
+}
+BOOLEAN_SETTINGS = {"maintenance_mode", "smtp_tls", "smtp_ssl"}
 
 
 def user_row_to_dict(row: sqlite3.Row | None, include_password: bool = False) -> dict | None:
@@ -44,6 +56,26 @@ def config_payload(users: list[dict], settings: Mapping[str, object]) -> dict[st
         "users": users,
         "settings": public_settings_payload(settings),
     }
+
+
+def settings_update_payload(data: Mapping[str, object]) -> dict[str, object]:
+    updates = {key: data.get(key, "") for key in SETTINGS_UPDATE_KEYS if key in data}
+    if "smtp_port" in updates:
+        try:
+            port = int(clean_text(updates["smtp_port"]))
+            if port <= 0:
+                raise ValueError
+            updates["smtp_port"] = str(port)
+        except ValueError:
+            raise ValueError("Puerto SMTP no valido.")
+    for key in BOOLEAN_SETTINGS:
+        if key in updates:
+            updates[key] = "1" if bool_text(updates[key]) else "0"
+    if clean_text(data.get("smtp_password")):
+        updates["smtp_password"] = clean_text(data.get("smtp_password"))
+    elif data.get("clear_smtp_password"):
+        updates["smtp_password"] = ""
+    return updates
 
 
 def seed_users_and_settings(

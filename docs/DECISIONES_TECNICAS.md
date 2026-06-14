@@ -963,3 +963,20 @@ Mover esa construccion a `config_payload()` y `public_settings_payload()` dentro
 - Se mantiene oculta la contraseña SMTP.
 - Se mantienen usuarios y settings en la misma respuesta.
 - No se cambian endpoints, SQLite, frontend ni Firebase.
+
+## ADR-049 — Extraer normalización de settings
+
+### Contexto
+
+`app.py` normalizaba directamente los cambios de configuracion administrativa antes de escribir `app_settings`: puerto SMTP, flags booleanos y contraseña SMTP.
+
+### Decisión
+
+Mover esa normalizacion a `settings_update_payload()` en `webapp/infonalia_webapp/user_settings.py`. El endpoint conserva la misma respuesta de error para puerto SMTP no valido.
+
+### Consecuencias
+
+- La normalizacion de settings queda testeada sin handler HTTP.
+- Se mantienen los mismos campos permitidos.
+- Se mantiene la regla de limpiar o actualizar contraseña SMTP.
+- No se cambian endpoints, SQLite, frontend ni Firebase.

@@ -30,6 +30,7 @@ try:
     from .user_settings import (
         config_payload as settings_config_payload,
         seed_users_and_settings as seed_user_settings,
+        settings_update_payload,
         update_settings as update_settings_values,
         user_row_to_dict,
     )
@@ -37,6 +38,7 @@ except ImportError:
     from user_settings import (
         config_payload as settings_config_payload,
         seed_users_and_settings as seed_user_settings,
+        settings_update_payload,
         update_settings as update_settings_values,
         user_row_to_dict,
     )
@@ -1890,32 +1892,11 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             return
 
         data = self.read_json()
-        allowed = {
-            "maintenance_mode",
-            "smtp_host",
-            "smtp_port",
-            "smtp_user",
-            "smtp_from",
-            "smtp_tls",
-            "smtp_ssl",
-        }
-        updates = {key: data.get(key, "") for key in allowed if key in data}
-        if "smtp_port" in updates:
-            try:
-                port = int(clean_text(updates["smtp_port"]))
-                if port <= 0:
-                    raise ValueError
-                updates["smtp_port"] = str(port)
-            except ValueError:
-                self.send_json({"error": "Puerto SMTP no valido."}, HTTPStatus.BAD_REQUEST)
-                return
-        for key in ("maintenance_mode", "smtp_tls", "smtp_ssl"):
-            if key in updates:
-                updates[key] = "1" if bool_text(updates[key]) else "0"
-        if clean_text(data.get("smtp_password")):
-            updates["smtp_password"] = clean_text(data.get("smtp_password"))
-        elif data.get("clear_smtp_password"):
-            updates["smtp_password"] = ""
+        try:
+            updates = settings_update_payload(data)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
 
         with db_session() as conn:
             update_settings(conn, updates)
