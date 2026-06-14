@@ -141,6 +141,19 @@ def test_private_app_sanitizes_dynamic_css_class_tokens() -> None:
     assert ".replaceAll(\" \", \"-\")" not in script
 
 
+def test_agenda_layout_views_are_isolated() -> None:
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_ROOT / "styles.css").read_text(encoding="utf-8")
+
+    assert 'calendarSection.classList.add(`agenda-view-${appState.agendaView || "day"}`)' in script
+    assert "function renderAgendaWeekList" in script
+    assert "calendarDayPanel.innerHTML = \"\";" in script
+    assert ".agenda-view-day .calendar-layout" in styles
+    assert ".agenda-view-all .calendar-layout" in styles
+    assert ".agenda-view-week .calendar-layout" in styles
+    assert ".agenda-week-list-content" in styles
+
+
 def test_private_app_has_no_obvious_html_injection_patterns() -> None:
     script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
     lowered = script.lower()

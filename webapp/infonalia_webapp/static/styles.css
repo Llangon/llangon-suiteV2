@@ -983,6 +983,33 @@ textarea {
   grid-template-columns: minmax(0, 1fr) 330px;
 }
 
+.agenda-view-day .calendar-layout,
+.agenda-view-all .calendar-layout {
+  display: none;
+}
+
+.agenda-view-week .calendar-layout {
+  display: block;
+}
+
+.agenda-view-week .calendar-panel {
+  margin-top: 18px;
+}
+
+.agenda-view-week .panel-sticky {
+  position: static;
+}
+
+.agenda-week-list-content {
+  display: grid;
+  gap: 14px;
+}
+
+.agenda-view-all .calendar-radar,
+.agenda-view-day .calendar-radar {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .calendar-month-wrap {
   min-width: 0;
 }

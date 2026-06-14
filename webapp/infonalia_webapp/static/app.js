@@ -1272,6 +1272,8 @@ function calendarFilteredItems() {
 
 function renderCalendarStateFilter() {
   calendarStateFilter.value = appState.agendaType || "all";
+  calendarSection.classList.remove("agenda-view-day", "agenda-view-week", "agenda-view-month", "agenda-view-all");
+  calendarSection.classList.add(`agenda-view-${appState.agendaView || "day"}`);
   document.querySelectorAll("[data-agenda-view]").forEach((button) => {
     button.classList.toggle("active", button.dataset.agendaView === appState.agendaView);
     if (button.dataset.agendaView === "day") {
@@ -1487,29 +1489,35 @@ function renderAgendaDay(items, selectedKey) {
     renderAgendaGroup("Sin fecha", withoutDate),
   ].join("");
   calendarBoard.innerHTML = "";
-  renderCalendarDayPanel([...overdue, ...dayItems, ...withoutDate], selectedKey);
+  calendarDayPanel.innerHTML = "";
 }
 
 function renderAgendaAll(items, selectedKey) {
   const groups = appState.agendaGroups || {};
+  const noDate = groups.no_date || items.filter((item) => !item.date);
+  const overdue = groups.overdue || items.filter((item) => item.is_overdue);
+  const upcoming = [
+    ...(groups.day || []),
+    ...(groups.today || []),
+    ...(groups.upcoming || []),
+  ].filter((item, index, allItems) => (
+    item.date && !item.is_overdue && allItems.findIndex((candidate) => candidate.id === item.id) === index
+  ));
   const blocks = [
-    renderAgendaGroup("Vencidos abiertos", groups.overdue || items.filter((item) => item.is_overdue)),
-    renderAgendaGroup("Fecha activa", groups.day || items.filter((item) => item.date === selectedKey && !item.is_overdue)),
-    ...((groups.today || []).length ? [renderAgendaGroup("Hoy", groups.today)] : []),
-    renderAgendaGroup("Próximos", groups.upcoming || items.filter((item) => item.date && item.date !== selectedKey && !item.is_overdue)),
-    renderAgendaGroup("Sin fecha", groups.no_date || items.filter((item) => !item.date)),
+    renderAgendaGroup("Sin fecha", noDate),
+    renderAgendaGroup("Vencidos", overdue),
+    renderAgendaGroup("Próximos", upcoming),
   ];
   calendarRadar.innerHTML = blocks.join("");
   calendarBoard.innerHTML = "";
-  renderCalendarDayPanel(items, selectedKey);
+  calendarDayPanel.innerHTML = "";
 }
 
 function renderAgendaWeek(items, selectedKey) {
   const selected = parseDate(selectedKey) || new Date();
   const start = weekStartMonday(selected);
   const groups = itemsByDate(items);
-  const overdue = items.filter((item) => item.is_overdue);
-  calendarRadar.innerHTML = renderAgendaGroup("Vencidos abiertos", overdue);
+  calendarRadar.innerHTML = "";
   const cells = [];
   for (let index = 0; index < 7; index += 1) {
     const day = addDays(start, index);
@@ -1529,7 +1537,32 @@ function renderAgendaWeek(items, selectedKey) {
     `);
   }
   calendarBoard.innerHTML = cells.join("");
-  renderCalendarDayPanel(groups.get(selectedKey) || [], selectedKey);
+  renderAgendaWeekList(items, start, groups);
+}
+
+function renderAgendaWeekList(items, start, groups) {
+  const currentWeekKeys = new Set(Array.from({ length: 7 }, (_, index) => dateKey(addDays(start, index))));
+  const overdueOutsideWeek = items
+    .filter((item) => item.is_overdue && item.date && !currentWeekKeys.has(item.date))
+    .sort(compareCalendarItems);
+  const sections = [];
+  if (overdueOutsideWeek.length) {
+    sections.push(renderAgendaGroup("Vencidos abiertos", overdueOutsideWeek));
+  }
+  for (let index = 0; index < 7; index += 1) {
+    const day = addDays(start, index);
+    const key = dateKey(day);
+    const title = day.toLocaleDateString("es-ES", { weekday: "long", day: "2-digit", month: "short" });
+    const dayItems = (groups.get(key) || []).sort(compareCalendarItems);
+    sections.push(renderAgendaGroup(title.charAt(0).toUpperCase() + title.slice(1), dayItems));
+  }
+  calendarDayPanel.innerHTML = `
+    <div class="panel-sticky agenda-week-list">
+      <p class="eyebrow">Agenda semanal</p>
+      <h3>Eventos de la semana</h3>
+      <div class="agenda-week-list-content">${sections.join("")}</div>
+    </div>
+  `;
 }
 
 function renderAgendaGroup(title, items) {
@@ -2645,6 +2678,7 @@ calendarRadar.addEventListener("click", (event) => {
     setAgendaEventoEstado(cancelButton.dataset.agendaCancel, "cancelar");
     return;
   }
+  if (!["week", "month"].includes(appState.agendaView)) return;
   const day = event.target.closest("[data-calendar-date]");
   if (!day) return;
   const parsed = parseDate(day.dataset.calendarDate);

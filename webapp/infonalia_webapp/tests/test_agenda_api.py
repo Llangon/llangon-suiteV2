@@ -90,8 +90,8 @@ def test_agenda_today_returns_open_overdue_and_today_events() -> None:
         now = datetime.now().replace(microsecond=0)
         set_licitacion_deadline(app, licitacion_open, fecha=now.date().isoformat(), hora="23:00", estado="Hacer")
         set_licitacion_deadline(app, licitacion_closed, fecha=now.date().isoformat(), hora="23:00", estado="Descartar")
-        create_actuacion(app, None, titulo="Actuación hoy", deadline_at=(now + timedelta(hours=1)).isoformat())
-        create_actuacion(app, None, titulo="Actuación cerrada", estado="cerrada", deadline_at=(now + timedelta(hours=1)).isoformat())
+        create_actuacion(app, None, titulo="Actuación hoy", deadline_at=f"{now.date().isoformat()}T23:30:00")
+        create_actuacion(app, None, titulo="Actuación cerrada", estado="cerrada", deadline_at=f"{now.date().isoformat()}T23:30:00")
         create_internal_event(app, titulo="Interno vencido", starts_at=(now - timedelta(hours=1)).isoformat())
         create_internal_event(app, titulo="Interno cerrado", starts_at=(now + timedelta(hours=1)).isoformat(), estado="cerrado")
 
