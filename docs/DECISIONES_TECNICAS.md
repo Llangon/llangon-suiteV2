@@ -1032,7 +1032,12 @@ Decisión:
 - exponer `GET /api/agenda` como fuente unificada;
 - normalizar eventos con `source_type`, `source_id`, `date`, `datetime`, `is_overdue`, `color_type` y vínculos;
 - añadir `agenda_eventos` mediante la migración `0006_agenda_eventos`;
-- ofrecer vistas Hoy, Semana y Calendario mensual;
+- mover la construcción de Agenda a `webapp/infonalia_webapp/agenda/service.py`;
+- ofrecer vistas fecha activa (`day`), Semana, Calendario mensual y Todo (`all`);
+- mantener `view=today` como alias de compatibilidad;
+- añadir filtros `actuacion`, `licitacion`, `interno`, `vencido` y `sin_fecha`;
+- añadir búsqueda simple global en Agenda;
+- añadir acciones rápidas: comentario, duplicado de actuación, nueva actuación desde licitación y resumen por email;
 - usar cuatro colores: rojo actuaciones, amarillo licitaciones, azul internos y gris/negro para vencidos abiertos;
 - hacer que el color de vencido prevalezca sobre el tipo.
 
@@ -1041,8 +1046,10 @@ Reglas:
 - cerrados, cancelados, descartados y archivados quedan fuera de Agenda;
 - los eventos internos se pueden crear, editar, cerrar y cancelar desde la pantalla Agenda;
 - las mutaciones de eventos internos requieren CSRF.
+- comentario rápido, duplicado de actuación y resumen por email requieren CSRF.
 
 Consecuencias:
 - Agenda se convierte en la primera versión práctica de Bandeja Hoy;
 - las licitaciones siguen viviendo en su pantalla principal;
-- los eventos internos son deliberadamente simples y no implementan drag and drop ni sincronización externa.
+- los eventos internos son deliberadamente simples y no implementan drag and drop ni sincronización externa;
+- `static/app.js` conserva la UI de Agenda en esta fase para evitar una separación arriesgada; el backend sí queda modularizado.

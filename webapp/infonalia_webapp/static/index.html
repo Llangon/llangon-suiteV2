@@ -117,6 +117,7 @@
           <button id="calendar-prev" class="ghost">Anterior</button>
           <button id="calendar-today" class="secondary">Hoy</button>
           <button id="calendar-next" class="ghost">Siguiente</button>
+          <button id="agenda-email-summary-button" class="secondary">Enviar resumen por email</button>
           <button id="new-agenda-event-button" class="primary">Nuevo evento interno</button>
         </div>
       </div>
@@ -125,9 +126,10 @@
         <label>
           Vista
           <div class="segmented compact">
-            <button type="button" data-agenda-view="today" class="active">Hoy</button>
+            <button type="button" data-agenda-view="day" class="active">Fecha activa</button>
             <button type="button" data-agenda-view="week">Semana</button>
             <button type="button" data-agenda-view="month">Calendario</button>
+            <button type="button" data-agenda-view="all">Todo</button>
           </div>
         </label>
         <label>
@@ -141,6 +143,8 @@
             <option value="actuacion">Actuaciones</option>
             <option value="licitacion">Licitaciones</option>
             <option value="interno">Internos</option>
+            <option value="vencido">Vencidos</option>
+            <option value="sin_fecha">Sin fecha</option>
           </select>
         </label>
       </section>
@@ -494,6 +498,7 @@
         </label>
         <label>Título<input name="titulo" required></label>
         <label>Fecha/hora límite<input name="deadline_at" type="datetime-local"></label>
+        <p class="form-warning" id="actuacion-date-warning" hidden></p>
         <label>Estado
           <select name="estado">
             <option value="pendiente">Pendiente</option>
@@ -561,6 +566,7 @@
       <div class="form-grid">
         <label>Título<input name="titulo" required></label>
         <label>Fecha y hora<input name="starts_at" type="datetime-local" required></label>
+        <p class="form-warning" id="agenda-event-date-warning" hidden></p>
         <label>Estado
           <select name="estado">
             <option value="pendiente">Pendiente</option>

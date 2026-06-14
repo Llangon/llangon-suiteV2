@@ -2315,13 +2315,14 @@ Borrado:
 
 ## Módulo Agenda
 
-La pantalla `Calendario` evoluciona visualmente a `Agenda`. Mantiene la sección interna para reducir cambios, pero la experiencia se centra en tres vistas:
+La pantalla `Calendario` evoluciona visualmente a `Agenda`. Mantiene la sección interna para reducir cambios, pero la experiencia se centra en cuatro vistas:
 
-- Hoy;
+- fecha activa dinámica, con etiqueta tipo `Hoy, miércoles 17` o `Lunes 15 jun`;
 - Semana;
-- Calendario mensual.
+- Calendario mensual;
+- Todo.
 
-La Agenda consume eventos normalizados desde `GET /api/agenda` con origen:
+La Agenda consume eventos normalizados desde `GET /api/agenda` con `view=day|week|month|all` y origen:
 
 - actuaciones abiertas con `deadline_at`;
 - licitaciones abiertas con `fecha_limite` y `hora_limite`;
@@ -2348,8 +2349,20 @@ Eventos internos:
 - endpoints privados mutantes para crear, editar, cerrar y cancelar;
 - protegidos con CSRF.
 
+Acciones operativas:
+
+- filtro por tipo, vencidos y sin fecha;
+- búsqueda por título, descripción, tipo y datos vinculados de licitación;
+- acceso rápido al origen de cada evento;
+- creación de actuación desde una licitación;
+- comentario rápido en actuaciones;
+- duplicado de actuaciones con vínculos, sin copiar histórico antiguo;
+- resumen por email al usuario logueado usando la configuración SMTP existente;
+- avisos simples de fecha pasada, sin fecha, hora vacía o formato inválido.
+
 Relación con Bandeja Hoy:
 
 - Agenda actúa como primera Bandeja Hoy operativa;
-- `GET /api/agenda?view=today` agrupa vencidos abiertos, eventos de hoy y actuaciones sin fecha si existen;
-- las vistas Semana y Calendario reutilizan el mismo modelo unificado.
+- `GET /api/agenda?view=today` se mantiene como alias temporal de `view=day`;
+- la vista `Todo` permite revisar todo lo abierto sin depender de la fecha activa;
+- los avisos automáticos quedan como evolución futura; de momento existe generación/envío manual de resumen.

@@ -34,6 +34,7 @@ def make_handler(
     csrf_token: str | None = VALID_CSRF_TOKEN,
     username: str = "admin_test",
     role: str = "admin",
+    email: str = "admin@example.test",
 ):
     body = json.dumps(payload or {}).encode("utf-8")
     handler = object.__new__(app.InfonaliaHandler)
@@ -51,6 +52,7 @@ def make_handler(
         "username": username,
         "role": role,
         "display_name": username,
+        "email": email,
         "csrf_token": VALID_CSRF_TOKEN,
     }
 
@@ -164,6 +166,40 @@ def test_update_licitaciones_and_detail_history() -> None:
         assert "licitaciones" in event_types
         assert "estado" in event_types
         assert "comentario" in event_types
+
+
+def test_duplicate_actuacion_copies_main_fields_and_links_without_old_history() -> None:
+    app = load_app_module()
+    with temporary_app_database(app):
+        dia_id = insert_dia(app)
+        licitacion_a = insert_licitacion(app, dia_id, "ACT-DUP-001")
+        item = create_actuacion(
+            app,
+            [licitacion_a],
+            titulo="Actuación a duplicar",
+            descripcion="Descripción duplicable",
+            deadline_at="2026-06-20T10:30:00",
+        )
+        comment = make_handler(
+            app,
+            "POST",
+            f"/api/actuaciones/{item['id']}/historial",
+            {"comentario": "Comentario que no se copia"},
+        )
+        dispatch(comment, "POST")
+
+        duplicate = make_handler(app, "POST", f"/api/actuaciones/{item['id']}/duplicar", {})
+        dispatch(duplicate, "POST")
+
+        assert duplicate.responses[-1][0] == HTTPStatus.CREATED
+        copied = duplicate.responses[-1][1]["item"]
+        assert copied["id"] != item["id"]
+        assert copied["titulo"] == "Actuación a duplicar (copia)"
+        assert copied["descripcion"] == "Descripción duplicable"
+        assert copied["deadline_at"] == "2026-06-20T10:30:00"
+        assert [linked["id"] for linked in copied["licitaciones"]] == [licitacion_a]
+        assert [entry["event_type"] for entry in copied["historial"]] == ["duplicado"]
+        assert "Comentario que no se copia" not in json.dumps(copied["historial"])
 
 
 def test_list_actuaciones_filters_vencidas_hoy_semana() -> None:

@@ -17,6 +17,7 @@ POST_CASES = [
     ("POST", "/api/news", "api_create_news", ()),
     ("POST", "/api/import/msg", "api_import_msg", ()),
     ("POST", "/api/import/csv", "api_import_csv", ()),
+    ("POST", "/api/agenda/email-summary", "api_send_agenda_email_summary", ()),
     ("POST", "/api/agenda/eventos", "api_create_agenda_evento", ()),
     ("POST", "/api/dias/7/revisado", "api_mark_dia_revisado", (7,)),
     ("POST", "/api/dias/7/enviar-nuria", "api_send_dia_to_nuria", (7,)),
@@ -29,6 +30,7 @@ POST_CASES = [
     ("POST", "/api/actuaciones/3/cerrar", "api_close_actuacion", (3,)),
     ("POST", "/api/actuaciones/3/cancelar", "api_cancel_actuacion", (3,)),
     ("POST", "/api/actuaciones/3/historial", "api_add_actuacion_historial", (3,)),
+    ("POST", "/api/actuaciones/3/duplicar", "api_duplicate_actuacion", (3,)),
     ("POST", "/api/agenda/eventos/4/cerrar", "api_set_agenda_evento_estado", (4, "cerrado")),
     ("POST", "/api/agenda/eventos/4/cancelar", "api_set_agenda_evento_estado", (4, "cancelado")),
 ]

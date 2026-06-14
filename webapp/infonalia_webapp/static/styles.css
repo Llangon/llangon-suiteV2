@@ -826,6 +826,21 @@ textarea {
   grid-template-columns: minmax(220px, 0.8fr) minmax(260px, 1fr) 220px;
 }
 
+.form-warning {
+  background: var(--yellow-soft);
+  border: 1px solid #f0cf7a;
+  border-radius: 8px;
+  color: var(--yellow);
+  font-size: 12px;
+  font-weight: 800;
+  margin: 0;
+  padding: 8px 10px;
+}
+
+.form-grid .form-warning {
+  grid-column: 1 / -1;
+}
+
 .agenda-legend {
   display: flex;
   flex-wrap: wrap;
@@ -915,6 +930,14 @@ textarea {
 .agenda-card {
   background: linear-gradient(90deg, var(--agenda-soft, #ffffff), #ffffff 46%);
   border-left-width: 5px;
+}
+
+.agenda-card .links {
+  margin-top: 8px;
+}
+
+.agenda-card .links button {
+  padding: 6px 8px;
 }
 
 .agenda-week-day {

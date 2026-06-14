@@ -15,8 +15,11 @@ const appState = {
   currentDayReviewedAt: "",
   currentDayNuriaTotal: null,
   calendarItems: [],
+  agendaGroups: {},
   agendaSummary: {},
-  agendaView: "today",
+  agendaActiveDateLabel: "",
+  agendaIsToday: false,
+  agendaView: "day",
   agendaType: "all",
   newsItems: [],
   actuaciones: [],
@@ -63,6 +66,7 @@ const calendarDayPanel = document.getElementById("calendar-day-panel");
 const agendaEventDialog = document.getElementById("agenda-event-dialog");
 const agendaEventForm = document.getElementById("agenda-event-form");
 const agendaEventFormTitle = document.getElementById("agenda-event-form-title");
+const agendaEventDateWarning = document.getElementById("agenda-event-date-warning");
 const actuacionesBoard = document.getElementById("actuaciones-board");
 const actuacionesSummary = document.getElementById("actuaciones-summary");
 const actuacionesFilter = document.getElementById("actuaciones-filter");
@@ -74,6 +78,7 @@ const actuacionSelectedLicitaciones = document.getElementById("actuacion-selecte
 const actuacionHistoryPanel = document.getElementById("actuacion-history-panel");
 const actuacionHistory = document.getElementById("actuacion-history");
 const actuacionComment = document.getElementById("actuacion-comment");
+const actuacionDateWarning = document.getElementById("actuacion-date-warning");
 const licitacionSelectorDialog = document.getElementById("licitacion-selector-dialog");
 const licitacionSelectorForm = document.getElementById("licitacion-selector-form");
 const licitacionSelectorSearch = document.getElementById("licitacion-selector-search");
@@ -165,6 +170,7 @@ const agendaTypeLabels = {
   licitacion: "Licitación",
   interno: "Interno",
   vencido: "Vencido",
+  sin_fecha: "Sin fecha",
 };
 const agendaColorTypes = new Set(["actuacion", "licitacion", "interno", "vencido"]);
 const agendaStatusLabels = {
@@ -428,7 +434,7 @@ function showCalendarView() {
   if (!appState.calendarSelectedDate) appState.calendarSelectedDate = todayKey;
   appState.lastSection = "calendar";
   setActiveNav("calendar");
-  setPageHeader("Agenda", "Hoy / Semana / Calendario");
+  setPageHeader("Agenda", "Fecha activa / Semana / Calendario / Todo");
   daysSection.hidden = true;
   licitacionesSection.hidden = true;
   calendarSection.hidden = false;
@@ -686,6 +692,8 @@ function renderActuacionCard(item) {
         ${item.descripcion ? `<p class="muted">${escapeHtml(item.descripcion)}</p>` : ""}
         <div class="card-actions">
           <button data-edit-actuacion="${escapeHtml(item.id)}">Editar</button>
+          <button data-comment-actuacion="${escapeHtml(item.id)}">Añadir comentario</button>
+          <button data-duplicate-actuacion="${escapeHtml(item.id)}">Duplicar actuación</button>
           ${canClose ? `<button data-close-actuacion="${escapeHtml(item.id)}">Cerrar</button>` : ""}
           ${canClose ? `<button class="danger" data-cancel-actuacion="${escapeHtml(item.id)}">Cancelar</button>` : ""}
         </div>
@@ -769,6 +777,17 @@ function commitLicitacionSelection() {
   licitacionSelectorDialog.close();
 }
 
+function findLicitacionSelection(id) {
+  const stringId = String(id);
+  const direct = appState.items.find((item) => String(item.id) === stringId);
+  if (direct) return direct;
+  for (const event of appState.calendarItems || []) {
+    const linked = (event.linked_licitaciones || []).find((item) => String(item.id) === stringId);
+    if (linked) return linked;
+  }
+  return null;
+}
+
 function renderActuacionHistory(entries = []) {
   if (!actuacionForm.elements.id.value) {
     actuacionHistoryPanel.hidden = true;
@@ -795,9 +814,9 @@ async function openActuacionDialog(licitacionId = "") {
   actuacionForm.elements.id.value = "";
   actuacionFormTitle.textContent = "Nueva actuación";
   actuacionForm.elements.recordatorio_email.checked = true;
-  const linked = licitacionId
-    ? appState.items.filter((item) => String(item.id) === String(licitacionId))
-    : [];
+  showDateWarning(actuacionDateWarning, "");
+  const linkedItem = licitacionId ? findLicitacionSelection(licitacionId) : null;
+  const linked = linkedItem ? [linkedItem] : [];
   setSelectedActuacionLicitaciones(linked);
   renderActuacionHistory([]);
   actuacionDialog.showModal();
@@ -818,6 +837,7 @@ async function editActuacion(id) {
   actuacionForm.elements.titulo.value = item.titulo || "";
   actuacionForm.elements.descripcion.value = item.descripcion || "";
   actuacionForm.elements.deadline_at.value = toDatetimeLocal(item.deadline_at || "");
+  showDateWarning(actuacionDateWarning, actuacionForm.elements.deadline_at.value);
   actuacionForm.elements.estado.value = item.estado || "pendiente";
   actuacionForm.elements.recordatorio_email.checked = Boolean(item.recordatorio_email);
   setSelectedActuacionLicitaciones(item.licitaciones || []);
@@ -828,6 +848,7 @@ async function editActuacion(id) {
 async function saveActuacion(event) {
   event.preventDefault();
   const id = actuacionForm.elements.id.value;
+  showDateWarning(actuacionDateWarning, actuacionForm.elements.deadline_at.value);
   const payload = {
     tipo: actuacionForm.elements.tipo.value,
     titulo: actuacionForm.elements.titulo.value,
@@ -872,6 +893,34 @@ async function addActuacionComment() {
   await loadActuaciones();
 }
 
+async function quickActuacionComment(id) {
+  const comentario = window.prompt("Comentario para la actuación:");
+  if (!comentario || !comentario.trim()) return;
+  const response = await fetch(`/api/actuaciones/${id}/historial`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
+    body: JSON.stringify({ comentario: comentario.trim() }),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(result.error || "No se pudo añadir el comentario.");
+    return;
+  }
+  await loadActuaciones();
+  await loadCalendarItems();
+}
+
+async function duplicateActuacion(id) {
+  const response = await fetch(`/api/actuaciones/${id}/duplicar`, { method: "POST", headers: csrfHeaders() });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(result.error || "No se pudo duplicar la actuación.");
+    return;
+  }
+  await loadActuaciones();
+  await loadCalendarItems();
+}
+
 async function setActuacionClosedState(id, action) {
   const response = await fetch(`/api/actuaciones/${id}/${action}`, { method: "POST", headers: csrfHeaders() });
   const result = await response.json().catch(() => ({}));
@@ -890,6 +939,7 @@ function openAgendaEventoDialog(item = null) {
   agendaEventForm.elements.titulo.value = item?.title || item?.titulo || "";
   agendaEventForm.elements.descripcion.value = item?.subtitle || item?.descripcion || "";
   agendaEventForm.elements.starts_at.value = toDatetimeLocal(item?.datetime || item?.starts_at || "");
+  showDateWarning(agendaEventDateWarning, agendaEventForm.elements.starts_at.value, { required: true });
   agendaEventForm.elements.estado.value = item?.status || item?.estado || "pendiente";
   agendaEventDialog.showModal();
 }
@@ -897,6 +947,7 @@ function openAgendaEventoDialog(item = null) {
 async function saveAgendaEvento(event) {
   event.preventDefault();
   const id = agendaEventForm.elements.id.value;
+  showDateWarning(agendaEventDateWarning, agendaEventForm.elements.starts_at.value, { required: true });
   const payload = {
     titulo: agendaEventForm.elements.titulo.value,
     descripcion: agendaEventForm.elements.descripcion.value,
@@ -925,6 +976,27 @@ async function setAgendaEventoEstado(id, action) {
     return;
   }
   await loadCalendarItems();
+}
+
+async function sendAgendaEmailSummary() {
+  const payload = {
+    view: appState.agendaView || "day",
+    date: appState.calendarSelectedDate || dateKey(new Date()),
+    type_filter: appState.agendaType || "all",
+    search: calendarSearch.value.trim(),
+    include_no_date: appState.agendaType === "sin_fecha" || appState.agendaView === "all",
+  };
+  const response = await fetch("/api/agenda/email-summary", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(result.error || "No se pudo enviar el resumen.");
+    return;
+  }
+  alert("Resumen enviado por email.");
 }
 
 function openAgendaOrigin(token) {
@@ -1153,10 +1225,12 @@ function renderBoard() {
 
 async function loadCalendarItems() {
   const params = new URLSearchParams();
-  params.set("view", appState.agendaView || "today");
+  params.set("view", appState.agendaView || "day");
   params.set("date", appState.calendarSelectedDate || dateKey(new Date()));
   params.set("type", appState.agendaType || "all");
-  if (appState.agendaView === "month") params.set("include_overdue", "1");
+  const search = calendarSearch.value.trim();
+  if (search) params.set("q", search);
+  if (appState.agendaView === "month" || appState.agendaView === "all") params.set("include_overdue", "1");
   const response = await fetch(`/api/agenda?${params.toString()}`);
   if (!response.ok) {
     if (response.status === 401) location.href = "/login";
@@ -1168,7 +1242,10 @@ async function loadCalendarItems() {
 
   const data = await response.json();
   appState.calendarItems = data.events || [];
+  appState.agendaGroups = data.groups || {};
   appState.agendaSummary = data.summary || {};
+  appState.agendaActiveDateLabel = data.active_date_label || "";
+  appState.agendaIsToday = Boolean(data.is_today);
   renderCalendarStateFilter();
   renderCalendar();
 }
@@ -1186,6 +1263,7 @@ function calendarFilteredItems() {
         licitacion.expediente,
         licitacion.organismo,
         licitacion.objeto,
+        licitacion.plataforma,
         licitacion.provincia,
       ]),
     ].some((value) => String(value || "").toLowerCase().includes(q));
@@ -1196,6 +1274,9 @@ function renderCalendarStateFilter() {
   calendarStateFilter.value = appState.agendaType || "all";
   document.querySelectorAll("[data-agenda-view]").forEach((button) => {
     button.classList.toggle("active", button.dataset.agendaView === appState.agendaView);
+    if (button.dataset.agendaView === "day") {
+      button.textContent = appState.agendaActiveDateLabel || "Fecha activa";
+    }
   });
 }
 
@@ -1259,6 +1340,29 @@ function agendaLinkedText(item) {
   return labels.join(", ");
 }
 
+function agendaOpenLabel(item) {
+  if (item.source_type === "actuacion") return "Abrir actuación";
+  if (item.source_type === "licitacion") return "Abrir licitación";
+  return "Abrir evento";
+}
+
+function renderAgendaActions(item) {
+  const token = `${item.source_type}:${item.source_id}`;
+  const actions = [`<button type="button" data-agenda-open="${escapeHtml(token)}">${escapeHtml(agendaOpenLabel(item))}</button>`];
+  if (item.source_type === "licitacion") {
+    actions.push(`<button type="button" data-new-actuacion-id="${escapeHtml(item.source_id)}">Nueva actuación</button>`);
+  }
+  if (item.source_type === "actuacion") {
+    actions.push(`<button type="button" data-agenda-comment="${escapeHtml(item.source_id)}">Añadir comentario</button>`);
+    actions.push(`<button type="button" data-agenda-duplicate="${escapeHtml(item.source_id)}">Duplicar actuación</button>`);
+  }
+  if (item.source_type === "interno") {
+    actions.push(`<button type="button" data-agenda-close="${escapeHtml(item.source_id)}">Cerrar</button>`);
+    actions.push(`<button type="button" class="danger" data-agenda-cancel="${escapeHtml(item.source_id)}">Cancelar</button>`);
+  }
+  return `<div class="links">${actions.join("")}</div>`;
+}
+
 function renderCalendar() {
   const filtered = calendarFilteredItems();
   const monthDate = appState.calendarDate;
@@ -1266,30 +1370,35 @@ function renderCalendar() {
   const todayKey = dateKey(today);
   const selectedKey = appState.calendarSelectedDate || todayKey;
 
-  if (appState.agendaView === "today") {
-    calendarMonthTitle.textContent = `Hoy · ${formatDate(selectedKey)}`;
+  if (appState.agendaView === "day") {
+    calendarMonthTitle.textContent = `Fecha activa · ${appState.agendaActiveDateLabel || formatDate(selectedKey)}`;
   } else if (appState.agendaView === "week") {
     const start = weekStartMonday(parseDate(selectedKey) || today);
     const end = addDays(start, 6);
     calendarMonthTitle.textContent = `Semana · ${formatDate(dateKey(start))} - ${formatDate(dateKey(end))}`;
+  } else if (appState.agendaView === "all") {
+    calendarMonthTitle.textContent = "Todo lo agendado";
   } else {
     calendarMonthTitle.textContent = `Calendario · ${monthTitle(monthDate)}`;
   }
   calendarSummary.innerHTML = [
     ["Vencidos", appState.agendaSummary.overdue || 0],
-    ["Hoy", appState.agendaSummary.today || 0],
+    ["Fecha activa", appState.agendaSummary.active_date || appState.agendaSummary.today || 0],
     ["Semana", appState.agendaSummary.week || 0],
-    ["Actuaciones", appState.agendaSummary.actuaciones || 0],
-    ["Licitaciones", appState.agendaSummary.licitaciones || 0],
-    ["Internos", appState.agendaSummary.internos || 0],
+    ["Sin fecha", appState.agendaSummary.no_date || 0],
+    ["Total abiertos", appState.agendaSummary.total_open || 0],
   ].map(renderMetric).join("");
 
-  if (appState.agendaView === "today") {
-    renderAgendaToday(filtered, selectedKey);
+  if (appState.agendaView === "day") {
+    renderAgendaDay(filtered, selectedKey);
     return;
   }
   if (appState.agendaView === "week") {
     renderAgendaWeek(filtered, selectedKey);
+    return;
+  }
+  if (appState.agendaView === "all") {
+    renderAgendaAll(filtered, selectedKey);
     return;
   }
   renderAgendaMonth(filtered, selectedKey);
@@ -1366,17 +1475,33 @@ function renderCalendarRadar(items) {
   calendarRadar.innerHTML = upcoming.map(renderAgendaCompactCard).join("");
 }
 
-function renderAgendaToday(items, selectedKey) {
-  const overdue = items.filter((item) => item.is_overdue);
-  const today = items.filter((item) => item.date === selectedKey && !item.is_overdue);
-  const withoutDate = items.filter((item) => !item.date);
+function renderAgendaDay(items, selectedKey) {
+  const groups = appState.agendaGroups || {};
+  const overdue = groups.overdue || items.filter((item) => item.is_overdue);
+  const dayItems = groups.day || items.filter((item) => item.date === selectedKey && !item.is_overdue);
+  const withoutDate = groups.no_date || items.filter((item) => !item.date);
+  const dayTitle = appState.agendaIsToday ? "Eventos de hoy" : "Eventos del día";
   calendarRadar.innerHTML = [
     renderAgendaGroup("Vencidos abiertos", overdue),
-    renderAgendaGroup("Hoy", today),
+    renderAgendaGroup(dayTitle, dayItems),
     renderAgendaGroup("Sin fecha", withoutDate),
   ].join("");
   calendarBoard.innerHTML = "";
-  renderCalendarDayPanel([...overdue, ...today, ...withoutDate], selectedKey);
+  renderCalendarDayPanel([...overdue, ...dayItems, ...withoutDate], selectedKey);
+}
+
+function renderAgendaAll(items, selectedKey) {
+  const groups = appState.agendaGroups || {};
+  const blocks = [
+    renderAgendaGroup("Vencidos abiertos", groups.overdue || items.filter((item) => item.is_overdue)),
+    renderAgendaGroup("Fecha activa", groups.day || items.filter((item) => item.date === selectedKey && !item.is_overdue)),
+    ...((groups.today || []).length ? [renderAgendaGroup("Hoy", groups.today)] : []),
+    renderAgendaGroup("Próximos", groups.upcoming || items.filter((item) => item.date && item.date !== selectedKey && !item.is_overdue)),
+    renderAgendaGroup("Sin fecha", groups.no_date || items.filter((item) => !item.date)),
+  ];
+  calendarRadar.innerHTML = blocks.join("");
+  calendarBoard.innerHTML = "";
+  renderCalendarDayPanel(items, selectedKey);
 }
 
 function renderAgendaWeek(items, selectedKey) {
@@ -1424,6 +1549,7 @@ function renderAgendaCompactCard(item) {
       <strong>${escapeHtml(item.title || "Sin título")}</strong>
       <small>${escapeHtml(item.date ? formatDate(item.date) : "Sin fecha")}${agendaEventTime(item) ? ` · ${escapeHtml(agendaEventTime(item))}` : ""}</small>
       <small>${escapeHtml(item.subtitle || "")}</small>
+      ${renderAgendaActions(item)}
     </article>
   `;
 }
@@ -1464,12 +1590,9 @@ function renderCalendarDayPanel(items, key) {
                 ${item.date ? `<span>${escapeHtml(formatDate(item.date))}</span>` : `<span>Sin fecha</span>`}
                 ${agendaEventTime(item) ? `<span>${escapeHtml(agendaEventTime(item))}</span>` : ""}
                 ${item.is_overdue ? `<span>Vencido abierto</span>` : ""}
+                ${(item.date_warnings || []).includes("fecha_pasada") ? `<span>Fecha pasada</span>` : ""}
               </div>
-              <div class="links">
-                <button type="button" data-agenda-open="${escapeHtml(item.source_type)}:${escapeHtml(item.source_id)}">Abrir origen</button>
-                ${item.source_type === "interno" ? `<button type="button" data-agenda-close="${escapeHtml(item.source_id)}">Cerrar</button>` : ""}
-                ${item.source_type === "interno" ? `<button type="button" class="danger" data-agenda-cancel="${escapeHtml(item.source_id)}">Cancelar</button>` : ""}
-              </div>
+              ${renderAgendaActions(item)}
             </article>
           `;
         }).join("")}
@@ -1540,6 +1663,23 @@ function toDatetimeLocal(value) {
   if (!value) return "";
   const text = String(value).replace("Z", "");
   return text.length >= 16 ? text.slice(0, 16) : text;
+}
+
+function dateWarningText(value, { required = false } = {}) {
+  if (!value) return required ? "La fecha y hora es obligatoria." : "Esta actuación no tiene fecha límite.";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "Formato de fecha inválido.";
+  const warnings = [];
+  if (!String(value).includes("T")) warnings.push("No se ha indicado hora.");
+  if (parsed.getTime() < Date.now()) warnings.push("La fecha indicada ya ha pasado.");
+  return warnings.join(" ");
+}
+
+function showDateWarning(element, value, options = {}) {
+  if (!element) return;
+  const text = dateWarningText(value, options);
+  element.hidden = !text;
+  element.textContent = text;
 }
 
 async function loadNewsAdmin() {
@@ -2253,14 +2393,14 @@ document.getElementById("cancel-importer").addEventListener("click", () => impor
 stateFilter.addEventListener("change", loadItems);
 dateOrder.addEventListener("change", loadItems);
 searchInput.addEventListener("input", debounce(loadItems, 250));
-calendarSearch.addEventListener("input", debounce(renderCalendar, 250));
+calendarSearch.addEventListener("input", debounce(loadCalendarItems, 250));
 calendarStateFilter.addEventListener("change", () => {
   appState.agendaType = calendarStateFilter.value || "all";
   loadCalendarItems();
 });
 document.querySelectorAll("[data-agenda-view]").forEach((button) => {
   button.addEventListener("click", () => {
-    appState.agendaView = button.dataset.agendaView || "today";
+    appState.agendaView = button.dataset.agendaView || "day";
     const selected = parseDate(appState.calendarSelectedDate) || new Date();
     appState.calendarDate = new Date(selected.getFullYear(), selected.getMonth(), 1);
     loadCalendarItems();
@@ -2291,9 +2431,13 @@ document.getElementById("calendar-today").addEventListener("click", () => {
   loadCalendarItems();
 });
 document.getElementById("new-agenda-event-button").addEventListener("click", () => openAgendaEventoDialog());
+document.getElementById("agenda-email-summary-button").addEventListener("click", sendAgendaEmailSummary);
 document.getElementById("close-agenda-event-dialog").addEventListener("click", () => agendaEventDialog.close());
 document.getElementById("cancel-agenda-event-dialog").addEventListener("click", () => agendaEventDialog.close());
 agendaEventForm.addEventListener("submit", saveAgendaEvento);
+agendaEventForm.elements.starts_at.addEventListener("input", () => (
+  showDateWarning(agendaEventDateWarning, agendaEventForm.elements.starts_at.value, { required: true })
+));
 notificationSearch.addEventListener("input", debounce(loadNotifications, 250));
 notificationScope.addEventListener("change", loadNotifications);
 notificationDestination.addEventListener("change", loadNotifications);
@@ -2310,6 +2454,9 @@ document.getElementById("clear-licitacion-selection").addEventListener("click", 
   renderLicitacionSelectorResults();
 });
 document.getElementById("add-actuacion-comment").addEventListener("click", addActuacionComment);
+actuacionForm.elements.deadline_at.addEventListener("input", () => (
+  showDateWarning(actuacionDateWarning, actuacionForm.elements.deadline_at.value)
+));
 licitacionSelectorSearch.addEventListener("input", debounce(loadLicitacionSelectorResults, 250));
 licitacionSelectorForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -2437,6 +2584,16 @@ actuacionesBoard.addEventListener("click", (event) => {
     editActuacion(editButton.dataset.editActuacion);
     return;
   }
+  const commentButton = event.target.closest("button[data-comment-actuacion]");
+  if (commentButton) {
+    quickActuacionComment(commentButton.dataset.commentActuacion);
+    return;
+  }
+  const duplicateButton = event.target.closest("button[data-duplicate-actuacion]");
+  if (duplicateButton) {
+    duplicateActuacion(duplicateButton.dataset.duplicateActuacion);
+    return;
+  }
   const closeButton = event.target.closest("button[data-close-actuacion]");
   if (closeButton) {
     setActuacionClosedState(closeButton.dataset.closeActuacion, "cerrar");
@@ -2458,6 +2615,36 @@ calendarBoard.addEventListener("click", (event) => {
 });
 
 calendarRadar.addEventListener("click", (event) => {
+  const openButton = event.target.closest("button[data-agenda-open]");
+  if (openButton) {
+    openAgendaOrigin(openButton.dataset.agendaOpen);
+    return;
+  }
+  const commentButton = event.target.closest("button[data-agenda-comment]");
+  if (commentButton) {
+    quickActuacionComment(commentButton.dataset.agendaComment);
+    return;
+  }
+  const duplicateButton = event.target.closest("button[data-agenda-duplicate]");
+  if (duplicateButton) {
+    duplicateActuacion(duplicateButton.dataset.agendaDuplicate);
+    return;
+  }
+  const newActuacionButton = event.target.closest("button[data-new-actuacion-id]");
+  if (newActuacionButton) {
+    openActuacionDialog(newActuacionButton.dataset.newActuacionId);
+    return;
+  }
+  const closeButton = event.target.closest("button[data-agenda-close]");
+  if (closeButton) {
+    setAgendaEventoEstado(closeButton.dataset.agendaClose, "cerrar");
+    return;
+  }
+  const cancelButton = event.target.closest("button[data-agenda-cancel]");
+  if (cancelButton) {
+    setAgendaEventoEstado(cancelButton.dataset.agendaCancel, "cancelar");
+    return;
+  }
   const day = event.target.closest("[data-calendar-date]");
   if (!day) return;
   const parsed = parseDate(day.dataset.calendarDate);
@@ -2470,6 +2657,21 @@ calendarDayPanel.addEventListener("click", (event) => {
   const openButton = event.target.closest("button[data-agenda-open]");
   if (openButton) {
     openAgendaOrigin(openButton.dataset.agendaOpen);
+    return;
+  }
+  const commentButton = event.target.closest("button[data-agenda-comment]");
+  if (commentButton) {
+    quickActuacionComment(commentButton.dataset.agendaComment);
+    return;
+  }
+  const duplicateButton = event.target.closest("button[data-agenda-duplicate]");
+  if (duplicateButton) {
+    duplicateActuacion(duplicateButton.dataset.agendaDuplicate);
+    return;
+  }
+  const newActuacionButton = event.target.closest("button[data-new-actuacion-id]");
+  if (newActuacionButton) {
+    openActuacionDialog(newActuacionButton.dataset.newActuacionId);
     return;
   }
   const closeButton = event.target.closest("button[data-agenda-close]");

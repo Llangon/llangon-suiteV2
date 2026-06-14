@@ -57,6 +57,30 @@ def titles(events: list[dict]) -> set[str]:
     return {event["title"] for event in events}
 
 
+class FakeSMTP:
+    sent_messages: list[object] = []
+
+    def __init__(self, host: str, port: int, *, timeout: int) -> None:
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+
+    def __enter__(self) -> "FakeSMTP":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def starttls(self) -> None:
+        return None
+
+    def login(self, *_args: object) -> None:
+        return None
+
+    def send_message(self, message: object) -> None:
+        self.sent_messages.append(message)
+
+
 def test_agenda_today_returns_open_overdue_and_today_events() -> None:
     app = load_app_module()
     with temporary_app_database(app):
@@ -148,6 +172,42 @@ def test_agenda_week_month_and_type_filters() -> None:
     assert titles(only_internos["events"]) == {"Interno mes"}
 
 
+def test_agenda_day_all_filters_no_date_and_search() -> None:
+    app = load_app_module()
+    with temporary_app_database(app):
+        dia_id = insert_dia(app)
+        licitacion_id = insert_licitacion(app, dia_id, "AGENDA-LIC-SEARCH")
+        now = datetime.now().replace(microsecond=0)
+        set_licitacion_deadline(app, licitacion_id, fecha=now.date().isoformat(), hora="23:00", estado="Hacer")
+        with app.db_session() as conn:
+            conn.execute(
+                "UPDATE licitaciones SET organismo = ?, plataforma = ?, provincia = ? WHERE id = ?",
+                ("Ayuntamiento de Pruebas", "PLACE Test", "Sevilla", licitacion_id),
+            )
+        create_actuacion(app, None, titulo="Actuación sin fecha API", deadline_at="")
+        create_internal_event(app, titulo="Interno mañana API", starts_at=(now + timedelta(days=1)).isoformat())
+
+        day = agenda(app, f"?view=day&date={now.date().isoformat()}")
+        alias = agenda(app, f"?view=today&date={now.date().isoformat()}")
+        all_events = agenda(app, f"?view=all&date={now.date().isoformat()}")
+        no_date = agenda(app, f"?view=all&date={now.date().isoformat()}&type=sin_fecha")
+        vencidos = agenda(app, f"?view=all&date={now.date().isoformat()}&type=vencido")
+        search = agenda(app, f"?view=all&date={now.date().isoformat()}&q=ayuntamiento")
+        month_no_date = agenda(app, f"?view=month&date={now.date().isoformat()}&type=sin_fecha")
+
+    assert day["view"] == "day"
+    assert alias["view"] == "day"
+    assert "active_date_label" in day
+    assert "AGENDA-LIC-SEARCH" in titles(day["events"])
+    assert {"AGENDA-LIC-SEARCH", "Actuación sin fecha API", "Interno mañana API"} <= titles(all_events["events"])
+    assert titles(no_date["events"]) == {"Actuación sin fecha API"}
+    assert all(event["is_overdue"] for event in vencidos["events"])
+    assert titles(search["events"]) == {"AGENDA-LIC-SEARCH"}
+    assert month_no_date["events"] == []
+    assert all_events["summary"]["no_date"] == 1
+    assert all_events["summary"]["total_open"] >= 3
+
+
 def test_agenda_includes_actuacion_without_deadline_in_today_only() -> None:
     app = load_app_module()
     with temporary_app_database(app):
@@ -198,6 +258,57 @@ def test_internal_event_create_requires_csrf() -> None:
 
         assert handler.responses[-1][0] == HTTPStatus.FORBIDDEN
         assert count_rows(app, "agenda_eventos") == 0
+
+
+def test_agenda_email_summary_uses_logged_user_email_and_fake_smtp(monkeypatch) -> None:
+    app = load_app_module()
+    FakeSMTP.sent_messages = []
+    with temporary_app_database(app):
+        with app.db_session() as conn:
+            for key, value in {
+                "smtp_host": "smtp.example.test",
+                "smtp_port": "2525",
+                "smtp_from": "agenda@example.test",
+                "smtp_tls": "0",
+                "smtp_ssl": "0",
+            }.items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                    (key, value, "2026-06-14T10:00:00"),
+                )
+        create_internal_event(app, titulo="Resumen interno", starts_at="2026-06-14T10:00:00")
+        monkeypatch.setattr(app.smtplib, "SMTP", FakeSMTP)
+
+        handler = make_handler(
+            app,
+            "POST",
+            "/api/agenda/email-summary",
+            {"view": "all", "date": "2026-06-14"},
+            email="agenda-user@example.test",
+        )
+        dispatch(handler, "POST")
+
+    assert handler.responses[-1][0] == HTTPStatus.OK
+    assert FakeSMTP.sent_messages
+    message = FakeSMTP.sent_messages[0]
+    assert message["To"] == "agenda-user@example.test"
+    assert "Resumen de Agenda" in message.get_body(preferencelist=("plain",)).get_content()
+
+
+def test_agenda_email_summary_requires_logged_user_email() -> None:
+    app = load_app_module()
+    with temporary_app_database(app):
+        handler = make_handler(
+            app,
+            "POST",
+            "/api/agenda/email-summary",
+            {"view": "all", "date": "2026-06-14"},
+            email="",
+        )
+        dispatch(handler, "POST")
+
+    assert handler.responses[-1][0] == HTTPStatus.BAD_REQUEST
+    assert "email" in handler.responses[-1][1]["error"].lower()
 
 
 def test_agenda_get_requires_auth_but_not_csrf() -> None:
