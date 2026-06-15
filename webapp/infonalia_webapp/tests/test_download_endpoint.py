@@ -126,6 +126,15 @@ def get_download_jobs(app: ModuleType, licitacion_id: int) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def get_storage_uploads(app: ModuleType, licitacion_id: int) -> list[dict]:
+    with app.db_session() as conn:
+        rows = conn.execute(
+            "SELECT * FROM storage_uploads WHERE licitacion_id = ? ORDER BY id",
+            (licitacion_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 @contextmanager
 def mocked_subprocess_run(app: ModuleType, fake_run):
     old_run = app.subprocess.run
@@ -190,10 +199,50 @@ def test_download_endpoint_success_updates_ruta_carpeta_with_mocked_subprocess()
         assert calls[0]["text"] is True
         assert calls[0]["timeout"] == app.MAX_DOWNLOAD_RUNTIME_SECONDS
         assert calls[0]["args"][-1] == "https://example.test/licitacion/1"
+        uploads = get_storage_uploads(app, licitacion_id)
+        assert len(uploads) == 1
+        assert uploads[0]["backend"] == "local"
+        assert uploads[0]["status"] == "completed"
 
     assert PRODUCTIVE_DB_PATH.exists() is existed_before
     if existed_before:
         assert PRODUCTIVE_DB_PATH.stat().st_mtime_ns == stat_before
+
+
+def test_download_endpoint_dropbox_dry_run_records_incremental_storage(monkeypatch) -> None:
+    app = load_app_module()
+    monkeypatch.setenv("INFONALIA_STORAGE_BACKEND", "dropbox")
+    monkeypatch.setenv("INFONALIA_DROPBOX_ENABLED", "1")
+    monkeypatch.setenv("INFONALIA_DROPBOX_DRY_RUN", "1")
+    monkeypatch.setenv("INFONALIA_DROPBOX_API_ROOT", "/LlangonSuite")
+
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app)
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
+            return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
+
+        handler = make_download_handler(app)
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        status, payload = handler.responses[-1]
+        assert status == HTTPStatus.OK
+        assert payload["storage"]["backend"] == "dropbox"
+        assert payload["storage"]["dry_run"] is True
+        assert payload["storage"]["would_upload_count"] == 2
+        assert payload["storage"]["storage_uri"] == "dropbox://LlangonSuite/Licitaciones/TEST-DL-001_1"
+        jobs = get_download_jobs(app, licitacion_id)
+        assert jobs[0]["storage_backend"] == "dropbox"
+        assert jobs[0]["storage_uri"] == "dropbox://LlangonSuite/Licitaciones/TEST-DL-001_1"
+        assert "infonalia_dropbox_manifest" in jobs[0]["file_manifest"]
+        uploads = get_storage_uploads(app, licitacion_id)
+        assert uploads[0]["backend"] == "dropbox"
+        assert uploads[0]["dry_run"] == 1
+        assert uploads[0]["uploaded_count"] == 0
+        assert uploads[0]["skipped_existing_count"] == 0
+        assert uploads[0]["failed_count"] == 0
 
 
 def test_download_route_success_with_valid_csrf_and_mocked_subprocess() -> None:

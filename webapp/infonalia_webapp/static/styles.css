@@ -1275,6 +1275,32 @@ textarea {
   gap: 12px;
 }
 
+.storage-status-board {
+  display: grid;
+  gap: 8px;
+}
+
+.storage-status-row {
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 10px 12px;
+}
+
+.storage-status-row span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.storage-status-row strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
 .users-board {
   display: grid;
   gap: 10px;

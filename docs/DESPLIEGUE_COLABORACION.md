@@ -35,7 +35,7 @@ http://IP_DEL_PC_ANFITRION:8787
 
 No debe exponerse este servidor directamente a Internet.
 
-## Dropbox
+## Dropbox local
 
 La ubicación se configura sin fijar una ruta específica de un equipo:
 
@@ -44,6 +44,42 @@ INFONALIA_DROPBOX_ROOT=%USERPROFILE%\Dropbox\00000 LLANGON
 ```
 
 Si Dropbox se encuentra en otra unidad, debe indicarse en el `.env` local.
+
+## Dropbox API incremental
+
+La integración API está desactivada por defecto y empieza siempre en dry-run:
+
+```text
+INFONALIA_STORAGE_BACKEND=local
+INFONALIA_DROPBOX_ENABLED=0
+INFONALIA_DROPBOX_DRY_RUN=1
+INFONALIA_DROPBOX_API_ROOT=/LlangonSuite
+INFONALIA_DROPBOX_APP_KEY=
+INFONALIA_DROPBOX_APP_SECRET=
+INFONALIA_DROPBOX_REFRESH_TOKEN=
+INFONALIA_DROPBOX_NON_DESTRUCTIVE=1
+```
+
+Para probar sin subir nada:
+
+1. Configurar `INFONALIA_STORAGE_BACKEND=dropbox`.
+2. Configurar `INFONALIA_DROPBOX_ENABLED=1`.
+3. Mantener `INFONALIA_DROPBOX_DRY_RUN=1`.
+4. Usar `GET /api/storage/status` y `POST /api/storage/dropbox/dry-run`.
+5. Ejecutar una descarga simulada en entorno de pruebas y revisar el manifest local `.infonalia_dropbox_manifest_*.json`.
+
+Cuando se desactive dry-run deben existir las tres credenciales. La app no devuelve tokens al frontend ni los guarda en SQLite.
+
+La política Dropbox es incremental y no destructiva:
+
+- la carpeta remota estable es `/LlangonSuite/Licitaciones/{expediente}_{id}/`;
+- si la carpeta existe, se reutiliza;
+- si un fichero remoto existe, se salta;
+- si un fichero remoto falta, se sube;
+- no se usa overwrite, update, delete, move destructivo ni autorename para documentos;
+- los manifests se guardan en `_manifests/` y pueden usar sufijo seguro para no sobrescribirse.
+
+Para volver a local basta con dejar `INFONALIA_STORAGE_BACKEND=local` o desactivar `INFONALIA_DROPBOX_ENABLED`.
 
 ## Seguridad
 

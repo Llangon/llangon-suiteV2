@@ -33,6 +33,7 @@ const appState = {
   licitacionesView: "live",
   lastSection: "days",
   config: null,
+  storage: null,
   expandedCards: new Set(),
   cardDetails: {},
 };
@@ -104,6 +105,10 @@ const usersBoard = document.getElementById("users-board");
 const settingsForm = document.getElementById("settings-form");
 const settingsResult = document.getElementById("settings-result");
 const testSmtpButton = document.getElementById("test-smtp-button");
+const storageStatusBoard = document.getElementById("storage-status-board");
+const storageResult = document.getElementById("storage-result");
+const testDropboxButton = document.getElementById("test-dropbox-button");
+const dryRunDropboxButton = document.getElementById("dry-run-dropbox-button");
 const pageTitle = document.getElementById("page-title");
 const pageKicker = document.getElementById("page-kicker");
 const sessionUser = document.getElementById("session-user");
@@ -1837,12 +1842,17 @@ async function loadConfig() {
     return;
   }
   appState.config = await response.json();
+  const storageResponse = await fetch("/api/storage/status");
+  appState.storage = storageResponse.ok
+    ? await storageResponse.json()
+    : { error: "No se pudo cargar el estado de almacenamiento." };
   renderConfig();
 }
 
 function renderConfig() {
   renderUsersConfig();
   renderSettingsConfig();
+  renderStorageConfig();
 }
 
 function renderUsersConfig() {
@@ -1881,6 +1891,29 @@ function renderSettingsConfig() {
     : "Sin contraseña guardada";
   settingsForm.elements.smtp_password.value = "";
   settingsForm.elements.clear_smtp_password.checked = false;
+}
+
+function storageValue(value) {
+  if (value === true) return "Sí";
+  if (value === false) return "No";
+  return value || "No configurado";
+}
+
+function renderStorageConfig() {
+  const storage = appState.storage || {};
+  if (storage.error) {
+    storageStatusBoard.innerHTML = `<div class="empty">${escapeHtml(storage.error)}</div>`;
+    return;
+  }
+  const warnings = storage.warnings || [];
+  storageStatusBoard.innerHTML = `
+    <div class="storage-status-row"><span>Backend</span><strong>${escapeHtml(storageValue(storage.backend))}</strong></div>
+    <div class="storage-status-row"><span>Dropbox activo</span><strong>${escapeHtml(storageValue(storage.dropbox_enabled))}</strong></div>
+    <div class="storage-status-row"><span>Dry-run</span><strong>${escapeHtml(storageValue(storage.dry_run))}</strong></div>
+    <div class="storage-status-row"><span>Raíz remota</span><strong>${escapeHtml(storageValue(storage.root))}</strong></div>
+    <div class="storage-status-row"><span>Modo</span><strong>${escapeHtml(storageValue(storage.mode))}</strong></div>
+    ${warnings.length ? `<div class="notification-warning">${warnings.map(escapeHtml).join("<br>")}</div>` : ""}
+  `;
 }
 
 function resetUserForm() {
@@ -2025,6 +2058,47 @@ async function testSmtpConfig() {
     testSmtpButton.disabled = false;
     testSmtpButton.textContent = originalText;
   }
+}
+
+async function runDropboxAction(button, endpoint, loadingText) {
+  if (!isAdmin()) return;
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = loadingText;
+  storageResult.className = "import-result";
+  storageResult.textContent = loadingText;
+  try {
+    const response = await fetch(endpoint, { method: "POST", headers: csrfHeaders() });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      storageResult.className = "import-result error";
+      storageResult.textContent = result.error || result.message || "No se pudo completar la operación Dropbox.";
+      return;
+    }
+    storageResult.className = "import-result ok";
+    storageResult.textContent = result.message || (
+      result.dry_run
+        ? `Dry-run correcto. Ficheros previstos: ${result.would_upload_count || 0}.`
+        : "Operación Dropbox completada."
+    );
+    const statusResponse = await fetch("/api/storage/status");
+    appState.storage = statusResponse.ok ? await statusResponse.json() : appState.storage;
+    renderStorageConfig();
+  } catch (error) {
+    storageResult.className = "import-result error";
+    storageResult.textContent = error.message || "No se pudo completar la operación Dropbox.";
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+}
+
+function testDropboxConfig() {
+  runDropboxAction(testDropboxButton, "/api/storage/dropbox/test", "Probando Dropbox...");
+}
+
+function dryRunDropboxConfig() {
+  runDropboxAction(dryRunDropboxButton, "/api/storage/dropbox/dry-run", "Simulando dry-run...");
 }
 
 function renderCard(item) {
@@ -2519,6 +2593,8 @@ document.getElementById("reset-news-form").addEventListener("click", resetNewsFo
 userConfigForm.addEventListener("submit", saveUserConfig);
 settingsForm.addEventListener("submit", saveSettingsConfig);
 testSmtpButton.addEventListener("click", testSmtpConfig);
+testDropboxButton.addEventListener("click", testDropboxConfig);
+dryRunDropboxButton.addEventListener("click", dryRunDropboxConfig);
 document.getElementById("reset-user-form").addEventListener("click", resetUserForm);
 
 usersBoard.addEventListener("click", (event) => {

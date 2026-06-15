@@ -212,3 +212,63 @@ def finish_download_job(
             job_id,
         ),
     )
+
+
+def record_storage_upload(
+    conn: sqlite3.Connection,
+    *,
+    licitacion_id: int,
+    download_job_id: int | None,
+    backend: str,
+    destination_uri: str,
+    manifest: dict,
+    status: str,
+    dry_run: bool,
+    mode: str,
+    uploaded_count: int,
+    skipped_existing_count: int,
+    failed_count: int,
+    no_changes: bool,
+    timestamp: str,
+    error_message: str = "",
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO storage_uploads (
+            licitacion_id,
+            download_job_id,
+            backend,
+            destination_uri,
+            manifest_json,
+            status,
+            dry_run,
+            mode,
+            uploaded_count,
+            skipped_existing_count,
+            failed_count,
+            no_changes,
+            created_at,
+            completed_at,
+            error_message
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            licitacion_id,
+            download_job_id,
+            backend,
+            destination_uri,
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True, default=str),
+            status,
+            1 if dry_run else 0,
+            mode,
+            uploaded_count,
+            skipped_existing_count,
+            failed_count,
+            1 if no_changes else 0,
+            timestamp,
+            timestamp,
+            error_message,
+        ),
+    )
+    return int(cur.lastrowid)

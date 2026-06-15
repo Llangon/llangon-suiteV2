@@ -58,6 +58,7 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
         "0004_actuaciones",
         "0005_actuaciones_multilicitacion",
         "0006_agenda_eventos",
+        "0007_storage_uploads",
     ]
     assert table_exists(conn, MIGRATIONS_TABLE)
     rows = conn.execute(
@@ -94,6 +95,11 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
             "Eventos internos para Agenda operativa",
             "2026-06-12T10:00:00",
         ),
+        (
+            "0007_storage_uploads",
+            "Auditoria de almacenamiento local y Dropbox",
+            "2026-06-12T10:00:00",
+        ),
     ]
     assert table_exists(conn, "download_jobs")
     assert table_exists(conn, "import_runs")
@@ -102,6 +108,7 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
     assert table_exists(conn, "actuacion_licitaciones")
     assert table_exists(conn, "actuacion_historial")
     assert table_exists(conn, "agenda_eventos")
+    assert table_exists(conn, "storage_uploads")
     assert not table_exists(conn, "licitacion_actuaciones")
 
 
@@ -125,6 +132,7 @@ def test_run_migrations_is_idempotent() -> None:
         "0004_actuaciones",
         "0005_actuaciones_multilicitacion",
         "0006_agenda_eventos",
+        "0007_storage_uploads",
     ]
     assert run_migrations(conn, now=lambda: "2026-06-12T10:05:00") == []
 
@@ -136,6 +144,7 @@ def test_run_migrations_is_idempotent() -> None:
         ("0004_actuaciones", "2026-06-12T10:00:00"),
         ("0005_actuaciones_multilicitacion", "2026-06-12T10:00:00"),
         ("0006_agenda_eventos", "2026-06-12T10:00:00"),
+        ("0007_storage_uploads", "2026-06-12T10:00:00"),
     ]
 
 
@@ -406,6 +415,46 @@ def test_agenda_eventos_migration_schema_is_idempotent() -> None:
         "idx_agenda_eventos_starts_at",
         "idx_agenda_eventos_estado",
         "idx_agenda_eventos_created_by",
+    } <= indexes
+
+
+def test_storage_uploads_migration_schema_is_idempotent() -> None:
+    conn = sqlite3.connect(":memory:")
+
+    run_migrations(conn, now=lambda: "2026-06-12T10:00:00")
+    run_migrations(conn, now=lambda: "2026-06-12T10:05:00")
+
+    columns = {
+        row[1]: row[2]
+        for row in conn.execute("PRAGMA table_info(storage_uploads)").fetchall()
+    }
+    assert columns == {
+        "id": "INTEGER",
+        "licitacion_id": "INTEGER",
+        "download_job_id": "INTEGER",
+        "backend": "TEXT",
+        "destination_uri": "TEXT",
+        "manifest_json": "TEXT",
+        "status": "TEXT",
+        "dry_run": "INTEGER",
+        "mode": "TEXT",
+        "uploaded_count": "INTEGER",
+        "skipped_existing_count": "INTEGER",
+        "failed_count": "INTEGER",
+        "no_changes": "INTEGER",
+        "created_at": "TEXT",
+        "completed_at": "TEXT",
+        "error_message": "TEXT",
+    }
+    indexes = {
+        row[1]
+        for row in conn.execute("PRAGMA index_list(storage_uploads)").fetchall()
+    }
+    assert {
+        "idx_storage_uploads_licitacion",
+        "idx_storage_uploads_job",
+        "idx_storage_uploads_backend",
+        "idx_storage_uploads_created",
     } <= indexes
 
 

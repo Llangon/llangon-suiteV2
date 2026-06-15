@@ -202,13 +202,22 @@ def test_duplicate_actuacion_copies_main_fields_and_links_without_old_history() 
         assert "Comentario que no se copia" not in json.dumps(copied["historial"])
 
 
-def test_list_actuaciones_filters_vencidas_hoy_semana() -> None:
+def test_list_actuaciones_filters_vencidas_hoy_semana(monkeypatch) -> None:
     app = load_app_module()
+    fixed_now = datetime(2026, 6, 14, 12, 0, 0)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001
+            if tz is not None:
+                return fixed_now.replace(tzinfo=tz)
+            return fixed_now
+
     with temporary_app_database(app):
-        now = datetime.now().replace(microsecond=0)
-        create_actuacion(app, None, titulo="Vencida", deadline_at=(now - timedelta(hours=2)).isoformat())
-        create_actuacion(app, None, titulo="Hoy", deadline_at=(now + timedelta(minutes=30)).isoformat())
-        create_actuacion(app, None, titulo="Semana", deadline_at=(now + timedelta(days=3)).isoformat())
+        create_actuacion(app, None, titulo="Vencida", deadline_at=(fixed_now - timedelta(hours=2)).isoformat())
+        create_actuacion(app, None, titulo="Hoy", deadline_at=(fixed_now + timedelta(minutes=30)).isoformat())
+        create_actuacion(app, None, titulo="Semana", deadline_at=(fixed_now + timedelta(days=3)).isoformat())
+        monkeypatch.setattr(app, "datetime", FixedDatetime)
 
         assert [item["titulo"] for item in list_actuaciones(app, "?vencidas=1")] == ["Vencida"]
         assert [item["titulo"] for item in list_actuaciones(app, "?hoy=1")] == ["Hoy"]

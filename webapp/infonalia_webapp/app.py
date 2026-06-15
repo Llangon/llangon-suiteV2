@@ -96,6 +96,7 @@ try:
         finish_download_job,
         finish_import_run,
         licitacion_id_for_payload,
+        record_storage_upload,
         record_import_result,
     )
 except ImportError:
@@ -105,6 +106,7 @@ except ImportError:
         finish_download_job,
         finish_import_run,
         licitacion_id_for_payload,
+        record_storage_upload,
         record_import_result,
     )
 
@@ -313,9 +315,28 @@ except ImportError:
     )
 
 try:
-    from .local_storage import LocalStorageError, local_uri_for_path, write_local_manifest
+    from .local_storage import LocalStorageError, write_local_manifest
 except ImportError:
-    from local_storage import LocalStorageError, local_uri_for_path, write_local_manifest
+    from local_storage import LocalStorageError, write_local_manifest
+
+try:
+    from .services.download_storage_service import (
+        DropboxStorageError,
+        StorageConfigurationError,
+        finalize_download_storage,
+        simulate_dropbox_dry_run,
+        storage_status_payload,
+        test_dropbox_configuration,
+    )
+except ImportError:
+    from services.download_storage_service import (
+        DropboxStorageError,
+        StorageConfigurationError,
+        finalize_download_storage,
+        simulate_dropbox_dry_run,
+        storage_status_payload,
+        test_dropbox_configuration,
+    )
 
 try:
     from .web_security import (
@@ -1601,6 +1622,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_list_notificaciones(parsed.query)
         elif path == "/api/config":
             self.api_get_config()
+        elif path == "/api/storage/status":
+            self.api_storage_status()
         elif path == "/api/news":
             self.api_list_news()
         else:
@@ -1634,6 +1657,10 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_create_user()
         elif path == "/api/config/test-smtp":
             self.api_test_smtp()
+        elif path == "/api/storage/dropbox/test":
+            self.api_storage_dropbox_test()
+        elif path == "/api/storage/dropbox/dry-run":
+            self.api_storage_dropbox_dry_run()
         elif path == "/api/news":
             self.api_create_news()
         elif path == "/api/agenda/email-summary":
@@ -1851,6 +1878,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "/api/agenda/eventos",
                 "/api/config/users",
                 "/api/config/test-smtp",
+                "/api/storage/dropbox/test",
+                "/api/storage/dropbox/dry-run",
                 "/api/news",
                 "/api/import/csv",
                 "/api/import/msg",
@@ -1985,6 +2014,30 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if not self.require_admin():
             return
         self.send_json(self.config_payload())
+
+    def api_storage_status(self) -> None:
+        if not self.require_admin():
+            return
+        try:
+            self.send_json(storage_status_payload())
+        except StorageConfigurationError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def api_storage_dropbox_test(self) -> None:
+        if not self.require_admin():
+            return
+        try:
+            self.send_json(test_dropbox_configuration())
+        except StorageConfigurationError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def api_storage_dropbox_dry_run(self) -> None:
+        if not self.require_admin():
+            return
+        try:
+            self.send_json(simulate_dropbox_dry_run())
+        except StorageConfigurationError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
     def require_news_manager(self) -> bool:
         user = self.current_user()
@@ -3475,7 +3528,14 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             )
             storage_root = storage_root_for_destination(destino, allowed_destination_roots)
             manifest_object = write_local_manifest(storage_root, destino, source_url=url)
-            storage_uri = local_uri_for_path(storage_root, destino)
+            storage_result = finalize_download_storage(
+                local_storage_root=storage_root,
+                local_folder=destino,
+                local_manifest_uri=manifest_object.uri,
+                licitacion_id=licitacion_id,
+                expediente=row["expediente"],
+                source_url=url,
+            )
         except DownloadSafetyError as exc:
             with db_session() as conn:
                 finish_download_job(
@@ -3497,8 +3557,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 HTTPStatus.BAD_REQUEST,
             )
             return
-        except (LocalStorageError, OSError) as exc:
-            error_message = f"No se pudo crear el manifiesto de descarga: {exc}"
+        except (LocalStorageError, OSError, StorageConfigurationError, DropboxStorageError) as exc:
+            error_message = f"No se pudo confirmar el almacenamiento de descarga: {exc}"
             with db_session() as conn:
                 finish_download_job(
                     conn,
@@ -3526,6 +3586,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         }
 
         set_clause = ", ".join(f"{key} = ?" for key in updates)
+        storage_status = str(storage_result.get("job_status") or "completed")
+        storage_errors = storage_result.get("errors") or []
+        storage_error_message = "; ".join(str(error) for error in storage_errors)[:2000]
         with db_session() as conn:
             conn.execute(
                 f"UPDATE licitaciones SET {set_clause} WHERE id = ?",
@@ -3536,11 +3599,29 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             finish_download_job(
                 conn,
                 download_job_id,
-                status="completed",
-                storage_backend="local",
-                storage_uri=storage_uri,
-                file_manifest=manifest_object.uri,
+                status=storage_status,
+                storage_backend=str(storage_result.get("backend") or "local"),
+                storage_uri=str(storage_result.get("storage_uri") or ""),
+                file_manifest=str(storage_result.get("manifest_uri") or manifest_object.uri),
+                error_message=storage_error_message or None,
                 timestamp=updates["updated_at"],
+            )
+            record_storage_upload(
+                conn,
+                licitacion_id=licitacion_id,
+                download_job_id=download_job_id,
+                backend=str(storage_result.get("backend") or "local"),
+                destination_uri=str(storage_result.get("storage_uri") or ""),
+                manifest=storage_result,
+                status=storage_status,
+                dry_run=bool(storage_result.get("dry_run")),
+                mode=str(storage_result.get("mode") or ""),
+                uploaded_count=int(storage_result.get("uploaded_count") or 0),
+                skipped_existing_count=int(storage_result.get("skipped_existing_count") or 0),
+                failed_count=int(storage_result.get("failed_count") or 0),
+                no_changes=bool(storage_result.get("no_changes")),
+                timestamp=updates["updated_at"],
+                error_message=storage_error_message,
             )
 
         self.send_json(
@@ -3550,6 +3631,17 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "carpeta": str(destino),
                 "ruta_carpeta": ruta_guardada,
                 "salida": salida,
+                "storage": {
+                    "backend": storage_result.get("backend"),
+                    "dry_run": storage_result.get("dry_run"),
+                    "storage_uri": storage_result.get("storage_uri"),
+                    "manifest_uri": storage_result.get("manifest_uri"),
+                    "no_changes": storage_result.get("no_changes"),
+                    "uploaded_count": storage_result.get("uploaded_count"),
+                    "skipped_existing_count": storage_result.get("skipped_existing_count"),
+                    "failed_count": storage_result.get("failed_count"),
+                    "would_upload_count": storage_result.get("would_upload_count"),
+                },
             },
             HTTPStatus.OK,
         )

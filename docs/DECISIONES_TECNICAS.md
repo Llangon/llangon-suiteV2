@@ -1053,3 +1053,29 @@ Consecuencias:
 - las licitaciones siguen viviendo en su pantalla principal;
 - los eventos internos son deliberadamente simples y no implementan drag and drop ni sincronización externa;
 - `static/app.js` conserva la UI de Agenda en esta fase para evitar una separación arriesgada; el backend sí queda modularizado.
+
+## ADR-053 — Dropbox incremental no destructivo
+
+Las descargas locales ya son seguras al reintentar: los descargadores omiten ficheros que existen y solo añaden novedades. Para trabajar en remoto hace falta una integración Dropbox API que replique esa política sin depender de Dropbox Desktop.
+
+Decisión:
+- crear `storage/dropbox_client.py` como cliente HTTP aislado, sin métodos públicos de delete, overwrite ni move destructivo;
+- crear `storage/dropbox_incremental.py` con `DropboxIncrementalStorage`;
+- crear `services/download_storage_service.py` para decidir backend local o Dropbox sin engordar `app.py`;
+- mantener la descarga local como primer paso y sincronizar después a Dropbox;
+- usar carpeta remota estable `/LlangonSuite/Licitaciones/{expediente_sanitizado}_{licitacion_id}/`;
+- si la carpeta existe, reutilizarla;
+- si un fichero remoto existe, saltarlo como `skipped_existing`;
+- si un fichero falta, subirlo con modo `add` y `autorename=false`;
+- no borrar, no sobrescribir, no renombrar documentos y no crear carpetas alternativas por conflicto;
+- dejar dry-run activo por defecto y Dropbox desactivado por defecto;
+- añadir `storage_uploads` mediante `0007_storage_uploads` para trazar cada confirmación de almacenamiento;
+- mantener `download_jobs.storage_backend`, `storage_uri` y `file_manifest` como resumen principal del job.
+
+Consecuencias:
+- reejecutar una descarga sobre la misma licitación es idempotente y solo añade ficheros nuevos;
+- si todo existía, el manifest marca `no_changes=true`;
+- los manifests Dropbox locales se guardan como `.infonalia_dropbox_manifest_*.json`;
+- en Dropbox real los manifests se suben a `_manifests/` sin sobrescribir;
+- los tokens se leen de `.env`, no se devuelven al frontend y no se guardan en SQLite;
+- `INFONALIA_DROPBOX_ROOT` conserva el sentido de ruta local Dropbox Desktop, y la raíz remota API usa `INFONALIA_DROPBOX_API_ROOT`.

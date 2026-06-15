@@ -321,6 +321,37 @@ def _agenda_eventos_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_agenda_eventos_created_by ON agenda_eventos(created_by)")
 
 
+def _storage_uploads_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS storage_uploads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            licitacion_id INTEGER NOT NULL,
+            download_job_id INTEGER,
+            backend TEXT NOT NULL,
+            destination_uri TEXT,
+            manifest_json TEXT,
+            status TEXT NOT NULL,
+            dry_run INTEGER NOT NULL DEFAULT 0,
+            mode TEXT NOT NULL,
+            uploaded_count INTEGER NOT NULL DEFAULT 0,
+            skipped_existing_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            no_changes INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            error_message TEXT,
+            FOREIGN KEY (licitacion_id) REFERENCES licitaciones(id),
+            FOREIGN KEY (download_job_id) REFERENCES download_jobs(id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_storage_uploads_licitacion ON storage_uploads(licitacion_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_storage_uploads_job ON storage_uploads(download_job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_storage_uploads_backend ON storage_uploads(backend)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_storage_uploads_created ON storage_uploads(created_at)")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version="0001_baseline_schema",
@@ -351,6 +382,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version="0006_agenda_eventos",
         description="Eventos internos para Agenda operativa",
         apply=_agenda_eventos_schema,
+    ),
+    Migration(
+        version="0007_storage_uploads",
+        description="Auditoria de almacenamiento local y Dropbox",
+        apply=_storage_uploads_schema,
     ),
 )
 

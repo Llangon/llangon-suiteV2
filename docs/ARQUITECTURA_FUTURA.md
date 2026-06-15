@@ -2366,3 +2366,41 @@ Relación con Bandeja Hoy:
 - `GET /api/agenda?view=today` se mantiene como alias temporal de `view=day`;
 - la vista `Todo` permite revisar todo lo abierto sin depender de la fecha activa;
 - los avisos automáticos quedan como evolución futura; de momento existe generación/envío manual de resumen.
+
+## Dropbox incremental no destructivo
+
+La integración Dropbox API queda conectada al flujo de descargas sin sustituir los descargadores existentes:
+
+1. `POST /api/licitaciones/{id}/descargar` mantiene la ejecución local del descargador.
+2. Se valida la carpeta local y se genera `.infonalia_manifest.json`.
+3. `download_storage_service.finalize_download_storage()` decide backend:
+   - `local`: conserva el comportamiento anterior;
+   - `dropbox`: sincroniza la carpeta local a Dropbox.
+4. `DropboxIncrementalStorage` usa una carpeta estable por licitación:
+   `/LlangonSuite/Licitaciones/{expediente_sanitizado}_{licitacion_id}/`.
+5. Por cada fichero local descargado:
+   - si la ruta remota existe, registra `skipped_existing`;
+   - si no existe, sube el fichero;
+   - no borra, no sobrescribe, no renombra y no usa autorename para documentos.
+6. Se genera manifest por ejecución con totales de `uploaded`, `skipped_existing`, `failed`, `would_upload` y `no_changes`.
+7. `download_jobs` conserva el resumen del almacenamiento y `storage_uploads` conserva la traza ampliada.
+
+Configuración:
+
+- Dropbox API está desactivado por defecto: `INFONALIA_STORAGE_BACKEND=local`.
+- El dry-run está activo por defecto: `INFONALIA_DROPBOX_DRY_RUN=1`.
+- La raíz remota se configura con `INFONALIA_DROPBOX_API_ROOT=/LlangonSuite`.
+- `INFONALIA_DROPBOX_ROOT` sigue reservado para la carpeta local de Dropbox Desktop.
+- Las credenciales se leen de `.env` y no se guardan en SQLite.
+
+Endpoints operativos:
+
+- `GET /api/storage/status`: devuelve backend, dry-run, raíz y avisos sin secretos.
+- `POST /api/storage/dropbox/test`: valida configuración sin subir archivos en dry-run.
+- `POST /api/storage/dropbox/dry-run`: simula una actualización ficticia sin red ni subida real.
+
+Pendiente:
+
+- probar Dropbox real con una app restringida y carpeta de prueba;
+- decidir si más adelante se comparan tamaño o checksum para detectar contenido distinto con mismo nombre;
+- valorar streaming para ficheros muy grandes si se superan los tamaños habituales de licitación.
