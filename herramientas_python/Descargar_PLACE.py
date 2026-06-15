@@ -323,9 +323,8 @@ def candidatos_para_segunda_fase(carpeta_destino, archivos_primera_fase):
             candidatos.append(nombre)
 
     for nombre in os.listdir(carpeta_destino):
-        nombre_lower = nombre.lower()
-        ext = os.path.splitext(nombre_lower)[1]
-        if "pliego" in nombre_lower and ext in {".html", ".htm", ".xml"}:
+        ext = os.path.splitext(nombre.lower())[1]
+        if ext in {".html", ".htm", ".xml"}:
             candidatos.append(nombre)
 
     resultado = []

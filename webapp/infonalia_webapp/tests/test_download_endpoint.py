@@ -188,12 +188,17 @@ def test_download_endpoint_success_updates_ruta_carpeta_with_mocked_subprocess()
         assert ruta_carpeta
         assert ruta_carpeta == payload["ruta_carpeta"]
         assert Path(payload["carpeta"], "HTTP.url").exists()
+        assert Path(payload["carpeta"], "Descargar ficheros de la plataforma.bat").exists()
         assert Path(payload["carpeta"], "documento-ficticio.pdf").exists()
         manifest_path = Path(payload["carpeta"], ".infonalia_manifest.json")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         assert manifest["schema"] == "infonalia.download_manifest.v1"
         assert manifest["source_url"] == "https://example.test/licitacion/1"
-        assert sorted(item["path"] for item in manifest["files"]) == ["HTTP.url", "documento-ficticio.pdf"]
+        assert sorted(item["path"] for item in manifest["files"]) == [
+            "Descargar ficheros de la plataforma.bat",
+            "HTTP.url",
+            "documento-ficticio.pdf",
+        ]
         jobs = get_download_jobs(app, licitacion_id)
         assert len(jobs) == 1
         assert jobs[0]["status"] == "completed"
@@ -240,7 +245,7 @@ def test_download_endpoint_dropbox_dry_run_records_incremental_storage(monkeypat
         assert status == HTTPStatus.OK
         assert payload["storage"]["backend"] == "dropbox"
         assert payload["storage"]["dry_run"] is True
-        assert payload["storage"]["would_upload_count"] == 2
+        assert payload["storage"]["would_upload_count"] == 3
         assert payload["storage"]["storage_uri"] == "dropbox://LlangonSuite/Licitaciones/TEST-DL-001_1"
         jobs = get_download_jobs(app, licitacion_id)
         assert jobs[0]["storage_backend"] == "dropbox"

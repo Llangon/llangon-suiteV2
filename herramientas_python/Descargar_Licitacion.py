@@ -52,9 +52,6 @@ def detectar_plataforma(url):
     ):
         return "EUSKADI"
 
-    if host == "contractaciopublica.cat" or host.endswith(".contractaciopublica.cat"):
-        return "CATALUNYA"
-
     return ""
 
 
@@ -104,13 +101,8 @@ def main():
         script = script_en_misma_carpeta("Descargar_Euskadi.py")
         sys.exit(ejecutar(script, [url], carpeta_destino))
 
-    if plataforma == "CATALUNYA":
-        log("Plataforma detectada: Catalunya")
-        script = script_en_misma_carpeta("Descargar_Catalunya.py")
-        sys.exit(ejecutar(script, [url], carpeta_destino))
-
     log("No se reconoce la plataforma de esta URL.")
-    log("Por ahora estan soportadas: PLACE, Junta de Andalucia, Comunidad de Madrid, Euskadi y Catalunya.")
+    log("Por ahora estan soportadas: PLACE, Junta de Andalucia, Comunidad de Madrid y Euskadi.")
     sys.exit(1)
 
 

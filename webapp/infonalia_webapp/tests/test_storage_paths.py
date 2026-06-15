@@ -8,6 +8,7 @@ import pytest
 
 from webapp.infonalia_webapp.local_storage import LocalStorageError
 from webapp.infonalia_webapp.storage_paths import (
+    DOWNLOAD_BAT_FILENAME,
     default_dropbox_folder,
     dropbox_relative_path,
     folder_descriptor,
@@ -103,6 +104,9 @@ def test_write_http_url_creates_shortcut_file(tmp_path) -> None:
     write_http_url(tmp_path, "https://example.test/perfil")
 
     assert (tmp_path / "HTTP.url").read_text(encoding="utf-8") == "[InternetShortcut]\nURL=https://example.test/perfil\n"
+    bat = (tmp_path / DOWNLOAD_BAT_FILENAME).read_text(encoding="utf-8")
+    assert 'Infonalia\\Descargar_Licitacion.py' in bat
+    assert 'python "%SCRIPT%"' in bat
 
 
 def test_is_internal_download_path_checks_download_root(tmp_path) -> None:

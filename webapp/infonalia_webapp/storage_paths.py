@@ -27,6 +27,31 @@ except ImportError:
     from normalization import clean_text, parse_time_value
 
 
+DOWNLOAD_BAT_FILENAME = "Descargar ficheros de la plataforma.bat"
+DOWNLOAD_BAT_CONTENT = """@echo off
+setlocal
+cd /d "%~dp0"
+set "BUSCAR=%CD%"
+:buscar_lanzador
+if exist "%BUSCAR%\\Infonalia\\Descargar_Licitacion.py" (
+    set "SCRIPT=%BUSCAR%\\Infonalia\\Descargar_Licitacion.py"
+    goto ejecutar
+)
+for %%I in ("%BUSCAR%\\..") do set "PADRE=%%~fI"
+if /I "%PADRE%"=="%BUSCAR%" goto no_encontrado
+set "BUSCAR=%PADRE%"
+goto buscar_lanzador
+:no_encontrado
+echo No se encontro Infonalia\\Descargar_Licitacion.py buscando desde:
+echo %~dp0
+pause
+exit /b 1
+:ejecutar
+python "%SCRIPT%"
+if errorlevel 1 pause
+"""
+
+
 def path_is_relative_to(path: Path, parent: Path) -> bool:
     try:
         path.resolve().relative_to(parent.resolve())
@@ -200,6 +225,7 @@ def write_http_url(folder: Path, url: str) -> None:
         "[InternetShortcut]\n" f"URL={url}\n",
         encoding="utf-8",
     )
+    (folder / DOWNLOAD_BAT_FILENAME).write_text(DOWNLOAD_BAT_CONTENT, encoding="utf-8")
 
 
 def storage_root_for_destination(destination: Path, allowed_roots: list[Path]) -> Path:
