@@ -47,6 +47,7 @@ firebase/public_firebase/.firebaserc
 *.bak
 *.tmp
 .local_backups/
+.local_runtime/
 *.zip
 *.7z
 *.rar
@@ -61,4 +62,4 @@ BACKUP*/
 .DS_Store
 Thumbs.db
 
-.pytest_tmp/
+.pytest_tmp*/

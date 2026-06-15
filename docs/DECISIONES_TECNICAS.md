@@ -1063,6 +1063,7 @@ Decisión:
 - crear `storage/dropbox_incremental.py` con `DropboxIncrementalStorage`;
 - crear `services/download_storage_service.py` para decidir backend local o Dropbox sin engordar `app.py`;
 - mantener la descarga local como primer paso y sincronizar después a Dropbox;
+- cuando `INFONALIA_STORAGE_BACKEND=dropbox`, usar `INFONALIA_DOWNLOAD_STAGING_ROOT` como carpeta local previa fuera de Dropbox Desktop;
 - usar carpeta remota estable `/LlangonSuite/Licitaciones/{expediente_sanitizado}_{licitacion_id}/`;
 - si la carpeta existe, reutilizarla;
 - si un fichero remoto existe, saltarlo como `skipped_existing`;
@@ -1078,4 +1079,4 @@ Consecuencias:
 - los manifests Dropbox locales se guardan como `.infonalia_dropbox_manifest_*.json`;
 - en Dropbox real los manifests se suben a `_manifests/` sin sobrescribir;
 - los tokens se leen de `.env`, no se devuelven al frontend y no se guardan en SQLite;
-- `INFONALIA_DROPBOX_ROOT` conserva el sentido de ruta local Dropbox Desktop, y la raíz remota API usa `INFONALIA_DROPBOX_API_ROOT`.
+- `INFONALIA_DROPBOX_ROOT` conserva el sentido de ruta local Dropbox Desktop, la raíz remota API usa `INFONALIA_DROPBOX_API_ROOT` y el staging local API usa `.local_runtime/downloads` por defecto.

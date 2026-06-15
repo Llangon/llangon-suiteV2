@@ -24,6 +24,9 @@ class StorageConfigurationError(ValueError):
     """Raised when storage configuration is incomplete or invalid."""
 
 
+DEFAULT_DOWNLOAD_STAGING_ROOT = ".local_runtime/downloads"
+
+
 def _bool_env(value: object, default: bool = False) -> bool:
     text = str(value if value is not None else "").strip().lower()
     if not text:
@@ -93,7 +96,7 @@ def remote_root_from_env(environ: Mapping[str, str]) -> str:
 
 
 def storage_config_from_env(environ: Mapping[str, str] | None = None) -> StorageConfig:
-    env = environ or os.environ
+    env = os.environ if environ is None else environ
     backend = str(env.get("INFONALIA_STORAGE_BACKEND") or "local").strip().lower() or "local"
     if backend not in {"local", "dropbox"}:
         raise StorageConfigurationError("INFONALIA_STORAGE_BACKEND debe ser local o dropbox.")
@@ -107,6 +110,28 @@ def storage_config_from_env(environ: Mapping[str, str] | None = None) -> Storage
         app_secret=str(env.get("INFONALIA_DROPBOX_APP_SECRET") or "").strip(),
         refresh_token=str(env.get("INFONALIA_DROPBOX_REFRESH_TOKEN") or "").strip(),
     )
+
+
+def uses_dropbox_api_backend(environ: Mapping[str, str] | None = None) -> bool:
+    return storage_config_from_env(environ).backend == "dropbox"
+
+
+def download_staging_root_for_backend(
+    repository_root: Path,
+    default_download_root: Path,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    env = os.environ if environ is None else environ
+    if not uses_dropbox_api_backend(env):
+        return Path(default_download_root).resolve(strict=False)
+
+    configured = str(env.get("INFONALIA_DOWNLOAD_STAGING_ROOT") or DEFAULT_DOWNLOAD_STAGING_ROOT).strip()
+    if not configured:
+        configured = DEFAULT_DOWNLOAD_STAGING_ROOT
+    staging_root = Path(configured)
+    if not staging_root.is_absolute():
+        staging_root = Path(repository_root) / staging_root
+    return staging_root.resolve(strict=False)
 
 
 def storage_status_payload(environ: Mapping[str, str] | None = None) -> dict:

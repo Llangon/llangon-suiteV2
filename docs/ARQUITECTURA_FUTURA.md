@@ -2372,22 +2372,24 @@ Relación con Bandeja Hoy:
 La integración Dropbox API queda conectada al flujo de descargas sin sustituir los descargadores existentes:
 
 1. `POST /api/licitaciones/{id}/descargar` mantiene la ejecución local del descargador.
-2. Se valida la carpeta local y se genera `.infonalia_manifest.json`.
-3. `download_storage_service.finalize_download_storage()` decide backend:
+2. Si el backend es `dropbox`, el descargador escribe en `INFONALIA_DOWNLOAD_STAGING_ROOT` y no en Dropbox Desktop.
+3. Se valida la carpeta local y se genera `.infonalia_manifest.json`.
+4. `download_storage_service.finalize_download_storage()` decide backend:
    - `local`: conserva el comportamiento anterior;
    - `dropbox`: sincroniza la carpeta local a Dropbox.
-4. `DropboxIncrementalStorage` usa una carpeta estable por licitación:
+5. `DropboxIncrementalStorage` usa una carpeta estable por licitación:
    `/LlangonSuite/Licitaciones/{expediente_sanitizado}_{licitacion_id}/`.
-5. Por cada fichero local descargado:
+6. Por cada fichero local descargado:
    - si la ruta remota existe, registra `skipped_existing`;
    - si no existe, sube el fichero;
    - no borra, no sobrescribe, no renombra y no usa autorename para documentos.
-6. Se genera manifest por ejecución con totales de `uploaded`, `skipped_existing`, `failed`, `would_upload` y `no_changes`.
-7. `download_jobs` conserva el resumen del almacenamiento y `storage_uploads` conserva la traza ampliada.
+7. Se genera manifest por ejecución con totales de `uploaded`, `skipped_existing`, `failed`, `would_upload` y `no_changes`.
+8. `download_jobs` conserva el resumen del almacenamiento y `storage_uploads` conserva la traza ampliada.
 
 Configuración:
 
 - Dropbox API está desactivado por defecto: `INFONALIA_STORAGE_BACKEND=local`.
+- El staging local para Dropbox API usa `INFONALIA_DOWNLOAD_STAGING_ROOT=.local_runtime/downloads`.
 - El dry-run está activo por defecto: `INFONALIA_DROPBOX_DRY_RUN=1`.
 - La raíz remota se configura con `INFONALIA_DROPBOX_API_ROOT=/LlangonSuite`.
 - `INFONALIA_DROPBOX_ROOT` sigue reservado para la carpeta local de Dropbox Desktop.

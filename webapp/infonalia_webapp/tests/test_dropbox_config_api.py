@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from http import HTTPStatus
+from pathlib import Path
 
 import pytest
 
 from webapp.infonalia_webapp.services.download_storage_service import (
+    download_staging_root_for_backend,
     StorageConfigurationError,
     simulate_dropbox_dry_run,
     storage_config_from_env,
@@ -25,6 +27,25 @@ def test_dropbox_config_defaults_to_local_dry_run_without_secrets() -> None:
     assert payload["non_destructive"] is True
     assert "APP_SECRET" not in str(payload)
     assert "REFRESH_TOKEN" not in str(payload)
+
+
+def test_download_staging_root_is_used_only_for_dropbox_backend(tmp_path: Path) -> None:
+    default_root = tmp_path / "data" / "descargas"
+
+    assert download_staging_root_for_backend(tmp_path, default_root, {}) == default_root.resolve(strict=False)
+    assert download_staging_root_for_backend(
+        tmp_path,
+        default_root,
+        {"INFONALIA_STORAGE_BACKEND": "dropbox"},
+    ) == (tmp_path / ".local_runtime" / "downloads").resolve(strict=False)
+    assert download_staging_root_for_backend(
+        tmp_path,
+        default_root,
+        {
+            "INFONALIA_STORAGE_BACKEND": "dropbox",
+            "INFONALIA_DOWNLOAD_STAGING_ROOT": str(tmp_path / "custom-staging"),
+        },
+    ) == (tmp_path / "custom-staging").resolve(strict=False)
 
 
 def test_dropbox_enabled_without_credentials_fails_only_for_real_mode() -> None:

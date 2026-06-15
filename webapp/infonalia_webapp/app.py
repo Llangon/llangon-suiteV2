@@ -323,19 +323,23 @@ try:
     from .services.download_storage_service import (
         DropboxStorageError,
         StorageConfigurationError,
+        download_staging_root_for_backend,
         finalize_download_storage,
         simulate_dropbox_dry_run,
         storage_status_payload,
         test_dropbox_configuration,
+        uses_dropbox_api_backend,
     )
 except ImportError:
     from services.download_storage_service import (
         DropboxStorageError,
         StorageConfigurationError,
+        download_staging_root_for_backend,
         finalize_download_storage,
         simulate_dropbox_dry_run,
         storage_status_payload,
         test_dropbox_configuration,
+        uses_dropbox_api_backend,
     )
 
 try:
@@ -1449,10 +1453,15 @@ def import_msg_content(
 
 
 def resolve_destination_folder(row: sqlite3.Row | dict) -> Path:
+    download_root = download_staging_root_for_backend(REPOSITORY_ROOT, DOWNLOAD_ROOT)
+    dropbox_root = None if uses_dropbox_api_backend() else find_dropbox_root()
+    destination_row = dict(row) if uses_dropbox_api_backend() else row
+    if uses_dropbox_api_backend():
+        destination_row["ruta_carpeta"] = ""
     return storage_resolve_destination_folder(
-        row,
-        download_root=DOWNLOAD_ROOT,
-        dropbox_root=find_dropbox_root(),
+        destination_row,
+        download_root=download_root,
+        dropbox_root=dropbox_root,
     )
 
 
@@ -3449,8 +3458,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.send_json({"error": f"No se encuentra el lanzador: {LAUNCHER_PATH}"}, HTTPStatus.BAD_REQUEST)
             return
 
-        dropbox_root = find_dropbox_root()
-        allowed_destination_roots = [DOWNLOAD_ROOT]
+        download_root = download_staging_root_for_backend(REPOSITORY_ROOT, DOWNLOAD_ROOT)
+        dropbox_root = None if uses_dropbox_api_backend() else find_dropbox_root()
+        allowed_destination_roots = [download_root]
         if dropbox_root:
             allowed_destination_roots.append(dropbox_root)
 

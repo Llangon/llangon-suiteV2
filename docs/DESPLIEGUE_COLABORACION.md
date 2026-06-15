@@ -51,6 +51,7 @@ La integración API está desactivada por defecto y empieza siempre en dry-run:
 
 ```text
 INFONALIA_STORAGE_BACKEND=local
+INFONALIA_DOWNLOAD_STAGING_ROOT=.local_runtime/downloads
 INFONALIA_DROPBOX_ENABLED=0
 INFONALIA_DROPBOX_DRY_RUN=1
 INFONALIA_DROPBOX_API_ROOT=/LlangonSuite
@@ -63,16 +64,18 @@ INFONALIA_DROPBOX_NON_DESTRUCTIVE=1
 Para probar sin subir nada:
 
 1. Configurar `INFONALIA_STORAGE_BACKEND=dropbox`.
-2. Configurar `INFONALIA_DROPBOX_ENABLED=1`.
-3. Mantener `INFONALIA_DROPBOX_DRY_RUN=1`.
-4. Usar `GET /api/storage/status` y `POST /api/storage/dropbox/dry-run`.
-5. Ejecutar una descarga simulada en entorno de pruebas y revisar el manifest local `.infonalia_dropbox_manifest_*.json`.
+2. Mantener `INFONALIA_DOWNLOAD_STAGING_ROOT=.local_runtime/downloads` o apuntarlo a otra carpeta fuera de Dropbox Desktop.
+3. Configurar `INFONALIA_DROPBOX_ENABLED=1`.
+4. Mantener `INFONALIA_DROPBOX_DRY_RUN=1`.
+5. Usar `GET /api/storage/status` y `POST /api/storage/dropbox/dry-run`.
+6. Ejecutar una descarga simulada en entorno de pruebas y revisar el manifest local `.infonalia_dropbox_manifest_*.json`.
 
 Cuando se desactive dry-run deben existir las tres credenciales. La app no devuelve tokens al frontend ni los guarda en SQLite.
 
 La política Dropbox es incremental y no destructiva:
 
 - la carpeta remota estable es `/LlangonSuite/Licitaciones/{expediente}_{id}/`;
+- la carpeta local previa de descarga, cuando el backend es Dropbox API, debe estar fuera de Dropbox Desktop;
 - si la carpeta existe, se reutiliza;
 - si un fichero remoto existe, se salta;
 - si un fichero remoto falta, se sube;

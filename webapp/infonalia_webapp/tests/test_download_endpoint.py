@@ -8,11 +8,19 @@ from http import HTTPStatus
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 from webapp.infonalia_webapp.tests.test_import_endpoints import (
     PRODUCTIVE_DB_PATH,
     VALID_CSRF_TOKEN,
     load_app_module,
 )
+
+
+@pytest.fixture(autouse=True)
+def default_download_storage_env(monkeypatch):
+    monkeypatch.setenv("INFONALIA_STORAGE_BACKEND", "local")
+    monkeypatch.delenv("INFONALIA_DOWNLOAD_STAGING_ROOT", raising=False)
 
 
 @contextmanager
@@ -209,9 +217,10 @@ def test_download_endpoint_success_updates_ruta_carpeta_with_mocked_subprocess()
         assert PRODUCTIVE_DB_PATH.stat().st_mtime_ns == stat_before
 
 
-def test_download_endpoint_dropbox_dry_run_records_incremental_storage(monkeypatch) -> None:
+def test_download_endpoint_dropbox_dry_run_records_incremental_storage(monkeypatch, tmp_path: Path) -> None:
     app = load_app_module()
     monkeypatch.setenv("INFONALIA_STORAGE_BACKEND", "dropbox")
+    monkeypatch.setenv("INFONALIA_DOWNLOAD_STAGING_ROOT", str(tmp_path / "staging"))
     monkeypatch.setenv("INFONALIA_DROPBOX_ENABLED", "1")
     monkeypatch.setenv("INFONALIA_DROPBOX_DRY_RUN", "1")
     monkeypatch.setenv("INFONALIA_DROPBOX_API_ROOT", "/LlangonSuite")
@@ -243,6 +252,40 @@ def test_download_endpoint_dropbox_dry_run_records_incremental_storage(monkeypat
         assert uploads[0]["uploaded_count"] == 0
         assert uploads[0]["skipped_existing_count"] == 0
         assert uploads[0]["failed_count"] == 0
+
+
+def test_download_endpoint_dropbox_backend_uses_staging_outside_dropbox_desktop(monkeypatch, tmp_path: Path) -> None:
+    app = load_app_module()
+    staging_root = tmp_path / "staging-downloads"
+    dropbox_desktop_root = tmp_path / "Dropbox" / "00000 LLANGON"
+    dropbox_desktop_root.mkdir(parents=True)
+    monkeypatch.setenv("INFONALIA_STORAGE_BACKEND", "dropbox")
+    monkeypatch.setenv("INFONALIA_DOWNLOAD_STAGING_ROOT", str(staging_root))
+    monkeypatch.setenv("INFONALIA_DROPBOX_ENABLED", "1")
+    monkeypatch.setenv("INFONALIA_DROPBOX_DRY_RUN", "1")
+    monkeypatch.setenv("INFONALIA_DROPBOX_API_ROOT", "/LlangonSuite")
+
+    with temporary_download_app(app):
+        app.find_dropbox_root = lambda: dropbox_desktop_root
+        licitacion_id = insert_fake_licitacion(app, ruta_carpeta=str(dropbox_desktop_root / "ruta-antigua"))
+        calls = []
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            calls.append(Path(cwd))
+            Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
+            return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
+
+        handler = make_download_handler(app)
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        status, payload = handler.responses[-1]
+        cwd = calls[0].resolve()
+        assert status == HTTPStatus.OK
+        assert cwd.is_relative_to(staging_root.resolve())
+        assert not cwd.is_relative_to(dropbox_desktop_root.resolve())
+        assert Path(payload["carpeta"]).resolve() == cwd
+        assert get_download_jobs(app, licitacion_id)[0]["storage_backend"] == "dropbox"
 
 
 def test_download_route_success_with_valid_csrf_and_mocked_subprocess() -> None:
