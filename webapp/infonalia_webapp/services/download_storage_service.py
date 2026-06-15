@@ -55,16 +55,21 @@ class StorageConfig:
             warnings.append("Dropbox esta seleccionado como backend, pero INFONALIA_DROPBOX_ENABLED no esta activo.")
         if self.dropbox_enabled and not self.configured:
             warnings.append("Dropbox esta activo, pero faltan credenciales.")
-        if self.dry_run:
+        if self.backend == "dropbox" and self.dry_run:
             warnings.append("Dropbox dry-run activo: no se subiran archivos reales.")
+        current_mode_label = "local / Dropbox Desktop" if self.backend == "local" else "Dropbox API experimental"
         return {
             "backend": self.backend,
+            "current_mode": self.backend,
+            "current_mode_label": current_mode_label,
             "dropbox_enabled": self.dropbox_enabled,
             "dry_run": self.dry_run,
             "root": self.root,
             "non_destructive": self.non_destructive,
             "configured": self.configured,
             "mode": MODE,
+            "dropbox_api_status": "experimental_enabled" if self.backend == "dropbox" else "experimental_disabled",
+            "dropbox_api_recommended": False,
             "warnings": warnings,
         }
 

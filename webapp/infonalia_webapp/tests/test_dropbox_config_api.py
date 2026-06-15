@@ -21,10 +21,13 @@ def test_dropbox_config_defaults_to_local_dry_run_without_secrets() -> None:
     payload = storage_status_payload({})
 
     assert payload["backend"] == "local"
+    assert payload["current_mode_label"] == "local / Dropbox Desktop"
     assert payload["dropbox_enabled"] is False
     assert payload["dry_run"] is True
     assert payload["root"] == "/LlangonSuite"
     assert payload["non_destructive"] is True
+    assert payload["dropbox_api_status"] == "experimental_disabled"
+    assert payload["dropbox_api_recommended"] is False
     assert "APP_SECRET" not in str(payload)
     assert "REFRESH_TOKEN" not in str(payload)
 
@@ -104,7 +107,30 @@ def test_storage_status_api_requires_admin_and_exposes_no_secrets(monkeypatch) -
     assert status == HTTPStatus.OK
     assert payload["backend"] == "dropbox"
     assert payload["dry_run"] is True
+    assert payload["dropbox_api_status"] == "experimental_enabled"
     assert "hidden" not in str(payload)
+
+
+def test_storage_status_api_shows_local_dropbox_desktop_as_main_flow(monkeypatch, tmp_path: Path) -> None:
+    app = load_app_module()
+    dropbox_root = tmp_path / "Dropbox" / "00000 LLANGON"
+    dropbox_root.mkdir(parents=True)
+    monkeypatch.setenv("INFONALIA_STORAGE_BACKEND", "local")
+    monkeypatch.setenv("INFONALIA_DROPBOX_ENABLED", "0")
+    monkeypatch.setattr(app, "find_dropbox_root", lambda: dropbox_root)
+    handler = make_download_handler(app, path="/api/storage/status")
+
+    handler.do_GET()
+
+    status, payload = handler.responses[-1]
+    assert status == HTTPStatus.OK
+    assert payload["backend"] == "local"
+    assert payload["current_mode_label"] == "local / Dropbox Desktop"
+    assert payload["local_flow_label"] == "Dropbox Desktop"
+    assert payload["dropbox_desktop_detected"] is True
+    assert payload["dropbox_desktop_root"] == str(dropbox_root)
+    assert payload["local_download_root"] == str(dropbox_root)
+    assert payload["dropbox_api_status"] == "experimental_disabled"
 
 
 def test_storage_dropbox_posts_require_csrf_before_running(monkeypatch) -> None:

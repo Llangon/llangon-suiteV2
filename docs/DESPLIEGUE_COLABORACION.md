@@ -37,17 +37,24 @@ No debe exponerse este servidor directamente a Internet.
 
 ## Dropbox local
 
-La ubicación se configura sin fijar una ruta específica de un equipo:
+Es el flujo principal recomendado para el despliegue por VPN: la app corre en el PC anfitrión, los descargadores escriben en una carpeta local de Dropbox Desktop y Dropbox sincroniza.
+
+Configuración recomendada:
 
 ```text
+INFONALIA_STORAGE_BACKEND=local
 INFONALIA_DROPBOX_ROOT=%USERPROFILE%\Dropbox\00000 LLANGON
+INFONALIA_DROPBOX_ENABLED=0
+INFONALIA_DROPBOX_DRY_RUN=1
 ```
 
 Si Dropbox se encuentra en otra unidad, debe indicarse en el `.env` local.
 
-## Dropbox API incremental
+Con este modo se conserva el comportamiento ya probado de los descargadores: si un fichero existe se omite, si falta se descarga, y no se duplica por reintentos normales.
 
-La integración API está desactivada por defecto y empieza siempre en dry-run:
+## Dropbox API incremental experimental
+
+La integración API queda aparcada para una fase futura. El código permanece disponible, pero no es el flujo recomendado ahora y está desactivado por defecto:
 
 ```text
 INFONALIA_STORAGE_BACKEND=local
@@ -61,7 +68,7 @@ INFONALIA_DROPBOX_REFRESH_TOKEN=
 INFONALIA_DROPBOX_NON_DESTRUCTIVE=1
 ```
 
-Para probar sin subir nada:
+Para una prueba futura sin subir nada:
 
 1. Configurar `INFONALIA_STORAGE_BACKEND=dropbox`.
 2. Mantener `INFONALIA_DOWNLOAD_STAGING_ROOT=.local_runtime/downloads` o apuntarlo a otra carpeta fuera de Dropbox Desktop.
@@ -82,7 +89,7 @@ La política Dropbox es incremental y no destructiva:
 - no se usa overwrite, update, delete, move destructivo ni autorename para documentos;
 - los manifests se guardan en `_manifests/` y pueden usar sufijo seguro para no sobrescribirse.
 
-Para volver a local basta con dejar `INFONALIA_STORAGE_BACKEND=local` o desactivar `INFONALIA_DROPBOX_ENABLED`.
+Para mantenerse en el flujo principal basta con dejar `INFONALIA_STORAGE_BACKEND=local` y `INFONALIA_DROPBOX_ENABLED=0`.
 
 ## Seguridad
 

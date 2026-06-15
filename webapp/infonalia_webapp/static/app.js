@@ -1906,12 +1906,15 @@ function renderStorageConfig() {
     return;
   }
   const warnings = storage.warnings || [];
+  const apiStatus = storage.dropbox_api_status === "experimental_enabled"
+    ? "experimental activo"
+    : "experimental desactivado";
   storageStatusBoard.innerHTML = `
-    <div class="storage-status-row"><span>Backend</span><strong>${escapeHtml(storageValue(storage.backend))}</strong></div>
-    <div class="storage-status-row"><span>Dropbox activo</span><strong>${escapeHtml(storageValue(storage.dropbox_enabled))}</strong></div>
-    <div class="storage-status-row"><span>Dry-run</span><strong>${escapeHtml(storageValue(storage.dry_run))}</strong></div>
-    <div class="storage-status-row"><span>Raíz remota</span><strong>${escapeHtml(storageValue(storage.root))}</strong></div>
-    <div class="storage-status-row"><span>Modo</span><strong>${escapeHtml(storageValue(storage.mode))}</strong></div>
+    <div class="storage-status-row"><span>Modo actual</span><strong>${escapeHtml(storageValue(storage.current_mode_label || storage.backend))}</strong></div>
+    <div class="storage-status-row"><span>Carpeta local</span><strong>${escapeHtml(storageValue(storage.local_download_root))}</strong></div>
+    <div class="storage-status-row"><span>Dropbox Desktop</span><strong>${escapeHtml(storage.dropbox_desktop_detected ? "detectado" : "no detectado")}</strong></div>
+    <div class="storage-status-row"><span>Dropbox API</span><strong>${escapeHtml(apiStatus)}</strong></div>
+    <div class="storage-status-row"><span>Raíz API remota</span><strong>${escapeHtml(storageValue(storage.root))}</strong></div>
     ${warnings.length ? `<div class="notification-warning">${warnings.map(escapeHtml).join("<br>")}</div>` : ""}
   `;
 }

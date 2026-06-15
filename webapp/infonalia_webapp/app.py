@@ -2028,7 +2028,18 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if not self.require_admin():
             return
         try:
-            self.send_json(storage_status_payload())
+            payload = storage_status_payload()
+            dropbox_root = find_dropbox_root()
+            local_download_root = dropbox_root or DOWNLOAD_ROOT
+            payload.update(
+                {
+                    "local_download_root": str(local_download_root),
+                    "dropbox_desktop_detected": bool(dropbox_root),
+                    "dropbox_desktop_root": str(dropbox_root) if dropbox_root else "",
+                    "local_flow_label": "Dropbox Desktop" if dropbox_root else "carpeta local interna",
+                }
+            )
+            self.send_json(payload)
         except StorageConfigurationError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 

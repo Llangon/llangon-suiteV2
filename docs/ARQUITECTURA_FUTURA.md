@@ -2371,6 +2371,8 @@ Relación con Bandeja Hoy:
 
 La integración Dropbox API queda conectada al flujo de descargas sin sustituir los descargadores existentes:
 
+Nota de estado: para el despliegue actual por VPN, el flujo principal es `local / Dropbox Desktop`. Dropbox API queda como experimental y desactivado por defecto.
+
 1. `POST /api/licitaciones/{id}/descargar` mantiene la ejecución local del descargador.
 2. Si el backend es `dropbox`, el descargador escribe en `INFONALIA_DOWNLOAD_STAGING_ROOT` y no en Dropbox Desktop.
 3. Se valida la carpeta local y se genera `.infonalia_manifest.json`.
@@ -2388,7 +2390,8 @@ La integración Dropbox API queda conectada al flujo de descargas sin sustituir 
 
 Configuración:
 
-- Dropbox API está desactivado por defecto: `INFONALIA_STORAGE_BACKEND=local`.
+- Flujo recomendado: `INFONALIA_STORAGE_BACKEND=local` y `INFONALIA_DROPBOX_ROOT` apuntando a Dropbox Desktop.
+- Dropbox API está desactivado por defecto y queda aparcado.
 - El staging local para Dropbox API usa `INFONALIA_DOWNLOAD_STAGING_ROOT=.local_runtime/downloads`.
 - El dry-run está activo por defecto: `INFONALIA_DROPBOX_DRY_RUN=1`.
 - La raíz remota se configura con `INFONALIA_DROPBOX_API_ROOT=/LlangonSuite`.

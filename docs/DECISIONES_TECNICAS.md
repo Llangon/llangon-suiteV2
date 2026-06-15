@@ -1058,6 +1058,8 @@ Consecuencias:
 
 Las descargas locales ya son seguras al reintentar: los descargadores omiten ficheros que existen y solo añaden novedades. Para trabajar en remoto hace falta una integración Dropbox API que replique esa política sin depender de Dropbox Desktop.
 
+Actualización operativa: como la app se ejecutará en un PC anfitrión accesible por VPN, el flujo principal vuelve a ser `local / Dropbox Desktop`. La API de Dropbox queda experimental y aparcada para una fase futura.
+
 Decisión:
 - crear `storage/dropbox_client.py` como cliente HTTP aislado, sin métodos públicos de delete, overwrite ni move destructivo;
 - crear `storage/dropbox_incremental.py` con `DropboxIncrementalStorage`;
@@ -1075,6 +1077,8 @@ Decisión:
 
 Consecuencias:
 - reejecutar una descarga sobre la misma licitación es idempotente y solo añade ficheros nuevos;
+- el modo recomendado actual es `INFONALIA_STORAGE_BACKEND=local` con `INFONALIA_DROPBOX_ROOT` apuntando a Dropbox Desktop;
+- Dropbox API no se prueba contra red real en esta fase;
 - si todo existía, el manifest marca `no_changes=true`;
 - los manifests Dropbox locales se guardan como `.infonalia_dropbox_manifest_*.json`;
 - en Dropbox real los manifests se suben a `_manifests/` sin sobrescribir;
