@@ -4,9 +4,25 @@ from collections.abc import Callable
 from typing import Any
 
 try:
+    from .licitacion_states import (
+        ESTADO_DESCARGAR_PARA_VER,
+        ESTADO_DESCARTADA,
+        ESTADO_ENVIADA_NURIA,
+        ESTADO_IMPORTADA,
+        ESTADO_PREPARAR_FICHA,
+        normalize_licitacion_estado,
+    )
     from .formatting import format_date_es, format_datetime_es
     from .normalization import clean_text
 except ImportError:
+    from licitacion_states import (
+        ESTADO_DESCARGAR_PARA_VER,
+        ESTADO_DESCARTADA,
+        ESTADO_ENVIADA_NURIA,
+        ESTADO_IMPORTADA,
+        ESTADO_PREPARAR_FICHA,
+        normalize_licitacion_estado,
+    )
     from formatting import format_date_es, format_datetime_es
     from normalization import clean_text
 
@@ -74,11 +90,18 @@ def refresh_day_status(conn: Any, dia_id: int, *, timestamp: str) -> None:
         """,
         (dia_id,),
     ).fetchall()
-    counts = {row["estado"]: row["total"] for row in rows}
+    counts: dict[str, int] = {}
+    for row in rows:
+        estado = normalize_licitacion_estado(row["estado"])
+        counts[estado] = counts.get(estado, 0) + int(row["total"] or 0)
     total = sum(counts.values())
-    pendientes = counts.get("Pendiente", 0)
-    pendientes_nuria = counts.get("Pendiente Nuria", 0)
-    decisiones_nuria = counts.get("Descartar", 0) + counts.get("Descargar", 0) + counts.get("Hacer", 0)
+    pendientes = counts.get(ESTADO_IMPORTADA, 0)
+    pendientes_nuria = counts.get(ESTADO_ENVIADA_NURIA, 0)
+    decisiones_nuria = (
+        counts.get(ESTADO_DESCARTADA, 0)
+        + counts.get(ESTADO_DESCARGAR_PARA_VER, 0)
+        + counts.get(ESTADO_PREPARAR_FICHA, 0)
+    )
     enviado_nuria_at = clean_text(row_value(day, "enviado_nuria_at"))
     reviewed_at = clean_text(row_value(day, "reviewed_at"))
     nuria_pending_update = is_nuria_update_pending(day)
@@ -116,10 +139,17 @@ def day_row_to_dict(conn: Any, row: Any) -> dict[str, object]:
         """,
         (row["id"],),
     ).fetchall()
-    counts = {count_row["estado"]: count_row["total"] for count_row in counts_rows}
+    counts: dict[str, int] = {}
+    for count_row in counts_rows:
+        estado = normalize_licitacion_estado(count_row["estado"])
+        counts[estado] = counts.get(estado, 0) + int(count_row["total"] or 0)
     total = sum(counts.values())
-    decisiones_nuria = counts.get("Descartar", 0) + counts.get("Descargar", 0) + counts.get("Hacer", 0)
-    nuria_total = counts.get("Pendiente Nuria", 0) + decisiones_nuria
+    decisiones_nuria = (
+        counts.get(ESTADO_DESCARTADA, 0)
+        + counts.get(ESTADO_DESCARGAR_PARA_VER, 0)
+        + counts.get(ESTADO_PREPARAR_FICHA, 0)
+    )
+    nuria_total = counts.get(ESTADO_ENVIADA_NURIA, 0) + decisiones_nuria
     nuria_pending_update = is_nuria_update_pending(row)
     return {
         "id": row["id"],
@@ -129,13 +159,13 @@ def day_row_to_dict(conn: Any, row: Any) -> dict[str, object]:
         "estado": row["estado"],
         "total": total,
         "total_nuria": nuria_total,
-        "pendientes": counts.get("Pendiente", 0),
-        "descartadas_mi": counts.get("Descartada por mí", 0),
-        "pendientes_nuria": counts.get("Pendiente Nuria", 0),
+        "pendientes": counts.get(ESTADO_IMPORTADA, 0),
+        "descartadas_mi": counts.get(ESTADO_DESCARTADA, 0),
+        "pendientes_nuria": counts.get(ESTADO_ENVIADA_NURIA, 0),
         "decisiones_nuria": decisiones_nuria,
-        "descartadas_nuria": counts.get("Descartar", 0),
-        "solo_descargar": counts.get("Descargar", 0),
-        "preparar_licitacion": counts.get("Hacer", 0),
+        "descartadas_nuria": counts.get(ESTADO_DESCARTADA, 0),
+        "solo_descargar": counts.get(ESTADO_DESCARGAR_PARA_VER, 0),
+        "preparar_licitacion": counts.get(ESTADO_PREPARAR_FICHA, 0),
         "descargadas": 0,
         "enviado_nuria_at": row_value(row, "enviado_nuria_at"),
         "fecha_envio_nuria": format_datetime_es(row_value(row, "enviado_nuria_at")) if row_has_key(row, "enviado_nuria_at") else "",

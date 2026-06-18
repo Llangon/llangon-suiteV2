@@ -6,30 +6,19 @@ from datetime import date, datetime, timedelta
 
 try:
     from ..actuaciones import ACTUACION_ESTADOS_ABIERTOS
+    from ..licitacion_states import is_agenda_licitacion_estado
     from ..normalization import clean_text
 except ImportError:
     from actuaciones import ACTUACION_ESTADOS_ABIERTOS
+    from licitacion_states import is_agenda_licitacion_estado
     from normalization import clean_text
 
 
-AGENDA_EVENTOS_ESTADOS_ABIERTOS = {"pendiente", "en_curso"}
-AGENDA_EVENTOS_ESTADOS_CERRADOS = {"cerrado", "cancelado"}
+AGENDA_EVENTOS_ESTADOS_ABIERTOS = {"pendiente", "en_curso", "preparado", "preparada"}
+AGENDA_EVENTOS_ESTADOS_CERRADOS = {"cerrado", "cerrada", "enviado", "enviada", "cancelado", "cancelada"}
 AGENDA_EVENTOS_ESTADOS = AGENDA_EVENTOS_ESTADOS_ABIERTOS | AGENDA_EVENTOS_ESTADOS_CERRADOS
 AGENDA_TYPE_FILTERS = {"all", "actuacion", "licitacion", "interno", "vencido", "sin_fecha"}
 AGENDA_VIEWS = {"day", "today", "week", "month", "all"}
-LICITACION_ESTADOS_OCULTOS_AGENDA = {
-    "descartada por mí",
-    "descartar",
-    "descartada",
-    "cancelada",
-    "cancelado",
-    "cerrada",
-    "cerrado",
-    "archivada",
-    "archivado",
-    "completada",
-    "completado",
-}
 WEEKDAYS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 MONTHS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 
@@ -122,7 +111,7 @@ def _actuacion_licitaciones(conn: sqlite3.Connection, actuacion_id: int) -> list
 
 
 def agenda_is_open_licitacion_estado(estado: object) -> bool:
-    return clean_text(estado).lower() not in LICITACION_ESTADOS_OCULTOS_AGENDA
+    return is_agenda_licitacion_estado(estado)
 
 
 def agenda_date_warnings(value: object, *, current: datetime | None = None, required: bool = False) -> list[str]:
@@ -253,7 +242,7 @@ def agenda_interno_events(conn: sqlite3.Connection, *, current: datetime) -> lis
         """
         SELECT id, titulo, descripcion, starts_at, estado
         FROM agenda_eventos
-        WHERE estado IN ('pendiente', 'en_curso')
+        WHERE estado IN ('pendiente', 'en_curso', 'preparado', 'preparada')
         ORDER BY starts_at ASC, id ASC
         """
     ).fetchall()

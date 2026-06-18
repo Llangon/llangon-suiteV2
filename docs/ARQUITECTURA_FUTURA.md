@@ -2371,7 +2371,7 @@ Relación con Bandeja Hoy:
 
 La integración Dropbox API queda conectada al flujo de descargas sin sustituir los descargadores existentes:
 
-Nota de estado: para el despliegue actual por VPN, el flujo principal es `local / Dropbox Desktop`. Dropbox API queda como experimental y desactivado por defecto.
+Nota de estado: para desarrollo y pruebas, el flujo principal es `local` contra la replica `C:\ReplicaDb`. Dropbox API queda como experimental y desactivado por defecto. Dropbox Desktop real no debe usarse para pruebas de monitor, marcadores, sincronizacion ni inventario.
 
 1. `POST /api/licitaciones/{id}/descargar` mantiene la ejecución local del descargador.
 2. Si el backend es `dropbox`, el descargador escribe en `INFONALIA_DOWNLOAD_STAGING_ROOT` y no en Dropbox Desktop.
@@ -2390,12 +2390,12 @@ Nota de estado: para el despliegue actual por VPN, el flujo principal es `local 
 
 Configuración:
 
-- Flujo recomendado: `INFONALIA_STORAGE_BACKEND=local` y `INFONALIA_DROPBOX_ROOT` apuntando a Dropbox Desktop.
+- Flujo recomendado de desarrollo: `INFONALIA_STORAGE_BACKEND=local` y `INFONALIA_DROPBOX_ROOT=C:\ReplicaDb`.
 - Dropbox API está desactivado por defecto y queda aparcado.
 - El staging local para Dropbox API usa `INFONALIA_DOWNLOAD_STAGING_ROOT=.local_runtime/downloads`.
 - El dry-run está activo por defecto: `INFONALIA_DROPBOX_DRY_RUN=1`.
 - La raíz remota se configura con `INFONALIA_DROPBOX_API_ROOT=/LlangonSuite`.
-- `INFONALIA_DROPBOX_ROOT` sigue reservado para la carpeta local de Dropbox Desktop.
+- `INFONALIA_DROPBOX_ROOT` representa la raiz local de documentos: en desarrollo es `C:\ReplicaDb`; solo en despliegue final puede volver a apuntar a Dropbox Desktop real.
 - Las credenciales se leen de `.env` y no se guardan en SQLite.
 
 Endpoints operativos:
@@ -2409,3 +2409,38 @@ Pendiente:
 - probar Dropbox real con una app restringida y carpeta de prueba;
 - decidir si más adelante se comparan tamaño o checksum para detectar contenido distinto con mismo nombre;
 - valorar streaming para ficheros muy grandes si se superan los tamaños habituales de licitación.
+
+## Agenda operativa, email e indicadores
+
+Agenda conserva la API de bandeja operativa, pero la UI principal queda en modo lista limpia:
+
+1. `GET /api/agenda/workbench` puede devolver `summary`, `sections` y `actuaciones_by_licitacion` para servicios internos.
+2. La pantalla Agenda no muestra contadores, bandeja ni actuaciones agrupadas por licitación.
+3. Las secciones internas mantienen prioridad fija:
+   vencidos abiertos, vencen hoy, próximos 7 días, sin fecha, licitaciones nuevas sin revisar y descargas fallidas.
+4. El resumen manual por email usa el mismo modelo que el futuro scheduler: principal/hoy y resto de semana hasta domingo.
+5. Si SMTP está desactivado o falta host, el endpoint devuelve error claro y no hace dry-run silencioso.
+6. `GET /api/licitaciones` acepta filtros de actuaciones, revisión, seguimiento, documentación y estado interno.
+7. El detalle de licitación devuelve actuaciones vinculadas, documentos locales, seguimiento, notas e histórico.
+
+Configuración email:
+
+- `INFONALIA_SMTP_ENABLED=0` por defecto.
+- `INFONALIA_AGENDA_EMAIL_TO` permite fallback cuando el usuario logueado no tiene email.
+- `INFONALIA_EMAIL_DRY_RUN` queda como ajuste de desarrollo; el botón principal no depende de él.
+- `INFONALIA_SMTP_HOST`, `INFONALIA_SMTP_PORT`, `INFONALIA_SMTP_USER`, `INFONALIA_SMTP_PASSWORD`, `INFONALIA_SMTP_FROM` y `INFONALIA_SMTP_USE_TLS` se documentan en `.env.example`.
+- La contraseña SMTP no se expone en configuración pública.
+
+El flujo recomendado de documentos no cambia: Dropbox local/Desktop con backend `local`. Dropbox API queda experimental y aparcado.
+
+## Seguimiento futuro de licitaciones
+
+La web prepara la estructura, pero no ejecuta el monitor:
+
+- campo `seguimiento_activo` por licitación;
+- notas y fechas de seguimiento;
+- tabla `licitacion_seguimiento_novedades`;
+- configuración global `INFONALIA_SEGUIMIENTO_EMAILS`;
+- sin destinatarios por licitación.
+
+El futuro script externo revisará solo licitaciones en seguimiento. Cuando detecte novedades, enviará un email individual por licitación afectada a los destinatarios globales.

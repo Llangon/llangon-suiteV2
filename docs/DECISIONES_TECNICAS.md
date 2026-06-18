@@ -1058,7 +1058,7 @@ Consecuencias:
 
 Las descargas locales ya son seguras al reintentar: los descargadores omiten ficheros que existen y solo añaden novedades. Para trabajar en remoto hace falta una integración Dropbox API que replique esa política sin depender de Dropbox Desktop.
 
-Actualización operativa: como la app se ejecutará en un PC anfitrión accesible por VPN, el flujo principal vuelve a ser `local / Dropbox Desktop`. La API de Dropbox queda experimental y aparcada para una fase futura.
+Actualización operativa: durante desarrollo y pruebas, el flujo principal vuelve a ser `local` contra la replica `C:\ReplicaDb`. La API de Dropbox queda experimental y aparcada para una fase futura. Dropbox Desktop real no debe usarse para monitor, marcadores, sincronización ni inventario en desarrollo.
 
 Decisión:
 - crear `storage/dropbox_client.py` como cliente HTTP aislado, sin métodos públicos de delete, overwrite ni move destructivo;
@@ -1077,10 +1077,56 @@ Decisión:
 
 Consecuencias:
 - reejecutar una descarga sobre la misma licitación es idempotente y solo añade ficheros nuevos;
-- el modo recomendado actual es `INFONALIA_STORAGE_BACKEND=local` con `INFONALIA_DROPBOX_ROOT` apuntando a Dropbox Desktop;
+- el modo recomendado actual de desarrollo es `INFONALIA_STORAGE_BACKEND=local` con `INFONALIA_DROPBOX_ROOT=C:\ReplicaDb`;
 - Dropbox API no se prueba contra red real en esta fase;
 - si todo existía, el manifest marca `no_changes=true`;
 - los manifests Dropbox locales se guardan como `.infonalia_dropbox_manifest_*.json`;
 - en Dropbox real los manifests se suben a `_manifests/` sin sobrescribir;
 - los tokens se leen de `.env`, no se devuelven al frontend y no se guardan en SQLite;
-- `INFONALIA_DROPBOX_ROOT` conserva el sentido de ruta local Dropbox Desktop, la raíz remota API usa `INFONALIA_DROPBOX_API_ROOT` y el staging local API usa `.local_runtime/downloads` por defecto.
+- `INFONALIA_DROPBOX_ROOT` conserva el sentido de raíz local de documentos: en desarrollo apunta a `C:\ReplicaDb`, en despliegue final puede apuntar a Dropbox Desktop real; la raíz remota API usa `INFONALIA_DROPBOX_API_ROOT` y el staging local API usa `.local_runtime/downloads` por defecto.
+
+## ADR-054 — Bandeja operativa, resumen email e indicadores de actuaciones
+
+La productividad diaria necesita una vista única para no perder plazos ni actuaciones abiertas.
+
+Decisión:
+- crear `GET /api/agenda/workbench` como resumen operativo encima de Agenda;
+- mantener `GET /api/agenda` para calendario/listado existente sin romper su contrato;
+- calcular la bandeja en `webapp/infonalia_webapp/agenda/workbench.py`;
+- ordenar prioridades como vencidos abiertos, vencen hoy, próximos 7 días, sin fecha, licitaciones nuevas y descargas fallidas;
+- ampliar el resumen por email para usar la bandeja operativa;
+- dejar `INFONALIA_EMAIL_DRY_RUN=1` y `INFONALIA_SMTP_ENABLED=0` por defecto;
+- añadir indicadores de actuaciones en licitaciones: abiertas, vencidas, sin fecha y próxima actuación;
+- añadir filtros `actuaciones=abiertas|vencidas|sin_fecha|sin_abiertas`;
+- exponer `GET /api/licitaciones/{id}/actuaciones` y devolver actuaciones vinculadas en el detalle de licitación.
+
+Reglas:
+- cerradas, canceladas, descartadas y borradas no cuentan como pendientes;
+- vencido abierto prevalece sobre el color por tipo;
+- los tests usan SMTP falso o dry-run y no envían correo real;
+- Dropbox API sigue aparcado; el flujo principal es Dropbox local/Desktop.
+
+Consecuencias:
+- `app.py` solo enruta y llama servicios;
+- la UI de Agenda sirve como bandeja diaria sin crear una pantalla adicional;
+- el listado de licitaciones permite localizar rápidamente expedientes con trabajo operativo abierto.
+
+## ADR-055 — Centro de licitaciones sin IA y seguimiento preparado
+
+Se aparca la IA en la interfaz principal. No se muestran botones de ficha IA, análisis IA ni vista preliminar IA, aunque el backend experimental puede quedar dormido para una fase futura.
+
+Decisión:
+- usar Licitaciones como centro de trabajo diario;
+- añadir `0008_licitaciones_center` con revisión, estado interno, notas, seguimiento e histórico;
+- preparar `licitacion_seguimiento_novedades` para el futuro monitor externo;
+- no guardar destinatarios por licitación;
+- configurar destinatarios globales futuros con `INFONALIA_SEGUIMIENTO_EMAILS`;
+- mantener Dropbox API aparcado y el flujo principal en Dropbox local/Desktop;
+- hacer que el botón manual de Agenda envíe correo real cuando SMTP está configurado;
+- devolver error claro si SMTP no está configurado;
+- reservar `dry_run=true` solo para pruebas explícitas.
+
+Regla futura:
+- el monitor se ejecutará como script externo de Windows;
+- si detecta novedades en 20 licitaciones, enviará 20 emails, uno por licitación;
+- todos los emails irán a destinatarios globales, no a emails configurados por expediente.

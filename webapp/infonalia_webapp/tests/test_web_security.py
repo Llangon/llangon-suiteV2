@@ -127,7 +127,7 @@ def test_private_app_escapes_dynamic_data_attributes() -> None:
     assert 'data-calendar-date="${escapeHtml(key)}"' in script
     assert 'data-id="${escapeHtml(item.id)}"' in script
     assert 'data-download-id="${escapeHtml(item.id)}"' in script
-    assert 'data-email-preview-id="${escapeHtml(item.id)}"' in script
+    assert 'data-toggle-reviewed="${escapeHtml(item.id)}"' in script
 
 
 def test_private_app_sanitizes_dynamic_css_class_tokens() -> None:
@@ -152,6 +152,159 @@ def test_agenda_layout_views_are_isolated() -> None:
     assert ".agenda-view-all .calendar-layout" in styles
     assert ".agenda-view-week .calendar-layout" in styles
     assert ".agenda-week-list-content" in styles
+
+
+def test_licitaciones_center_ui_is_simplified_and_has_detail_view() -> None:
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_ROOT / "styles.css").read_text(encoding="utf-8")
+
+    assert "Centro de licitaciones" in html
+    assert 'data-licitaciones-view="live"' in html
+    assert 'data-licitaciones-view="all"' in html
+    assert 'data-licitaciones-view="active"' not in html
+    assert 'id="summary" hidden' in html
+    assert 'id="licitacion-detail-dialog"' in html
+    assert "PRÓXIMOS MÓDULOS" not in html
+    assert "Clientes" not in html
+    assert "Requerimientos" not in html
+    assert 'data-open-licitacion-detail="${escapeHtml(item.id)}"' in script
+    assert "function renderLicitacionDetailView" in script
+    assert "Crear nueva actuación" in script
+    assert "@media print" in styles
+    assert ".detail-dialog[open]" in styles
+
+
+def test_dropbox_marker_followup_ui_has_no_manual_tracking_controls() -> None:
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="sync-dropbox-markers-button"' in html
+    assert "/api/storage/markers/sync" in script
+    assert "data-toggle-follow" not in script
+    assert "data-tracking-notes-for" not in script
+    assert "Marcar en seguimiento" not in script
+    assert "Dejar de seguir" not in script
+    assert "EnSeguimiento.llangon" not in script
+
+
+def test_licitacion_cards_and_detail_keep_hotfix_ux_noise_out() -> None:
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    card_render = script.split("function renderCard", 1)[1].split("function renderExpandedCard", 1)[0]
+    detail_render = script.split("function renderLicitacionDetailView", 1)[1].split("function renderLicitacionSummary", 1)[0]
+
+    assert "estadoLabel(item.estado)" in card_render
+    assert "dueText" in card_render
+    assert "province-chip" in card_render
+    assert "No revisada" not in card_render
+    assert "Revisada" not in card_render
+    assert "Nueva" not in card_render
+    assert "En seguimiento" not in card_render
+    assert "Documentación descargada" not in card_render
+    assert "Sin descargar" not in card_render
+    assert "Descarga fallida" not in card_render
+    assert "footer-state" not in card_render
+    assert "Ver detalles" not in card_render
+    assert 'isAdmin() ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""' in card_render
+    assert "card-side-id" in card_render
+    assert "ID ${escapeHtml(item.id)}" in card_render
+    assert "Duplicar" not in card_render
+    assert "Borrar" not in card_render
+    assert ">Abrir</button>" in card_render
+    assert "Crear nueva actuación" in card_render
+
+    assert "Notas internas" not in detail_render
+    assert "Histórico" not in detail_render
+    assert "Último inventario" not in detail_render
+    assert "document_summary" not in detail_render
+    assert "document_groups" not in detail_render
+    assert "renderLicitacionWorkFields" not in detail_render
+    assert "renderLicitacionHistory" not in detail_render
+
+
+def test_nuria_day_review_filter_defaults_to_not_discarded() -> None:
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert "__nuria_active" in script
+    assert "No descartadas" in script
+    assert "__nuria_all" in script
+    assert "Todas" in script
+    assert "__nuria_discarded" in script
+    assert "Descartadas" in script
+    assert 'params.set("nuria_filter", option.filter)' in script
+    assert 'if (diaId && isNuria()) stateFilter.value = "__nuria_active";' in script
+
+
+def test_agenda_pending_tasks_ui_is_admin_only_and_initial_route_by_role() -> None:
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert 'data-agenda-view="pending" data-admin-only hidden' in html
+    assert "Tareas pendientes" in html
+    assert "/api/agenda/pending-tasks" in script
+    assert "function showInitialView" in script
+    assert 'appState.agendaView = "pending";' in script
+    assert "showCalendarView();" in script
+    assert "showDaysView();" in script
+    assert "select data-pending-state" in script
+    assert "updatePendingTaskState" in script
+
+
+def test_monitor_history_ui_is_admin_only_and_inventory_ui_is_hidden() -> None:
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="monitor-button" class="nav-item" data-nav-section="monitor" data-admin-only hidden' in html
+    assert 'id="monitor-section" hidden' in html
+    assert 'id="monitor-task-type-filter"' in html
+    assert "Resumen agenda" in html
+    assert "Agenda diaria" in html
+    assert "Agenda semanal" in html
+    assert "Aviso 7 días" in html
+    assert "Aviso 3 días" in html
+    assert "Aviso mañana" in html
+    assert "Aviso hoy" in html
+    assert 'id="monitor-send-agenda-summary"' in html
+    assert 'id="monitor-send-agenda-daily"' in html
+    assert 'id="monitor-send-agenda-weekly"' in html
+    assert "Enviar resumen de agenda de prueba" in html
+    assert "Enviar agenda diaria de prueba" in html
+    assert "Enviar agenda semanal de prueba" in html
+    assert 'id="monitor-runs-board"' in html
+    assert 'id="monitor-run-detail"' in html
+    assert 'id="monitor-inventory-button"' not in html
+    assert "Inventariar carpetas" not in html
+    assert "/api/monitor/runs" in script
+    assert "function showMonitorView" in script
+    assert "monitorTaskTypeLabels" in script
+    assert 'params.set("task_type", monitorTaskTypeFilter.value)' in script
+    assert "Elementos procesados" in script
+    assert "function sendMonitorAgendaTask" in script
+    assert '"agenda_diaria"' in script
+    assert '"agenda_semanal"' in script
+    assert "aviso_vencimiento_7d" in script
+    assert "aviso_vencimiento_3d" in script
+    assert "aviso_vencimiento_1d" in script
+    assert "aviso_vencimiento_hoy" in script
+    assert "schedule_key" in script
+    assert "monitorInventoryButton" not in script
+    assert "Ficheros inventariados" not in script
+    assert "Sin documentación inventariada" not in script
+
+
+def test_new_licitacion_platform_capture_ui_exists_and_preserves_manual_values() -> None:
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="capture-platform-button"' in html
+    assert "Capturar XML" in html
+    assert 'id="capture-platform-result"' in html
+    assert "Pega la URL XML del pliego" in script
+    assert 'fetch("/api/licitaciones/capture"' in script
+    assert "profile_url: profileUrl" in script
+    assert "form.elements[target].value = value" in script
+    assert 'if (String(form.elements[target].value || "").trim())' in script
+    assert "campo ya tenía valor, no se ha sobrescrito" in script
 
 
 def test_private_app_has_no_obvious_html_injection_patterns() -> None:

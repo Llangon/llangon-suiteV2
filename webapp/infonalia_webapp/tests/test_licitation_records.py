@@ -32,7 +32,7 @@ def test_licitation_row_to_dict_detects_platform_and_normalizes_output_fields() 
             "plataforma": " ",
             "enlace_perfil": " https://contratacion.example/perfil ",
             "enlace_infonalia": " https://infonalia.example/item ",
-            "ruta_carpeta": " C:\\Dropbox\\00000 LLANGON\\2026\\EXP-7 ",
+            "ruta_carpeta": " C:\\ReplicaDb\\2026\\EXP-7 ",
         }
     )
 
@@ -48,7 +48,7 @@ def test_licitation_row_to_dict_detects_platform_and_normalizes_output_fields() 
     assert item["plataforma"] == "plataforma:https://contratacion.example/perfil"
     assert item["enlace_perfil"] == "url:https://contratacion.example/perfil"
     assert item["enlace_infonalia"] == "url:https://infonalia.example/item"
-    assert item["ruta_carpeta"] == "folder:C:\\Dropbox\\00000 LLANGON\\2026\\EXP-7"
+    assert item["ruta_carpeta"] == "folder:C:\\ReplicaDb\\2026\\EXP-7"
 
 
 def test_licitation_row_to_dict_keeps_existing_platform() -> None:

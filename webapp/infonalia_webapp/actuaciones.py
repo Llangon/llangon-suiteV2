@@ -24,8 +24,8 @@ ACTUACION_TIPOS = {
     "otro",
 }
 
-ACTUACION_ESTADOS_ABIERTOS = {"pendiente", "en_curso", "respondida"}
-ACTUACION_ESTADOS_CERRADOS = {"cerrada", "cancelada"}
+ACTUACION_ESTADOS_ABIERTOS = {"pendiente", "en_curso", "preparado", "preparada"}
+ACTUACION_ESTADOS_CERRADOS = {"respondida", "cerrada", "enviado", "enviada", "cancelado", "cancelada"}
 ACTUACION_ESTADOS = ACTUACION_ESTADOS_ABIERTOS | ACTUACION_ESTADOS_CERRADOS
 
 

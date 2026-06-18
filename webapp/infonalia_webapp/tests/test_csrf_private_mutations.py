@@ -12,8 +12,10 @@ from webapp.infonalia_webapp.tests.test_import_endpoints import (
 
 POST_CASES = [
     ("POST", "/api/licitaciones", "api_create_licitacion", ()),
+    ("POST", "/api/licitaciones/capture", "api_capture_licitacion", ()),
     ("POST", "/api/config/users", "api_create_user", ()),
     ("POST", "/api/config/test-smtp", "api_test_smtp", ()),
+    ("POST", "/api/storage/markers/sync", "api_storage_markers_sync", ()),
     ("POST", "/api/news", "api_create_news", ()),
     ("POST", "/api/import/msg", "api_import_msg", ()),
     ("POST", "/api/import/csv", "api_import_csv", ()),

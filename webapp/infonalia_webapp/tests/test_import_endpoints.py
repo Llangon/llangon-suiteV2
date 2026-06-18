@@ -158,12 +158,13 @@ def test_csv_import_endpoint_accepts_small_valid_csv_with_temp_db() -> None:
 
         with app.db_session() as conn:
             row = conn.execute(
-                "SELECT id, expediente, objeto, organismo FROM licitaciones WHERE expediente = ?",
+                "SELECT id, expediente, objeto, organismo, estado FROM licitaciones WHERE expediente = ?",
                 ("TEST-001",),
             ).fetchone()
 
         assert row["objeto"] == "Servicio ficticio"
         assert row["organismo"] == "Organismo ficticio"
+        assert row["estado"] == "Importada"
         runs = get_import_runs(app)
         assert len(runs) == 1
         assert runs[0]["source_name"] == "csv"

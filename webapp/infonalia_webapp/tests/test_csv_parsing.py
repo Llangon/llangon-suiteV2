@@ -40,12 +40,12 @@ def test_csv_alias_map_preserves_known_aliases() -> None:
 
 
 def test_normalize_estado_preserves_existing_labels() -> None:
-    assert normalize_estado("Descartada por mí") == "Descartada por mí"
-    assert normalize_estado("Pendiente Nuria") == "Pendiente Nuria"
-    assert normalize_estado("Solo descargar") == "Descargar"
-    assert normalize_estado("Hacer concurso") == "Hacer"
-    assert normalize_estado("No interesa") == "Descartar"
-    assert normalize_estado("") == "Pendiente"
+    assert normalize_estado("Descartada por mí") == "Descartada"
+    assert normalize_estado("Pendiente Nuria") == "Enviada a Nuria"
+    assert normalize_estado("Solo descargar") == "Descargar para ver"
+    assert normalize_estado("Hacer concurso") == "Preparar ficha"
+    assert normalize_estado("No interesa") == "Descartada"
+    assert normalize_estado("") == "Importada"
 
 
 def test_read_csv_rows_selects_best_header_row() -> None:
@@ -91,4 +91,4 @@ def test_build_payload_from_csv_row_preserves_current_transformations() -> None:
     assert payload["hora_limite"] == "09:05"
     assert payload["enlace_perfil"] == "https://contrataciondelestado.es/wps"
     assert payload["plataforma"] == "PLACE"
-    assert payload["estado"] == "Descargar"
+    assert payload["estado"] == "Importada"

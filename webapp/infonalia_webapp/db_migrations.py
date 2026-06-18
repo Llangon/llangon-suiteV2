@@ -5,6 +5,32 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
+try:
+    from .licitacion_states import (
+        ESTADO_DESCARGAR_PARA_VER,
+        ESTADO_DESCARTADA,
+        ESTADO_ENVIADA_NURIA,
+        ESTADO_IMPORTADA,
+        ESTADO_OFERTA_ENVIADA,
+        ESTADO_PREPARADA,
+        ESTADO_PREPARAR_FICHA,
+    )
+except ImportError:
+    from licitacion_states import (
+        ESTADO_DESCARGAR_PARA_VER,
+        ESTADO_DESCARTADA,
+        ESTADO_ENVIADA_NURIA,
+        ESTADO_IMPORTADA,
+        ESTADO_OFERTA_ENVIADA,
+        ESTADO_PREPARADA,
+        ESTADO_PREPARAR_FICHA,
+    )
+
+try:
+    from .monitor.repository import ensure_monitor_schema as _ensure_monitor_schema
+except ImportError:
+    from monitor.repository import ensure_monitor_schema as _ensure_monitor_schema
+
 
 MIGRATIONS_TABLE = "schema_migrations"
 
@@ -26,6 +52,10 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
         (name,),
     ).fetchone()
     return row is not None
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(row[1] == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
 
 
 def _baseline_schema(_: sqlite3.Connection) -> None:
@@ -352,6 +382,147 @@ def _storage_uploads_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_storage_uploads_created ON storage_uploads(created_at)")
 
 
+def _licitaciones_center_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "licitaciones"):
+        conn.execute(
+            """
+            CREATE TABLE licitaciones (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                expediente TEXT NOT NULL DEFAULT '',
+                estado TEXT NOT NULL DEFAULT 'Importada',
+                created_at TEXT,
+                updated_at TEXT
+            )
+            """
+        )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(licitaciones)")}
+    additions = {
+        "reviewed_at": "TEXT",
+        "reviewed_by": "TEXT",
+        "estado_interno": "TEXT NOT NULL DEFAULT 'Nueva'",
+        "notas_internas": "TEXT",
+        "seguimiento_activo": "INTEGER NOT NULL DEFAULT 0",
+        "seguimiento_desde": "TEXT",
+        "seguimiento_ultimo_check": "TEXT",
+        "seguimiento_ultima_novedad": "TEXT",
+        "seguimiento_notas": "TEXT",
+    }
+    for column, definition in additions.items():
+        if column not in columns:
+            conn.execute(f"ALTER TABLE licitaciones ADD COLUMN {column} {definition}")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS licitacion_historial (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            licitacion_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            old_value TEXT,
+            new_value TEXT,
+            user_id TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (licitacion_id) REFERENCES licitaciones(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS licitacion_seguimiento_novedades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            licitacion_id INTEGER NOT NULL,
+            detected_at TEXT NOT NULL,
+            source TEXT,
+            title TEXT NOT NULL,
+            summary TEXT,
+            change_type TEXT,
+            file_name TEXT,
+            file_path TEXT,
+            status TEXT NOT NULL DEFAULT 'nueva',
+            raw_data_json TEXT,
+            FOREIGN KEY (licitacion_id) REFERENCES licitaciones(id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_licitaciones_reviewed ON licitaciones(reviewed_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_licitaciones_estado_interno ON licitaciones(estado_interno)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_licitaciones_seguimiento ON licitaciones(seguimiento_activo)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_licitacion_historial_licitacion ON licitacion_historial(licitacion_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_seguimiento_novedades_licitacion ON licitacion_seguimiento_novedades(licitacion_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_seguimiento_novedades_detected ON licitacion_seguimiento_novedades(detected_at)"
+    )
+
+
+def _normalize_licitacion_states(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "licitaciones") or not _column_exists(conn, "licitaciones", "estado"):
+        return
+    mappings = {
+        "": ESTADO_IMPORTADA,
+        "Pendiente": ESTADO_IMPORTADA,
+        "Importado": ESTADO_IMPORTADA,
+        "Descartada por mí": ESTADO_DESCARTADA,
+        "Descartada interna": ESTADO_DESCARTADA,
+        "Descartar": ESTADO_DESCARTADA,
+        "Pendiente Nuria": ESTADO_ENVIADA_NURIA,
+        "Enviada Nuria": ESTADO_ENVIADA_NURIA,
+        "Descargar": ESTADO_DESCARGAR_PARA_VER,
+        "Solo descargar": ESTADO_DESCARGAR_PARA_VER,
+        "Hacer": ESTADO_PREPARAR_FICHA,
+        "Hacer concurso": ESTADO_PREPARAR_FICHA,
+        "Preparar licitación": ESTADO_PREPARAR_FICHA,
+        "Presentada": ESTADO_OFERTA_ENVIADA,
+    }
+    for old, new in mappings.items():
+        conn.execute(
+            "UPDATE licitaciones SET estado = ? WHERE COALESCE(estado, '') = ?",
+            (new, old),
+        )
+    conn.execute(
+        """
+        UPDATE licitaciones
+        SET estado = ?
+        WHERE estado NOT IN (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            ESTADO_IMPORTADA,
+            ESTADO_IMPORTADA,
+            ESTADO_DESCARTADA,
+            ESTADO_ENVIADA_NURIA,
+            ESTADO_DESCARGAR_PARA_VER,
+            ESTADO_PREPARAR_FICHA,
+            ESTADO_PREPARADA,
+            ESTADO_OFERTA_ENVIADA,
+        ),
+    )
+
+
+def _licitaciones_marker_cache_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "licitaciones"):
+        return
+    additions = {
+        "seguimiento_ultima_sync": "TEXT",
+        "seguimiento_marker_path": "TEXT",
+        "seguimiento_marker_warning": "TEXT",
+    }
+    for column, definition in additions.items():
+        if not _column_exists(conn, "licitaciones", column):
+            conn.execute(f"ALTER TABLE licitaciones ADD COLUMN {column} {definition}")
+
+
+def _monitor_v0_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "licitaciones"):
+        return
+    _ensure_monitor_schema(conn)
+
+
+def _monitor_inventory_v05_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "licitaciones"):
+        return
+    _ensure_monitor_schema(conn)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version="0001_baseline_schema",
@@ -387,6 +558,31 @@ MIGRATIONS: tuple[Migration, ...] = (
         version="0007_storage_uploads",
         description="Auditoria de almacenamiento local y Dropbox",
         apply=_storage_uploads_schema,
+    ),
+    Migration(
+        version="0008_licitaciones_center",
+        description="Campos de trabajo, seguimiento e historial para licitaciones",
+        apply=_licitaciones_center_schema,
+    ),
+    Migration(
+        version="0009_licitaciones_estados_operativos",
+        description="Normalizacion de estados operativos de licitaciones",
+        apply=_normalize_licitacion_states,
+    ),
+    Migration(
+        version="0010_licitaciones_seguimiento_markers",
+        description="Cache derivada de marcadores Dropbox para seguimiento",
+        apply=_licitaciones_marker_cache_schema,
+    ),
+    Migration(
+        version="0011_monitor_licitaciones_v0",
+        description="Monitor V0 local con runs e inventario de ficheros",
+        apply=_monitor_v0_schema,
+    ),
+    Migration(
+        version="0012_monitor_inventory_v05",
+        description="Clasificacion documental del inventario Monitor V0.5",
+        apply=_monitor_inventory_v05_schema,
     ),
 )
 

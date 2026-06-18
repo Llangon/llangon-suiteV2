@@ -59,6 +59,11 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
         "0005_actuaciones_multilicitacion",
         "0006_agenda_eventos",
         "0007_storage_uploads",
+        "0008_licitaciones_center",
+        "0009_licitaciones_estados_operativos",
+        "0010_licitaciones_seguimiento_markers",
+        "0011_monitor_licitaciones_v0",
+        "0012_monitor_inventory_v05",
     ]
     assert table_exists(conn, MIGRATIONS_TABLE)
     rows = conn.execute(
@@ -100,6 +105,31 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
             "Auditoria de almacenamiento local y Dropbox",
             "2026-06-12T10:00:00",
         ),
+        (
+            "0008_licitaciones_center",
+            "Campos de trabajo, seguimiento e historial para licitaciones",
+            "2026-06-12T10:00:00",
+        ),
+        (
+            "0009_licitaciones_estados_operativos",
+            "Normalizacion de estados operativos de licitaciones",
+            "2026-06-12T10:00:00",
+        ),
+        (
+            "0010_licitaciones_seguimiento_markers",
+            "Cache derivada de marcadores Dropbox para seguimiento",
+            "2026-06-12T10:00:00",
+        ),
+        (
+            "0011_monitor_licitaciones_v0",
+            "Monitor V0 local con runs e inventario de ficheros",
+            "2026-06-12T10:00:00",
+        ),
+        (
+            "0012_monitor_inventory_v05",
+            "Clasificacion documental del inventario Monitor V0.5",
+            "2026-06-12T10:00:00",
+        ),
     ]
     assert table_exists(conn, "download_jobs")
     assert table_exists(conn, "import_runs")
@@ -109,7 +139,26 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
     assert table_exists(conn, "actuacion_historial")
     assert table_exists(conn, "agenda_eventos")
     assert table_exists(conn, "storage_uploads")
+    assert table_exists(conn, "licitacion_historial")
+    assert table_exists(conn, "licitacion_seguimiento_novedades")
+    assert table_exists(conn, "monitor_runs")
+    assert table_exists(conn, "licitacion_file_inventory")
+    assert table_exists(conn, "monitor_vencimiento_alerts")
     assert not table_exists(conn, "licitacion_actuaciones")
+    monitor_columns = {row[1] for row in conn.execute("PRAGMA table_info(monitor_runs)").fetchall()}
+    assert {
+        "task_type",
+        "schedule_key",
+        "processed_items_count",
+        "folders_checked_count",
+        "folders_repaired_count",
+        "folders_broken_count",
+        "platforms_checked_count",
+        "changes_detected_count",
+        "emails_prepared_count",
+        "emails_sent_count",
+        "details_json",
+    } <= monitor_columns
 
 
 def test_run_migrations_enables_foreign_key_enforcement() -> None:
@@ -133,6 +182,11 @@ def test_run_migrations_is_idempotent() -> None:
         "0005_actuaciones_multilicitacion",
         "0006_agenda_eventos",
         "0007_storage_uploads",
+        "0008_licitaciones_center",
+        "0009_licitaciones_estados_operativos",
+        "0010_licitaciones_seguimiento_markers",
+        "0011_monitor_licitaciones_v0",
+        "0012_monitor_inventory_v05",
     ]
     assert run_migrations(conn, now=lambda: "2026-06-12T10:05:00") == []
 
@@ -145,6 +199,11 @@ def test_run_migrations_is_idempotent() -> None:
         ("0005_actuaciones_multilicitacion", "2026-06-12T10:00:00"),
         ("0006_agenda_eventos", "2026-06-12T10:00:00"),
         ("0007_storage_uploads", "2026-06-12T10:00:00"),
+        ("0008_licitaciones_center", "2026-06-12T10:00:00"),
+        ("0009_licitaciones_estados_operativos", "2026-06-12T10:00:00"),
+        ("0010_licitaciones_seguimiento_markers", "2026-06-12T10:00:00"),
+        ("0011_monitor_licitaciones_v0", "2026-06-12T10:00:00"),
+        ("0012_monitor_inventory_v05", "2026-06-12T10:00:00"),
     ]
 
 
@@ -456,6 +515,85 @@ def test_storage_uploads_migration_schema_is_idempotent() -> None:
         "idx_storage_uploads_backend",
         "idx_storage_uploads_created",
     } <= indexes
+
+
+def test_licitaciones_center_migration_prepares_followup_without_per_licitacion_recipients() -> None:
+    conn = sqlite3.connect(":memory:")
+
+    run_migrations(conn, now=lambda: "2026-06-12T10:00:00")
+    run_migrations(conn, now=lambda: "2026-06-12T10:05:00")
+
+    licitacion_columns = {
+        row[1]: row[2]
+        for row in conn.execute("PRAGMA table_info(licitaciones)").fetchall()
+    }
+    assert {
+        "reviewed_at",
+        "reviewed_by",
+        "estado_interno",
+        "notas_internas",
+        "seguimiento_activo",
+        "seguimiento_desde",
+        "seguimiento_ultimo_check",
+        "seguimiento_ultima_novedad",
+        "seguimiento_notas",
+        "seguimiento_ultima_sync",
+        "seguimiento_marker_path",
+        "seguimiento_marker_warning",
+    } <= set(licitacion_columns)
+
+    novedades_columns = {
+        row[1]: row[2]
+        for row in conn.execute("PRAGMA table_info(licitacion_seguimiento_novedades)").fetchall()
+    }
+    assert novedades_columns == {
+        "id": "INTEGER",
+        "licitacion_id": "INTEGER",
+        "detected_at": "TEXT",
+        "source": "TEXT",
+        "title": "TEXT",
+        "summary": "TEXT",
+        "change_type": "TEXT",
+        "file_name": "TEXT",
+        "file_path": "TEXT",
+        "status": "TEXT",
+        "raw_data_json": "TEXT",
+    }
+    assert not any("email" in column.lower() or "recipient" in column.lower() for column in novedades_columns)
+
+
+def test_licitaciones_state_migration_normalizes_old_labels() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+
+    run_migrations(conn, now=lambda: "2026-06-12T10:00:00")
+    conn.executemany(
+        "INSERT INTO licitaciones (expediente, estado) VALUES (?, ?)",
+        [
+            ("OLD-PENDIENTE", "Pendiente"),
+            ("OLD-NURIA", "Pendiente Nuria"),
+            ("OLD-DESCARGAR", "Descargar"),
+            ("OLD-HACER", "Hacer"),
+            ("OLD-DESCARTAR", "Descartar"),
+            ("OLD-PRESENTADA", "Presentada"),
+        ],
+    )
+    migration = [item for item in MIGRATIONS if item.version == "0009_licitaciones_estados_operativos"][0]
+
+    migration.apply(conn)
+
+    states = {
+        row["expediente"]: row["estado"]
+        for row in conn.execute("SELECT expediente, estado FROM licitaciones")
+    }
+    assert states == {
+        "OLD-PENDIENTE": "Importada",
+        "OLD-NURIA": "Enviada a Nuria",
+        "OLD-DESCARGAR": "Descargar para ver",
+        "OLD-HACER": "Preparar ficha",
+        "OLD-DESCARTAR": "Descartada",
+        "OLD-PRESENTADA": "Oferta enviada",
+    }
 
 
 def test_init_db_runs_migrations_on_temporary_database_only() -> None:

@@ -209,8 +209,12 @@ def test_public_settings_payload_preserves_current_public_shape() -> None:
         "smtp_port": "2525",
         "smtp_user": "user",
         "smtp_from": "",
+        "smtp_enabled": "0",
         "smtp_tls": "1",
         "smtp_ssl": "0",
+        "email_dry_run": "1",
+        "agenda_email_to": "",
+        "seguimiento_emails": "",
         "smtp_password_set": True,
     }
 
@@ -228,9 +232,13 @@ def test_config_payload_combines_users_and_public_settings_without_password() ->
             "smtp_port": "587",
             "smtp_user": "",
             "smtp_from": "",
+            "smtp_enabled": "0",
             "smtp_tls": "1",
-            "smtp_ssl": "0",
-            "smtp_password_set": False,
+                "smtp_ssl": "0",
+                "email_dry_run": "1",
+                "agenda_email_to": "",
+                "seguimiento_emails": "",
+                "smtp_password_set": False,
         },
     }
 

@@ -6,9 +6,11 @@ import re
 import unicodedata
 
 try:
+    from .licitacion_states import ESTADO_IMPORTADA, normalize_licitacion_estado
     from .normalization import clean_text, parse_date_value, parse_money, parse_time_value
     from .url_helpers import detectar_plataforma, normalize_url
 except ImportError:
+    from licitacion_states import ESTADO_IMPORTADA, normalize_licitacion_estado
     from normalization import clean_text, parse_date_value, parse_money, parse_time_value
     from url_helpers import detectar_plataforma, normalize_url
 
@@ -108,18 +110,7 @@ def row_value(row: dict[str, str], mapping: dict[str, str], field: str) -> str:
 
 
 def normalize_estado(value: object) -> str:
-    text = normalize_key(value)
-    if text in {"descartadapormi", "descartadainterna"}:
-        return "Descartada por mí"
-    if text in {"pendientenuria", "enviadanuria"}:
-        return "Pendiente Nuria"
-    if text in {"solodescargar", "solodescarga", "descargar", "descargada", "descargado"}:
-        return "Descargar"
-    if text in {"hacer", "hacerconcurso", "concurso"}:
-        return "Hacer"
-    if text in {"no", "nointeresa", "descartar", "descartada"}:
-        return "Descartar"
-    return "Pendiente"
+    return normalize_licitacion_estado(value)
 
 
 def decode_csv_bytes(content: bytes) -> str:
@@ -186,7 +177,7 @@ def build_payload_from_csv_row(row: dict[str, str], mapping: dict[str, str]) -> 
         "plataforma": plataforma,
         "enlace_perfil": enlace_perfil,
         "enlace_infonalia": enlace_infonalia,
-        "estado": normalize_estado(row_value(row, mapping, "estado")),
+        "estado": ESTADO_IMPORTADA,
         "comentario": row_value(row, mapping, "comentario"),
         "ruta_carpeta": row_value(row, mapping, "ruta_carpeta"),
     }

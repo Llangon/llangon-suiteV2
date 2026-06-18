@@ -71,6 +71,27 @@ INFONALIA_ENABLE_ADMIN_ALIAS=0
 
 Después puede iniciarse manualmente con `python app.py`. No usar datos reales, descargas ni acceso de red hasta validar la configuración local.
 
+## Agenda operativa y email
+
+La pantalla Agenda usa listas limpias por día, semana, calendario mensual y vista completa. La bandeja operativa queda disponible para servicios internos, pero no se muestra como bloque principal.
+
+El resumen por email se lanza manualmente desde Agenda. Si SMTP está configurado, el botón envía correo real al usuario logueado o al fallback `INFONALIA_AGENDA_EMAIL_TO`. Si SMTP no está configurado, devuelve un error claro y no hace dry-run silencioso.
+
+```text
+INFONALIA_SMTP_ENABLED=1
+INFONALIA_AGENDA_EMAIL_TO=usuario@ejemplo.es
+```
+
+`dry_run=true` queda reservado para pruebas/desarrollo del endpoint. No se guardan secretos en Git.
+
+El flujo de documentos recomendado sigue siendo Dropbox local/Desktop con `INFONALIA_STORAGE_BACKEND=local`; Dropbox API queda experimental y desactivado.
+
+## Licitaciones y seguimiento
+
+La pantalla Licitaciones es el centro de trabajo diario. Cada expediente puede marcarse como revisado, tener estado interno, notas internas, actuaciones vinculadas y seguimiento activo. El seguimiento automático real queda preparado, pero no implementado: el futuro monitor será un script externo de Windows y enviará un email por cada licitación con novedades a los destinatarios globales de `INFONALIA_SEGUIMIENTO_EMAILS`.
+
+La IA queda aparcada: no se muestra ningún botón de ficha, análisis o resumen IA en la interfaz principal.
+
 ## Orden de lectura
 
 1. `README.md`

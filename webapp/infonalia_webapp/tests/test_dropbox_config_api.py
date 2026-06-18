@@ -113,11 +113,11 @@ def test_storage_status_api_requires_admin_and_exposes_no_secrets(monkeypatch) -
 
 def test_storage_status_api_shows_local_dropbox_desktop_as_main_flow(monkeypatch, tmp_path: Path) -> None:
     app = load_app_module()
-    dropbox_root = tmp_path / "Dropbox" / "00000 LLANGON"
-    dropbox_root.mkdir(parents=True)
+    replica_root = tmp_path / "ReplicaDb"
+    replica_root.mkdir(parents=True)
     monkeypatch.setenv("INFONALIA_STORAGE_BACKEND", "local")
     monkeypatch.setenv("INFONALIA_DROPBOX_ENABLED", "0")
-    monkeypatch.setattr(app, "find_dropbox_root", lambda: dropbox_root)
+    monkeypatch.setattr(app, "find_dropbox_root", lambda: replica_root)
     handler = make_download_handler(app, path="/api/storage/status")
 
     handler.do_GET()
@@ -128,9 +128,21 @@ def test_storage_status_api_shows_local_dropbox_desktop_as_main_flow(monkeypatch
     assert payload["current_mode_label"] == "local / Dropbox Desktop"
     assert payload["local_flow_label"] == "Dropbox Desktop"
     assert payload["dropbox_desktop_detected"] is True
-    assert payload["dropbox_desktop_root"] == str(dropbox_root)
-    assert payload["local_download_root"] == str(dropbox_root)
+    assert payload["dropbox_desktop_root"] == str(replica_root)
+    assert payload["local_download_root"] == str(replica_root)
     assert payload["dropbox_api_status"] == "experimental_disabled"
+
+
+def test_configured_dropbox_root_never_falls_back_to_real_dropbox(monkeypatch, tmp_path: Path) -> None:
+    app = load_app_module()
+    replica_root = tmp_path / "ReplicaDb"
+    monkeypatch.setenv("INFONALIA_DROPBOX_ROOT", str(replica_root))
+
+    assert app.find_dropbox_root() is None
+
+    replica_root.mkdir()
+
+    assert app.find_dropbox_root() == replica_root
 
 
 def test_storage_dropbox_posts_require_csrf_before_running(monkeypatch) -> None:

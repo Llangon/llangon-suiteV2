@@ -63,7 +63,7 @@ def insert_licitacion(app: ModuleType, dia_id: int, expediente: str) -> int:
             )
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (dia_id, "2026-06-14", expediente, "Servicio ficticio", "Pendiente", timestamp, timestamp),
+            (dia_id, "2026-06-14", expediente, "Servicio ficticio", "Importada", timestamp, timestamp),
         )
         return int(cur.lastrowid)
 

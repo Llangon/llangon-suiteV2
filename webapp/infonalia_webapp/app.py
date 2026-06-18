@@ -131,6 +131,29 @@ except ImportError:
     from url_helpers import detectar_plataforma, normalize_url, should_update_url
 
 try:
+    from .licitacion_capture import CaptureError, capture_licitacion_from_url
+except ImportError:
+    from licitacion_capture import CaptureError, capture_licitacion_from_url
+
+try:
+    from .licitacion_states import (
+        ADMIN_REVIEW_STATES,
+        AGENDA_LICITACION_STATES,
+        ESTADO_DESCARGAR_PARA_VER,
+        ESTADO_DESCARTADA,
+        ESTADO_ENVIADA_NURIA,
+        ESTADO_IMPORTADA,
+        ESTADO_PREPARADA,
+        ESTADO_PREPARAR_FICHA,
+        ESTADOS_ORDEN,
+        ESTADOS_VALIDOS,
+        ESTADO_LABELS,
+        NURIA_DEFAULT_REVIEW_STATES,
+        NURIA_DISCARDED_STATES,
+        NURIA_REVIEW_STATES,
+        NURIA_VISIBLE_STATES,
+        normalize_licitacion_estado,
+    )
     from .csv_parsing import (
         CSV_ALIASES,
         build_payload_from_csv_row,
@@ -142,6 +165,24 @@ try:
         row_value,
     )
 except ImportError:
+    from licitacion_states import (
+        ADMIN_REVIEW_STATES,
+        AGENDA_LICITACION_STATES,
+        ESTADO_DESCARGAR_PARA_VER,
+        ESTADO_DESCARTADA,
+        ESTADO_ENVIADA_NURIA,
+        ESTADO_IMPORTADA,
+        ESTADO_PREPARADA,
+        ESTADO_PREPARAR_FICHA,
+        ESTADOS_ORDEN,
+        ESTADOS_VALIDOS,
+        ESTADO_LABELS,
+        NURIA_DEFAULT_REVIEW_STATES,
+        NURIA_DISCARDED_STATES,
+        NURIA_REVIEW_STATES,
+        NURIA_VISIBLE_STATES,
+        normalize_licitacion_estado,
+    )
     from csv_parsing import (
         CSV_ALIASES,
         build_payload_from_csv_row,
@@ -296,7 +337,50 @@ except ImportError:
     from db_migrations import enable_foreign_keys, run_migrations
 
 try:
-    from .agenda.email_summary import build_agenda_email_html, build_agenda_email_summary
+    from .seguimiento_markers import (
+        ensure_id_marker,
+        get_marker_status_for_licitacion,
+        marker_status_for_folder,
+        monitor_year_bounds,
+        sync_marker_paths,
+    )
+except ImportError:
+    from seguimiento_markers import (
+        ensure_id_marker,
+        get_marker_status_for_licitacion,
+        marker_status_for_folder,
+        monitor_year_bounds,
+        sync_marker_paths,
+    )
+
+try:
+    from .monitor.service import MonitorError, run_automation_task, run_monitor
+    from .monitor.repository import ensure_monitor_schema, get_monitor_run, list_monitor_runs
+except ImportError:
+    from monitor.service import MonitorError, run_automation_task, run_monitor
+    from monitor.repository import ensure_monitor_schema, get_monitor_run, list_monitor_runs
+
+try:
+    from .actuacion_indicators import (
+        apply_licitacion_actuaciones_filter,
+        fetch_licitacion_actuacion_indicators,
+        list_licitacion_actuaciones,
+    )
+    from .licitacion_center import (
+        ESTADOS_INTERNOS,
+        build_licitacion_center_detail,
+        center_update_payload,
+        fetch_licitacion_download_indicators,
+        record_licitacion_history,
+    )
+    from .agenda.email_summary import (
+        build_agenda_email_html,
+        build_agenda_email_summary,
+        build_operational_email_html,
+        build_operational_email_payload,
+        build_operational_email_subject,
+        build_operational_email_text,
+    )
     from .agenda.service import (
         build_agenda_events,
         build_agenda_response,
@@ -304,8 +388,29 @@ try:
         set_agenda_evento_estado,
         update_agenda_evento,
     )
+    from .agenda.pending_tasks import build_pending_tasks_response
+    from .agenda.workbench import build_agenda_workbench
 except ImportError:
-    from agenda.email_summary import build_agenda_email_html, build_agenda_email_summary
+    from actuacion_indicators import (
+        apply_licitacion_actuaciones_filter,
+        fetch_licitacion_actuacion_indicators,
+        list_licitacion_actuaciones,
+    )
+    from licitacion_center import (
+        ESTADOS_INTERNOS,
+        build_licitacion_center_detail,
+        center_update_payload,
+        fetch_licitacion_download_indicators,
+        record_licitacion_history,
+    )
+    from agenda.email_summary import (
+        build_agenda_email_html,
+        build_agenda_email_summary,
+        build_operational_email_html,
+        build_operational_email_payload,
+        build_operational_email_subject,
+        build_operational_email_text,
+    )
     from agenda.service import (
         build_agenda_events,
         build_agenda_response,
@@ -313,6 +418,8 @@ except ImportError:
         set_agenda_evento_estado,
         update_agenda_evento,
     )
+    from agenda.pending_tasks import build_pending_tasks_response
+    from agenda.workbench import build_agenda_workbench
 
 try:
     from .local_storage import LocalStorageError, write_local_manifest
@@ -455,7 +562,17 @@ SMTP_USER = os.environ.get("INFONALIA_SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("INFONALIA_SMTP_PASSWORD", "")
 SMTP_FROM = os.environ.get("INFONALIA_SMTP_FROM", SMTP_USER or ADMIN_EMAIL or REVIEWER_EMAIL)
 SMTP_USE_SSL = os.environ.get("INFONALIA_SMTP_SSL", "0") == "1"
-SMTP_USE_TLS = os.environ.get("INFONALIA_SMTP_TLS", "1") != "0"
+SMTP_ENABLED = os.environ.get("INFONALIA_SMTP_ENABLED", "0") == "1"
+SMTP_USE_TLS = os.environ.get("INFONALIA_SMTP_USE_TLS", os.environ.get("INFONALIA_SMTP_TLS", "1")) != "0"
+EMAIL_DRY_RUN = os.environ.get("INFONALIA_EMAIL_DRY_RUN", "1") != "0"
+AGENDA_EMAIL_TO = os.environ.get("INFONALIA_AGENDA_EMAIL_TO", "").strip()
+SEGUIMIENTO_EMAILS = os.environ.get("INFONALIA_SEGUIMIENTO_EMAILS", "").strip()
+MONITOR_TEST_EMAIL = (
+    os.environ.get("MONITOR_TEST_EMAIL")
+    or os.environ.get("INFONALIA_MONITOR_TEST_EMAIL")
+    or ""
+).strip()
+MONITOR_YEAR_MIN, MONITOR_YEAR_MAX = monitor_year_bounds()
 COOKIE_SECURE = os.environ.get("INFONALIA_COOKIE_SECURE", "0") == "1"
 SESSION_COOKIE = "infonalia_session"
 SESSION_MAX_AGE_SECONDS = 60 * 60 * 10
@@ -469,28 +586,10 @@ LOGIN_RATE_LIMITER = LoginRateLimiter(
 )
 
 
-ESTADOS_ORDEN = [
-    "Pendiente",
-    "Descartada por mí",
-    "Pendiente Nuria",
-    "Descartar",
-    "Descargar",
-    "Hacer",
-]
-ESTADOS_VALIDOS = set(ESTADOS_ORDEN)
-NURIA_ESTADOS = ["Pendiente Nuria", "Descartar", "Descargar", "Hacer"]
-NURIA_ESTADOS_VALIDOS = set(NURIA_ESTADOS)
-NURIA_LICITACIONES_ESTADOS = ["Descargar", "Hacer"]
-CALENDARIO_ESTADOS = ["Pendiente Nuria", "Descargar", "Hacer"]
-
-ESTADO_LABELS = {
-    "Pendiente": "Pendiente",
-    "Descartada por mí": "Descartada por mí",
-    "Pendiente Nuria": "Pendiente de revisión",
-    "Descartar": "Descartada",
-    "Descargar": "Solo descargar",
-    "Hacer": "Preparar licitación",
-}
+NURIA_ESTADOS = NURIA_VISIBLE_STATES
+NURIA_ESTADOS_VALIDOS = set(NURIA_REVIEW_STATES)
+NURIA_LICITACIONES_ESTADOS = AGENDA_LICITACION_STATES
+CALENDARIO_ESTADOS = AGENDA_LICITACION_STATES
 
 USERS = {
     ADMIN_USER: {
@@ -529,8 +628,13 @@ DEFAULT_SETTINGS = {
     "smtp_user": SMTP_USER,
     "smtp_password": SMTP_PASSWORD,
     "smtp_from": SMTP_FROM,
+    "smtp_enabled": "1" if SMTP_ENABLED else "0",
     "smtp_tls": "1" if SMTP_USE_TLS else "0",
     "smtp_ssl": "1" if SMTP_USE_SSL else "0",
+    "email_dry_run": "1" if EMAIL_DRY_RUN else "0",
+    "agenda_email_to": AGENDA_EMAIL_TO,
+    "seguimiento_emails": SEGUIMIENTO_EMAILS,
+    "monitor_test_email": MONITOR_TEST_EMAIL,
 }
 
 DIA_ESTADOS_ORDEN = [
@@ -639,7 +743,7 @@ def init_db() -> None:
                 plataforma TEXT,
                 enlace_perfil TEXT,
                 enlace_infonalia TEXT,
-                estado TEXT NOT NULL DEFAULT 'Pendiente',
+                estado TEXT NOT NULL DEFAULT 'Importada',
                 comentario TEXT,
                 ruta_carpeta TEXT,
                 created_at TEXT NOT NULL,
@@ -972,6 +1076,14 @@ def delete_licitacion_dependents(conn: sqlite3.Connection, licitacion_ids: list[
         f"DELETE FROM actuacion_licitaciones WHERE licitacion_id IN ({placeholders})",
         licitacion_ids,
     )
+    conn.execute(
+        f"DELETE FROM licitacion_historial WHERE licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
+    conn.execute(
+        f"DELETE FROM licitacion_seguimiento_novedades WHERE licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
 
 
 def seed_users_and_settings(conn: sqlite3.Connection) -> None:
@@ -1039,19 +1151,17 @@ def maintenance_mode_enabled() -> bool:
 
 def find_dropbox_root() -> Path | None:
     configured = clean_text(os.environ.get("INFONALIA_DROPBOX_ROOT"))
-    candidates = []
     if configured:
-        candidates.append(Path(configured))
+        candidate = Path(os.path.expandvars(configured)).expanduser()
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+        return None
 
     home = Path.home()
-    candidates.extend(
-        [
-            home / "Dropbox" / "00000 LLANGON",
-            home / "Dropbox",
-        ]
-    )
-
-    for candidate in candidates:
+    for candidate in [
+        home / "Dropbox" / "00000 LLANGON",
+        home / "Dropbox",
+    ]:
         if candidate.exists() and candidate.is_dir():
             return candidate
     return None
@@ -1088,13 +1198,27 @@ def is_nuria_update_pending(row: sqlite3.Row | dict | None) -> bool:
     return day_nuria_update_pending(row)
 
 
+def dia_is_reviewed(conn: sqlite3.Connection, dia_id: int | None) -> bool:
+    if not dia_id:
+        return False
+    row = conn.execute(
+        "SELECT reviewed_at FROM infonalia_dias WHERE id = ?",
+        (dia_id,),
+    ).fetchone()
+    return bool(row and clean_text(row["reviewed_at"]))
+
+
 def mark_dia_nuria_dirty(conn: sqlite3.Connection, dia_id: int | None, timestamp: str | None = None) -> None:
     if not dia_id:
+        return
+    if dia_is_reviewed(conn, dia_id):
         return
     mark_day_nuria_dirty(conn, dia_id, timestamp=timestamp or now_iso())
 
 
 def refresh_dia_estado(conn: sqlite3.Connection, dia_id: int) -> None:
+    if dia_is_reviewed(conn, dia_id):
+        return
     refresh_day_status(conn, dia_id, timestamp=now_iso())
 
 
@@ -1164,6 +1288,7 @@ def insert_payload(conn: sqlite3.Connection, payload: dict[str, object], dia_id:
 
     timestamp = now_iso()
     payload = dict(payload)
+    payload["estado"] = normalize_licitacion_estado(payload.get("estado"), default=ESTADO_IMPORTADA)
     if "ruta_carpeta" in payload:
         payload["ruta_carpeta"] = folder_path_for_storage(payload.get("ruta_carpeta"))
     payload["infonalia_dia_id"] = dia_id
@@ -1328,7 +1453,7 @@ def parse_msg_body(body: str, fecha_infonalia: str, enrich_pdf: bool = True) -> 
                 "plataforma": detectar_plataforma(clean_text(data["enlace_perfil"])),
                 "enlace_perfil": clean_text(data["enlace_perfil"]),
                 "enlace_infonalia": clean_text(data["enlace_infonalia"]),
-                "estado": "Pendiente",
+                "estado": ESTADO_IMPORTADA,
                 "comentario": "",
                 "ruta_carpeta": "",
             }
@@ -1550,6 +1675,39 @@ def send_notification_email(usuario_destino: str | None, asunto: str, cuerpo: st
     )
 
 
+def monitor_test_recipient(user: dict | None = None, settings: dict[str, str] | None = None) -> str:
+    settings = settings or get_settings()
+    user = user or {}
+    return clean_text(
+        os.environ.get("MONITOR_TEST_EMAIL")
+        or os.environ.get("INFONALIA_MONITOR_TEST_EMAIL")
+        or settings.get("monitor_test_email")
+        or settings.get("agenda_email_to")
+        or user.get("email")
+    )
+
+
+def send_monitor_email(
+    recipient: str,
+    subject: str,
+    body: str,
+    html_body: str,
+    *,
+    settings: dict[str, str] | None = None,
+) -> tuple[str | None, str | None]:
+    return send_notification_email_with_settings(
+        settings=settings or get_settings(),
+        recipients=[recipient],
+        subject=subject,
+        body=body,
+        html_body=html_body,
+        logo_path=STATIC_ROOT / "logo-llangon.png",
+        now=now_iso,
+        smtp_factory=smtplib.SMTP,
+        smtp_ssl_factory=smtplib.SMTP_SSL,
+    )
+
+
 def create_notification(
     conn: sqlite3.Connection,
     usuario_origen: str | None,
@@ -1611,12 +1769,28 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_me()
         elif path == "/api/dias":
             self.api_list_dias()
+        elif path == "/api/agenda/pending-tasks":
+            self.api_agenda_pending_tasks(parsed.query)
+        elif path == "/api/agenda/workbench":
+            self.api_agenda_workbench()
         elif path == "/api/agenda":
             self.api_agenda(parsed.query)
         elif path == "/api/licitaciones/search":
             self.api_search_licitaciones(parsed.query)
         elif path == "/api/licitaciones":
             self.api_list_licitaciones(parsed.query)
+        elif path.startswith("/api/licitaciones/") and path.endswith("/actuaciones"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/actuaciones").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_get_licitacion_actuaciones(int(licitacion_id))
+        elif path.startswith("/api/licitaciones/"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_get_licitacion(int(licitacion_id))
         elif path == "/api/actuaciones":
             self.api_list_actuaciones(parsed.query)
         elif path == "/api/actuaciones/resumen":
@@ -1633,6 +1807,14 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_get_config()
         elif path == "/api/storage/status":
             self.api_storage_status()
+        elif path == "/api/monitor/runs":
+            self.api_monitor_runs(parsed.query)
+        elif path.startswith("/api/monitor/runs/"):
+            run_id = path.removeprefix("/api/monitor/runs/").strip("/")
+            if not run_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_monitor_run_detail(int(run_id))
         elif path == "/api/news":
             self.api_list_news()
         else:
@@ -1662,6 +1844,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         if path == "/api/licitaciones":
             self.api_create_licitacion()
+        elif path == "/api/licitaciones/capture":
+            self.api_capture_licitacion()
         elif path == "/api/config/users":
             self.api_create_user()
         elif path == "/api/config/test-smtp":
@@ -1670,6 +1854,10 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_storage_dropbox_test()
         elif path == "/api/storage/dropbox/dry-run":
             self.api_storage_dropbox_dry_run()
+        elif path == "/api/storage/markers/sync":
+            self.api_storage_markers_sync()
+        elif path == "/api/monitor/run":
+            self.api_monitor_run()
         elif path == "/api/news":
             self.api_create_news()
         elif path == "/api/agenda/email-summary":
@@ -1882,6 +2070,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if method == "POST":
             if path in {
                 "/api/licitaciones",
+                "/api/licitaciones/capture",
                 "/api/actuaciones",
                 "/api/agenda/email-summary",
                 "/api/agenda/eventos",
@@ -1889,6 +2078,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "/api/config/test-smtp",
                 "/api/storage/dropbox/test",
                 "/api/storage/dropbox/dry-run",
+                "/api/storage/markers/sync",
+                "/api/monitor/run",
                 "/api/news",
                 "/api/import/csv",
                 "/api/import/msg",
@@ -2037,6 +2228,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     "dropbox_desktop_detected": bool(dropbox_root),
                     "dropbox_desktop_root": str(dropbox_root) if dropbox_root else "",
                     "local_flow_label": "Dropbox Desktop" if dropbox_root else "carpeta local interna",
+                    "monitor_year_min": MONITOR_YEAR_MIN,
+                    "monitor_year_max": MONITOR_YEAR_MAX,
                 }
             )
             self.send_json(payload)
@@ -2058,6 +2251,94 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.send_json(simulate_dropbox_dry_run())
         except StorageConfigurationError as exc:
             self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def api_storage_markers_sync(self) -> None:
+        if not self.require_admin():
+            return
+        dropbox_root = find_dropbox_root()
+        if not dropbox_root:
+            self.send_json(
+                {"ok": False, "error": "No se ha encontrado la raíz local de Dropbox."},
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+        with db_session() as conn:
+            result = sync_marker_paths(
+                conn,
+                dropbox_root,
+                MONITOR_YEAR_MIN,
+                MONITOR_YEAR_MAX,
+                timestamp=now_iso(),
+                normalize_folder_path=lambda path: folder_path_for_storage(path, dropbox_root),
+            )
+        self.send_json(result)
+
+    def api_monitor_run(self) -> None:
+        if not self.require_admin():
+            return
+        data = self.read_json()
+        task_type = clean_text(data.get("task_type")) or "licitaciones"
+        mode = clean_text(data.get("mode")) or "dry-run"
+        dry_run_value = data.get("dry_run")
+        try:
+            if task_type == "licitaciones":
+                report = run_monitor(
+                    mode,
+                    dry_run=bool(dry_run_value) if dry_run_value is not None else None,
+                    db_path=DB_PATH,
+                )
+            else:
+                settings = get_settings()
+                recipient = monitor_test_recipient(self.current_user(), settings)
+                report = run_automation_task(
+                    task_type,
+                    dry_run=False if dry_run_value is None else bool_text(dry_run_value),
+                    db_path=DB_PATH,
+                    recipient=recipient,
+                    trigger_mode=clean_text(data.get("trigger_mode")) or "manual",
+                    email_sender=lambda to, subject, body, html_body: send_monitor_email(
+                        to,
+                        subject,
+                        body,
+                        html_body,
+                        settings=settings,
+                    ),
+                )
+        except MonitorError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        if task_type != "licitaciones" and report.get("status") == "failed":
+            self.send_json(
+                {**report, "ok": False, "error": clean_text(report.get("error_message")) or "No se pudo ejecutar la tarea."},
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+        self.send_json(report)
+
+    def api_monitor_runs(self, query: str) -> None:
+        if not self.require_admin():
+            return
+        params = parse_qs(query)
+        try:
+            limit = int(params.get("limit", ["50"])[0])
+        except ValueError:
+            limit = 50
+        task_type = clean_text(params.get("task_type", [""])[0])
+        with db_session() as conn:
+            ensure_monitor_schema(conn)
+            items = list_monitor_runs(conn, limit=limit, task_type=task_type)
+        self.send_json({"items": items})
+
+    def api_monitor_run_detail(self, run_id: int) -> None:
+        if not self.require_admin():
+            return
+        with db_session() as conn:
+            ensure_monitor_schema(conn)
+            item = get_monitor_run(conn, run_id)
+        if not item:
+            self.send_json({"error": "Ejecucion de monitor no encontrada"}, HTTPStatus.NOT_FOUND)
+            return
+        self.send_json({"item": item})
 
     def require_news_manager(self) -> bool:
         user = self.current_user()
@@ -2431,43 +2712,69 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             response = build_agenda_response(conn, params=params)
         self.send_json(response)
 
+    def api_agenda_pending_tasks(self, query: str) -> None:
+        if not self.require_admin():
+            return
+        params = parse_qs(query)
+        search = clean_text(params.get("q", [""])[0])
+        with db_session() as conn:
+            response = build_pending_tasks_response(conn, query=search)
+        self.send_json(response)
+
+    def api_agenda_workbench(self) -> None:
+        with db_session() as conn:
+            response = build_agenda_workbench(conn)
+        self.send_json(response)
+
     def api_send_agenda_email_summary(self) -> None:
         user = self.current_user() or {}
         username = clean_text(user.get("username"))
-        recipient = clean_text(user.get("email"))
-        if not recipient:
-            self.send_json({"error": "El usuario logueado no tiene email configurado."}, HTTPStatus.BAD_REQUEST)
-            return
         try:
             data = self.read_json()
         except json.JSONDecodeError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
-        params = {
-            "view": clean_text(data.get("view") or "day"),
-            "date": clean_text(data.get("date")),
-            "type": clean_text(data.get("type_filter") or data.get("type") or "all"),
-            "q": clean_text(data.get("search") or data.get("q")),
-            "include_overdue": "1",
-        }
-        with db_session() as conn:
-            response = build_agenda_response(conn, params=params)
-        subject = f"Resumen Agenda - {response.get('active_date_label') or response.get('date')}"
-        body = build_agenda_email_summary(response)
-        sent_at, error = send_notification_email_with_settings(
-            settings=get_settings(),
-            recipients=[recipient],
-            subject=subject,
-            body=body,
-            html_body=build_agenda_email_html(response),
-            logo_path=STATIC_ROOT / "logo-llangon.png",
-            now=now_iso,
-            smtp_factory=smtplib.SMTP,
-            smtp_ssl_factory=smtplib.SMTP_SSL,
-        )
-        if error:
-            self.send_json({"error": error}, HTTPStatus.BAD_REQUEST)
+        settings = get_settings()
+        recipient = clean_text(user.get("email")) or clean_text(settings.get("agenda_email_to"))
+        if not recipient:
+            self.send_json(
+                {"error": "No hay email destinatario para el resumen de Agenda."},
+                HTTPStatus.BAD_REQUEST,
+            )
             return
+        dry_run = data.get("dry_run") is not None and bool_text(data.get("dry_run"))
+        target_date = clean_text(data.get("date")) or datetime.now().date().isoformat()
+        with db_session() as conn:
+            today_response = build_agenda_response(
+                conn,
+                params={"view": "day", "date": target_date, "type": "all"},
+            )
+            week_response = build_agenda_response(
+                conn,
+                params={"view": "week", "date": target_date, "type": "all"},
+            )
+        email_payload = build_operational_email_payload(today_response, week_response)
+        subject = build_operational_email_subject()
+        body = build_operational_email_text(email_payload)
+        sent_at = None
+        error = None
+        if not dry_run:
+            sent_at, error = send_notification_email_with_settings(
+                settings=settings,
+                recipients=[recipient],
+                subject=subject,
+                body=body,
+                html_body=build_operational_email_html(email_payload),
+                logo_path=STATIC_ROOT / "logo-llangon.png",
+                now=now_iso,
+                smtp_factory=smtplib.SMTP,
+                smtp_ssl_factory=smtplib.SMTP_SSL,
+            )
+            if error:
+                if error == "SMTP no configurado":
+                    error = "SMTP no configurado. No se ha enviado el correo."
+                self.send_json({"error": error}, HTTPStatus.BAD_REQUEST)
+                return
         with db_session() as conn:
             create_notification_record(
                 conn,
@@ -2480,7 +2787,18 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 email_error=None,
                 timestamp=now_iso(),
             )
-        self.send_json({"ok": True, "sent_at": sent_at, "recipient": recipient})
+        self.send_json(
+            {
+                "ok": True,
+                "sent": bool(sent_at),
+                "sent_at": sent_at,
+                "dry_run": dry_run,
+                "recipient": recipient,
+                "subject": subject,
+                "preview": body,
+                "counts": email_payload.get("counts", {}),
+            }
+        )
 
     def api_create_agenda_evento(self) -> None:
         user = self.current_user() or {}
@@ -2543,11 +2861,18 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         vigentes = clean_text(params.get("vigentes", [""])[0]) == "1"
         vivas = clean_text(params.get("vivas", [""])[0]) == "1"
         calendario = clean_text(params.get("calendario", [""])[0]) == "1"
-        orden_fecha = clean_text(params.get("orden_fecha", ["asc"])[0]).lower()
+        nuria_filter = clean_text(params.get("nuria_filter", [""])[0]).lower()
+        default_order = "asc" if vivas or calendario else "desc"
+        orden_fecha = clean_text(params.get("orden_fecha", [default_order])[0]).lower()
+        actuaciones_filter = clean_text(params.get("actuaciones", [""])[0]).lower()
+        revision_filter = clean_text(params.get("revision", [""])[0]).lower()
+        seguimiento_filter = clean_text(params.get("seguimiento", [""])[0]).lower()
+        documentacion_filter = clean_text(params.get("documentacion", [""])[0]).lower()
+        estado_interno_filter = clean_text(params.get("estado_interno", [""])[0])
         direccion_fecha = "DESC" if orden_fecha == "desc" else "ASC"
         nuria_visible_states = None
-        calendario_estados = NURIA_LICITACIONES_ESTADOS if user.get("role") == "nuria" else CALENDARIO_ESTADOS
-        vivas_estados = NURIA_LICITACIONES_ESTADOS if user.get("role") == "nuria" else CALENDARIO_ESTADOS
+        calendario_estados = CALENDARIO_ESTADOS
+        vivas_estados = CALENDARIO_ESTADOS
         if calendario:
             if estado and estado != "Todos" and estado not in calendario_estados:
                 estado = ""
@@ -2555,7 +2880,15 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             if estado and estado != "Todos" and estado not in vivas_estados:
                 estado = ""
         elif user.get("role") == "nuria":
-            nuria_visible_states = NURIA_ESTADOS if dia_id.isdigit() else NURIA_LICITACIONES_ESTADOS
+            if dia_id.isdigit():
+                if nuria_filter in {"all", "todas"}:
+                    nuria_visible_states = NURIA_VISIBLE_STATES
+                elif nuria_filter in {"discarded", "descartadas"}:
+                    nuria_visible_states = NURIA_DISCARDED_STATES
+                else:
+                    nuria_visible_states = NURIA_DEFAULT_REVIEW_STATES
+            else:
+                nuria_visible_states = CALENDARIO_ESTADOS
             if estado and estado != "Todos" and estado not in nuria_visible_states:
                 estado = ""
 
@@ -2573,14 +2906,14 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             placeholders = ", ".join("?" for _ in vivas_estados)
             where.append(f"estado IN ({placeholders})")
             values.extend(vivas_estados)
-        elif user.get("role") == "nuria":
+        elif user.get("role") == "nuria" and not (estado and estado != "Todos"):
             placeholders = ", ".join("?" for _ in nuria_visible_states)
             where.append(f"estado IN ({placeholders})")
             values.extend(nuria_visible_states)
         if dia_id.isdigit():
             where.append("infonalia_dia_id = ?")
             values.append(int(dia_id))
-        elif vigentes or vivas:
+        elif vigentes:
             current = datetime.now()
             where.append(
                 """
@@ -2606,6 +2939,29 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             )
             like = f"%{search}%"
             values.extend([like, like, like, like])
+        if revision_filter == "pendiente":
+            where.append("(reviewed_at IS NULL OR reviewed_at = '')")
+        elif revision_filter == "revisada":
+            where.append("reviewed_at IS NOT NULL AND reviewed_at <> ''")
+        if seguimiento_filter == "1":
+            where.append("seguimiento_activo = 1")
+        if documentacion_filter == "sin_descargar":
+            where.append("(ruta_carpeta IS NULL OR ruta_carpeta = '')")
+        elif documentacion_filter == "fallida":
+            where.append(
+                """
+                EXISTS (
+                    SELECT 1 FROM download_jobs dj_filter
+                    WHERE dj_filter.licitacion_id = licitaciones.id
+                      AND dj_filter.status = 'failed'
+                )
+                """
+            )
+        if estado_interno_filter in ESTADOS_INTERNOS:
+            where.append("estado_interno = ?")
+            values.append(estado_interno_filter)
+        current = datetime.now().replace(microsecond=0)
+        apply_licitacion_actuaciones_filter(where, values, actuaciones_filter, now_text=current.isoformat())
 
         sql = "SELECT * FROM licitaciones"
         if where:
@@ -2626,33 +2982,23 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             rows = [row_to_dict(row) for row in conn.execute(sql, values)]
             if rows:
                 licitacion_ids = [int(row["id"]) for row in rows]
-                placeholders = ",".join("?" for _ in licitacion_ids)
-                estado_placeholders = ",".join("?" for _ in ACTUACION_ESTADOS_ABIERTOS)
-                counts = {
-                    row["licitacion_id"]: row
-                    for row in conn.execute(
-                        f"""
-                        SELECT
-                            al.licitacion_id,
-                            COUNT(DISTINCT a.id) AS total_abiertas,
-                            SUM(CASE WHEN a.deadline_at IS NOT NULL AND a.deadline_at <> '' AND a.deadline_at < ? THEN 1 ELSE 0 END) AS vencidas
-                        FROM actuacion_licitaciones al
-                        JOIN actuaciones a ON a.id = al.actuacion_id
-                        WHERE al.licitacion_id IN ({placeholders})
-                          AND a.estado IN ({estado_placeholders})
-                        GROUP BY al.licitacion_id
-                        """,
-                        [now_iso(), *licitacion_ids, *sorted(ACTUACION_ESTADOS_ABIERTOS)],
-                    )
-                }
+                counts = fetch_licitacion_actuacion_indicators(conn, licitacion_ids, current=current)
+                downloads = fetch_licitacion_download_indicators(conn, licitacion_ids)
                 for row in rows:
                     count_row = counts.get(row["id"])
-                    row["actuaciones_abiertas"] = int(count_row["total_abiertas"] if count_row else 0)
-                    row["actuaciones_vencidas"] = int(count_row["vencidas"] if count_row and count_row["vencidas"] else 0)
-            totals = {
-                row["estado"]: row["total"]
-                for row in conn.execute(totals_sql, values)
-            }
+                    download_row = downloads.get(row["id"], {})
+                    row["actuaciones_abiertas"] = int(count_row["actuaciones_abiertas"] if count_row else 0)
+                    row["actuaciones_vencidas"] = int(count_row["actuaciones_vencidas"] if count_row else 0)
+                    row["actuaciones_sin_fecha"] = int(count_row["actuaciones_sin_fecha"] if count_row else 0)
+                    row["proxima_actuacion_at"] = count_row["proxima_actuacion_at"] if count_row else ""
+                    row["revisada"] = bool(clean_text(row.get("reviewed_at")))
+                    row["documentacion_descargada"] = bool(clean_text(row.get("ruta_carpeta")))
+                    row["descarga_fallida"] = bool(download_row.get("descarga_fallida"))
+                    row["download_error"] = download_row.get("download_error") or ""
+            totals: dict[str, int] = {}
+            for row in conn.execute(totals_sql, values):
+                normalized_state = normalize_licitacion_estado(row["estado"])
+                totals[normalized_state] = totals.get(normalized_state, 0) + int(row["total"] or 0)
             day_pending_review = None
             day_pending_admin = None
             day_sent_nuria_at = None
@@ -2676,21 +3022,19 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     """,
                     (int(dia_id),),
                 ).fetchall()
-                day_counts = {row["estado"]: row["total"] for row in day_counts_rows}
-                day_pending_review = day_counts.get("Pendiente Nuria", 0)
-                day_pending_admin = day_counts.get("Pendiente", 0)
-                day_nuria_total = (
-                    day_counts.get("Pendiente Nuria", 0)
-                    + day_counts.get("Descartar", 0)
-                    + day_counts.get("Descargar", 0)
-                    + day_counts.get("Hacer", 0)
-                )
+                day_counts: dict[str, int] = {}
+                for row in day_counts_rows:
+                    normalized_state = normalize_licitacion_estado(row["estado"])
+                    day_counts[normalized_state] = day_counts.get(normalized_state, 0) + int(row["total"] or 0)
+                day_pending_review = day_counts.get(ESTADO_ENVIADA_NURIA, 0)
+                day_pending_admin = day_counts.get(ESTADO_IMPORTADA, 0)
+                day_nuria_total = sum(day_counts.get(state, 0) for state in NURIA_VISIBLE_STATES)
         if calendario:
             estados = calendario_estados
         elif vivas:
             estados = vivas_estados
         elif user.get("role") == "nuria":
-            estados = NURIA_ESTADOS if dia_id.isdigit() else NURIA_LICITACIONES_ESTADOS
+            estados = nuria_visible_states if dia_id.isdigit() else CALENDARIO_ESTADOS
         else:
             estados = ESTADOS_ORDEN
         self.send_json(
@@ -2707,6 +3051,45 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "day_nuria_total": day_nuria_total,
             }
         )
+
+    def api_get_licitacion(self, licitacion_id: int) -> None:
+        current = datetime.now().replace(microsecond=0)
+        with db_session() as conn:
+            row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+            if not row:
+                self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                return
+            item = row_to_dict(row)
+            indicators = fetch_licitacion_actuacion_indicators(conn, [licitacion_id], current=current).get(licitacion_id, {})
+            actuaciones = list_licitacion_actuaciones(conn, licitacion_id, current=current)
+            item.update(
+                {
+                    "actuaciones_abiertas": int(indicators.get("actuaciones_abiertas") or 0),
+                    "actuaciones_vencidas": int(indicators.get("actuaciones_vencidas") or 0),
+                    "actuaciones_sin_fecha": int(indicators.get("actuaciones_sin_fecha") or 0),
+                    "proxima_actuacion_at": indicators.get("proxima_actuacion_at") or "",
+                }
+            )
+            item = build_licitacion_center_detail(conn, item, actuaciones=actuaciones)
+            marker_status = get_marker_status_for_licitacion(item, find_dropbox_root())
+            item["seguimiento_activo"] = bool(marker_status.get("activo"))
+            item["seguimiento"] = {
+                **(item.get("seguimiento") or {}),
+                **marker_status,
+                "activo": bool(marker_status.get("activo")),
+                "fuente": "marcador Dropbox",
+            }
+        self.send_json({"item": item})
+
+    def api_get_licitacion_actuaciones(self, licitacion_id: int) -> None:
+        current = datetime.now().replace(microsecond=0)
+        with db_session() as conn:
+            exists = conn.execute("SELECT 1 FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+            if not exists:
+                self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                return
+            items = list_licitacion_actuaciones(conn, licitacion_id, current=current)
+        self.send_json({"items": items})
 
     def api_search_licitaciones(self, query: str) -> None:
         params = parse_qs(query)
@@ -3093,6 +3476,23 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             item = actuacion_response(conn, duplicated, include_historial=True)
         self.send_json({"ok": True, "item": item}, HTTPStatus.CREATED)
 
+    def api_capture_licitacion(self) -> None:
+        if not self.require_admin():
+            return
+        try:
+            data = self.read_json()
+            result = capture_licitacion_from_url(data.get("url"), profile_url=data.get("profile_url"))
+        except json.JSONDecodeError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        except CaptureError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        except Exception:
+            self.send_json({"ok": False, "error": "Error consultando plataforma."}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(result)
+
     def api_create_licitacion(self) -> None:
         if not self.require_admin():
             return
@@ -3120,15 +3520,16 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             "plataforma": plataforma,
             "enlace_perfil": enlace_perfil,
             "enlace_infonalia": enlace_infonalia,
-            "estado": normalize_estado(data.get("estado")) or "Pendiente",
+            "estado": normalize_estado(data.get("estado")) or ESTADO_IMPORTADA,
             "comentario": clean_text(data.get("comentario")),
             "ruta_carpeta": folder_path_for_storage(data.get("ruta_carpeta")),
             "created_at": timestamp,
             "updated_at": timestamp,
         }
 
+        payload["estado"] = normalize_licitacion_estado(payload["estado"], default=ESTADO_IMPORTADA)
         if payload["estado"] not in ESTADOS_VALIDOS:
-            payload["estado"] = "Pendiente"
+            payload["estado"] = ESTADO_IMPORTADA
 
         with db_session() as conn:
             dia_id = None
@@ -3240,19 +3641,26 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 """,
                 (dia_id,),
             ).fetchall()
-            counts = {row["estado"]: row["total"] for row in counts_rows}
-            pendientes = counts.get("Pendiente", 0)
-            pendientes_nuria = counts.get("Pendiente Nuria", 0)
-            decisiones_nuria = counts.get("Descartar", 0) + counts.get("Descargar", 0) + counts.get("Hacer", 0)
+            counts: dict[str, int] = {}
+            for row in counts_rows:
+                normalized_state = normalize_licitacion_estado(row["estado"])
+                counts[normalized_state] = counts.get(normalized_state, 0) + int(row["total"] or 0)
+            pendientes = counts.get(ESTADO_IMPORTADA, 0)
+            pendientes_nuria = counts.get(ESTADO_ENVIADA_NURIA, 0)
+            decisiones_nuria = (
+                counts.get(ESTADO_DESCARTADA, 0)
+                + counts.get(ESTADO_DESCARGAR_PARA_VER, 0)
+                + counts.get(ESTADO_PREPARAR_FICHA, 0)
+            )
             nuria_total = pendientes_nuria + decisiones_nuria
             pending_rows = conn.execute(
                 """
                 SELECT expediente, objeto, fecha_limite, hora_limite
                 FROM licitaciones
-                WHERE infonalia_dia_id = ? AND estado = 'Pendiente Nuria'
+                WHERE infonalia_dia_id = ? AND estado = ?
                 ORDER BY fecha_limite ASC, hora_limite ASC, id ASC
                 """,
-                (dia_id,),
+                (dia_id, ESTADO_ENVIADA_NURIA),
             ).fetchall()
             already_sent = bool(clean_text(day["enviado_nuria_at"]))
             pending_update = is_nuria_update_pending(day)
@@ -3341,9 +3749,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 """
                 SELECT COUNT(*) AS total
                 FROM licitaciones
-                WHERE infonalia_dia_id = ? AND estado = 'Pendiente Nuria'
+                WHERE infonalia_dia_id = ? AND estado = ?
                 """,
-                (dia_id,),
+                (dia_id, ESTADO_ENVIADA_NURIA),
             ).fetchone()["total"]
             if pendientes:
                 self.send_json(
@@ -3374,13 +3782,16 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     """,
                     (dia_id,),
                 ).fetchall()
-                counts = {row["estado"]: row["total"] for row in counts_rows}
+                counts: dict[str, int] = {}
+                for row in counts_rows:
+                    normalized_state = normalize_licitacion_estado(row["estado"])
+                    counts[normalized_state] = counts.get(normalized_state, 0) + int(row["total"] or 0)
                 asunto = f"Día Infonalia revisado: {day['titulo']}"
                 cuerpo = (
                     f"El equipo revisor ha marcado como revisado el día {day['titulo']}.\n\n"
-                    f"Descartadas: {counts.get('Descartar', 0)}\n"
-                    f"Solo descargar: {counts.get('Descargar', 0)}\n"
-                    f"Preparar licitación: {counts.get('Hacer', 0)}"
+                    f"Descartadas: {counts.get(ESTADO_DESCARTADA, 0)}\n"
+                    f"Descargar para ver: {counts.get(ESTADO_DESCARGAR_PARA_VER, 0)}\n"
+                    f"Preparar ficha: {counts.get(ESTADO_PREPARAR_FICHA, 0)}"
                 )
                 create_notification(
                     conn,
@@ -3601,9 +4012,20 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             )
             return
 
+        marker_result = ensure_id_marker(licitacion_id, destino)
+        marker_status = marker_status_for_folder(licitacion_id, destino)
+        if marker_result.get("error") and not marker_status.get("warning"):
+            marker_status["warning"] = marker_result.get("error")
+
+        timestamp = now_iso()
         updates = {
             "ruta_carpeta": ruta_guardada,
-            "updated_at": now_iso(),
+            "seguimiento_activo": 1 if marker_status.get("activo") else 0,
+            "seguimiento_ultimo_check": timestamp,
+            "seguimiento_ultima_sync": timestamp,
+            "seguimiento_marker_path": clean_text(marker_result.get("path")),
+            "seguimiento_marker_warning": clean_text(marker_status.get("warning")),
+            "updated_at": timestamp,
         }
 
         set_clause = ", ".join(f"{key} = ?" for key in updates)
@@ -3625,7 +4047,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 storage_uri=str(storage_result.get("storage_uri") or ""),
                 file_manifest=str(storage_result.get("manifest_uri") or manifest_object.uri),
                 error_message=storage_error_message or None,
-                timestamp=updates["updated_at"],
+                timestamp=timestamp,
             )
             record_storage_upload(
                 conn,
@@ -3641,7 +4063,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 skipped_existing_count=int(storage_result.get("skipped_existing_count") or 0),
                 failed_count=int(storage_result.get("failed_count") or 0),
                 no_changes=bool(storage_result.get("no_changes")),
-                timestamp=updates["updated_at"],
+                timestamp=timestamp,
                 error_message=storage_error_message,
             )
 
@@ -3652,6 +4074,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "carpeta": str(destino),
                 "ruta_carpeta": ruta_guardada,
                 "salida": salida,
+                "marker": marker_result,
                 "storage": {
                     "backend": storage_result.get("backend"),
                     "dry_run": storage_result.get("dry_run"),
@@ -3672,11 +4095,11 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         data = self.read_json()
 
         if user.get("role") == "nuria":
-            estado = clean_text(data.get("estado"))
+            estado = normalize_licitacion_estado(data.get("estado"), default="")
             if not estado:
                 self.send_json({"error": "No hay cambios"}, HTTPStatus.BAD_REQUEST)
                 return
-            if estado not in NURIA_ESTADOS_VALIDOS:
+            if estado not in NURIA_REVIEW_STATES:
                 self.send_json({"error": "Estado no permitido para esta revision."}, HTTPStatus.FORBIDDEN)
                 return
 
@@ -3685,7 +4108,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 if not row:
                     self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
                     return
-                if row["estado"] not in NURIA_ESTADOS_VALIDOS:
+                if normalize_licitacion_estado(row["estado"]) not in NURIA_VISIBLE_STATES:
                     self.send_json({"error": "Esta licitacion no esta en revision de Nuria."}, HTTPStatus.FORBIDDEN)
                     return
                 conn.execute(
@@ -3733,10 +4156,15 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             updates["ruta_carpeta"] = folder_path_for_storage(updates["ruta_carpeta"])
         if "presupuesto" in data:
             updates["presupuesto"] = parse_money(data.get("presupuesto"))
-        if "estado" in updates and updates["estado"] not in ESTADOS_VALIDOS:
-            self.send_json({"error": "Estado no valido"}, HTTPStatus.BAD_REQUEST)
-            return
-        if not updates:
+        if "estado" in updates:
+            updates["estado"] = normalize_licitacion_estado(updates["estado"], default="")
+            if updates["estado"] not in ESTADOS_VALIDOS:
+                self.send_json({"error": "Estado no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+        if not updates and not any(
+            key in data
+            for key in {"estado_interno", "notas_internas", "revisada"}
+        ):
             self.send_json({"error": "No hay cambios"}, HTTPStatus.BAD_REQUEST)
             return
 
@@ -3744,20 +4172,62 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             key != "ruta_carpeta"
             for key in updates
         )
-        updates["updated_at"] = now_iso()
-        set_clause = ", ".join(f"{key} = ?" for key in updates)
-        values = list(updates.values()) + [licitacion_id]
+        timestamp = now_iso()
 
         with db_session() as conn:
+            old_row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+            if not old_row:
+                self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                center_updates, center_history = center_update_payload(
+                    data,
+                    old_row,
+                    username=clean_text(user.get("username")),
+                    timestamp=timestamp,
+                )
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            updates.update(center_updates)
+            if not updates:
+                self.send_json({"error": "No hay cambios"}, HTTPStatus.BAD_REQUEST)
+                return
+            for key, new_value in updates.items():
+                if key in {"updated_at", "ruta_carpeta"}:
+                    continue
+                old_value = old_row[key] if key in old_row.keys() else ""
+                if str(old_value or "") != str(new_value or ""):
+                    record_licitacion_history(
+                        conn,
+                        licitacion_id,
+                        event_type=key,
+                        old_value=old_value,
+                        new_value=new_value,
+                        user_id=clean_text(user.get("username")),
+                        timestamp=timestamp,
+                    )
+            for key, old_value, new_value in center_history:
+                if key in updates:
+                    continue
+                record_licitacion_history(
+                    conn,
+                    licitacion_id,
+                    event_type=key,
+                    old_value=old_value,
+                    new_value=new_value,
+                    user_id=clean_text(user.get("username")),
+                    timestamp=timestamp,
+                )
+            updates["updated_at"] = timestamp
+            set_clause = ", ".join(f"{key} = ?" for key in updates)
+            values = list(updates.values()) + [licitacion_id]
             conn.execute(f"UPDATE licitaciones SET {set_clause} WHERE id = ?", values)
             row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
             if row and row["infonalia_dia_id"]:
                 if mark_for_nuria:
                     mark_dia_nuria_dirty(conn, int(row["infonalia_dia_id"]))
                 refresh_dia_estado(conn, int(row["infonalia_dia_id"]))
-        if not row:
-            self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
-            return
         self.send_json(row_to_dict(row))
 
     def api_delete_licitacion(self, licitacion_id: int) -> None:

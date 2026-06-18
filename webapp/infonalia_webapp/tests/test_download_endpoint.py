@@ -10,6 +10,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from webapp.infonalia_webapp.tests.test_delete_dia_endpoint import insert_dia
 from webapp.infonalia_webapp.tests.test_import_endpoints import (
     PRODUCTIVE_DB_PATH,
     VALID_CSRF_TOKEN,
@@ -143,6 +144,31 @@ def get_storage_uploads(app: ModuleType, licitacion_id: int) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def mark_download_dia_as_reviewed(app: ModuleType, dia_id: int) -> None:
+    timestamp = datetime(2026, 6, 14, 12, 0, 0).isoformat()
+    with app.db_session() as conn:
+        conn.execute(
+            """
+            UPDATE infonalia_dias
+            SET estado = 'Completado',
+                reviewed_at = ?,
+                nuria_dirty_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (timestamp, timestamp, dia_id),
+        )
+
+
+def get_download_dia_review_state(app: ModuleType, dia_id: int) -> dict:
+    with app.db_session() as conn:
+        row = conn.execute(
+            "SELECT estado, reviewed_at, nuria_dirty_at FROM infonalia_dias WHERE id = ?",
+            (dia_id,),
+        ).fetchone()
+        return dict(row)
+
+
 @contextmanager
 def mocked_subprocess_run(app: ModuleType, fake_run):
     old_run = app.subprocess.run
@@ -190,6 +216,9 @@ def test_download_endpoint_success_updates_ruta_carpeta_with_mocked_subprocess()
         assert Path(payload["carpeta"], "HTTP.url").exists()
         assert Path(payload["carpeta"], "Descargar ficheros de la plataforma.bat").exists()
         assert Path(payload["carpeta"], "documento-ficticio.pdf").exists()
+        assert Path(payload["carpeta"], f"{licitacion_id}.llangon").exists()
+        assert not Path(payload["carpeta"], "EnSeguimiento.llangon").exists()
+        assert payload["marker"]["path"].endswith(f"{licitacion_id}.llangon")
         manifest_path = Path(payload["carpeta"], ".infonalia_manifest.json")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         assert manifest["schema"] == "infonalia.download_manifest.v1"
@@ -220,6 +249,34 @@ def test_download_endpoint_success_updates_ruta_carpeta_with_mocked_subprocess()
     assert PRODUCTIVE_DB_PATH.exists() is existed_before
     if existed_before:
         assert PRODUCTIVE_DB_PATH.stat().st_mtime_ns == stat_before
+
+
+def test_download_endpoint_keeps_reviewed_day_closed() -> None:
+    app = load_app_module()
+    with temporary_download_app(app):
+        dia_id = insert_dia(app)
+        licitacion_id = insert_fake_licitacion(app)
+        with app.db_session() as conn:
+            conn.execute(
+                "UPDATE licitaciones SET infonalia_dia_id = ? WHERE id = ?",
+                (dia_id, licitacion_id),
+            )
+        mark_download_dia_as_reviewed(app, dia_id)
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
+            return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
+
+        handler = make_download_handler(app)
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        state = get_download_dia_review_state(app, dia_id)
+
+    assert handler.responses[-1][0] == HTTPStatus.OK
+    assert state["estado"] == "Completado"
+    assert state["reviewed_at"]
+    assert not state["nuria_dirty_at"]
 
 
 def test_download_endpoint_dropbox_dry_run_records_incremental_storage(monkeypatch, tmp_path: Path) -> None:
@@ -262,8 +319,8 @@ def test_download_endpoint_dropbox_dry_run_records_incremental_storage(monkeypat
 def test_download_endpoint_dropbox_backend_uses_staging_outside_dropbox_desktop(monkeypatch, tmp_path: Path) -> None:
     app = load_app_module()
     staging_root = tmp_path / "staging-downloads"
-    dropbox_desktop_root = tmp_path / "Dropbox" / "00000 LLANGON"
-    dropbox_desktop_root.mkdir(parents=True)
+    replica_root = tmp_path / "ReplicaDb"
+    replica_root.mkdir(parents=True)
     monkeypatch.setenv("INFONALIA_STORAGE_BACKEND", "dropbox")
     monkeypatch.setenv("INFONALIA_DOWNLOAD_STAGING_ROOT", str(staging_root))
     monkeypatch.setenv("INFONALIA_DROPBOX_ENABLED", "1")
@@ -271,8 +328,8 @@ def test_download_endpoint_dropbox_backend_uses_staging_outside_dropbox_desktop(
     monkeypatch.setenv("INFONALIA_DROPBOX_API_ROOT", "/LlangonSuite")
 
     with temporary_download_app(app):
-        app.find_dropbox_root = lambda: dropbox_desktop_root
-        licitacion_id = insert_fake_licitacion(app, ruta_carpeta=str(dropbox_desktop_root / "ruta-antigua"))
+        app.find_dropbox_root = lambda: replica_root
+        licitacion_id = insert_fake_licitacion(app, ruta_carpeta=str(replica_root / "ruta-antigua"))
         calls = []
 
         def fake_run(args, cwd, capture_output, text, timeout):
@@ -288,7 +345,7 @@ def test_download_endpoint_dropbox_backend_uses_staging_outside_dropbox_desktop(
         cwd = calls[0].resolve()
         assert status == HTTPStatus.OK
         assert cwd.is_relative_to(staging_root.resolve())
-        assert not cwd.is_relative_to(dropbox_desktop_root.resolve())
+        assert not cwd.is_relative_to(replica_root.resolve())
         assert Path(payload["carpeta"]).resolve() == cwd
         assert get_download_jobs(app, licitacion_id)[0]["storage_backend"] == "dropbox"
 

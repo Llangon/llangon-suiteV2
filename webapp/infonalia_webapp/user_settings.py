@@ -16,10 +16,14 @@ SETTINGS_UPDATE_KEYS = {
     "smtp_port",
     "smtp_user",
     "smtp_from",
+    "smtp_enabled",
     "smtp_tls",
     "smtp_ssl",
+    "email_dry_run",
+    "agenda_email_to",
+    "seguimiento_emails",
 }
-BOOLEAN_SETTINGS = {"maintenance_mode", "smtp_tls", "smtp_ssl"}
+BOOLEAN_SETTINGS = {"maintenance_mode", "smtp_enabled", "smtp_tls", "smtp_ssl", "email_dry_run"}
 USER_ROLES = {"admin", "nuria"}
 USERNAME_PATTERN = re.compile(r"[a-zA-Z0-9_.-]{3,40}")
 
@@ -86,8 +90,12 @@ def public_settings_payload(settings: Mapping[str, object]) -> dict[str, object]
         "smtp_port": settings.get("smtp_port", "587"),
         "smtp_user": settings.get("smtp_user", ""),
         "smtp_from": settings.get("smtp_from", ""),
+        "smtp_enabled": settings.get("smtp_enabled", "0"),
         "smtp_tls": settings.get("smtp_tls", "1"),
         "smtp_ssl": settings.get("smtp_ssl", "0"),
+        "email_dry_run": settings.get("email_dry_run", "1"),
+        "agenda_email_to": settings.get("agenda_email_to", ""),
+        "seguimiento_emails": settings.get("seguimiento_emails", ""),
         "smtp_password_set": bool(clean_text(settings.get("smtp_password"))),
     }
 

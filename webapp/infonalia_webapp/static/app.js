@@ -6,7 +6,7 @@ const appState = {
   estados: [],
   totals: {},
   currentDiaId: "",
-  currentDiaTitle: "Todas las licitaciones",
+  currentDiaTitle: "Centro de licitaciones",
   currentDayPendingReview: null,
   currentDayPendingAdmin: null,
   currentDaySentNuriaAt: "",
@@ -17,11 +17,14 @@ const appState = {
   calendarItems: [],
   agendaGroups: {},
   agendaSummary: {},
+  agendaWorkbench: null,
+  agendaWorkbenchSelectedKey: "",
   agendaActiveDateLabel: "",
   agendaIsToday: false,
   agendaView: "day",
   agendaType: "all",
   newsItems: [],
+  monitorRuns: [],
   actuaciones: [],
   actuacionesSummary: {},
   actuacionSelectedLicitaciones: [],
@@ -44,6 +47,7 @@ const calendarSection = document.getElementById("calendar-section");
 const actuacionesSection = document.getElementById("actuaciones-section");
 const notificationsSection = document.getElementById("notifications-section");
 const newsAdminSection = document.getElementById("news-admin-section");
+const monitorSection = document.getElementById("monitor-section");
 const configSection = document.getElementById("config-section");
 const daysBoard = document.getElementById("days-board");
 const daysSummary = document.getElementById("days-summary");
@@ -53,6 +57,8 @@ const board = document.getElementById("board");
 const summary = document.getElementById("summary");
 const stateFilter = document.getElementById("state-filter");
 const dateOrder = document.getElementById("date-order");
+const licitacionesActuacionesFilter = document.getElementById("licitaciones-actuaciones-filter");
+const licitacionesQuickFilter = document.getElementById("licitaciones-quick-filter");
 const searchInput = document.getElementById("search");
 const currentDayTitle = document.getElementById("current-day-title");
 const reviewDayButton = document.getElementById("review-day-button");
@@ -60,6 +66,7 @@ const sendNuriaButton = document.getElementById("send-nuria-button");
 const calendarMonthTitle = document.getElementById("calendar-month-title");
 const calendarSearch = document.getElementById("calendar-search");
 const calendarStateFilter = document.getElementById("calendar-state-filter");
+const agendaWorkbench = document.getElementById("agenda-workbench");
 const calendarSummary = document.getElementById("calendar-summary");
 const calendarRadar = document.getElementById("calendar-radar");
 const calendarBoard = document.getElementById("calendar-board");
@@ -86,6 +93,13 @@ const licitacionSelectorSearch = document.getElementById("licitacion-selector-se
 const licitacionSelectorResults = document.getElementById("licitacion-selector-results");
 const notificationsBoard = document.getElementById("notifications-board");
 const newsAdminBoard = document.getElementById("news-admin-board");
+const monitorRunsBoard = document.getElementById("monitor-runs-board");
+const monitorRunDetail = document.getElementById("monitor-run-detail");
+const monitorTaskTypeFilter = document.getElementById("monitor-task-type-filter");
+const monitorActionResult = document.getElementById("monitor-action-result");
+const monitorSendAgendaSummaryButton = document.getElementById("monitor-send-agenda-summary");
+const monitorSendAgendaDailyButton = document.getElementById("monitor-send-agenda-daily");
+const monitorSendAgendaWeeklyButton = document.getElementById("monitor-send-agenda-weekly");
 const newsForm = document.getElementById("news-form");
 const newsResult = document.getElementById("news-result");
 const newsFormTitle = document.getElementById("news-form-title");
@@ -97,6 +111,11 @@ const editor = document.getElementById("editor");
 const editorTitle = document.getElementById("editor-title");
 const editorEyebrow = document.getElementById("editor-eyebrow");
 const form = document.getElementById("licitacion-form");
+const capturePlatformButton = document.getElementById("capture-platform-button");
+const capturePlatformResult = document.getElementById("capture-platform-result");
+const licitacionDetailDialog = document.getElementById("licitacion-detail-dialog");
+const licitacionDetailTitle = document.getElementById("licitacion-detail-title");
+const licitacionDetailContent = document.getElementById("licitacion-detail-content");
 const importer = document.getElementById("importer");
 const importForm = document.getElementById("import-form");
 const importResult = document.getElementById("import-result");
@@ -109,32 +128,71 @@ const storageStatusBoard = document.getElementById("storage-status-board");
 const storageResult = document.getElementById("storage-result");
 const testDropboxButton = document.getElementById("test-dropbox-button");
 const dryRunDropboxButton = document.getElementById("dry-run-dropbox-button");
+const syncDropboxMarkersButton = document.getElementById("sync-dropbox-markers-button");
+const monitorDryRunButton = document.getElementById("monitor-dry-run-button");
+const monitorRepairButton = document.getElementById("monitor-repair-button");
+const refreshMonitorRunsButton = document.getElementById("refresh-monitor-runs");
 const pageTitle = document.getElementById("page-title");
 const pageKicker = document.getElementById("page-kicker");
 const sessionUser = document.getElementById("session-user");
 const logoutButton = document.getElementById("logout-button");
 
 const estadoOrden = [
-  "Pendiente",
-  "Descartada por mí",
-  "Pendiente Nuria",
-  "Descartar",
-  "Descargar",
-  "Hacer",
+  "Importada",
+  "Descartada",
+  "Enviada a Nuria",
+  "Descargar para ver",
+  "Preparar ficha",
+  "Preparada",
+  "Oferta enviada",
 ];
 
 const estadoLabels = {
-  "Pendiente": "Pendiente",
-  "Descartada por mí": "Descartada por mí",
-  "Pendiente Nuria": "Pendiente de revisión",
-  "Descartar": "Descartada",
-  "Descargar": "Solo descargar",
-  "Hacer": "Preparar licitación",
+  "Importada": "Importada",
+  "Descartada": "Descartada",
+  "Enviada a Nuria": "Enviada a Nuria",
+  "Descargar para ver": "Descargar para ver",
+  "Preparar ficha": "Preparar ficha",
+  "Preparada": "Preparada",
+  "Oferta enviada": "Oferta enviada",
 };
 
-const nuriaEstados = ["Pendiente Nuria", "Descartar", "Descargar", "Hacer"];
-const nuriaLicitacionesEstados = ["Descargar", "Hacer"];
-const calendarioEstados = ["Pendiente Nuria", "Descargar", "Hacer"];
+const monitorTaskTypeLabels = {
+  licitaciones: "Licitaciones",
+  resumen_agenda: "Resumen agenda",
+  agenda_diaria: "Agenda diaria",
+  agenda_semanal: "Agenda semanal",
+  aviso_vencimiento_7d: "Aviso 7 días",
+  aviso_vencimiento_3d: "Aviso 3 días",
+  aviso_vencimiento_1d: "Aviso mañana",
+  aviso_vencimiento_hoy: "Aviso hoy",
+  avisos_vencimientos: "Avisos vencimientos",
+  tareas_pendientes: "Tareas pendientes",
+  monitor_licitaciones: "Monitor licitaciones",
+  otro: "Otro",
+};
+
+const adminReviewEstados = ["Descartada", "Enviada a Nuria"];
+const nuriaEstados = ["Descartada", "Descargar para ver", "Preparar ficha"];
+const nuriaDefaultReviewEstados = ["Enviada a Nuria", "Descargar para ver", "Preparar ficha", "Preparada", "Oferta enviada"];
+const nuriaVisibleEstados = [...nuriaDefaultReviewEstados, "Descartada"];
+const nuriaLicitacionesEstados = ["Descargar para ver", "Preparar ficha", "Preparada"];
+const calendarioEstados = ["Descargar para ver", "Preparar ficha", "Preparada"];
+const nuriaDayFilterOptions = [
+  { value: "__nuria_active", label: "No descartadas", filter: "active" },
+  { value: "__nuria_all", label: "Todas", filter: "all" },
+  { value: "__nuria_discarded", label: "Descartadas", filter: "discarded" },
+];
+const estadosInternos = [
+  "Nueva",
+  "Pendiente revisión",
+  "En estudio",
+  "Preparando oferta",
+  "Presentada",
+  "En seguimiento",
+  "Descartada",
+  "Finalizada",
+];
 const actuacionTipoLabels = {
   requerimiento: "Requerimiento",
   subsanacion: "Subsanación",
@@ -155,10 +213,16 @@ const actuacionTipoLabels = {
 };
 const actuacionEstadoLabels = {
   pendiente: "Pendiente",
-  en_curso: "En curso",
-  respondida: "Respondida",
-  cerrada: "Cerrada",
-  cancelada: "Cancelada",
+  en_curso: "Pendiente",
+  preparado: "Preparado",
+  preparada: "Preparado",
+  respondida: "Enviado",
+  cerrada: "Enviado",
+  cerrado: "Enviado",
+  enviado: "Enviado",
+  enviada: "Enviado",
+  cancelado: "Cancelado",
+  cancelada: "Cancelado",
 };
 const actuacionVisualLabels = {
   vencida: "Vencida",
@@ -166,9 +230,14 @@ const actuacionVisualLabels = {
   vence_esta_semana: "Esta semana",
   sin_fecha: "Sin fecha",
   cerrada_fuera_de_plazo: "Cerrada fuera de plazo",
-  cerrada: "Cerrada",
-  cancelada: "Cancelada",
+  cerrado: "Enviado",
+  cerrada: "Enviado",
+  enviado: "Enviado",
+  enviada: "Enviado",
+  cancelado: "Cancelado",
+  cancelada: "Cancelado",
   pendiente: "Pendiente",
+  preparado: "Preparado",
 };
 const agendaTypeLabels = {
   actuacion: "Actuación",
@@ -180,11 +249,23 @@ const agendaTypeLabels = {
 const agendaColorTypes = new Set(["actuacion", "licitacion", "interno", "vencido"]);
 const agendaStatusLabels = {
   pendiente: "Pendiente",
-  en_curso: "En curso",
-  respondida: "Respondida",
-  cerrado: "Cerrado",
+  en_curso: "Pendiente",
+  preparado: "Preparado",
+  preparada: "Preparado",
+  respondida: "Enviado",
+  cerrado: "Enviado",
+  cerrada: "Enviado",
+  enviado: "Enviado",
+  enviada: "Enviado",
   cancelado: "Cancelado",
+  cancelada: "Cancelado",
 };
+const taskStateOptions = [
+  { value: "pendiente", label: "Pendiente" },
+  { value: "preparado", label: "Preparado" },
+  { value: "enviado", label: "Enviado" },
+  { value: "cancelado", label: "Cancelado" },
+];
 const editorFields = [
   "id",
   "expediente",
@@ -203,9 +284,49 @@ const editorFields = [
   "ruta_carpeta",
   "comentario",
 ];
+const captureFieldTargets = {
+  expediente: "expediente",
+  objeto: "objeto",
+  organismo: "organismo",
+  organo_contratacion: "organismo",
+  provincia: "provincia",
+  tipo: "tipo",
+  presupuesto: "presupuesto",
+  fecha_limite: "fecha_limite",
+  hora_limite: "hora_limite",
+  plataforma: "plataforma",
+  enlace_perfil: "enlace_perfil",
+};
+const captureFieldLabels = {
+  expediente: "Expediente",
+  objeto: "Objeto",
+  organismo: "Órgano de contratación",
+  organo_contratacion: "Órgano de contratación",
+  provincia: "Provincia/lugar",
+  tipo: "Tipo",
+  presupuesto: "Presupuesto",
+  fecha_limite: "Fecha límite",
+  fecha_presentacion: "Fecha límite",
+  hora_limite: "Hora límite",
+  plataforma: "Plataforma",
+  enlace_perfil: "Enlace plataforma",
+  procedimiento: "Procedimiento",
+  cpv: "CPV",
+  estado_licitacion: "Estado plataforma",
+  valor_estimado: "Valor estimado",
+  duracion: "Duración/plazo",
+};
 
 function isAdmin() {
   return appState.user?.role === "admin";
+}
+
+function isNuria() {
+  return appState.user?.role === "nuria";
+}
+
+function isNuriaDayReview() {
+  return Boolean(appState.currentDiaId) && isNuria();
 }
 
 function escapeHtml(value) {
@@ -227,6 +348,13 @@ function formatDate(value) {
   const [year, month, day] = String(value).split("-");
   if (!year || !month || !day) return value;
   return `${day}/${month}/${year}`;
+}
+
+function formatDateTime(value) {
+  if (!value) return "";
+  const [datePart, timePart = ""] = String(value).split("T");
+  const time = timePart.slice(0, 5);
+  return [formatDate(datePart), time].filter(Boolean).join(" ");
 }
 
 function parseTimeParts(value) {
@@ -325,6 +453,26 @@ function estadoLabel(value) {
   return estadoLabels[value] || value || "";
 }
 
+function estadoActionLabel(value) {
+  if (value === "Descartada") return "Descartar";
+  if (value === "Enviada a Nuria") return "Enviar a Nuria para revisión";
+  if (value === "Descargar para ver") return "Descargar para ver";
+  if (value === "Preparar ficha") return "Preparar ficha";
+  return estadoLabel(value);
+}
+
+function normalizedTaskStateValue(value) {
+  const key = String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+  if (["preparado", "preparada"].includes(key)) return "preparado";
+  if (["respondida", "cerrado", "cerrada", "enviado", "enviada"].includes(key)) return "enviado";
+  if (["cancelado", "cancelada"].includes(key)) return "cancelado";
+  return "pendiente";
+}
+
 function normalizeUrl(value) {
   const url = String(value ?? "").trim();
   if (!url) return "";
@@ -346,7 +494,7 @@ function applyRoleUi() {
     element.hidden = !isAdmin();
   });
   nuriaDaysTabs.hidden = false;
-  document.getElementById("list-button").textContent = isAdmin() ? "Todas las licitaciones" : "Todas mis licitaciones";
+  document.getElementById("list-button").textContent = "Centro de licitaciones";
   if (sessionUser) {
     const name = appState.user?.display_name || appState.user?.username || "";
     sessionUser.textContent = name ? `Sesión: ${name}` : "";
@@ -401,7 +549,7 @@ function setPageHeader(title, kicker = "Panel privado") {
 
 function showDaysView() {
   appState.currentDiaId = "";
-  appState.currentDiaTitle = "Todas las licitaciones";
+  appState.currentDiaTitle = "Centro de licitaciones";
   appState.lastSection = "days";
   setActiveNav("days");
   setPageHeader("Días Infonalia", "Revisión");
@@ -411,24 +559,28 @@ function showDaysView() {
   actuacionesSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
+  monitorSection.hidden = true;
   configSection.hidden = true;
   loadDias();
 }
 
-function showLicitacionesView({ diaId = "", title = "Todas las licitaciones", view = "live" } = {}) {
+function showLicitacionesView({ diaId = "", title = "Centro de licitaciones", view = "live" } = {}) {
   appState.currentDiaId = diaId;
   appState.currentDiaTitle = title;
   appState.licitacionesView = diaId ? "all" : view;
+  if (diaId && isNuria()) stateFilter.value = "__nuria_active";
+  if (!diaId) dateOrder.value = appState.licitacionesView === "live" ? "asc" : "desc";
   currentDayTitle.textContent = title;
   appState.lastSection = "licitaciones";
   setActiveNav("licitaciones");
-  setPageHeader(diaId ? "Revisión de día" : "Licitaciones", diaId ? title : "Bandeja");
+  setPageHeader(diaId ? "Revisión de día" : "Centro de licitaciones", diaId ? title : "Bandeja");
   daysSection.hidden = true;
   licitacionesSection.hidden = false;
   calendarSection.hidden = true;
   actuacionesSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
+  monitorSection.hidden = true;
   configSection.hidden = true;
   renderLicitacionesTabs();
   loadItems();
@@ -436,18 +588,30 @@ function showLicitacionesView({ diaId = "", title = "Todas las licitaciones", vi
 
 function showCalendarView() {
   const todayKey = dateKey(new Date());
+  if (!isAdmin() && appState.agendaView === "pending") appState.agendaView = "day";
   if (!appState.calendarSelectedDate) appState.calendarSelectedDate = todayKey;
   appState.lastSection = "calendar";
   setActiveNav("calendar");
-  setPageHeader("Agenda", "Fecha activa / Semana / Calendario / Todo");
+  setPageHeader("Agenda", isAdmin() ? "Tareas pendientes / Hoy / Semana / Calendario / Todo" : "Hoy / Semana / Calendario / Todo");
   daysSection.hidden = true;
   licitacionesSection.hidden = true;
   calendarSection.hidden = false;
   actuacionesSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
+  monitorSection.hidden = true;
   configSection.hidden = true;
   loadCalendarItems();
+}
+
+function showInitialView() {
+  if (isAdmin()) {
+    appState.agendaView = "pending";
+    appState.calendarSelectedDate = dateKey(new Date());
+    showCalendarView();
+    return;
+  }
+  showDaysView();
 }
 
 function showActuacionesView() {
@@ -460,6 +624,7 @@ function showActuacionesView() {
   actuacionesSection.hidden = false;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
+  monitorSection.hidden = true;
   configSection.hidden = true;
   loadActuaciones();
 }
@@ -473,6 +638,7 @@ function showNotificationsView() {
   actuacionesSection.hidden = true;
   notificationsSection.hidden = false;
   newsAdminSection.hidden = true;
+  monitorSection.hidden = true;
   configSection.hidden = true;
   loadNotifications();
 }
@@ -488,8 +654,25 @@ function showNewsAdminView() {
   actuacionesSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = false;
+  monitorSection.hidden = true;
   configSection.hidden = true;
   loadNewsAdmin();
+}
+
+function showMonitorView() {
+  if (!isAdmin()) return;
+  appState.lastSection = "monitor";
+  setActiveNav("monitor");
+  setPageHeader("Monitor", "Histórico de ejecuciones");
+  daysSection.hidden = true;
+  licitacionesSection.hidden = true;
+  calendarSection.hidden = true;
+  actuacionesSection.hidden = true;
+  notificationsSection.hidden = true;
+  newsAdminSection.hidden = true;
+  monitorSection.hidden = false;
+  configSection.hidden = true;
+  loadMonitorRuns();
 }
 
 function showConfigView() {
@@ -503,6 +686,7 @@ function showConfigView() {
   actuacionesSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
+  monitorSection.hidden = true;
   configSection.hidden = false;
   loadConfig();
 }
@@ -514,6 +698,10 @@ function backFromNotifications() {
   }
   if (appState.lastSection === "calendar") {
     showCalendarView();
+    return;
+  }
+  if (appState.lastSection === "monitor") {
+    showMonitorView();
     return;
   }
   if (appState.lastSection === "licitaciones") {
@@ -674,7 +862,7 @@ function linkedLicitacionesCountText(licitaciones = []) {
 function renderActuacionCard(item) {
   const deadline = item.deadline_at ? item.deadline_at.replace("T", " ") : "Sin fecha";
   const linked = item.licitaciones || [];
-  const canClose = ["pendiente", "en_curso", "respondida"].includes(item.estado);
+  const canClose = ["pendiente", "en_curso", "preparado", "preparada"].includes(item.estado);
   return `
     <article class="card compact-card actuacion-card">
       <div class="card-content">
@@ -843,7 +1031,7 @@ async function editActuacion(id) {
   actuacionForm.elements.descripcion.value = item.descripcion || "";
   actuacionForm.elements.deadline_at.value = toDatetimeLocal(item.deadline_at || "");
   showDateWarning(actuacionDateWarning, actuacionForm.elements.deadline_at.value);
-  actuacionForm.elements.estado.value = item.estado || "pendiente";
+  actuacionForm.elements.estado.value = normalizedTaskStateValue(item.estado || "pendiente");
   actuacionForm.elements.recordatorio_email.checked = Boolean(item.recordatorio_email);
   setSelectedActuacionLicitaciones(item.licitaciones || []);
   renderActuacionHistory(item.historial || []);
@@ -945,7 +1133,7 @@ function openAgendaEventoDialog(item = null) {
   agendaEventForm.elements.descripcion.value = item?.subtitle || item?.descripcion || "";
   agendaEventForm.elements.starts_at.value = toDatetimeLocal(item?.datetime || item?.starts_at || "");
   showDateWarning(agendaEventDateWarning, agendaEventForm.elements.starts_at.value, { required: true });
-  agendaEventForm.elements.estado.value = item?.status || item?.estado || "pendiente";
+  agendaEventForm.elements.estado.value = normalizedTaskStateValue(item?.status || item?.estado || "pendiente");
   agendaEventDialog.showModal();
 }
 
@@ -983,6 +1171,28 @@ async function setAgendaEventoEstado(id, action) {
   await loadCalendarItems();
 }
 
+async function updatePendingTaskState(token, stateValue) {
+  const [sourceType, sourceId] = String(token || "").split(":");
+  if (!sourceType || !sourceId) return;
+  const endpoint = {
+    licitacion: `/api/licitaciones/${sourceId}`,
+    actuacion: `/api/actuaciones/${sourceId}`,
+    interno: `/api/agenda/eventos/${sourceId}`,
+  }[sourceType];
+  if (!endpoint) return;
+  const response = await fetch(endpoint, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
+    body: JSON.stringify({ estado: stateValue }),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(result.error || "No se pudo actualizar el estado.");
+    return;
+  }
+  await loadCalendarItems();
+}
+
 async function sendAgendaEmailSummary() {
   const payload = {
     view: appState.agendaView || "day",
@@ -1001,14 +1211,17 @@ async function sendAgendaEmailSummary() {
     alert(result.error || "No se pudo enviar el resumen.");
     return;
   }
-  alert("Resumen enviado por email.");
+  const status = result.dry_run
+    ? "Dry-run: no se ha enviado email real."
+    : "Resumen enviado por email.";
+  alert(`${status}\n\n${result.subject || ""}\n\n${result.preview || ""}`.trim());
 }
 
 function openAgendaOrigin(token) {
   const [sourceType, sourceId] = String(token || "").split(":");
   if (!sourceType || !sourceId) return;
   if (sourceType === "licitacion") {
-    openEditEditor(sourceId);
+    openLicitacionDetail(sourceId);
     return;
   }
   if (sourceType === "actuacion") {
@@ -1081,17 +1294,30 @@ async function loadItems() {
   const q = searchInput.value.trim();
   const visibleOrder = visibleStateOrder();
 
-  if (estado && estado !== "Todos" && !visibleOrder.includes(estado)) {
+  if (isNuriaDayReview()) {
+    const option = nuriaDayFilterOptions.find((item) => item.value === estado) || nuriaDayFilterOptions[0];
+    estado = option.value;
+    stateFilter.value = estado;
+    params.set("nuria_filter", option.filter);
+  } else if (estado && estado !== "Todos" && !visibleOrder.includes(estado)) {
     estado = "Todos";
     stateFilter.value = "Todos";
   }
 
-  if (estado && estado !== "Todos") params.set("estado", estado);
+  if (!isNuriaDayReview() && estado && estado !== "Todos") params.set("estado", estado);
   if (appState.currentDiaId) params.set("dia_id", appState.currentDiaId);
   if (!appState.currentDiaId && appState.licitacionesView === "live") params.set("vivas", "1");
-  if (!appState.currentDiaId && appState.licitacionesView === "active") params.set("vigentes", "1");
   params.set("orden_fecha", ordenFecha);
   if (q) params.set("q", q);
+  if (licitacionesActuacionesFilter.value) params.set("actuaciones", licitacionesActuacionesFilter.value);
+  const quickFilter = licitacionesQuickFilter.value;
+  if (quickFilter === "revision_pendiente") params.set("revision", "pendiente");
+  if (quickFilter === "revision_revisada") params.set("revision", "revisada");
+  if (quickFilter === "seguimiento") params.set("seguimiento", "1");
+  if (quickFilter === "sin_documentacion") params.set("documentacion", "sin_descargar");
+  if (quickFilter === "descarga_fallida") params.set("documentacion", "fallida");
+  if (quickFilter === "estado_descartada") params.set("estado_interno", "Descartada");
+  if (quickFilter === "estado_presentada") params.set("estado_interno", "Presentada");
 
   const response = await fetch(`/api/licitaciones?${params.toString()}`);
   if (!response.ok) {
@@ -1132,11 +1358,23 @@ function visibleStateOrder() {
   if (!appState.currentDiaId && appState.licitacionesView === "live") {
     return isAdmin() ? calendarioEstados : nuriaLicitacionesEstados;
   }
+  if (appState.currentDiaId && isAdmin()) return ["Importada", ...adminReviewEstados];
   if (isAdmin()) return estadoOrden;
-  return appState.currentDiaId ? nuriaEstados : nuriaLicitacionesEstados;
+  return appState.currentDiaId ? nuriaDefaultReviewEstados : nuriaLicitacionesEstados;
 }
 
 function renderStateFilter() {
+  if (isNuriaDayReview()) {
+    const current = stateFilter.value || "__nuria_active";
+    const safeCurrent = nuriaDayFilterOptions.some((option) => option.value === current) ? current : "__nuria_active";
+    stateFilter.innerHTML = nuriaDayFilterOptions
+      .map((option) => (
+        `<option value="${escapeHtml(option.value)}" ${option.value === safeCurrent ? "selected" : ""}>${escapeHtml(option.label)}</option>`
+      ))
+      .join("");
+    stateFilter.value = safeCurrent;
+    return;
+  }
   const current = stateFilter.value || "Todos";
   const visibleOrder = visibleStateOrder();
   const safeCurrent = current === "Todos" || visibleOrder.includes(current) ? current : "Todos";
@@ -1152,17 +1390,13 @@ function renderStateFilter() {
 }
 
 function renderSummary() {
-  summary.innerHTML = [
-    ["Vista actual", appState.items.length],
-    ["Pendientes de revisión", appState.totals["Pendiente Nuria"] || 0],
-    ["Solo descargar", appState.totals["Descargar"] || 0],
-    ["Preparar licitación", appState.totals["Hacer"] || 0],
-  ].map(renderMetric).join("");
+  summary.innerHTML = "";
+  summary.hidden = true;
 }
 
 function renderReviewButton() {
   const hasDay = Boolean(appState.currentDiaId);
-  const hasPendingReview = Number(appState.currentDayPendingReview ?? appState.totals["Pendiente Nuria"] ?? 0) > 0;
+  const hasPendingReview = Number(appState.currentDayPendingReview ?? appState.totals["Enviada a Nuria"] ?? 0) > 0;
   const dia = appState.dias.find((item) => String(item.id) === String(appState.currentDiaId));
   const isReviewed = diaIsCurrentlyReviewed(dia);
   reviewDayButton.hidden = !hasDay;
@@ -1229,6 +1463,26 @@ function renderBoard() {
 }
 
 async function loadCalendarItems() {
+  if (appState.agendaView === "pending") {
+    const params = new URLSearchParams();
+    const search = calendarSearch.value.trim();
+    if (search) params.set("q", search);
+    const response = await fetch(`/api/agenda/pending-tasks?${params.toString()}`);
+    if (!response.ok) {
+      if (response.status === 401) location.href = "/login";
+      if (response.status === 403) showDaysView();
+      return;
+    }
+    const data = await response.json();
+    appState.calendarItems = data.items || [];
+    appState.agendaGroups = data.groups || {};
+    appState.agendaSummary = {};
+    appState.agendaWorkbench = null;
+    renderCalendarStateFilter();
+    renderCalendar();
+    return;
+  }
+
   const params = new URLSearchParams();
   params.set("view", appState.agendaView || "day");
   params.set("date", appState.calendarSelectedDate || dateKey(new Date()));
@@ -1251,6 +1505,7 @@ async function loadCalendarItems() {
   appState.agendaSummary = data.summary || {};
   appState.agendaActiveDateLabel = data.active_date_label || "";
   appState.agendaIsToday = Boolean(data.is_today);
+  appState.agendaWorkbench = null;
   renderCalendarStateFilter();
   renderCalendar();
 }
@@ -1277,12 +1532,13 @@ function calendarFilteredItems() {
 
 function renderCalendarStateFilter() {
   calendarStateFilter.value = appState.agendaType || "all";
-  calendarSection.classList.remove("agenda-view-day", "agenda-view-week", "agenda-view-month", "agenda-view-all");
+  calendarStateFilter.disabled = appState.agendaView === "pending";
+  calendarSection.classList.remove("agenda-view-pending", "agenda-view-day", "agenda-view-week", "agenda-view-month", "agenda-view-all");
   calendarSection.classList.add(`agenda-view-${appState.agendaView || "day"}`);
   document.querySelectorAll("[data-agenda-view]").forEach((button) => {
     button.classList.toggle("active", button.dataset.agendaView === appState.agendaView);
     if (button.dataset.agendaView === "day") {
-      button.textContent = appState.agendaActiveDateLabel || "Fecha activa";
+      button.textContent = "Hoy";
     }
   });
 }
@@ -1353,6 +1609,34 @@ function agendaOpenLabel(item) {
   return "Abrir evento";
 }
 
+function isPendingAgendaView() {
+  return appState.agendaView === "pending";
+}
+
+function pendingStateOptions(item) {
+  if (item.state_options && item.state_options.length) return item.state_options;
+  if (item.source_type === "licitacion") return estadoOrden.map((estado) => ({ value: estado, label: estadoLabel(estado) }));
+  return taskStateOptions;
+}
+
+function renderPendingStateControl(item) {
+  if (!isPendingAgendaView()) return "";
+  const token = `${item.source_type}:${item.source_id}`;
+  const value = item.source_type === "licitacion"
+    ? (item.state_value || item.status || item.state || "")
+    : normalizedTaskStateValue(item.state_value || item.raw_state || item.status || item.state);
+  return `
+    <label class="agenda-state-control">
+      <span>Estado</span>
+      <select data-pending-state="${escapeHtml(token)}">
+        ${pendingStateOptions(item).map((option) => `
+          <option value="${escapeHtml(option.value)}" ${String(option.value) === String(value) ? "selected" : ""}>${escapeHtml(option.label)}</option>
+        `).join("")}
+      </select>
+    </label>
+  `;
+}
+
 function renderAgendaActions(item) {
   const token = `${item.source_type}:${item.source_id}`;
   const actions = [`<button type="button" data-agenda-open="${escapeHtml(token)}">${escapeHtml(agendaOpenLabel(item))}</button>`];
@@ -1363,11 +1647,11 @@ function renderAgendaActions(item) {
     actions.push(`<button type="button" data-agenda-comment="${escapeHtml(item.source_id)}">Añadir comentario</button>`);
     actions.push(`<button type="button" data-agenda-duplicate="${escapeHtml(item.source_id)}">Duplicar actuación</button>`);
   }
-  if (item.source_type === "interno") {
+  if (item.source_type === "interno" && !isPendingAgendaView()) {
     actions.push(`<button type="button" data-agenda-close="${escapeHtml(item.source_id)}">Cerrar</button>`);
     actions.push(`<button type="button" class="danger" data-agenda-cancel="${escapeHtml(item.source_id)}">Cancelar</button>`);
   }
-  return `<div class="links">${actions.join("")}</div>`;
+  return `${renderPendingStateControl(item)}<div class="links">${actions.join("")}</div>`;
 }
 
 function renderCalendar() {
@@ -1376,6 +1660,8 @@ function renderCalendar() {
   const today = new Date();
   const todayKey = dateKey(today);
   const selectedKey = appState.calendarSelectedDate || todayKey;
+  if (agendaWorkbench) agendaWorkbench.innerHTML = "";
+  calendarSummary.innerHTML = "";
 
   if (appState.agendaView === "day") {
     calendarMonthTitle.textContent = `Fecha activa · ${appState.agendaActiveDateLabel || formatDate(selectedKey)}`;
@@ -1385,17 +1671,16 @@ function renderCalendar() {
     calendarMonthTitle.textContent = `Semana · ${formatDate(dateKey(start))} - ${formatDate(dateKey(end))}`;
   } else if (appState.agendaView === "all") {
     calendarMonthTitle.textContent = "Todo lo agendado";
+  } else if (appState.agendaView === "pending") {
+    calendarMonthTitle.textContent = "Tareas pendientes";
   } else {
     calendarMonthTitle.textContent = `Calendario · ${monthTitle(monthDate)}`;
   }
-  calendarSummary.innerHTML = [
-    ["Vencidos", appState.agendaSummary.overdue || 0],
-    ["Fecha activa", appState.agendaSummary.active_date || appState.agendaSummary.today || 0],
-    ["Semana", appState.agendaSummary.week || 0],
-    ["Sin fecha", appState.agendaSummary.no_date || 0],
-    ["Total abiertos", appState.agendaSummary.total_open || 0],
-  ].map(renderMetric).join("");
 
+  if (appState.agendaView === "pending") {
+    renderAgendaPending(filtered);
+    return;
+  }
   if (appState.agendaView === "day") {
     renderAgendaDay(filtered, selectedKey);
     return;
@@ -1411,11 +1696,125 @@ function renderCalendar() {
   renderAgendaMonth(filtered, selectedKey);
 }
 
+function renderAgendaWorkbench() {
+  const workbench = appState.agendaWorkbench;
+  if (!workbench || !agendaWorkbench) {
+    if (agendaWorkbench) agendaWorkbench.innerHTML = "";
+    return;
+  }
+  const sections = workbench.sections || [];
+  const counts = workbench.summary || {};
+  const grouped = workbench.actuaciones_by_licitacion || [];
+  const selected = sections.find((section) => section.key === appState.agendaWorkbenchSelectedKey);
+  agendaWorkbench.innerHTML = `
+    <div class="workbench-head">
+      <div>
+        <p class="eyebrow">Bandeja operativa</p>
+        <h3>Prioridades</h3>
+      </div>
+      <span>${escapeHtml(counts.open_actuaciones_count || 0)} actuaciones abiertas</span>
+    </div>
+    <div class="workbench-grid">
+      ${sections.map((section) => `
+        <button type="button" class="workbench-card ${selected?.key === section.key ? "active-state" : ""}" data-workbench-key="${escapeHtml(section.key)}">
+          <span>${escapeHtml(section.title)}</span>
+          <strong>${escapeHtml(section.count || 0)}</strong>
+        </button>
+      `).join("")}
+    </div>
+    ${selected ? `
+      <section class="agenda-group workbench-group">
+        <h3>${escapeHtml(selected.title)}</h3>
+        ${(selected.items || []).length ? (selected.items || []).slice(0, 10).map(renderWorkbenchItem).join("") : `<div class="empty">Sin elementos.</div>`}
+      </section>
+    ` : ""}
+    ${grouped.length ? `
+      <section class="agenda-group workbench-group">
+        <h3>Actuaciones por licitación</h3>
+        ${grouped.slice(0, 6).map((item) => `
+          <article class="radar-card agenda-card ${Number(item.overdue_count || 0) ? "agenda-event--vencido" : "agenda-event--actuacion"}">
+            <span>${escapeHtml(item.open_count || 0)} abiertas · ${escapeHtml(item.overdue_count || 0)} vencidas</span>
+            <strong>${escapeHtml(item.expediente || item.organismo || `Licitación ${item.licitacion_id}`)}</strong>
+            <small>${escapeHtml(item.next_deadline_at || "Sin próxima fecha")}</small>
+            <div class="links">
+              <button type="button" data-workbench-licitacion="${escapeHtml(item.licitacion_id)}">Abrir licitación</button>
+              <button type="button" data-workbench-actuaciones="${escapeHtml(item.licitacion_id)}">Ver actuaciones</button>
+            </div>
+          </article>
+        `).join("")}
+      </section>
+    ` : ""}
+  `;
+}
+
+function renderWorkbenchItem(item) {
+  const sourceType = item.source_type || (item.expediente ? "licitacion" : "");
+  const title = item.title || item.expediente || item.objeto || item.organismo || "Sin título";
+  const subtitle = item.subtitle || item.objeto || item.organismo || item.error_message || "";
+  const when = item.datetime || item.date || item.fecha_limite || item.download_updated_at || "Sin fecha";
+  const id = item.source_id || item.id || "";
+  const colorClass = sourceType === "actuacion"
+    ? "agenda-event--actuacion"
+    : sourceType === "licitacion"
+      ? "agenda-event--licitacion"
+      : "agenda-event--interno";
+  return `
+    <article class="radar-card agenda-card ${item.is_overdue ? "agenda-event--vencido" : colorClass}">
+      <span>${escapeHtml(sourceType || "Prioridad")}</span>
+      <strong>${escapeHtml(title)}</strong>
+      <small>${escapeHtml(when)}</small>
+      <small>${escapeHtml(subtitle)}</small>
+      ${sourceType === "licitacion" && id ? `<div class="links"><button type="button" data-workbench-licitacion="${escapeHtml(id)}">Abrir licitación</button></div>` : ""}
+      ${sourceType === "actuacion" && id ? `<div class="links"><button type="button" data-workbench-actuacion="${escapeHtml(id)}">Abrir actuación</button></div>` : ""}
+    </article>
+  `;
+}
+
+function activateWorkbenchSection(key) {
+  appState.agendaWorkbenchSelectedKey = key;
+  const today = dateKey(new Date());
+  if (key === "overdue") {
+    appState.agendaView = "all";
+    appState.agendaType = "vencido";
+    loadCalendarItems();
+    return;
+  }
+  if (key === "due_today") {
+    appState.agendaView = "day";
+    appState.agendaType = "all";
+    appState.calendarSelectedDate = today;
+    loadCalendarItems();
+    return;
+  }
+  if (key === "next_7_days") {
+    appState.agendaView = "week";
+    appState.agendaType = "all";
+    appState.calendarSelectedDate = today;
+    loadCalendarItems();
+    return;
+  }
+  if (key === "without_date") {
+    appState.agendaView = "all";
+    appState.agendaType = "sin_fecha";
+    loadCalendarItems();
+    return;
+  }
+  if (key === "new_licitaciones") {
+    stateFilter.value = "Importada";
+    licitacionesActuacionesFilter.value = "";
+    showLicitacionesView({ view: "all" });
+    return;
+  }
+  if (key === "failed_downloads") {
+    renderAgendaWorkbench();
+  }
+}
+
 function renderAgendaMonth(items, selectedKey) {
   const groups = itemsByDate(items);
   const monthDate = appState.calendarDate;
   const todayKey = dateKey(new Date());
-  renderCalendarRadar(items);
+  calendarRadar.innerHTML = "";
   const start = monthStartMonday(monthDate);
   const cells = [];
   for (let index = 0; index < 42; index += 1) {
@@ -1483,16 +1882,27 @@ function renderCalendarRadar(items) {
 }
 
 function renderAgendaDay(items, selectedKey) {
+  const dayTitle = agendaDayHeading(selectedKey);
+  calendarRadar.innerHTML = renderAgendaListPanel(
+    "Agenda del día",
+    "Eventos del día",
+    renderAgendaGroup(dayTitle, items)
+  );
+  calendarBoard.innerHTML = "";
+  calendarDayPanel.innerHTML = "";
+}
+
+function renderAgendaPending(items) {
   const groups = appState.agendaGroups || {};
-  const overdue = groups.overdue || items.filter((item) => item.is_overdue);
-  const dayItems = groups.day || items.filter((item) => item.date === selectedKey && !item.is_overdue);
-  const withoutDate = groups.no_date || items.filter((item) => !item.date);
-  const dayTitle = appState.agendaIsToday ? "Eventos de hoy" : "Eventos del día";
-  calendarRadar.innerHTML = [
-    renderAgendaGroup("Vencidos abiertos", overdue),
-    renderAgendaGroup(dayTitle, dayItems),
-    renderAgendaGroup("Sin fecha", withoutDate),
-  ].join("");
+  const blocks = [
+    renderAgendaGroup("Vencidos", groups.overdue || items.filter((item) => item.is_overdue)),
+    renderAgendaGroup("Sin fecha", groups.no_date || items.filter((item) => item.is_without_date)),
+    renderAgendaGroup("Hoy", groups.today || items.filter((item) => item.is_today && !item.is_overdue)),
+    renderAgendaGroup("Próximos", groups.upcoming || items.filter((item) => (
+      !item.is_overdue && !item.is_without_date && !item.is_today
+    ))),
+  ];
+  calendarRadar.innerHTML = renderAgendaListPanel("Tareas pendientes", "Lista de trabajo", blocks.join(""));
   calendarBoard.innerHTML = "";
   calendarDayPanel.innerHTML = "";
 }
@@ -1513,7 +1923,7 @@ function renderAgendaAll(items, selectedKey) {
     renderAgendaGroup("Vencidos", overdue),
     renderAgendaGroup("Próximos", upcoming),
   ];
-  calendarRadar.innerHTML = blocks.join("");
+  calendarRadar.innerHTML = renderAgendaListPanel("Agenda completa", "Todos los eventos", blocks.join(""));
   calendarBoard.innerHTML = "";
   calendarDayPanel.innerHTML = "";
 }
@@ -1522,52 +1932,21 @@ function renderAgendaWeek(items, selectedKey) {
   const selected = parseDate(selectedKey) || new Date();
   const start = weekStartMonday(selected);
   const groups = itemsByDate(items);
-  calendarRadar.innerHTML = "";
-  const cells = [];
-  for (let index = 0; index < 7; index += 1) {
-    const day = addDays(start, index);
-    const key = dateKey(day);
-    const dayItems = (groups.get(key) || []).sort(compareCalendarItems);
-    cells.push(`
-      <article class="calendar-day agenda-week-day ${key === selectedKey ? "selected" : ""}" data-calendar-date="${escapeHtml(key)}">
-        <div class="calendar-day-head">
-          <strong>${escapeHtml(day.toLocaleDateString("es-ES", { weekday: "short", day: "2-digit" }))}</strong>
-          ${dayItems.length ? `<span>${dayItems.length}</span>` : ""}
-        </div>
-        <div class="calendar-events">
-          ${dayItems.slice(0, 6).map(renderCalendarEvent).join("")}
-          ${dayItems.length > 6 ? `<span class="calendar-more">+${dayItems.length - 6} más</span>` : ""}
-        </div>
-      </article>
-    `);
-  }
-  calendarBoard.innerHTML = cells.join("");
+  calendarBoard.innerHTML = "";
+  calendarDayPanel.innerHTML = "";
   renderAgendaWeekList(items, start, groups);
 }
 
 function renderAgendaWeekList(items, start, groups) {
-  const currentWeekKeys = new Set(Array.from({ length: 7 }, (_, index) => dateKey(addDays(start, index))));
-  const overdueOutsideWeek = items
-    .filter((item) => item.is_overdue && item.date && !currentWeekKeys.has(item.date))
-    .sort(compareCalendarItems);
   const sections = [];
-  if (overdueOutsideWeek.length) {
-    sections.push(renderAgendaGroup("Vencidos abiertos", overdueOutsideWeek));
-  }
   for (let index = 0; index < 7; index += 1) {
     const day = addDays(start, index);
     const key = dateKey(day);
-    const title = day.toLocaleDateString("es-ES", { weekday: "long", day: "2-digit", month: "short" });
+    const title = agendaDayHeading(key);
     const dayItems = (groups.get(key) || []).sort(compareCalendarItems);
-    sections.push(renderAgendaGroup(title.charAt(0).toUpperCase() + title.slice(1), dayItems));
+    sections.push(renderAgendaGroup(title, dayItems));
   }
-  calendarDayPanel.innerHTML = `
-    <div class="panel-sticky agenda-week-list">
-      <p class="eyebrow">Agenda semanal</p>
-      <h3>Eventos de la semana</h3>
-      <div class="agenda-week-list-content">${sections.join("")}</div>
-    </div>
-  `;
+  calendarRadar.innerHTML = renderAgendaListPanel("Agenda semanal", "Eventos de la semana", sections.join(""));
 }
 
 function renderAgendaGroup(title, items) {
@@ -1579,64 +1958,49 @@ function renderAgendaGroup(title, items) {
   `;
 }
 
+function renderAgendaListPanel(eyebrow, title, content) {
+  return `
+    <div class="panel-sticky agenda-week-list">
+      <p class="eyebrow">${escapeHtml(eyebrow)}</p>
+      <h3>${escapeHtml(title)}</h3>
+      <div class="agenda-week-list-content">${content}</div>
+    </div>
+  `;
+}
+
+function agendaDayHeading(key) {
+  if (key === "sin-fecha") return "Sin fecha";
+  const parsed = parseDate(key);
+  const text = parsed
+    ? parsed.toLocaleDateString("es-ES", { weekday: "long", day: "2-digit", month: "short" })
+    : formatDate(key);
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : "Sin fecha";
+}
+
 function renderAgendaCompactCard(item) {
   const colorClass = agendaEventClass(item);
+  const linked = agendaLinkedText(item);
   return `
     <article class="radar-card agenda-card ${colorClass}" data-calendar-date="${escapeHtml(item.date || "sin-fecha")}">
       <span><b class="agenda-event-dot ${colorClass}"></b>${escapeHtml(agendaTypeLabel(item))}${item.is_overdue ? " · Vencido" : ""}</span>
       <strong>${escapeHtml(item.title || "Sin título")}</strong>
+      <small>Estado: ${escapeHtml(agendaStatusLabel(item))}</small>
       <small>${escapeHtml(item.date ? formatDate(item.date) : "Sin fecha")}${agendaEventTime(item) ? ` · ${escapeHtml(agendaEventTime(item))}` : ""}</small>
       <small>${escapeHtml(item.subtitle || "")}</small>
+      ${linked ? `<small>Licitación vinculada: ${escapeHtml(linked)}</small>` : ""}
       ${renderAgendaActions(item)}
     </article>
   `;
 }
 
 function renderCalendarDayPanel(items, key) {
-  const dateText = key === "sin-fecha" ? "Sin fecha" : formatDate(key);
+  const dateText = agendaDayHeading(key);
   const sorted = [...items].sort(compareCalendarItems);
-  if (!sorted.length) {
-    calendarDayPanel.innerHTML = `
-      <div class="panel-sticky">
-        <p class="eyebrow">Día seleccionado</p>
-        <h3>${escapeHtml(dateText)}</h3>
-        <div class="empty">No hay eventos este día.</div>
-      </div>
-    `;
-    return;
-  }
-
-  calendarDayPanel.innerHTML = `
-    <div class="panel-sticky">
-      <p class="eyebrow">Día seleccionado</p>
-      <h3>${escapeHtml(dateText)}</h3>
-      <div class="calendar-panel-list">
-        ${sorted.map((item) => {
-          const linked = agendaLinkedText(item);
-          const colorClass = agendaEventClass(item);
-          return `
-            <article class="calendar-panel-item ${colorClass}">
-              <div class="calendar-panel-head">
-                <span class="due-chip ${colorClass}"><b class="agenda-event-dot ${colorClass}"></b>${escapeHtml(agendaTypeLabel(item))}</span>
-                <span class="badge ${badgeClass(item.status)}">${escapeHtml(agendaStatusLabel(item))}</span>
-              </div>
-              <h4>${escapeHtml(item.title || "Sin título")}</h4>
-              <p class="calendar-panel-org">${escapeHtml(item.source_type || "")}</p>
-              <p>${escapeHtml(item.subtitle || "")}</p>
-              ${linked ? `<p>${escapeHtml(linked)}</p>` : ""}
-              <div class="calendar-panel-meta">
-                ${item.date ? `<span>${escapeHtml(formatDate(item.date))}</span>` : `<span>Sin fecha</span>`}
-                ${agendaEventTime(item) ? `<span>${escapeHtml(agendaEventTime(item))}</span>` : ""}
-                ${item.is_overdue ? `<span>Vencido abierto</span>` : ""}
-                ${(item.date_warnings || []).includes("fecha_pasada") ? `<span>Fecha pasada</span>` : ""}
-              </div>
-              ${renderAgendaActions(item)}
-            </article>
-          `;
-        }).join("")}
-      </div>
-    </div>
-  `;
+  calendarDayPanel.innerHTML = renderAgendaListPanel(
+    "Calendario",
+    "Eventos del día seleccionado",
+    renderAgendaGroup(dateText, sorted)
+  );
 }
 
 async function loadNotifications() {
@@ -1884,6 +2248,8 @@ function renderSettingsConfig() {
   settingsForm.elements.smtp_port.value = settings.smtp_port || "587";
   settingsForm.elements.smtp_user.value = settings.smtp_user || "";
   settingsForm.elements.smtp_from.value = settings.smtp_from || "";
+  settingsForm.elements.agenda_email_to.value = settings.agenda_email_to || "";
+  settingsForm.elements.seguimiento_emails.value = settings.seguimiento_emails || "";
   settingsForm.elements.smtp_tls.checked = settings.smtp_tls !== "0";
   settingsForm.elements.smtp_ssl.checked = settings.smtp_ssl === "1";
   settingsForm.elements.smtp_password.placeholder = settings.smtp_password_set
@@ -1913,6 +2279,7 @@ function renderStorageConfig() {
     <div class="storage-status-row"><span>Modo actual</span><strong>${escapeHtml(storageValue(storage.current_mode_label || storage.backend))}</strong></div>
     <div class="storage-status-row"><span>Carpeta local</span><strong>${escapeHtml(storageValue(storage.local_download_root))}</strong></div>
     <div class="storage-status-row"><span>Dropbox Desktop</span><strong>${escapeHtml(storage.dropbox_desktop_detected ? "detectado" : "no detectado")}</strong></div>
+    <div class="storage-status-row"><span>Escaneo marcadores</span><strong>${escapeHtml(`${storage.monitor_year_min || 2000}-${storage.monitor_year_max || 2300}`)}</strong></div>
     <div class="storage-status-row"><span>Dropbox API</span><strong>${escapeHtml(apiStatus)}</strong></div>
     <div class="storage-status-row"><span>Raíz API remota</span><strong>${escapeHtml(storageValue(storage.root))}</strong></div>
     ${warnings.length ? `<div class="notification-warning">${warnings.map(escapeHtml).join("<br>")}</div>` : ""}
@@ -1991,6 +2358,8 @@ function settingsPayload() {
     smtp_port: settingsForm.elements.smtp_port.value.trim() || "587",
     smtp_user: settingsForm.elements.smtp_user.value.trim(),
     smtp_from: settingsForm.elements.smtp_from.value.trim(),
+    agenda_email_to: settingsForm.elements.agenda_email_to.value.trim(),
+    seguimiento_emails: settingsForm.elements.seguimiento_emails.value.trim(),
     smtp_tls: settingsForm.elements.smtp_tls.checked ? "1" : "0",
     smtp_ssl: settingsForm.elements.smtp_ssl.checked ? "1" : "0",
     clear_smtp_password: settingsForm.elements.clear_smtp_password.checked,
@@ -2104,21 +2473,321 @@ function dryRunDropboxConfig() {
   runDropboxAction(dryRunDropboxButton, "/api/storage/dropbox/dry-run", "Simulando dry-run...");
 }
 
+async function syncDropboxMarkers() {
+  if (!isAdmin()) return;
+  const originalText = syncDropboxMarkersButton.textContent;
+  syncDropboxMarkersButton.disabled = true;
+  syncDropboxMarkersButton.textContent = "Sincronizando...";
+  storageResult.className = "import-result";
+  storageResult.textContent = "Sincronizando marcadores Dropbox...";
+  try {
+    const response = await fetch("/api/storage/markers/sync", { method: "POST", headers: csrfHeaders() });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      storageResult.className = "import-result error";
+      storageResult.textContent = result.error || "No se pudo sincronizar marcadores Dropbox.";
+      return;
+    }
+    storageResult.className = result.conflicts?.length || result.warnings?.length ? "import-result warning" : "import-result ok";
+    storageResult.textContent = `Marcadores: ${result.found || 0}. Rutas actualizadas: ${result.updated || 0}. En seguimiento: ${result.following || 0}. Conflictos: ${(result.conflicts || []).length}. Avisos: ${(result.warnings || []).length}.`;
+    await loadItems();
+  } catch (error) {
+    storageResult.className = "import-result error";
+    storageResult.textContent = error.message || "No se pudo sincronizar marcadores Dropbox.";
+  } finally {
+    syncDropboxMarkersButton.disabled = false;
+    syncDropboxMarkersButton.textContent = originalText;
+  }
+}
+
+function monitorSummaryText(result) {
+  return [
+    `Modo: ${result.mode || ""}`,
+    `Años: ${(result.year_roots || []).length}`,
+    `Marcadores: ${result.found_markers_count || 0}`,
+    `Licitaciones monitorizadas: ${result.followed_count || 0}`,
+    `Carpetas revisadas: ${result.folders_checked_count || 0}`,
+    `Carpetas corregidas: ${result.folders_repaired_count || result.route_updates_count || 0}`,
+    `Carpetas con incidencias: ${result.folders_broken_count || 0}`,
+    `Plataformas consultadas: ${result.platforms_checked_count || 0}`,
+    `Modificaciones localizadas: ${result.changes_detected_count || 0}`,
+    `Correos preparados/enviados: ${result.emails_prepared_count || 0}/${result.emails_sent_count || 0}`,
+    `Conflictos: ${(result.conflicts || []).length}`,
+    `Avisos: ${(result.warnings || []).length}`,
+  ].join(". ");
+}
+
+function monitorEmailResultText(result) {
+  const details = result.task_details || {};
+  const recipient = details.recipient ? ` Destinatario: ${details.recipient}.` : "";
+  return `Resumen de agenda preparado: ${result.emails_prepared_count || 0}. Enviado: ${result.emails_sent_count || 0}.${recipient}`;
+}
+
+function monitorStatusLabel(status) {
+  const labels = {
+    running: "En curso",
+    completed: "Completada",
+    completed_with_errors: "Completada con errores",
+    failed: "Fallida",
+    ok: "Completada",
+    error: "Fallida",
+  };
+  return labels[status] || status || "Pendiente";
+}
+
+function monitorStatusClass(status) {
+  if (status === "completed") return "ok";
+  if (status === "completed_with_errors") return "warning";
+  if (status === "failed" || status === "error") return "error";
+  return "running";
+}
+
+function monitorTaskTypeLabel(taskType) {
+  return monitorTaskTypeLabels[taskType] || taskType || "Licitaciones";
+}
+
+function monitorIncidenceText(item) {
+  if (item.error_message) return item.error_message;
+  const conflicts = Number(item.conflicts_count || 0);
+  const warnings = Number(item.warnings_count || 0);
+  if (conflicts || warnings) return `${conflicts} conflicto(s), ${warnings} aviso(s)`;
+  return "Sin incidencias";
+}
+
+async function loadMonitorRuns() {
+  if (!isAdmin() || !monitorRunsBoard) return;
+  monitorRunsBoard.innerHTML = `<div class="empty">Cargando histórico...</div>`;
+  try {
+    const params = new URLSearchParams({ limit: "50" });
+    if (monitorTaskTypeFilter?.value) params.set("task_type", monitorTaskTypeFilter.value);
+    const response = await fetch(`/api/monitor/runs?${params.toString()}`);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      monitorRunsBoard.innerHTML = `<div class="empty">No se pudo cargar el histórico del monitor.</div>`;
+      if (monitorRunDetail) monitorRunDetail.innerHTML = `<div class="empty">${escapeHtml(data.error || "Sin detalle disponible.")}</div>`;
+      return;
+    }
+    appState.monitorRuns = data.items || [];
+    renderMonitorRuns();
+  } catch (error) {
+    monitorRunsBoard.innerHTML = `<div class="empty">${escapeHtml(error.message || "No se pudo cargar el histórico del monitor.")}</div>`;
+  }
+}
+
+function renderMonitorRuns() {
+  if (!monitorRunsBoard) return;
+  if (!appState.monitorRuns.length) {
+    monitorRunsBoard.innerHTML = `<div class="empty">Todavía no hay ejecuciones del monitor.</div>`;
+    if (monitorRunDetail) monitorRunDetail.innerHTML = `<div class="empty">Ejecuta el monitor para ver detalle aquí.</div>`;
+    return;
+  }
+  monitorRunsBoard.innerHTML = appState.monitorRuns.map((item, index) => `
+    <button type="button" class="monitor-run-card ${index === 0 ? "active" : ""}" data-monitor-run="${escapeHtml(item.id)}">
+      <span class="monitor-run-head">
+        <strong>${escapeHtml(formatDateTime(item.started_at) || item.started_at || `Ejecución ${item.id}`)}</strong>
+        <span class="monitor-status ${monitorStatusClass(item.status)}">${escapeHtml(monitorStatusLabel(item.status))}</span>
+      </span>
+      <span class="monitor-run-meta">
+        <span>Tipo: ${escapeHtml(monitorTaskTypeLabel(item.task_type))}</span>
+        <span>Elementos: ${escapeHtml(item.processed_items_count || item.followed_count || 0)}</span>
+        <span>Cambios: ${escapeHtml(item.changes_detected_count || 0)}</span>
+        <span>Correos: ${escapeHtml(item.emails_prepared_count || 0)}/${escapeHtml(item.emails_sent_count || 0)}</span>
+        <span>Corregidas: ${escapeHtml(item.folders_repaired_count || item.route_updates_count || 0)}</span>
+      </span>
+    </button>
+  `).join("");
+  renderMonitorRunDetail(appState.monitorRuns[0]);
+}
+
+async function openMonitorRun(id) {
+  if (!id || !monitorRunDetail) return;
+  monitorRunsBoard?.querySelectorAll("[data-monitor-run]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.monitorRun === String(id));
+  });
+  monitorRunDetail.innerHTML = `<div class="empty">Cargando detalle...</div>`;
+  const response = await fetch(`/api/monitor/runs/${encodeURIComponent(id)}`);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    monitorRunDetail.innerHTML = `<div class="empty">${escapeHtml(data.error || "No se pudo cargar el detalle.")}</div>`;
+    return;
+  }
+  renderMonitorRunDetail(data.item);
+}
+
+function renderMonitorRunDetail(item) {
+  if (!monitorRunDetail || !item) return;
+  const details = item.details || {};
+  const taskDetails = details.task_details || {};
+  const warnings = details.warnings || [];
+  const conflicts = details.conflicts || [];
+  const updates = details.route_updates || [];
+  const incidents = [...conflicts, ...warnings];
+  monitorRunDetail.innerHTML = `
+    <div class="panel-head">
+      <div>
+        <p class="eyebrow">Detalle</p>
+        <h3>${escapeHtml(formatDateTime(item.started_at) || item.started_at || `Ejecución ${item.id}`)}</h3>
+      </div>
+      <span class="monitor-status ${monitorStatusClass(item.status)}">${escapeHtml(monitorStatusLabel(item.status))}</span>
+    </div>
+    <div class="monitor-detail-grid">
+      <div class="detail"><span>Tipo de tarea</span>${escapeHtml(monitorTaskTypeLabel(item.task_type))}</div>
+      <div class="detail"><span>Modo</span>${escapeHtml(item.mode || "No informado")}</div>
+      <div class="detail"><span>Programación</span>${escapeHtml(item.schedule_key || "Manual")}</div>
+      <div class="detail"><span>Finalización</span>${escapeHtml(formatDateTime(item.finished_at) || "En curso")}</div>
+      <div class="detail"><span>Elementos procesados</span>${escapeHtml(item.processed_items_count || 0)}</div>
+      <div class="detail"><span>Elementos avisados</span>${escapeHtml(taskDetails.items_notified_count ?? item.changes_detected_count ?? 0)}</div>
+      <div class="detail"><span>Licitaciones monitorizadas</span>${escapeHtml(item.followed_count || 0)}</div>
+      <div class="detail"><span>Carpetas revisadas</span>${escapeHtml(item.folders_checked_count || 0)}</div>
+      <div class="detail"><span>Carpetas corregidas</span>${escapeHtml(item.folders_repaired_count || item.route_updates_count || 0)}</div>
+      <div class="detail"><span>Carpetas con incidencias</span>${escapeHtml(item.folders_broken_count || 0)}</div>
+      <div class="detail"><span>Plataformas consultadas</span>${escapeHtml(item.platforms_checked_count || 0)}</div>
+      <div class="detail"><span>Modificaciones localizadas</span>${escapeHtml(item.changes_detected_count || 0)}</div>
+      <div class="detail"><span>Correos preparados</span>${escapeHtml(item.emails_prepared_count || 0)}</div>
+      <div class="detail"><span>Correos enviados</span>${escapeHtml(item.emails_sent_count || 0)}</div>
+      <div class="detail full-width"><span>Raíz</span>${escapeHtml(item.root_path || "No informada")}</div>
+      <div class="detail full-width"><span>Incidencias</span>${escapeHtml(monitorIncidenceText(item))}</div>
+    </div>
+    ${updates.length ? `<div class="monitor-detail-list"><h4>Rutas corregidas</h4>${updates.map((entry) => `
+      <article class="history-row">
+        <strong>ID ${escapeHtml(entry.licitacion_id)}</strong>
+        <small>${escapeHtml(entry.old_path || "Sin ruta previa")}</small>
+        <span>${escapeHtml(entry.new_path || "")}</span>
+      </article>
+    `).join("")}</div>` : ""}
+    ${incidents.length ? `<div class="monitor-detail-list"><h4>Incidencias</h4>${incidents.map((entry) => `
+      <article class="history-row">
+        <strong>${escapeHtml(entry.code || "incidencia")}</strong>
+        <small>${escapeHtml(entry.path || "")}</small>
+        <span>${escapeHtml(entry.message || "")}</span>
+      </article>
+    `).join("")}</div>` : ""}
+  `;
+}
+
+async function runMonitorMode(button, mode, loadingText) {
+  if (!isAdmin()) return;
+  const originalText = button.textContent;
+  const monitorButtons = [monitorDryRunButton, monitorRepairButton].filter(Boolean);
+  monitorButtons.forEach((item) => { item.disabled = true; });
+  button.textContent = loadingText;
+  storageResult.className = "import-result";
+  storageResult.textContent = loadingText;
+  try {
+    const response = await fetch("/api/monitor/run", {
+      method: "POST",
+      headers: { ...csrfHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      storageResult.className = "import-result error";
+      storageResult.textContent = result.error || "No se pudo ejecutar el monitor.";
+      return;
+    }
+    storageResult.className = result.conflicts?.length || result.warnings?.length ? "import-result warning" : "import-result ok";
+    storageResult.textContent = monitorSummaryText(result);
+    if (mode !== "dry-run") {
+      await loadItems();
+    }
+    await loadMonitorRuns();
+  } catch (error) {
+    storageResult.className = "import-result error";
+    storageResult.textContent = error.message || "No se pudo ejecutar el monitor.";
+  } finally {
+    button.textContent = originalText;
+    monitorButtons.forEach((item) => { item.disabled = false; });
+  }
+}
+
+async function sendMonitorAgendaTask(button, taskType, loadingText, errorText) {
+  if (!isAdmin() || !button) return;
+  const originalText = button.textContent;
+  const monitorEmailButtons = [
+    monitorSendAgendaSummaryButton,
+    monitorSendAgendaDailyButton,
+    monitorSendAgendaWeeklyButton,
+  ].filter(Boolean);
+  monitorEmailButtons.forEach((item) => { item.disabled = true; });
+  button.textContent = "Enviando...";
+  if (monitorActionResult) {
+    monitorActionResult.className = "import-result";
+    monitorActionResult.textContent = loadingText;
+  }
+  try {
+    const response = await fetch("/api/monitor/run", {
+      method: "POST",
+      headers: { ...csrfHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ task_type: taskType, dry_run: false }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (monitorActionResult) {
+        monitorActionResult.className = "import-result error";
+        monitorActionResult.textContent = result.error || errorText;
+      }
+      await loadMonitorRuns();
+      return;
+    }
+    if (monitorActionResult) {
+      monitorActionResult.className = "import-result ok";
+      monitorActionResult.textContent = monitorEmailResultText(result);
+    }
+    if (monitorTaskTypeFilter) monitorTaskTypeFilter.value = taskType;
+    await loadMonitorRuns();
+  } catch (error) {
+    if (monitorActionResult) {
+      monitorActionResult.className = "import-result error";
+      monitorActionResult.textContent = error.message || errorText;
+    }
+  } finally {
+    button.textContent = originalText;
+    monitorEmailButtons.forEach((item) => { item.disabled = false; });
+  }
+}
+
+syncDropboxMarkersButton?.addEventListener("click", syncDropboxMarkers);
+monitorDryRunButton?.addEventListener("click", () => runMonitorMode(monitorDryRunButton, "dry-run", "Simulando monitor..."));
+monitorRepairButton?.addEventListener("click", () => runMonitorMode(monitorRepairButton, "repair-routes", "Reparando rutas..."));
+refreshMonitorRunsButton?.addEventListener("click", loadMonitorRuns);
+monitorSendAgendaSummaryButton?.addEventListener("click", () => sendMonitorAgendaTask(
+  monitorSendAgendaSummaryButton,
+  "resumen_agenda",
+  "Preparando y enviando resumen de agenda...",
+  "No se pudo enviar el resumen de agenda.",
+));
+monitorSendAgendaDailyButton?.addEventListener("click", () => sendMonitorAgendaTask(
+  monitorSendAgendaDailyButton,
+  "agenda_diaria",
+  "Preparando y enviando agenda diaria...",
+  "No se pudo enviar la agenda diaria.",
+));
+monitorSendAgendaWeeklyButton?.addEventListener("click", () => sendMonitorAgendaTask(
+  monitorSendAgendaWeeklyButton,
+  "agenda_semanal",
+  "Preparando y enviando agenda semanal...",
+  "No se pudo enviar la agenda semanal.",
+));
+monitorTaskTypeFilter?.addEventListener("change", loadMonitorRuns);
+monitorRunsBoard?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-monitor-run]");
+  if (button) openMonitorRun(button.dataset.monitorRun);
+});
+
 function renderCard(item) {
   const fechaLimite = [formatDate(item.fecha_limite), item.hora_limite].filter(Boolean).join(" ");
   const remainingDays = daysUntil(item.fecha_limite, item.hora_limite);
   const enlacePerfil = normalizeUrl(item.enlace_perfil);
   const enlaceInfonalia = normalizeUrl(item.enlace_infonalia);
-  const detail = appState.cardDetails[item.id] || null;
-  const expanded = appState.expandedCards.has(String(item.id));
   const links = [
     enlacePerfil ? `<a href="${escapeHtml(enlacePerfil)}" target="_blank" rel="noreferrer">Perfil del contratante</a>` : "",
     enlaceInfonalia ? `<a href="${escapeHtml(enlaceInfonalia)}" target="_blank" rel="noreferrer">Anuncio Infonalia</a>` : "",
   ].filter(Boolean).join("");
-  const stateActions = isAdmin() ? estadoOrden : nuriaEstados;
-  const showActions = true;
-  const showFooterState = !showActions || !stateActions.includes(item.estado);
-  const dueText = dueLabel(remainingDays);
+  const isReview = Boolean(appState.currentDiaId);
+  const stateActions = isAdmin() ? adminReviewEstados : nuriaEstados;
+  const showStateActions = isReview;
+  const dueText = dueLabel(remainingDays) || "Sin fecha";
+  const dueClassName = remainingDays === null ? "" : dueClass(remainingDays);
 
   return `
     <article class="card compact-card">
@@ -2132,8 +2801,8 @@ function renderCard(item) {
               <p class="object">${escapeHtml(item.objeto || "Sin objeto informado")}</p>
             </div>
             <div class="card-flags">
-              ${dueText ? `<span class="due-chip ${dueClass(remainingDays)}">${escapeHtml(dueText)}</span>` : ""}
-              ${Number(item.actuaciones_abiertas || 0) ? `<span class="due-chip ${Number(item.actuaciones_vencidas || 0) ? "expired" : "soon"}">${escapeHtml(item.actuaciones_abiertas)} actuaciones</span>` : ""}
+              <span class="badge ${badgeClass(item.estado)}">${escapeHtml(estadoLabel(item.estado))}</span>
+              <span class="due-chip ${dueClassName}">${escapeHtml(dueText)}</span>
               ${item.provincia ? `<span class="province-chip">${escapeHtml(item.provincia)}</span>` : ""}
             </div>
           </div>
@@ -2146,28 +2815,20 @@ function renderCard(item) {
 
           ${links ? `<div class="links">${links}</div>` : ""}
 
-          <div class="card-actions state-actions">
-            ${showActions ? stateActions.map((estado) => `
-              <button class="${item.estado === estado ? "active-state" : ""}" data-id="${escapeHtml(item.id)}" data-estado="${escapeHtml(estado)}">${escapeHtml(estadoLabel(estado))}</button>
-            `).join("") : ""}
-            ${showFooterState ? `<span class="badge footer-state ${badgeClass(item.estado)}">${escapeHtml(estadoLabel(item.estado))}</span>` : ""}
-          </div>
+          ${showStateActions ? `<div class="card-actions state-actions">
+            ${stateActions.map((estado) => `
+              <button class="${item.estado === estado ? "active-state" : ""}" data-id="${escapeHtml(item.id)}" data-estado="${escapeHtml(estado)}">${escapeHtml(estadoActionLabel(estado))}</button>
+            `).join("")}
+          </div>` : ""}
         </div>
 
         <div class="card-side-actions">
-          ${isAdmin() ? `<button class="download-button" data-download-id="${escapeHtml(item.id)}">Descargar ficheros</button>` : ""}
-          <button data-preview-id="${escapeHtml(item.id)}">Vista preliminar por IA</button>
+          <button data-open-licitacion-detail="${escapeHtml(item.id)}">Abrir</button>
           ${isAdmin() ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""}
-          <button data-new-actuacion-id="${escapeHtml(item.id)}">Nueva actuación</button>
-          ${isAdmin() ? `<button data-duplicate-id="${escapeHtml(item.id)}">Duplicar</button>` : ""}
-          ${isAdmin() ? `<button class="danger" data-delete-id="${escapeHtml(item.id)}">Borrar</button>` : ""}
-          <button class="expand-button ${expanded ? "active-state" : ""}" data-toggle-details="${escapeHtml(item.id)}">
-            ${expanded ? "Ocultar detalles" : "Ver detalles"}
-          </button>
+          <button data-new-actuacion-id="${escapeHtml(item.id)}">Crear nueva actuación</button>
+          <span class="card-side-id">ID ${escapeHtml(item.id)}</span>
         </div>
       </div>
-
-      ${expanded ? renderExpandedCard(item, detail) : ""}
     </article>
   `;
 }
@@ -2177,61 +2838,332 @@ function renderExpandedCard(item, detail) {
     return `<div class="card-expanded"><div class="empty">Cargando información ampliada...</div></div>`;
   }
 
-  const preview = detail.preview || null;
+  const detailItem = detail.item || item;
+  const linkedActuaciones = detailItem.actuaciones || [];
+  const documentCount = documentCountLabel(detailItem);
 
   return `
     <div class="card-expanded">
-      <section class="expanded-panel ai-preview-panel">
+      <section class="expanded-panel">
         <div class="panel-head">
           <div>
-            <p class="eyebrow">Vista preliminar por IA</p>
-            <h3>${preview ? escapeHtml(preview.cabecera?.Expediente || item.expediente) : "Resumen pendiente"}</h3>
+            <p class="eyebrow">Resumen</p>
+            <h3>${escapeHtml(detailItem.expediente || item.expediente)}</h3>
           </div>
-          <button data-email-preview-id="${escapeHtml(item.id)}" ${preview ? "" : "disabled"}>Recibir por email</button>
         </div>
-        ${preview ? renderPreview(preview) : `<div class="empty">Pulsa “Vista preliminar por IA” para generar el resumen.</div>`}
+        ${renderLicitacionSummary(detailItem)}
+        ${renderLicitacionMainActions(detailItem)}
+      </section>
+      <section class="expanded-panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Documentación</p>
+            <h3>${escapeHtml(documentCount)}</h3>
+          </div>
+          ${isAdmin() ? `<button class="download-button" data-download-id="${escapeHtml(item.id)}">Descargar documentación</button>` : ""}
+        </div>
+        ${renderLicitacionDocuments(detailItem)}
+      </section>
+      <section class="expanded-panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Actuaciones vinculadas</p>
+            <h3>${escapeHtml(linkedActuaciones.length ? `${linkedActuaciones.length} actuación(es)` : "Sin actuaciones vinculadas")}</h3>
+          </div>
+          <button data-new-actuacion-id="${escapeHtml(item.id)}">Nueva actuación desde esta licitación</button>
+        </div>
+        ${linkedActuaciones.length ? renderLinkedActuaciones(linkedActuaciones) : `<div class="empty">No hay actuaciones vinculadas a esta licitación.</div>`}
+      </section>
+      <section class="expanded-panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Seguimiento</p>
+            <h3>${detailItem.seguimiento_activo ? "En seguimiento" : "No en seguimiento"}</h3>
+          </div>
+        </div>
+        ${renderLicitacionTracking(detailItem)}
       </section>
     </div>
   `;
 }
 
-function renderPreview(preview) {
-  const cabecera = preview.cabecera || {};
-  const rows = Object.entries(cabecera).filter(([, value]) => value);
-  const list = (items) => items?.length
-    ? `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
-    : `<p class="muted">No detectado en la ficha disponible.</p>`;
-
+function renderLicitacionDetailView(item) {
+  const actuaciones = item.actuaciones || [];
+  const seguimiento = item.seguimiento || {};
+  const folder = item.ruta_carpeta || "";
+  const folderUrl = fileUrl(folder);
+  const profile = normalizeUrl(item.enlace_perfil);
+  const infonalia = normalizeUrl(item.enlace_infonalia);
+  const fechaLimite = [formatDate(item.fecha_limite), item.hora_limite].filter(Boolean).join(" ");
+  const documentCount = documentCountLabel(item);
   return `
-    <div class="preview-grid">
-      <div class="preview-box">
-        <p class="eyebrow">Cabecera</p>
-        ${rows.map(([key, value]) => `<p><strong>${escapeHtml(key)}:</strong> ${escapeHtml(value)}</p>`).join("")}
-      </div>
-      <div class="preview-box">
-        <p class="eyebrow">Centros</p>
-        ${list(preview.centros)}
-      </div>
-      <div class="preview-box">
-        <p class="eyebrow">Lotes e importes</p>
-        ${list(preview.lotes)}
-      </div>
-      <div class="preview-box">
-        <p class="eyebrow">Criterios de adjudicación</p>
-        ${list(preview.criterios_adjudicacion)}
-      </div>
-      <div class="preview-box">
-        <p class="eyebrow">Criterios especiales de ejecución</p>
-        ${list(preview.criterios_ejecucion)}
-      </div>
-      <div class="preview-box preview-summary">
-        <p class="eyebrow">Resumen generado por IA</p>
-        <p>${escapeHtml(preview.resumen || "")}</p>
-        <small>${escapeHtml(preview.nota || "")}</small>
-      </div>
+    <article class="licitacion-print-sheet">
+      <section class="expanded-panel detail-hero">
+        <div>
+          <p class="eyebrow">Expediente</p>
+          <h2>${escapeHtml(item.expediente || "Sin expediente")}</h2>
+          <p>${escapeHtml(item.organismo || "Organismo no informado")}</p>
+        </div>
+        <div class="card-flags">
+          <span class="badge ${badgeClass(item.estado)}">${escapeHtml(estadoLabel(item.estado))}</span>
+          ${fechaLimite ? `<span class="due-chip">${escapeHtml(fechaLimite)}</span>` : ""}
+          ${item.plataforma ? `<span class="province-chip">${escapeHtml(item.plataforma)}</span>` : ""}
+          ${item.provincia ? `<span class="province-chip">${escapeHtml(item.provincia)}</span>` : ""}
+        </div>
+      </section>
+
+      <section class="expanded-panel no-print">
+        <div class="card-actions state-actions">
+          ${isAdmin() ? `<button class="download-button" data-download-id="${escapeHtml(item.id)}">Descargar</button>` : ""}
+          ${isAdmin() ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""}
+          ${isAdmin() ? `<button data-duplicate-id="${escapeHtml(item.id)}">Duplicar</button>` : ""}
+          ${isAdmin() ? `<button data-new-actuacion-id="${escapeHtml(item.id)}">Crear nueva actuación</button>` : ""}
+          ${isAdmin() ? `<button class="danger" data-delete-id="${escapeHtml(item.id)}">Borrar</button>` : ""}
+        </div>
+      </section>
+
+      <section class="expanded-panel">
+        <div class="panel-head"><div><p class="eyebrow">Resumen de la licitación</p><h3>Información principal</h3></div></div>
+        <div class="detail-grid">
+          <div class="detail full-width"><span>Objeto</span>${escapeHtml(item.objeto || "No informado")}</div>
+          <div class="detail"><span>Presupuesto</span>${escapeHtml(formatMoney(item.presupuesto))}</div>
+          <div class="detail"><span>Estado</span>${escapeHtml(estadoLabel(item.estado))}</div>
+          <div class="detail full-width"><span>Observaciones</span>${escapeHtml(item.comentario || "Sin observaciones")}</div>
+        </div>
+        <div class="links no-print">
+          ${profile ? `<a href="${escapeHtml(profile)}" target="_blank" rel="noreferrer">Abrir enlace plataforma</a>` : ""}
+          ${infonalia ? `<a href="${escapeHtml(infonalia)}" target="_blank" rel="noreferrer">Abrir Infonalia</a>` : ""}
+        </div>
+      </section>
+
+      <section class="expanded-panel">
+        <div class="panel-head"><div><p class="eyebrow">Datos administrativos</p><h3>Contratación</h3></div></div>
+        <div class="detail-grid">
+          <div class="detail"><span>Expediente</span>${escapeHtml(item.expediente || "No informado")}</div>
+          <div class="detail"><span>Órgano / organismo</span>${escapeHtml(item.organismo || "No informado")}</div>
+          <div class="detail"><span>Tipo de contrato</span>${escapeHtml(item.tipo || "No informado")}</div>
+          <div class="detail"><span>Procedimiento</span>${escapeHtml(item.procedimiento || "No informado")}</div>
+          <div class="detail"><span>CPV</span>${escapeHtml(item.cpv || "No informado")}</div>
+          <div class="detail"><span>Lugar ejecución</span>${escapeHtml(item.provincia || "No informado")}</div>
+          <div class="detail"><span>Fecha presentación</span>${escapeHtml(fechaLimite || "No informado")}</div>
+          <div class="detail"><span>Fecha Infonalia</span>${escapeHtml(formatDate(item.fecha_infonalia) || "No informado")}</div>
+        </div>
+      </section>
+
+      <section class="expanded-panel">
+        <div class="panel-head">
+          <div><p class="eyebrow">Documentación</p><h3>${escapeHtml(documentCount)}</h3></div>
+          ${folderUrl ? `<a class="no-print" href="${escapeHtml(folderUrl)}" target="_blank" rel="noreferrer">Abrir carpeta</a>` : ""}
+        </div>
+        <div class="detail-grid">
+          <div class="detail full-width"><span>Carpeta</span>${escapeHtml(folder || "Sin carpeta")}</div>
+          <div class="detail"><span>Estado descarga</span>${escapeHtml(item.descarga_fallida ? "Descarga fallida" : item.documentacion_descargada ? "Con documentación" : "Pendiente")}</div>
+          <div class="detail"><span>Error descarga</span>${escapeHtml(item.download_error || "Sin errores")}</div>
+        </div>
+        ${renderLicitacionDocuments(item)}
+      </section>
+
+      <section class="expanded-panel">
+        <div class="panel-head"><div><p class="eyebrow">Seguimiento</p><h3>${escapeHtml(seguimiento.activo ? "En seguimiento" : "No en seguimiento")}</h3></div></div>
+        <div class="detail-grid">
+          <div class="detail"><span>Estado</span>${escapeHtml(seguimiento.activo ? "En seguimiento" : "No en seguimiento")}</div>
+          <div class="detail"><span>Fuente</span>${escapeHtml(seguimiento.fuente || "marcador Dropbox")}</div>
+          <div class="detail full-width"><span>Carpeta detectada</span>${escapeHtml(seguimiento.folder_path || folder || "Sin carpeta")}</div>
+          <div class="detail"><span>Marcador ID</span>${escapeHtml(seguimiento.id_marker_exists ? "Correcto" : "No encontrado")}</div>
+          <div class="detail"><span>Última sincronización</span>${escapeHtml(seguimiento.ultima_sync || "Pendiente")}</div>
+          ${seguimiento.warning ? `<div class="detail full-width warning-detail"><span>Aviso</span>${escapeHtml(seguimiento.warning)}</div>` : ""}
+        </div>
+      </section>
+
+      <section class="expanded-panel">
+        <div class="panel-head">
+          <div><p class="eyebrow">Actuaciones vinculadas</p><h3>${escapeHtml(actuaciones.length ? `${actuaciones.length} actuación(es)` : "Sin actuaciones vinculadas")}</h3></div>
+        </div>
+        ${actuaciones.length ? renderLinkedActuaciones(actuaciones) : `<div class="empty">No hay actuaciones vinculadas a esta licitación.</div>`}
+      </section>
+
+    </article>
+  `;
+}
+
+function renderLicitacionSummary(item) {
+  const folder = item.ruta_carpeta || "";
+  const profile = normalizeUrl(item.enlace_perfil);
+  const infonalia = normalizeUrl(item.enlace_infonalia);
+  const folderUrl = fileUrl(folder);
+  const rows = [
+    ["Objeto", item.objeto],
+    ["Organismo", item.organismo],
+    ["Plataforma", item.plataforma],
+    ["Provincia", item.provincia],
+    ["Presupuesto", formatMoney(item.presupuesto)],
+    ["Fecha límite", [formatDate(item.fecha_limite), item.hora_limite].filter(Boolean).join(" ")],
+    ["Estado interno", item.estado_interno || "Nueva"],
+    ["Revisión", item.revisada ? "Revisada" : "No revisada"],
+    ["Seguimiento", item.seguimiento_activo ? "Sí" : "No"],
+    ["Ruta carpeta", folder || "Sin carpeta"],
+  ];
+  return `
+    <div class="detail-grid">
+      ${rows.map(([label, value]) => `<div class="detail"><span>${escapeHtml(label)}</span>${escapeHtml(value || "No informado")}</div>`).join("")}
+    </div>
+    <div class="links">
+      ${folderUrl ? `<a href="${escapeHtml(folderUrl)}" target="_blank" rel="noreferrer">Abrir carpeta</a>` : ""}
+      ${profile ? `<a href="${escapeHtml(profile)}" target="_blank" rel="noreferrer">Abrir enlace plataforma</a>` : ""}
+      ${infonalia ? `<a href="${escapeHtml(infonalia)}" target="_blank" rel="noreferrer">Abrir Infonalia</a>` : ""}
     </div>
   `;
 }
+
+function renderLicitacionMainActions(item) {
+  return `
+    <div class="card-actions state-actions">
+      ${isAdmin() ? `<button class="download-button" data-download-id="${escapeHtml(item.id)}">Descargar documentación</button>` : ""}
+      <button data-toggle-reviewed="${escapeHtml(item.id)}" data-reviewed="${item.revisada ? "0" : "1"}">
+        ${item.revisada ? "Marcar no revisada" : "Marcar revisada"}
+      </button>
+      <button data-new-actuacion-id="${escapeHtml(item.id)}">Nueva actuación</button>
+      <button data-set-internal-state="${escapeHtml(item.id)}" data-internal-state="Descartada">Descartar</button>
+    </div>
+  `;
+}
+
+function fileUrl(path) {
+  const value = String(path || "").trim();
+  if (!value) return "";
+  const normalized = value.replaceAll("\\", "/");
+  if (/^[a-zA-Z]:\//.test(normalized)) return `file:///${encodeURI(normalized)}`;
+  if (normalized.startsWith("/")) return `file://${encodeURI(normalized)}`;
+  return "";
+}
+
+function formatBytes(value) {
+  const size = Number(value || 0);
+  if (size >= 1048576) return `${(size / 1048576).toFixed(1)} MB`;
+  if (size >= 1024) return `${Math.round(size / 1024)} KB`;
+  return `${size} B`;
+}
+
+function documentCountLabel(item) {
+  const docs = item.documentos || [];
+  if (docs.length) return `${docs.length} documento(s)`;
+  return "Documentación";
+}
+
+function yesNo(value) {
+  return value ? "Sí" : "No";
+}
+
+function renderDocumentSummary(item) {
+  const summary = item.document_summary || {};
+  if (!summary.total_files && !(item.documentos || []).length) return "";
+  const metrics = [
+    ["PCAP", yesNo(summary.has_pcap)],
+    ["PPT", yesNo(summary.has_ppt)],
+    ["Anuncio", yesNo(summary.has_announcement)],
+    ["Requerimientos", summary.requirement_count || 0],
+    ["Anexos", summary.annex_count || 0],
+    ["Oferta/Sobres", yesNo(summary.has_offer_documents)],
+    ["Relevantes", summary.relevant_files_count || (item.documentos || []).length || 0],
+  ];
+  return `
+    <div class="document-summary-grid">
+      ${metrics.map(([label, value]) => `<div class="document-summary-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}
+    </div>
+  `;
+}
+
+function renderLicitacionDocuments(item) {
+  const docs = item.documentos || [];
+  if (!docs.length) return `<div class="empty">Sin documentación registrada.</div>`;
+  return `
+    <div class="document-table-wrap">
+      <table class="document-table">
+        <thead><tr><th>Tipo</th><th>Documento</th><th>Tamaño</th><th></th></tr></thead>
+        <tbody>
+          ${docs.map((doc) => `
+            <tr>
+              <td><span class="badge">${escapeHtml(doc.category || "Otros")}</span></td>
+              <td><strong>${escapeHtml(doc.name)}</strong><small>${escapeHtml(doc.relative_path || "")}</small></td>
+              <td>${escapeHtml(formatBytes(doc.size_bytes))}</td>
+              <td>${doc.open_url ? `<a href="${escapeHtml(doc.open_url)}" target="_blank" rel="noreferrer">Abrir</a>` : ""}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderLicitacionTracking(item) {
+  const seguimiento = item.seguimiento || {};
+  const novedades = seguimiento.novedades || [];
+  return `
+    <div class="detail-grid">
+      <div class="detail"><span>Estado</span>${escapeHtml(seguimiento.activo ? "En seguimiento" : "No en seguimiento")}</div>
+      <div class="detail"><span>Fuente</span>${escapeHtml(seguimiento.fuente || "marcador Dropbox")}</div>
+      <div class="detail"><span>Última sincronización</span>${escapeHtml(seguimiento.ultima_sync || seguimiento.ultimo_check || "Pendiente")}</div>
+      <div class="detail"><span>Última novedad</span>${escapeHtml(seguimiento.ultima_novedad || "Sin novedades")}</div>
+      ${seguimiento.warning ? `<div class="detail full-width warning-detail"><span>Aviso</span>${escapeHtml(seguimiento.warning)}</div>` : ""}
+    </div>
+    ${novedades.length ? novedades.map((entry) => `
+      <article class="history-row">
+        <strong>${escapeHtml(entry.title)}</strong>
+        <small>${escapeHtml(entry.detected_at)} · ${escapeHtml(entry.change_type || entry.source || "")}</small>
+        <span>${escapeHtml(entry.summary || "")}</span>
+      </article>
+    `).join("") : `<div class="empty">Sin novedades registradas todavía.</div>`}
+  `;
+}
+
+function renderLicitacionWorkFields(item) {
+  return `
+    <div class="form-grid compact-form">
+      <label>Estado interno
+        <select data-internal-state-for="${escapeHtml(item.id)}">
+          ${estadosInternos.map((estado) => `<option value="${escapeHtml(estado)}" ${estado === (item.estado_interno || "Nueva") ? "selected" : ""}>${escapeHtml(estado)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="full-width">Notas internas
+        <textarea rows="3" data-notes-for="${escapeHtml(item.id)}">${escapeHtml(item.notas_internas || "")}</textarea>
+      </label>
+    </div>
+  `;
+}
+
+function renderLicitacionHistory(item) {
+  const rows = item.historial || [];
+  if (!rows.length) return `<div class="empty">Sin histórico todavía.</div>`;
+  return rows.map((entry) => `
+    <article class="history-row">
+      <strong>${escapeHtml(entry.event_type)}</strong>
+      <small>${escapeHtml(entry.created_at)} · ${escapeHtml(entry.user_id || "Sistema")}</small>
+      <span>${escapeHtml(entry.old_value || "")} → ${escapeHtml(entry.new_value || "")}</span>
+    </article>
+  `).join("");
+}
+
+function renderLinkedActuaciones(items) {
+  return `
+    <div class="linked-actuaciones">
+      ${items.map((actuacion) => `
+        <article class="linked-actuacion ${actuacion.estado_visual === "vencida" ? "agenda-event--vencido" : "agenda-event--actuacion"}">
+          <div>
+            <span class="due-chip ${escapeHtml(actuacion.estado_visual || "")}">${escapeHtml(actuacionLabel(actuacionEstadoLabels, actuacion.estado))}</span>
+            <strong>${escapeHtml(actuacion.titulo || "Actuación")}</strong>
+            <small>${escapeHtml(actuacion.deadline_at ? formatDateTime(actuacion.deadline_at) : "Sin fecha")}</small>
+            ${actuacion.ultimo_comentario ? `<small>${escapeHtml(actuacion.ultimo_comentario)}</small>` : `<small>${escapeHtml(actuacion.historial_count || 0)} comentario(s)</small>`}
+          </div>
+          <div class="links">
+            <button data-edit-actuacion="${escapeHtml(actuacion.id)}">Abrir actuación</button>
+            <button data-comment-actuacion="${escapeHtml(actuacion.id)}">Añadir comentario</button>
+          </div>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
 
 async function updateEstado(id, estado) {
   const response = await fetch(`/api/licitaciones/${id}`, {
@@ -2331,58 +3263,148 @@ async function toggleDetails(id) {
     appState.cardDetails[id] = {};
   }
   renderBoard();
+  try {
+    const response = await fetch(`/api/licitaciones/${id}`);
+    const result = await response.json().catch(() => ({}));
+    if (response.ok) {
+      appState.cardDetails[id] = { ...(appState.cardDetails[id] || {}), item: result.item };
+      renderBoard();
+    }
+  } catch {
+    appState.cardDetails[id] = { ...(appState.cardDetails[id] || {}), loadError: true };
+    renderBoard();
+  }
 }
 
-async function generatePreview(id, button) {
-  const originalText = button.textContent;
-  button.disabled = true;
-  button.textContent = "Generando...";
-  appState.expandedCards.add(String(id));
-  if (!appState.cardDetails[id]) {
-    appState.cardDetails[id] = {};
+async function openLicitacionDetail(id) {
+  licitacionDetailTitle.textContent = "Cargando licitación...";
+  licitacionDetailContent.innerHTML = `<div class="empty">Cargando ficha ampliada...</div>`;
+  licitacionDetailDialog.showModal();
+  const response = await fetch(`/api/licitaciones/${id}`);
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    licitacionDetailContent.innerHTML = `<div class="empty">No se pudo cargar la ficha.</div>`;
+    return;
   }
-  try {
-    const response = await fetch(`/api/licitaciones/${id}/ia-preview`, { method: "POST", headers: csrfHeaders() });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      alert(result.error || "No se pudo generar la vista preliminar.");
+  const item = result.item;
+  appState.cardDetails[id] = { ...(appState.cardDetails[id] || {}), item };
+  licitacionDetailTitle.textContent = item.expediente || "Licitación";
+  licitacionDetailContent.innerHTML = renderLicitacionDetailView(item);
+}
+
+async function refreshLicitacionDetail(id) {
+  const response = await fetch(`/api/licitaciones/${id}`);
+  const result = await response.json().catch(() => ({}));
+  if (response.ok) {
+    appState.cardDetails[id] = { ...(appState.cardDetails[id] || {}), item: result.item };
+  }
+}
+
+async function patchLicitacionWork(id, payload) {
+  const response = await fetch(`/api/licitaciones/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(result.error || "No se pudo actualizar la licitación.");
+    return false;
+  }
+  await loadItems();
+  await refreshLicitacionDetail(id);
+  renderBoard();
+  const detail = appState.cardDetails[id]?.item;
+  if (detail && licitacionDetailDialog.open) {
+    licitacionDetailTitle.textContent = detail.expediente || "Licitación";
+    licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
+  }
+  return true;
+}
+
+function renderCaptureResult(message, type = "", details = []) {
+  capturePlatformResult.className = `import-result capture-result ${type}`.trim();
+  const detailItems = details.filter(Boolean).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  capturePlatformResult.innerHTML = `${escapeHtml(message)}${detailItems ? `<ul>${detailItems}</ul>` : ""}`;
+}
+
+function applyCapturedFields(fields) {
+  const filled = [];
+  const skipped = [];
+  const seenTargets = new Set();
+  Object.entries(fields || {}).forEach(([field, rawValue]) => {
+    const value = String(rawValue ?? "").trim();
+    const target = captureFieldTargets[field];
+    if (!value || !target || !form.elements[target] || seenTargets.has(target)) return;
+    seenTargets.add(target);
+    const label = captureFieldLabels[field] || field;
+    if (String(form.elements[target].value || "").trim()) {
+      skipped.push(label);
       return;
     }
-    appState.cardDetails[id] = { ...(appState.cardDetails[id] || {}), preview: result.preview };
-    renderBoard();
-  } finally {
-    button.disabled = false;
-    button.textContent = originalText;
-  }
+    form.elements[target].value = value;
+    filled.push(label);
+  });
+  return { filled, skipped };
 }
 
-async function emailPreview(id, button) {
-  const originalText = button.textContent;
-  button.disabled = true;
-  button.textContent = "Enviando...";
+async function capturePlatformData() {
+  if (!isAdmin()) return;
+  const profileUrl = String(form.elements.enlace_perfil?.value || "").trim();
+  const defaultCaptureUrl = profileUrl.includes("GetDocumentByIdServlet") ? profileUrl : "";
+  const requestedUrl = window.prompt("Pega la URL XML del pliego o documento PLACE:", defaultCaptureUrl);
+  if (requestedUrl === null) return;
+  const url = String(requestedUrl || "").trim();
+  if (!url) {
+    renderCaptureResult("Pega la URL XML del pliego o documento PLACE.", "error");
+    return;
+  }
+  capturePlatformButton.disabled = true;
+  renderCaptureResult("Consultando XML de PLACE...", "");
   try {
-    const response = await fetch(`/api/licitaciones/${id}/ia-preview/email`, {
+    const response = await fetch("/api/licitaciones/capture", {
       method: "POST",
-      headers: csrfHeaders(),
+      headers: { "Content-Type": "application/json", ...csrfHeaders() },
+      body: JSON.stringify({ url, profile_url: profileUrl || undefined }),
     });
     const result = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      alert(result.error || "No se pudo enviar la vista preliminar.");
+    if (!response.ok || result.ok === false) {
+      renderCaptureResult(result.error || "Error consultando plataforma.", "error");
       return;
     }
-    alert(result.message || "Vista preliminar enviada.");
+    const fields = result.fields || {};
+    const { filled, skipped } = applyCapturedFields(fields);
+    const captured = Object.entries(fields)
+      .filter(([, value]) => String(value ?? "").trim())
+      .map(([field, value]) => `${captureFieldLabels[field] || field}: ${value}`);
+    const details = [
+      ...captured.slice(0, 8),
+      ...skipped.map((label) => `${label}: campo ya tenía valor, no se ha sobrescrito`),
+      ...(result.warnings || []),
+    ];
+    if (filled.length) {
+      renderCaptureResult(`Datos capturados correctamente. Se han capturado ${filled.length} campos.`, "ok", details);
+      return;
+    }
+    renderCaptureResult(
+      captured.length ? "Datos capturados, pero no se han sobrescrito campos con valor." : "No se han encontrado datos suficientes.",
+      captured.length ? "ok" : "error",
+      details
+    );
+  } catch (error) {
+    renderCaptureResult(error.message || "Error consultando plataforma.", "error");
   } finally {
-    button.disabled = false;
-    button.textContent = originalText;
+    capturePlatformButton.disabled = false;
   }
 }
 
 function openCreateEditor() {
   form.reset();
+  capturePlatformResult.textContent = "";
   form.elements.id.value = "";
   editorEyebrow.textContent = "Alta manual";
   editorTitle.textContent = "Nueva licitación";
-  form.elements.estado.value = "Pendiente";
+  form.elements.estado.value = "Importada";
   editor.showModal();
 }
 
@@ -2394,6 +3416,7 @@ function openEditEditor(id) {
   if (!item) return;
 
   form.reset();
+  capturePlatformResult.textContent = "";
   editorEyebrow.textContent = "Edición";
   editorTitle.textContent = `Editar ${item.expediente || "licitación"}`;
 
@@ -2409,6 +3432,7 @@ function openDuplicateEditor(id) {
   if (!item) return;
 
   form.reset();
+  capturePlatformResult.textContent = "";
   editorEyebrow.textContent = "Alta manual";
   editorTitle.textContent = `Nueva licitación desde ${item.expediente || "licitación"}`;
 
@@ -2449,7 +3473,7 @@ async function deleteDia(id, title) {
 
   if (String(appState.currentDiaId) === String(id)) {
     appState.currentDiaId = "";
-    appState.currentDiaTitle = "Todas las licitaciones";
+    appState.currentDiaTitle = "Centro de licitaciones";
   }
   await loadDias();
   showDaysView();
@@ -2471,6 +3495,7 @@ logoutButton?.addEventListener("click", logout);
 document.getElementById("notifications-button").addEventListener("click", showNotificationsView);
 document.getElementById("back-from-notifications").addEventListener("click", backFromNotifications);
 document.getElementById("news-admin-button").addEventListener("click", showNewsAdminView);
+document.getElementById("monitor-button").addEventListener("click", showMonitorView);
 document.getElementById("config-button").addEventListener("click", showConfigView);
 document.getElementById("back-from-config").addEventListener("click", backFromConfig);
 document.getElementById("back-to-days").addEventListener("click", showDaysView);
@@ -2480,6 +3505,7 @@ licitacionesTabs.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-licitaciones-view]");
   if (!button) return;
   appState.licitacionesView = button.dataset.licitacionesView;
+  dateOrder.value = appState.licitacionesView === "live" ? "asc" : "desc";
   renderLicitacionesTabs();
   loadItems();
 });
@@ -2494,6 +3520,7 @@ nuriaDaysTabs.addEventListener("click", (event) => {
 document.getElementById("new-button").addEventListener("click", openCreateEditor);
 document.getElementById("close-editor").addEventListener("click", () => editor.close());
 document.getElementById("cancel-editor").addEventListener("click", () => editor.close());
+capturePlatformButton.addEventListener("click", capturePlatformData);
 document.getElementById("import-button").addEventListener("click", () => {
   importResult.textContent = "";
   importer.showModal();
@@ -2502,11 +3529,34 @@ document.getElementById("close-importer").addEventListener("click", () => import
 document.getElementById("cancel-importer").addEventListener("click", () => importer.close());
 stateFilter.addEventListener("change", loadItems);
 dateOrder.addEventListener("change", loadItems);
+licitacionesActuacionesFilter.addEventListener("change", loadItems);
+licitacionesQuickFilter.addEventListener("change", loadItems);
 searchInput.addEventListener("input", debounce(loadItems, 250));
 calendarSearch.addEventListener("input", debounce(loadCalendarItems, 250));
 calendarStateFilter.addEventListener("change", () => {
   appState.agendaType = calendarStateFilter.value || "all";
   loadCalendarItems();
+});
+agendaWorkbench.addEventListener("click", (event) => {
+  const sectionButton = event.target.closest("button[data-workbench-key]");
+  if (sectionButton) {
+    activateWorkbenchSection(sectionButton.dataset.workbenchKey);
+    return;
+  }
+  const licitacionButton = event.target.closest("button[data-workbench-licitacion]");
+  if (licitacionButton) {
+    showLicitacionesView({ view: "all" });
+    toggleDetails(licitacionButton.dataset.workbenchLicitacion);
+    return;
+  }
+  const actuacionesButton = event.target.closest("button[data-workbench-actuaciones]");
+  if (actuacionesButton) {
+    actuacionesFilter.value = "abiertas";
+    showActuacionesView();
+    return;
+  }
+  const actuacionButton = event.target.closest("button[data-workbench-actuacion]");
+  if (actuacionButton) editActuacion(actuacionButton.dataset.workbenchActuacion);
 });
 document.querySelectorAll("[data-agenda-view]").forEach((button) => {
   button.addEventListener("click", () => {
@@ -2624,6 +3674,64 @@ newsAdminBoard.addEventListener("click", (event) => {
   }
 });
 
+document.getElementById("close-licitacion-detail").addEventListener("click", () => licitacionDetailDialog.close());
+
+licitacionDetailContent.addEventListener("click", (event) => {
+  const downloadButton = event.target.closest("button[data-download-id]");
+  if (downloadButton) {
+    downloadLicitacion(downloadButton.dataset.downloadId, downloadButton);
+    return;
+  }
+
+  const editButton = event.target.closest("button[data-edit-id]");
+  if (editButton) {
+    openEditEditor(editButton.dataset.editId);
+    return;
+  }
+
+  const duplicateButton = event.target.closest("button[data-duplicate-id]");
+  if (duplicateButton) {
+    openDuplicateEditor(duplicateButton.dataset.duplicateId);
+    return;
+  }
+
+  const newActuacionButton = event.target.closest("button[data-new-actuacion-id]");
+  if (newActuacionButton) {
+    openActuacionDialog(newActuacionButton.dataset.newActuacionId);
+    return;
+  }
+
+  const deleteButton = event.target.closest("button[data-delete-id]");
+  if (deleteButton) {
+    deleteLicitacion(deleteButton.dataset.deleteId);
+    licitacionDetailDialog.close();
+    return;
+  }
+
+  const saveWorkButton = event.target.closest("button[data-save-licitacion-work]");
+  if (saveWorkButton) {
+    const id = saveWorkButton.dataset.saveLicitacionWork;
+    const notes = licitacionDetailContent.querySelector(`[data-notes-for="${id}"]`);
+    const state = licitacionDetailContent.querySelector(`[data-internal-state-for="${id}"]`);
+    patchLicitacionWork(id, {
+      notas_internas: notes ? notes.value : "",
+      estado_interno: state ? state.value : "Nueva",
+    });
+    return;
+  }
+
+  const editActuacionButton = event.target.closest("button[data-edit-actuacion]");
+  if (editActuacionButton) {
+    editActuacion(editActuacionButton.dataset.editActuacion);
+    return;
+  }
+
+  const commentActuacionButton = event.target.closest("button[data-comment-actuacion]");
+  if (commentActuacionButton) {
+    quickActuacionComment(commentActuacionButton.dataset.commentActuacion);
+  }
+});
+
 daysBoard.addEventListener("click", (event) => {
   const deleteButton = event.target.closest("button[data-delete-dia]");
   if (deleteButton) {
@@ -2637,21 +3745,15 @@ daysBoard.addEventListener("click", (event) => {
 });
 
 board.addEventListener("click", (event) => {
+  const openDetailButton = event.target.closest("button[data-open-licitacion-detail]");
+  if (openDetailButton) {
+    openLicitacionDetail(openDetailButton.dataset.openLicitacionDetail);
+    return;
+  }
+
   const downloadButton = event.target.closest("button[data-download-id]");
   if (downloadButton) {
     downloadLicitacion(downloadButton.dataset.downloadId, downloadButton);
-    return;
-  }
-
-  const previewButton = event.target.closest("button[data-preview-id]");
-  if (previewButton) {
-    generatePreview(previewButton.dataset.previewId, previewButton);
-    return;
-  }
-
-  const emailPreviewButton = event.target.closest("button[data-email-preview-id]");
-  if (emailPreviewButton) {
-    emailPreview(emailPreviewButton.dataset.emailPreviewId, emailPreviewButton);
     return;
   }
 
@@ -2676,6 +3778,46 @@ board.addEventListener("click", (event) => {
   const newActuacionButton = event.target.closest("button[data-new-actuacion-id]");
   if (newActuacionButton) {
     openActuacionDialog(newActuacionButton.dataset.newActuacionId);
+    return;
+  }
+
+  const reviewedButton = event.target.closest("button[data-toggle-reviewed]");
+  if (reviewedButton) {
+    patchLicitacionWork(reviewedButton.dataset.toggleReviewed, {
+      revisada: reviewedButton.dataset.reviewed === "1",
+    });
+    return;
+  }
+
+  const internalStateButton = event.target.closest("button[data-set-internal-state]");
+  if (internalStateButton) {
+    patchLicitacionWork(internalStateButton.dataset.setInternalState, {
+      estado_interno: internalStateButton.dataset.internalState,
+    });
+    return;
+  }
+
+  const saveWorkButton = event.target.closest("button[data-save-licitacion-work]");
+  if (saveWorkButton) {
+    const id = saveWorkButton.dataset.saveLicitacionWork;
+    const notes = board.querySelector(`[data-notes-for="${id}"]`);
+    const state = board.querySelector(`[data-internal-state-for="${id}"]`);
+    patchLicitacionWork(id, {
+      notas_internas: notes ? notes.value : "",
+      estado_interno: state ? state.value : "Nueva",
+    });
+    return;
+  }
+
+  const editActuacionButton = event.target.closest("button[data-edit-actuacion]");
+  if (editActuacionButton) {
+    editActuacion(editActuacionButton.dataset.editActuacion);
+    return;
+  }
+
+  const commentActuacionButton = event.target.closest("button[data-comment-actuacion]");
+  if (commentActuacionButton) {
+    quickActuacionComment(commentActuacionButton.dataset.commentActuacion);
     return;
   }
 
@@ -2766,6 +3908,12 @@ calendarRadar.addEventListener("click", (event) => {
   loadCalendarItems();
 });
 
+calendarRadar.addEventListener("change", (event) => {
+  const stateSelect = event.target.closest("select[data-pending-state]");
+  if (!stateSelect) return;
+  updatePendingTaskState(stateSelect.dataset.pendingState, stateSelect.value);
+});
+
 calendarDayPanel.addEventListener("click", (event) => {
   const openButton = event.target.closest("button[data-agenda-open]");
   if (openButton) {
@@ -2796,6 +3944,12 @@ calendarDayPanel.addEventListener("click", (event) => {
   if (cancelButton) {
     setAgendaEventoEstado(cancelButton.dataset.agendaCancel, "cancelar");
   }
+});
+
+calendarDayPanel.addEventListener("change", (event) => {
+  const stateSelect = event.target.closest("select[data-pending-state]");
+  if (!stateSelect) return;
+  updatePendingTaskState(stateSelect.dataset.pendingState, stateSelect.value);
 });
 
 form.addEventListener("submit", async (event) => {
@@ -2890,4 +4044,4 @@ importForm.addEventListener("submit", async (event) => {
   }
 });
 
-loadMe().then(showDaysView);
+loadMe().then(showInitialView);

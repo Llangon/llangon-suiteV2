@@ -35,20 +35,36 @@ http://IP_DEL_PC_ANFITRION:8787
 
 No debe exponerse este servidor directamente a Internet.
 
-## Dropbox local
+## Replica local de Dropbox para desarrollo
 
-Es el flujo principal recomendado para el despliegue por VPN: la app corre en el PC anfitrión, los descargadores escriben en una carpeta local de Dropbox Desktop y Dropbox sincroniza.
+Durante desarrollo y pruebas no se debe trabajar contra la carpeta real de Dropbox Desktop. La app debe usar una replica local de la estructura de Dropbox:
+
+```text
+C:\ReplicaDb
+```
+
+Los descargadores, marcadores `[IdLicitacion].llangon`, marcador `EnSeguimiento.llangon`, sincronizacion e inventario/monitor de desarrollo deben apuntar a esa raiz.
 
 Configuración recomendada:
 
 ```text
 INFONALIA_STORAGE_BACKEND=local
-INFONALIA_DROPBOX_ROOT=%USERPROFILE%\Dropbox\00000 LLANGON
+INFONALIA_DROPBOX_ROOT=C:\ReplicaDb
 INFONALIA_DROPBOX_ENABLED=0
 INFONALIA_DROPBOX_DRY_RUN=1
 ```
 
-Si Dropbox se encuentra en otra unidad, debe indicarse en el `.env` local.
+No usar para desarrollo:
+
+```text
+C:\Users\LLangon03\Dropbox\00000 LLANGON
+```
+
+Si `INFONALIA_DROPBOX_ROOT` esta definido pero la carpeta no existe, la app no debe caer a autodeteccion de Dropbox real. Debe crearse `C:\ReplicaDb` o corregirse la ruta del `.env`.
+
+## Dropbox local real para despliegue
+
+En despliegue final por VPN puede recuperarse el flujo con Dropbox Desktop real: la app corre en el PC anfitrion, los descargadores escriben en una carpeta local de Dropbox Desktop y Dropbox sincroniza. Ese modo no debe usarse para pruebas de desarrollo mientras exista la replica `C:\ReplicaDb`.
 
 Con este modo se conserva el comportamiento ya probado de los descargadores: si un fichero existe se omite, si falta se descarga, y no se duplica por reintentos normales.
 

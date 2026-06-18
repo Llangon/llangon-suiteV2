@@ -150,16 +150,16 @@ def test_mark_day_nuria_dirty_updates_timestamp_fields() -> None:
     ("estados", "day_fields", "expected"),
     [
         ([], {}, "Importado"),
-        (["Pendiente"], {}, "En filtrado interno"),
-        (["Pendiente Nuria"], {}, "Listo para enviar a Nuria"),
-        (["Pendiente Nuria"], {"enviado_nuria_at": "2026-06-12T09:00:00"}, "Pendiente de revisión Nuria"),
-        (["Hacer"], {"enviado_nuria_at": "2026-06-12T09:00:00"}, "Revisión parcial"),
+        (["Importada"], {}, "En filtrado interno"),
+        (["Enviada a Nuria"], {}, "Listo para enviar a Nuria"),
+        (["Enviada a Nuria"], {"enviado_nuria_at": "2026-06-12T09:00:00"}, "Pendiente de revisión Nuria"),
+        (["Preparar ficha"], {"enviado_nuria_at": "2026-06-12T09:00:00"}, "Revisión parcial"),
         (
-            ["Hacer"],
+            ["Preparar ficha"],
             {"enviado_nuria_at": "2026-06-12T09:00:00", "nuria_dirty_at": "2026-06-12T10:00:00"},
             "Cambios pendientes para Nuria",
         ),
-        (["Descartar"], {"reviewed_at": "2026-06-12T12:00:00"}, "Completado"),
+        (["Descartada"], {"reviewed_at": "2026-06-12T12:00:00"}, "Completado"),
     ],
 )
 def test_refresh_day_status_preserves_existing_state_machine(
@@ -188,7 +188,7 @@ def test_day_row_to_dict_preserves_api_payload_shape() -> None:
     insert_licitaciones(
         conn,
         dia_id,
-        ["Pendiente", "Descartada por mí", "Pendiente Nuria", "Descartar", "Descargar", "Hacer"],
+        ["Importada", "Descartada", "Enviada a Nuria", "Descargar para ver", "Preparar ficha", "Preparada"],
     )
     row = conn.execute("SELECT * FROM infonalia_dias WHERE id = ?", (dia_id,)).fetchone()
 
@@ -210,10 +210,10 @@ def test_day_row_to_dict_preserves_api_payload_shape() -> None:
     assert item["fecha_revision"] == "12/06/2026 11:00"
     assert item["nuria_pending_update"] is True
     assert item["counts"] == {
-        "Pendiente": 1,
-        "Descartada por mí": 1,
-        "Pendiente Nuria": 1,
-        "Descartar": 1,
-        "Descargar": 1,
-        "Hacer": 1,
+        "Importada": 1,
+        "Descartada": 1,
+        "Enviada a Nuria": 1,
+        "Descargar para ver": 1,
+        "Preparar ficha": 1,
+        "Preparada": 1,
     }

@@ -20,17 +20,13 @@
       <nav class="sidebar-nav" aria-label="Navegación principal">
         <p class="nav-group-title">Trabajo diario</p>
         <button id="days-button" class="nav-item" data-nav-section="days">Días Infonalia</button>
-        <button id="list-button" class="nav-item" data-nav-section="licitaciones">Todas las licitaciones</button>
+        <button id="list-button" class="nav-item" data-nav-section="licitaciones">Centro de licitaciones</button>
         <button id="calendar-button" class="nav-item" data-nav-section="calendar">Agenda</button>
         <button id="actuaciones-button" class="nav-item" data-nav-section="actuaciones">Actuaciones</button>
 
-        <p class="nav-group-title nav-future-title">Próximos módulos</p>
-        <button class="nav-item nav-item-muted" type="button" disabled>Clientes</button>
-        <button class="nav-item nav-item-muted" type="button" disabled>Tareas</button>
-        <button class="nav-item nav-item-muted" type="button" disabled>Requerimientos</button>
-
         <p class="nav-group-title" data-admin-only hidden>Administración</p>
         <button id="news-admin-button" class="nav-item" data-nav-section="news-admin" data-admin-only hidden>Noticias</button>
+        <button id="monitor-button" class="nav-item" data-nav-section="monitor" data-admin-only hidden>Monitor</button>
         <button id="config-button" class="nav-item" data-nav-section="config" data-admin-only hidden>Configuración</button>
       </nav>
 
@@ -78,11 +74,10 @@
 
       <section id="licitaciones-tabs" class="segmented" hidden>
         <button type="button" data-licitaciones-view="live" class="active">Licitaciones vivas</button>
-        <button type="button" data-licitaciones-view="active">Licitaciones no vencidas</button>
         <button type="button" data-licitaciones-view="all">Todas las licitaciones</button>
       </section>
 
-      <section class="summary" id="summary"></section>
+      <section class="summary" id="summary" hidden></section>
 
       <section class="toolbar">
         <label>
@@ -95,6 +90,19 @@
             <option>Todos</option>
           </select>
         </label>
+        <label hidden>
+          Trabajo
+          <select id="licitaciones-quick-filter">
+            <option value="">Todo</option>
+            <option value="revision_pendiente">No revisadas</option>
+            <option value="revision_revisada">Revisadas</option>
+            <option value="seguimiento">En seguimiento</option>
+            <option value="sin_documentacion">Sin documentación descargada</option>
+            <option value="descarga_fallida">Descarga fallida</option>
+            <option value="estado_descartada">Descartadas</option>
+            <option value="estado_presentada">Presentadas</option>
+          </select>
+        </label>
         <label>
           Fecha presentación
           <select id="date-order">
@@ -102,10 +110,31 @@
             <option value="desc">Más lejanas primero</option>
           </select>
         </label>
+        <label hidden>
+          Actuaciones
+          <select id="licitaciones-actuaciones-filter">
+            <option value="">Todas</option>
+            <option value="abiertas">Con abiertas</option>
+            <option value="vencidas">Con vencidas</option>
+            <option value="sin_fecha">Con abiertas sin fecha</option>
+            <option value="sin_abiertas">Sin abiertas</option>
+          </select>
+        </label>
       </section>
 
       <section class="board" id="board"></section>
     </section>
+
+    <dialog id="licitacion-detail-dialog" class="detail-dialog">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">Ficha ampliada</p>
+          <h2 id="licitacion-detail-title">Licitación</h2>
+        </div>
+        <button type="button" class="icon-button no-print" id="close-licitacion-detail">×</button>
+      </div>
+      <section id="licitacion-detail-content" class="licitacion-detail-view"></section>
+    </dialog>
 
     <section id="calendar-section" hidden>
       <div class="section-head">
@@ -126,7 +155,8 @@
         <label>
           Vista
           <div class="segmented compact">
-            <button type="button" data-agenda-view="day" class="active">Fecha activa</button>
+            <button type="button" data-agenda-view="pending" data-admin-only hidden>Tareas pendientes</button>
+            <button type="button" data-agenda-view="day" class="active">Hoy</button>
             <button type="button" data-agenda-view="week">Semana</button>
             <button type="button" data-agenda-view="month">Calendario</button>
             <button type="button" data-agenda-view="all">Todo</button>
@@ -155,6 +185,7 @@
         <span><b class="legend-dot agenda-dot--vencido"></b> Vencido</span>
       </section>
 
+      <section class="agenda-workbench" id="agenda-workbench" hidden></section>
       <section class="summary" id="calendar-summary"></section>
       <section class="calendar-radar" id="calendar-radar"></section>
 
@@ -296,6 +327,54 @@
       </section>
     </section>
 
+    <section id="monitor-section" hidden>
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Administración</p>
+          <h2>Monitor</h2>
+        </div>
+        <div class="section-actions">
+          <button id="monitor-send-agenda-summary" class="secondary">Enviar resumen de agenda de prueba</button>
+          <button id="monitor-send-agenda-daily" class="secondary">Enviar agenda diaria de prueba</button>
+          <button id="monitor-send-agenda-weekly" class="secondary">Enviar agenda semanal de prueba</button>
+          <button id="refresh-monitor-runs" class="ghost">Actualizar</button>
+        </div>
+      </div>
+      <div class="import-result" id="monitor-action-result"></div>
+
+      <section class="monitor-layout">
+        <div class="monitor-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Histórico</p>
+              <h3>Ejecuciones recientes</h3>
+            </div>
+          </div>
+          <label class="monitor-filter">Tipo de tarea
+            <select id="monitor-task-type-filter">
+              <option value="">Todas</option>
+              <option value="licitaciones">Licitaciones</option>
+              <option value="resumen_agenda">Resumen agenda</option>
+              <option value="agenda_diaria">Agenda diaria</option>
+              <option value="agenda_semanal">Agenda semanal</option>
+              <option value="aviso_vencimiento_7d">Aviso 7 días</option>
+              <option value="aviso_vencimiento_3d">Aviso 3 días</option>
+              <option value="aviso_vencimiento_1d">Aviso mañana</option>
+              <option value="aviso_vencimiento_hoy">Aviso hoy</option>
+              <option value="avisos_vencimientos">Avisos vencimientos</option>
+              <option value="tareas_pendientes">Tareas pendientes</option>
+              <option value="monitor_licitaciones">Monitor licitaciones</option>
+              <option value="otro">Otro</option>
+            </select>
+          </label>
+          <div id="monitor-runs-board" class="monitor-runs-board"></div>
+        </div>
+        <aside class="monitor-panel monitor-detail" id="monitor-run-detail">
+          <div class="empty">Selecciona una ejecución para ver el detalle.</div>
+        </aside>
+      </section>
+    </section>
+
     <section id="config-section" hidden>
       <div class="section-head">
         <div>
@@ -358,6 +437,8 @@
               Borrar contraseña SMTP guardada
             </label>
             <label>Remitente<input name="smtp_from" type="email"></label>
+            <label>Email Agenda fallback<input name="agenda_email_to" type="email"></label>
+            <label>Emails seguimiento globales<input name="seguimiento_emails" placeholder="nuria@ejemplo.es,otro@ejemplo.es"></label>
             <label class="check-field">
               <input name="smtp_tls" type="checkbox" checked>
               Usar TLS
@@ -383,6 +464,9 @@
           </div>
           <div id="storage-status-board" class="storage-status-board"></div>
           <div class="dialog-actions">
+            <button type="button" class="primary" id="sync-dropbox-markers-button">Sincronizar marcadores Dropbox</button>
+            <button type="button" class="secondary" id="monitor-dry-run-button">Simular monitor</button>
+            <button type="button" class="ghost" id="monitor-repair-button">Reparar rutas</button>
             <button type="button" class="ghost" id="test-dropbox-button">Probar API experimental</button>
             <button type="button" class="ghost" id="dry-run-dropbox-button">Simular API dry-run</button>
           </div>
@@ -409,12 +493,13 @@
         <label>Expediente<input name="expediente" required></label>
         <label>Estado
           <select name="estado">
-            <option value="Pendiente">Pendiente</option>
-            <option value="Descartada por mí">Descartada por mí</option>
-            <option value="Pendiente Nuria">Pendiente de revisión</option>
-            <option value="Descartar">Descartada</option>
-            <option value="Descargar">Solo descargar</option>
-            <option value="Hacer">Preparar licitación</option>
+            <option value="Importada">Importada</option>
+            <option value="Descartada">Descartada</option>
+            <option value="Enviada a Nuria">Enviada a Nuria</option>
+            <option value="Descargar para ver">Descargar para ver</option>
+            <option value="Preparar ficha">Preparar ficha</option>
+            <option value="Preparada">Preparada</option>
+            <option value="Oferta enviada">Oferta enviada</option>
           </select>
         </label>
         <label>Objeto<textarea name="objeto" rows="3"></textarea></label>
@@ -426,11 +511,18 @@
         <label>Hora límite<input name="hora_limite" type="time"></label>
         <label>Fecha Infonalia<input name="fecha_infonalia" type="date"></label>
         <label>Plataforma<input name="plataforma" placeholder="PLACE, Junta, Madrid..."></label>
-        <label>Enlace perfil<input name="enlace_perfil"></label>
+        <label class="capture-url-field">Enlace perfil
+          <span class="input-action-row">
+            <input name="enlace_perfil">
+            <button type="button" class="ghost" id="capture-platform-button">Capturar XML</button>
+          </span>
+        </label>
         <label>Enlace Infonalia<input name="enlace_infonalia"></label>
         <label>Ruta carpeta<input name="ruta_carpeta"></label>
         <label>Comentario<textarea name="comentario" rows="2"></textarea></label>
       </div>
+
+      <div class="import-result capture-result" id="capture-platform-result"></div>
 
       <div class="dialog-actions">
         <button type="button" class="ghost" id="cancel-editor">Cancelar</button>
@@ -517,10 +609,9 @@
         <label>Estado
           <select name="estado">
             <option value="pendiente">Pendiente</option>
-            <option value="en_curso">En curso</option>
-            <option value="respondida">Respondida</option>
-            <option value="cerrada">Cerrada</option>
-            <option value="cancelada">Cancelada</option>
+            <option value="preparado">Preparado</option>
+            <option value="enviado">Enviado</option>
+            <option value="cancelado">Cancelado</option>
           </select>
         </label>
         <label class="check-field">
@@ -585,8 +676,8 @@
         <label>Estado
           <select name="estado">
             <option value="pendiente">Pendiente</option>
-            <option value="en_curso">En curso</option>
-            <option value="cerrado">Cerrado</option>
+            <option value="preparado">Preparado</option>
+            <option value="enviado">Enviado</option>
             <option value="cancelado">Cancelado</option>
           </select>
         </label>

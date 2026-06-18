@@ -1,0 +1,1179 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Callable, Iterable
+
+from .config import MonitorConfigError, load_monitor_config
+from .email import prepare_monitor_emails
+from .inventory import InventoryFile, scan_inventory_files
+from .document_summary import build_document_summary
+from .platforms import check_followed_platforms
+from .repository import (
+    TASK_TYPE_AGENDA_DIARIA,
+    TASK_TYPE_AGENDA_SEMANAL,
+    TASK_TYPE_AVISO_VENCIMIENTO_1D,
+    TASK_TYPE_AVISO_VENCIMIENTO_3D,
+    TASK_TYPE_AVISO_VENCIMIENTO_7D,
+    TASK_TYPE_AVISO_VENCIMIENTO_HOY,
+    TASK_TYPE_LICITACIONES,
+    TASK_TYPE_MONITOR_LICITACIONES,
+    TASK_TYPE_RESUMEN_AGENDA,
+    TASK_TYPES,
+    connect_db,
+    ensure_monitor_schema,
+    fetch_licitaciones,
+    normalize_task_type,
+    row_value,
+)
+from .routes import FolderNormalizer, repair_routes
+from .scanner import MarkerRecord, MonitorIssue, ScanResult, scan_marker_tree
+
+try:
+    from ..agenda.email_summary import (
+        build_operational_email_html,
+        build_operational_email_payload,
+        build_operational_email_text,
+    )
+    from ..agenda.service import active_date_label, agenda_week_bounds, build_agenda_events, build_agenda_response
+    from ..normalization import clean_text
+except ImportError:
+    from agenda.email_summary import (
+        build_operational_email_html,
+        build_operational_email_payload,
+        build_operational_email_text,
+    )
+    from agenda.service import active_date_label, agenda_week_bounds, build_agenda_events, build_agenda_response
+    from normalization import clean_text
+
+
+APP_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DB_PATH = APP_ROOT / "data" / "infonalia.db"
+SOURCE_LOCAL_DROPBOX = "local_dropbox"
+ALL_MODES = {"dry-run", "repair-routes", "inventory", "sync", "monitor"}
+EmailSender = Callable[[str, str, str, str], tuple[str | None, str | None]]
+AUTOMATION_MODE_MANUAL = "manual"
+AUTOMATION_MODE_AUTOMATIC = "automatic"
+MONITOR_AUTOMATION_SCHEDULES = {
+    TASK_TYPE_AGENDA_DIARIA: {
+        "frequency": "daily",
+        "time": "06:00",
+        "send_policy": "only_if_due_today",
+    },
+    TASK_TYPE_AGENDA_SEMANAL: {
+        "frequency": "weekly",
+        "weekday": "monday",
+        "time": "05:30",
+        "send_policy": "always",
+    },
+    TASK_TYPE_AVISO_VENCIMIENTO_7D: {
+        "frequency": "daily",
+        "time": "06:15",
+        "notice_days": 7,
+        "notice_level": "7d",
+        "send_policy": "only_if_new_alerts",
+    },
+    TASK_TYPE_AVISO_VENCIMIENTO_3D: {
+        "frequency": "daily",
+        "time": "06:20",
+        "notice_days": 3,
+        "notice_level": "3d",
+        "send_policy": "only_if_new_alerts",
+    },
+    TASK_TYPE_AVISO_VENCIMIENTO_1D: {
+        "frequency": "daily",
+        "time": "06:25",
+        "notice_days": 1,
+        "notice_level": "1d",
+        "send_policy": "only_if_new_alerts",
+    },
+    TASK_TYPE_AVISO_VENCIMIENTO_HOY: {
+        "frequency": "daily",
+        "time": "06:30",
+        "notice_days": 0,
+        "notice_level": "hoy",
+        "send_policy": "only_if_new_alerts",
+    },
+    TASK_TYPE_MONITOR_LICITACIONES: {
+        "frequency": "weekdays",
+        "times": ["07:00", "12:30", "17:30"],
+        "send_policy": "only_with_changes",
+    },
+}
+NOTICE_TASK_TYPES = {
+    TASK_TYPE_AVISO_VENCIMIENTO_7D,
+    TASK_TYPE_AVISO_VENCIMIENTO_3D,
+    TASK_TYPE_AVISO_VENCIMIENTO_1D,
+    TASK_TYPE_AVISO_VENCIMIENTO_HOY,
+}
+
+
+class MonitorError(RuntimeError):
+    """Monitor V0 failed before producing a usable report."""
+
+
+def now_iso() -> str:
+    return datetime.now().replace(microsecond=0).isoformat()
+
+
+def normalize_mode(mode: str) -> str:
+    clean = (mode or "dry-run").strip().lower()
+    if clean not in ALL_MODES:
+        raise MonitorError(f"Modo de monitor no valido: {mode}")
+    return clean
+
+
+def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return bool(
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+    )
+
+
+def mode_steps(mode: str) -> set[str]:
+    if mode == "repair-routes":
+        return {"repair"}
+    if mode == "inventory":
+        return {"inventory"}
+    return {"repair", "follow", "platforms", "email"}
+
+
+def dedupe_issues(issues: Iterable[MonitorIssue]) -> list[MonitorIssue]:
+    seen: set[tuple[object, ...]] = set()
+    result: list[MonitorIssue] = []
+    for issue in issues:
+        key = (issue.code, issue.message, issue.path, issue.licitacion_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(issue)
+    return result
+
+
+def existing_markers(
+    conn: sqlite3.Connection,
+    scan_result: ScanResult,
+    warnings: list[MonitorIssue],
+) -> tuple[list[MarkerRecord], dict[int, sqlite3.Row]]:
+    rows = fetch_licitaciones(conn, sorted({marker.licitacion_id for marker in scan_result.markers}))
+    markers: list[MarkerRecord] = []
+    for marker in scan_result.markers:
+        if marker.licitacion_id not in rows:
+            warnings.append(
+                MonitorIssue(
+                    code="licitacion_missing",
+                    message="Hay marcador .llangon pero la licitacion no existe en SQLite.",
+                    path=str(marker.marker_path),
+                    licitacion_id=marker.licitacion_id,
+                )
+            )
+            continue
+        markers.append(marker)
+    return markers, rows
+
+
+def sync_follow_status(
+    conn: sqlite3.Connection,
+    scan_result: ScanResult,
+    dry_run: bool,
+    timestamp: str,
+    warnings: list[MonitorIssue],
+) -> list[dict[str, object]]:
+    markers, rows = existing_markers(conn, scan_result, warnings)
+    updates: list[dict[str, object]] = []
+    for marker in markers:
+        row = rows[marker.licitacion_id]
+        active = 1 if marker.is_followed else 0
+        marker_path = str(marker.follow_marker_path or "")
+        changed = (
+            int(row_value(row, "seguimiento_activo", 0) or 0) != active
+            or str(row_value(row, "seguimiento_marker_path", "") or "") != marker_path
+        )
+        if changed:
+            updates.append(
+                {
+                    "licitacion_id": marker.licitacion_id,
+                    "seguimiento_activo": bool(active),
+                    "marker_path": marker_path,
+                    "dry_run": dry_run,
+                }
+            )
+        if not dry_run:
+            conn.execute(
+                """
+                UPDATE licitaciones
+                SET seguimiento_activo = ?,
+                    seguimiento_ultimo_check = ?,
+                    seguimiento_ultima_sync = ?,
+                    seguimiento_marker_path = ?,
+                    seguimiento_marker_warning = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (active, timestamp, timestamp, marker_path, timestamp, marker.licitacion_id),
+            )
+    return updates
+
+
+def upsert_inventory_file(conn: sqlite3.Connection, item: InventoryFile, timestamp: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO licitacion_file_inventory (
+            licitacion_id,
+            folder_path,
+            relative_path,
+            file_name,
+            extension,
+            file_type,
+            folder_type,
+            is_relevant,
+            is_system_file,
+            size_bytes,
+            modified_at,
+            discovered_at,
+            last_seen_at,
+            checksum,
+            is_missing,
+            missing_since,
+            source
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL, ?)
+        ON CONFLICT(licitacion_id, relative_path, source) DO UPDATE SET
+            folder_path = excluded.folder_path,
+            file_name = excluded.file_name,
+            extension = excluded.extension,
+            file_type = excluded.file_type,
+            folder_type = excluded.folder_type,
+            is_relevant = excluded.is_relevant,
+            is_system_file = excluded.is_system_file,
+            size_bytes = excluded.size_bytes,
+            modified_at = excluded.modified_at,
+            last_seen_at = excluded.last_seen_at,
+            is_missing = 0,
+            missing_since = NULL
+        """,
+        (
+            item.licitacion_id,
+            str(item.folder_path),
+            item.relative_path,
+            item.file_name,
+            item.extension,
+            item.file_type,
+            item.folder_type,
+            1 if item.is_relevant else 0,
+            1 if item.is_system_file else 0,
+            item.size_bytes,
+            item.modified_at,
+            timestamp,
+            timestamp,
+            SOURCE_LOCAL_DROPBOX,
+        ),
+    )
+
+
+def inventory_files(
+    conn: sqlite3.Connection,
+    scan_result: ScanResult,
+    dry_run: bool,
+    timestamp: str,
+    warnings: list[MonitorIssue],
+) -> list[dict[str, object]]:
+    markers, _rows = existing_markers(conn, scan_result, warnings)
+    discovered: list[dict[str, object]] = []
+    for marker in markers:
+        files = scan_inventory_files(marker)
+        discovered.extend(item.to_dict() for item in files)
+        if dry_run:
+            continue
+        conn.execute(
+            """
+            UPDATE licitacion_file_inventory
+            SET is_missing = 1,
+                missing_since = COALESCE(missing_since, ?)
+            WHERE licitacion_id = ? AND source = ?
+            """,
+            (timestamp, marker.licitacion_id, SOURCE_LOCAL_DROPBOX),
+        )
+        for item in files:
+            upsert_inventory_file(conn, item, timestamp)
+    return discovered
+
+
+def create_monitor_run(
+    conn: sqlite3.Connection,
+    *,
+    task_type: str = TASK_TYPE_LICITACIONES,
+    mode: str,
+    root_path: Path | str,
+    started_at: str,
+    dry_run: bool,
+    schedule_key: str = "",
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO monitor_runs (
+            task_type,
+            mode,
+            root_path,
+            started_at,
+            status,
+            dry_run,
+            schedule_key
+        )
+        VALUES (?, ?, ?, ?, 'running', ?, ?)
+        """,
+        (normalize_task_type(task_type), mode, str(root_path), started_at, 1 if dry_run else 0, schedule_key),
+    )
+    return int(cursor.lastrowid)
+
+
+def finish_monitor_run(
+    conn: sqlite3.Connection,
+    run_id: int,
+    report: dict[str, object],
+    error_message: str = "",
+) -> None:
+    details = {
+        "task_details": report.get("task_details", {}),
+        "route_updates": report.get("route_updates", [])[:50],
+        "follow_updates": report.get("follow_updates", [])[:50],
+        "platform_changes": report.get("platform_changes", [])[:50],
+        "email_drafts": report.get("email_drafts", [])[:20],
+        "conflicts": report.get("conflicts", [])[:50],
+        "warnings": report.get("warnings", [])[:50],
+    }
+    conn.execute(
+        """
+        UPDATE monitor_runs
+        SET finished_at = ?,
+            status = ?,
+            found_markers_count = ?,
+            route_updates_count = ?,
+            followed_count = ?,
+            folders_checked_count = ?,
+            folders_repaired_count = ?,
+            folders_broken_count = ?,
+            platforms_checked_count = ?,
+            changes_detected_count = ?,
+            emails_prepared_count = ?,
+            emails_sent_count = ?,
+            inventory_files_count = ?,
+            conflicts_count = ?,
+            warnings_count = ?,
+            processed_items_count = ?,
+            error_message = ?,
+            details_json = ?
+        WHERE id = ?
+        """,
+        (
+            report.get("finished_at"),
+            report.get("status"),
+            report.get("found_markers_count", 0),
+            report.get("route_updates_count", 0),
+            report.get("followed_count", 0),
+            report.get("folders_checked_count", 0),
+            report.get("folders_repaired_count", report.get("route_updates_count", 0)),
+            report.get("folders_broken_count", 0),
+            report.get("platforms_checked_count", 0),
+            report.get("changes_detected_count", 0),
+            report.get("emails_prepared_count", 0),
+            report.get("emails_sent_count", 0),
+            report.get("inventory_files_count", 0),
+            len(report.get("conflicts", [])),
+            len(report.get("warnings", [])),
+            report.get("processed_items_count", 0),
+            error_message,
+            json.dumps(details, ensure_ascii=False),
+            run_id,
+        ),
+    )
+
+
+def run_monitor(
+    mode: str = "dry-run",
+    *,
+    dry_run: bool | None = None,
+    db_path: str | Path | None = None,
+    root: str | Path | None = None,
+    normalize_folder_path: FolderNormalizer | None = None,
+) -> dict[str, object]:
+    clean_mode = normalize_mode(mode)
+    effective_dry_run = True if clean_mode == "dry-run" else bool(dry_run)
+    started_at = now_iso()
+    run_id: int | None = None
+    conn: sqlite3.Connection | None = None
+
+    try:
+        config = load_monitor_config(root)
+        db_file = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
+        conn = connect_db(db_file, read_only=False)
+        ensure_monitor_schema(conn)
+        run_id = create_monitor_run(
+            conn,
+            task_type=TASK_TYPE_LICITACIONES,
+            mode=clean_mode,
+            root_path=config.root_path,
+            started_at=started_at,
+            dry_run=effective_dry_run,
+        )
+        conn.commit()
+
+        scan_result = scan_marker_tree(config.root_path, config.year_min, config.year_max)
+        timestamp = now_iso()
+        warnings = list(scan_result.warnings)
+
+        report: dict[str, object] = {
+            "mode": clean_mode,
+            "task_type": TASK_TYPE_LICITACIONES,
+            "dry_run": effective_dry_run,
+            "root_path": str(config.root_path),
+            "year_min": config.year_min,
+            "year_max": config.year_max,
+            "started_at": started_at,
+            "finished_at": "",
+            "status": "running",
+            "monitor_run_id": run_id,
+            "year_roots": [str(path) for path in scan_result.year_roots],
+            "markers": [marker.to_dict() for marker in scan_result.markers],
+            "found_markers_count": scan_result.raw_id_marker_count,
+            "route_updates": [],
+            "route_updates_count": 0,
+            "follow_updates": [],
+            "follow_updates_count": 0,
+            "followed_count": scan_result.followed_count,
+            "processed_items_count": len(scan_result.markers),
+            "folders_checked_count": len(scan_result.markers),
+            "folders_repaired_count": 0,
+            "folders_broken_count": len(scan_result.conflicts),
+            "platforms_checked_count": 0,
+            "changes_detected_count": 0,
+            "emails_prepared_count": 0,
+            "emails_sent_count": 0,
+            "platform_changes": [],
+            "email_drafts": [],
+            "inventory_files": [],
+            "inventory_files_count": 0,
+            "relevant_files_count": 0,
+            "system_files_count": 0,
+            "document_summaries": [],
+            "conflicts": [issue.to_dict() for issue in scan_result.conflicts],
+            "warnings": [],
+        }
+
+        steps = mode_steps(clean_mode)
+        if "repair" in steps:
+            route_updates = repair_routes(
+                conn,
+                scan_result,
+                effective_dry_run,
+                timestamp,
+                warnings,
+                normalize_folder_path=normalize_folder_path,
+            )
+            report["route_updates"] = route_updates
+            report["route_updates_count"] = len(route_updates)
+            report["folders_repaired_count"] = len(route_updates)
+        if "follow" in steps:
+            follow_updates = sync_follow_status(conn, scan_result, effective_dry_run, timestamp, warnings)
+            report["follow_updates"] = follow_updates
+            report["follow_updates_count"] = len(follow_updates)
+            report["followed_count"] = scan_result.followed_count
+        if "platforms" in steps:
+            platform_result = check_followed_platforms(scan_result.markers, dry_run=effective_dry_run)
+            changes = list(platform_result.get("changes", []))
+            report["platforms_checked_count"] = platform_result.get("platforms_checked_count", 0)
+            report["platform_changes"] = changes[:50]
+            report["changes_detected_count"] = len(changes)
+        if "email" in steps:
+            email_result = prepare_monitor_emails(
+                list(report.get("platform_changes", [])),
+                dry_run=effective_dry_run,
+            )
+            report["emails_prepared_count"] = email_result.get("emails_prepared_count", 0)
+            report["emails_sent_count"] = email_result.get("emails_sent_count", 0)
+            report["email_drafts"] = email_result.get("drafts", [])[:20]
+        if "inventory" in steps:
+            inventory = inventory_files(conn, scan_result, effective_dry_run, timestamp, warnings)
+            report["inventory_files"] = inventory[:200]
+            report["inventory_files_count"] = len(inventory)
+            report["relevant_files_count"] = sum(
+                1 for item in inventory if item.get("is_relevant") and not item.get("is_system_file")
+            )
+            report["system_files_count"] = sum(1 for item in inventory if item.get("is_system_file"))
+            summaries_by_id: dict[int, list[dict[str, object]]] = {}
+            for item in inventory:
+                summaries_by_id.setdefault(int(item["licitacion_id"]), []).append(item)
+            report["document_summaries"] = [
+                build_document_summary(licitacion_id, rows)
+                for licitacion_id, rows in sorted(summaries_by_id.items())
+            ]
+
+        report["warnings"] = [issue.to_dict() for issue in dedupe_issues(warnings)]
+        report["folders_broken_count"] = len(report["conflicts"]) + len(report["warnings"])
+        report["finished_at"] = now_iso()
+        report["status"] = "completed_with_errors" if report["folders_broken_count"] else "completed"
+        finish_monitor_run(conn, run_id, report)
+        conn.commit()
+        return report
+    except (MonitorConfigError, FileNotFoundError, NotADirectoryError, sqlite3.Error, OSError) as exc:
+        if conn is not None and run_id is not None:
+            error_report = {
+                "finished_at": now_iso(),
+                "status": "failed",
+                "found_markers_count": 0,
+                "route_updates_count": 0,
+                "followed_count": 0,
+                "processed_items_count": 0,
+                "folders_checked_count": 0,
+                "folders_repaired_count": 0,
+                "folders_broken_count": 1,
+                "platforms_checked_count": 0,
+                "changes_detected_count": 0,
+                "emails_prepared_count": 0,
+                "emails_sent_count": 0,
+                "inventory_files_count": 0,
+                "conflicts": [],
+                "warnings": [{"code": "monitor_error", "message": str(exc)}],
+            }
+            finish_monitor_run(conn, run_id, error_report, str(exc))
+            conn.commit()
+        raise MonitorError(str(exc)) from exc
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def monitor_automation_schedules() -> dict[str, dict[str, object]]:
+    return {key: dict(value) for key, value in MONITOR_AUTOMATION_SCHEDULES.items()}
+
+
+def schedule_time_has_arrived(current: datetime, time_text: object) -> bool:
+    parts = clean_text(time_text).split(":")
+    if len(parts) != 2:
+        return False
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return False
+    return (current.hour * 60 + current.minute) >= (hour * 60 + minute)
+
+
+def due_automation_task_types(current: datetime | None = None) -> list[str]:
+    target = current or datetime.now()
+    due: list[str] = []
+    daily_schedule = MONITOR_AUTOMATION_SCHEDULES[TASK_TYPE_AGENDA_DIARIA]
+    if schedule_time_has_arrived(target, daily_schedule.get("time")):
+        due.append(TASK_TYPE_AGENDA_DIARIA)
+    weekly_schedule = MONITOR_AUTOMATION_SCHEDULES[TASK_TYPE_AGENDA_SEMANAL]
+    if target.weekday() == 0 and schedule_time_has_arrived(target, weekly_schedule.get("time")):
+        due.append(TASK_TYPE_AGENDA_SEMANAL)
+    for task_type in (
+        TASK_TYPE_AVISO_VENCIMIENTO_7D,
+        TASK_TYPE_AVISO_VENCIMIENTO_3D,
+        TASK_TYPE_AVISO_VENCIMIENTO_1D,
+        TASK_TYPE_AVISO_VENCIMIENTO_HOY,
+    ):
+        schedule = MONITOR_AUTOMATION_SCHEDULES[task_type]
+        if schedule_time_has_arrived(target, schedule.get("time")):
+            due.append(task_type)
+    return due
+
+
+def run_due_automation_tasks(
+    *,
+    dry_run: bool = False,
+    db_path: str | Path | None = None,
+    recipient: str = "",
+    email_sender: EmailSender | None = None,
+    current: datetime | None = None,
+) -> list[dict[str, object]]:
+    target = current or datetime.now()
+    return [
+        run_automation_task(
+            task_type,
+            dry_run=dry_run,
+            db_path=db_path,
+            recipient=recipient,
+            email_sender=email_sender,
+            current=target,
+            trigger_mode=AUTOMATION_MODE_AUTOMATIC,
+        )
+        for task_type in due_automation_task_types(target)
+    ]
+
+
+def schedule_key_for_task(task_type: str, current: datetime) -> str:
+    if task_type == TASK_TYPE_AGENDA_DIARIA or task_type in NOTICE_TASK_TYPES:
+        return f"{task_type}:{current.date().isoformat()}"
+    if task_type == TASK_TYPE_AGENDA_SEMANAL:
+        calendar = current.date().isocalendar()
+        return f"{task_type}:{calendar.year}-W{calendar.week:02d}"
+    return ""
+
+
+def successful_schedule_exists(conn: sqlite3.Connection, task_type: str, schedule_key: str) -> bool:
+    if not schedule_key:
+        return False
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM monitor_runs
+        WHERE task_type = ?
+          AND schedule_key = ?
+          AND status = 'completed'
+        LIMIT 1
+        """,
+        (task_type, schedule_key),
+    ).fetchone()
+    return row is not None
+
+
+def event_date(value: object) -> date | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def agenda_events_for_exact_day(
+    conn: sqlite3.Connection,
+    *,
+    target: datetime,
+) -> list[dict[str, object]]:
+    target_day = target.date()
+    events = build_agenda_events(
+        conn,
+        view="all",
+        target_date=target_day,
+        type_filter="all",
+        include_overdue=True,
+        current=target,
+    )
+    return [event for event in events if event_date(event.get("date")) == target_day]
+
+
+def agenda_events_for_week(
+    conn: sqlite3.Connection,
+    *,
+    target: datetime,
+) -> tuple[date, date, list[dict[str, object]]]:
+    target_day = target.date()
+    start, end = agenda_week_bounds(target_day)
+    events = build_agenda_events(
+        conn,
+        view="all",
+        target_date=target_day,
+        type_filter="all",
+        include_overdue=True,
+        current=target,
+    )
+    return start, end, [
+        event for event in events
+        if (event_day := event_date(event.get("date"))) is not None and start <= event_day <= end
+    ]
+
+
+def day_section_title(day: date) -> str:
+    label = active_date_label(day, current=day)
+    return f"{label} ({day.isoformat()})"
+
+
+def build_daily_agenda_email_payload(
+    conn: sqlite3.Connection,
+    *,
+    target: datetime,
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    events = agenda_events_for_exact_day(conn, target=target)
+    payload = {
+        "active_date_label": active_date_label(target.date(), current=target.date()),
+        "heading": "Agenda de hoy",
+        "subtitle": "Vencimientos del día",
+        "sections": [
+            {
+                "title": "Vencimientos del día",
+                "items": events,
+            },
+        ],
+        "counts": {
+            "today": len(events),
+            "week_rest": 0,
+        },
+    }
+    return payload, events
+
+
+def build_weekly_agenda_email_payload(
+    conn: sqlite3.Connection,
+    *,
+    target: datetime,
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    start, end, events = agenda_events_for_week(conn, target=target)
+    sections = []
+    for offset in range(7):
+        day = start + timedelta(days=offset)
+        day_items = [event for event in events if event_date(event.get("date")) == day]
+        if day_items:
+            sections.append({"title": day_section_title(day), "items": day_items})
+    if not sections:
+        sections.append({"title": f"Semana {start.isoformat()} a {end.isoformat()}", "items": []})
+    payload = {
+        "active_date_label": f"{start.isoformat()} a {end.isoformat()}",
+        "heading": "Resumen semanal de agenda",
+        "subtitle": "Planificación y vencimientos de la semana",
+        "sections": sections,
+        "counts": {
+            "today": sum(1 for event in events if event_date(event.get("date")) == target.date()),
+            "week_rest": len(events),
+        },
+    }
+    return payload, events
+
+
+def notice_config(task_type: str) -> dict[str, object]:
+    return MONITOR_AUTOMATION_SCHEDULES.get(task_type, {})
+
+
+def notice_label(days: int) -> str:
+    if days == 0:
+        return "hoy"
+    if days == 1:
+        return "mañana"
+    return f"en {days} días"
+
+
+def notice_title(days: int) -> str:
+    if days == 0:
+        return "Vencimientos de hoy"
+    if days == 1:
+        return "Vencimientos de mañana"
+    return f"Vencimientos en {days} días"
+
+
+def event_due_at(item: dict[str, object]) -> str:
+    return clean_text(item.get("datetime") or item.get("date") or item.get("deadline_at") or item.get("fecha_limite"))
+
+
+def event_alert_key(item: dict[str, object]) -> str:
+    source_type = clean_text(item.get("source_type")) or "agenda"
+    source_id = clean_text(item.get("source_id") or item.get("id"))
+    if not source_id:
+        source_id = clean_text(item.get("title") or event_due_at(item))
+    return f"{source_type}:{source_id}"
+
+
+def already_alerted_pairs(
+    conn: sqlite3.Connection,
+    *,
+    notice_level: str,
+    events: list[dict[str, object]],
+) -> set[tuple[str, str]]:
+    pairs = {(event_alert_key(event), event_due_at(event)) for event in events if event_due_at(event)}
+    if not pairs:
+        return set()
+    clauses = " OR ".join("(event_key = ? AND due_at = ?)" for _key, _due_at in pairs)
+    params: list[object] = [notice_level]
+    for key, due_at in pairs:
+        params.extend([key, due_at])
+    rows = conn.execute(
+        f"""
+        SELECT event_key, due_at
+        FROM monitor_vencimiento_alerts
+        WHERE notice_level = ?
+          AND ({clauses})
+        """,
+        params,
+    ).fetchall()
+    return {(row["event_key"], row["due_at"]) for row in rows}
+
+
+def due_notice_events(
+    conn: sqlite3.Connection,
+    *,
+    task_type: str,
+    target: datetime,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], dict[str, object]]:
+    config = notice_config(task_type)
+    days = int(config.get("notice_days", 0) or 0)
+    notice_level = clean_text(config.get("notice_level")) or f"{days}d"
+    due_date = target.date() + timedelta(days=days)
+    events = build_agenda_events(
+        conn,
+        view="all",
+        target_date=target.date(),
+        type_filter="all",
+        include_overdue=True,
+        current=target,
+    )
+    due_events = [
+        event for event in events
+        if event_date(event.get("date")) == due_date and event_due_at(event)
+    ]
+    alerted = already_alerted_pairs(conn, notice_level=notice_level, events=due_events)
+    new_events = [
+        event for event in due_events
+        if (event_alert_key(event), event_due_at(event)) not in alerted
+    ]
+    return due_events, new_events, {
+        **config,
+        "notice_days": days,
+        "notice_level": notice_level,
+        "due_date": due_date.isoformat(),
+    }
+
+
+def build_notice_email_payload(
+    *,
+    task_type: str,
+    target: datetime,
+    events: list[dict[str, object]],
+    config: dict[str, object],
+) -> dict[str, object]:
+    days = int(config.get("notice_days", 0) or 0)
+    label = notice_label(days)
+    title = notice_title(days)
+    return {
+        "active_date_label": clean_text(config.get("due_date")) or (target.date() + timedelta(days=days)).isoformat(),
+        "heading": "Aviso de vencimientos",
+        "subtitle": title,
+        "sections": [
+            {
+                "title": f"{title} ({len(events)} elementos)",
+                "items": events,
+            }
+        ],
+        "counts": {
+            "today": len(events) if days == 0 else 0,
+            "week_rest": len(events),
+        },
+        "notice": {
+            "task_type": task_type,
+            "label": label,
+            "level": clean_text(config.get("notice_level")),
+            "days": days,
+        },
+    }
+
+
+def notice_email_subject(config: dict[str, object], count: int) -> str:
+    days = int(config.get("notice_days", 0) or 0)
+    return f"{notice_title(days)} ({count} elementos)"
+
+
+def record_notice_alerts(
+    conn: sqlite3.Connection,
+    *,
+    task_type: str,
+    events: list[dict[str, object]],
+    config: dict[str, object],
+    monitor_run_id: int,
+    recipient: str,
+    subject: str,
+    generated_at: str,
+) -> None:
+    notice_level = clean_text(config.get("notice_level"))
+    for event in events:
+        source_type = clean_text(event.get("source_type")) or "agenda"
+        source_id = clean_text(event.get("source_id") or event.get("id"))
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO monitor_vencimiento_alerts (
+                task_type,
+                notice_level,
+                source_type,
+                source_id,
+                event_key,
+                due_at,
+                generated_at,
+                monitor_run_id,
+                recipient,
+                subject,
+                status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent')
+            """,
+            (
+                task_type,
+                notice_level,
+                source_type,
+                source_id,
+                event_alert_key(event),
+                event_due_at(event),
+                generated_at,
+                monitor_run_id,
+                recipient,
+                subject,
+            ),
+        )
+
+
+def build_summary_agenda_email_payload(
+    conn: sqlite3.Connection,
+    *,
+    target: datetime,
+) -> tuple[dict[str, object], int]:
+    target_date = target.date().isoformat()
+    today_response = build_agenda_response(
+        conn,
+        params={"view": "day", "date": target_date, "type": "all"},
+        current=target,
+    )
+    week_response = build_agenda_response(
+        conn,
+        params={"view": "week", "date": target_date, "type": "all"},
+        current=target,
+    )
+    payload = build_operational_email_payload(today_response, week_response)
+    counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
+    processed_items = int(counts.get("today", 0) or 0) + int(counts.get("week_rest", 0) or 0)
+    return payload, processed_items
+
+
+def automation_email_subject(task_type: str, target: datetime) -> str:
+    if task_type == TASK_TYPE_AGENDA_DIARIA:
+        return f"Agenda de hoy - vencimientos del día {target.date().isoformat()}"
+    if task_type == TASK_TYPE_AGENDA_SEMANAL:
+        start, end = agenda_week_bounds(target.date())
+        return f"Resumen semanal de agenda {start.isoformat()} a {end.isoformat()}"
+    return f"Agenda Llangón - resumen operativo {target.date().isoformat()}"
+
+
+def run_automation_task(
+    task_type: str,
+    *,
+    dry_run: bool = True,
+    db_path: str | Path | None = None,
+    recipient: str = "",
+    email_sender: EmailSender | None = None,
+    current: datetime | None = None,
+    trigger_mode: str = AUTOMATION_MODE_MANUAL,
+) -> dict[str, object]:
+    clean_task_type = normalize_task_type(task_type, default="")
+    supported_tasks = {
+        TASK_TYPE_RESUMEN_AGENDA,
+        TASK_TYPE_AGENDA_DIARIA,
+        TASK_TYPE_AGENDA_SEMANAL,
+        *NOTICE_TASK_TYPES,
+    }
+    if clean_task_type not in TASK_TYPES or clean_task_type not in supported_tasks:
+        raise MonitorError(f"Tipo de tarea de monitor no valido: {task_type}")
+
+    started_at = now_iso()
+    run_id: int | None = None
+    conn: sqlite3.Connection | None = None
+    try:
+        db_file = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
+        conn = connect_db(db_file, read_only=False)
+        ensure_monitor_schema(conn)
+        effective_dry_run = True if dry_run is None else bool(dry_run)
+        requested_mode = AUTOMATION_MODE_AUTOMATIC if clean_text(trigger_mode).lower() == AUTOMATION_MODE_AUTOMATIC else AUTOMATION_MODE_MANUAL
+        target = current or datetime.now()
+        schedule_key = schedule_key_for_task(clean_task_type, target)
+        run_mode = "dry-run" if effective_dry_run else requested_mode
+        run_id = create_monitor_run(
+            conn,
+            task_type=clean_task_type,
+            mode=run_mode,
+            root_path="",
+            started_at=started_at,
+            dry_run=effective_dry_run,
+            schedule_key=schedule_key,
+        )
+        conn.commit()
+
+        processed_items = 0
+        emails_prepared_count = 0
+        emails_sent_count = 0
+        warnings: list[dict[str, object]] = []
+        error_message = ""
+        notice_events_to_record: list[dict[str, object]] = []
+        notice_config_to_record: dict[str, object] = {}
+        task_details: dict[str, object] = {
+            "message": "Tarea automática ejecutada desde Monitor.",
+            "email_sending_enabled": not effective_dry_run,
+            "schedule": MONITOR_AUTOMATION_SCHEDULES.get(clean_task_type, {}),
+            "schedule_key": schedule_key,
+            "trigger_mode": run_mode,
+        }
+        if run_mode == AUTOMATION_MODE_AUTOMATIC and successful_schedule_exists(conn, clean_task_type, schedule_key):
+            task_details.update(
+                {
+                    "message": "Ejecución automática omitida: esta tarea ya se ejecutó correctamente para el periodo.",
+                    "skipped_duplicate": True,
+                }
+            )
+        elif table_exists(conn, "agenda_eventos"):
+            if clean_task_type == TASK_TYPE_RESUMEN_AGENDA:
+                email_payload, processed_items = build_summary_agenda_email_payload(conn, target=target)
+            elif clean_task_type == TASK_TYPE_AGENDA_DIARIA:
+                email_payload, events = build_daily_agenda_email_payload(conn, target=target)
+                processed_items = len(events)
+                if not events:
+                    task_details.update(
+                        {
+                            "message": "No se envía correo porque no hay vencimientos para hoy.",
+                            "target_date": target.date().isoformat(),
+                            "counts": {"today": 0, "week_rest": 0},
+                            "preview": "",
+                        }
+                    )
+                    email_payload = {}
+            elif clean_task_type == TASK_TYPE_AGENDA_SEMANAL:
+                email_payload, events = build_weekly_agenda_email_payload(conn, target=target)
+                processed_items = len(events)
+            else:
+                due_events, new_events, alert_config = due_notice_events(
+                    conn,
+                    task_type=clean_task_type,
+                    target=target,
+                )
+                processed_items = len(due_events)
+                notice_config_to_record = alert_config
+                task_details.update(
+                    {
+                        "target_date": target.date().isoformat(),
+                        "due_date": alert_config.get("due_date"),
+                        "notice_level": alert_config.get("notice_level"),
+                        "notice_days": alert_config.get("notice_days"),
+                        "items_due_count": len(due_events),
+                        "items_notified_count": len(new_events),
+                    }
+                )
+                if new_events:
+                    email_payload = build_notice_email_payload(
+                        task_type=clean_task_type,
+                        target=target,
+                        events=new_events,
+                        config=alert_config,
+                    )
+                    notice_events_to_record = new_events
+                else:
+                    email_payload = {}
+                    task_details.update(
+                        {
+                            "message": (
+                                "No se envía correo porque no hay vencimientos nuevos "
+                                f"para el aviso {alert_config.get('notice_level')}."
+                            ),
+                            "counts": {"today": 0, "week_rest": 0},
+                            "preview": "",
+                        }
+                    )
+
+            if email_payload:
+                subject = (
+                    notice_email_subject(notice_config_to_record, len(notice_events_to_record))
+                    if clean_task_type in NOTICE_TASK_TYPES
+                    else automation_email_subject(clean_task_type, target)
+                )
+                body = build_operational_email_text(email_payload)
+                html_body = build_operational_email_html(
+                    email_payload,
+                    generated_at=target.replace(microsecond=0).isoformat(),
+                )
+                counts = email_payload.get("counts") if isinstance(email_payload.get("counts"), dict) else {}
+                emails_prepared_count = 1
+                task_details.update(
+                    {
+                        "target_date": target.date().isoformat(),
+                        "subject": subject,
+                        "recipient": clean_text(recipient),
+                        "preview": body[:1200],
+                        "counts": counts,
+                    }
+                )
+                if not effective_dry_run:
+                    if not clean_text(recipient):
+                        error_message = "No hay email de pruebas configurado para Monitor."
+                        warnings.append({"code": "missing_monitor_test_email", "message": error_message})
+                    elif email_sender is None:
+                        error_message = "No hay mecanismo de envío configurado para Monitor."
+                        warnings.append({"code": "missing_monitor_email_sender", "message": error_message})
+                    else:
+                        sent_at, error = email_sender(clean_text(recipient), subject, body, html_body)
+                        if error:
+                            error_message = error
+                            warnings.append({"code": "monitor_email_error", "message": error})
+                        else:
+                            emails_sent_count = 1
+                            task_details["sent_at"] = sent_at or now_iso()
+                            if clean_task_type in NOTICE_TASK_TYPES and notice_events_to_record:
+                                record_notice_alerts(
+                                    conn,
+                                    task_type=clean_task_type,
+                                    events=notice_events_to_record,
+                                    config=notice_config_to_record,
+                                    monitor_run_id=run_id,
+                                    recipient=clean_text(recipient),
+                                    subject=subject,
+                                    generated_at=task_details["sent_at"],
+                                )
+        else:
+            error_message = "La tabla de agenda no existe."
+            warnings.append({"code": "agenda_table_missing", "message": error_message})
+
+        report: dict[str, object] = {
+            "task_type": clean_task_type,
+            "mode": run_mode,
+            "dry_run": effective_dry_run,
+            "schedule_key": schedule_key,
+            "root_path": "",
+            "started_at": started_at,
+            "finished_at": now_iso(),
+            "status": "failed" if error_message else "completed",
+            "monitor_run_id": run_id,
+            "processed_items_count": processed_items,
+            "found_markers_count": 0,
+            "route_updates_count": 0,
+            "followed_count": 0,
+            "folders_checked_count": 0,
+            "folders_repaired_count": 0,
+            "folders_broken_count": 0,
+            "platforms_checked_count": 0,
+            "changes_detected_count": int(task_details.get("items_notified_count", 0) or 0)
+            if clean_task_type in NOTICE_TASK_TYPES
+            else 0,
+            "emails_prepared_count": emails_prepared_count,
+            "emails_sent_count": emails_sent_count,
+            "inventory_files_count": 0,
+            "conflicts": [],
+            "warnings": warnings,
+            "error_message": error_message,
+            "task_details": task_details,
+        }
+        finish_monitor_run(conn, run_id, report, error_message)
+        conn.commit()
+        return report
+    except sqlite3.Error as exc:
+        if conn is not None and run_id is not None:
+            error_report = {
+                "finished_at": now_iso(),
+                "status": "failed",
+                "processed_items_count": 0,
+                "found_markers_count": 0,
+                "route_updates_count": 0,
+                "followed_count": 0,
+                "folders_checked_count": 0,
+                "folders_repaired_count": 0,
+                "folders_broken_count": 1,
+                "platforms_checked_count": 0,
+                "changes_detected_count": 0,
+                "emails_prepared_count": 0,
+                "emails_sent_count": 0,
+                "inventory_files_count": 0,
+                "conflicts": [],
+                "warnings": [{"code": "automation_task_error", "message": str(exc)}],
+            }
+            finish_monitor_run(conn, run_id, error_report, str(exc))
+            conn.commit()
+        raise MonitorError(str(exc)) from exc
+    finally:
+        if conn is not None:
+            conn.close()

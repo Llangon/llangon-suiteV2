@@ -86,7 +86,7 @@ INFONALIA_REVIEWER_EMAIL=
 INFONALIA_ENABLE_ADMIN_ALIAS=0
 INFONALIA_HOST=127.0.0.1
 INFONALIA_PORT=8787
-INFONALIA_DROPBOX_ROOT=
+INFONALIA_DROPBOX_ROOT=C:\ReplicaDb
 INFONALIA_PDFTOTEXT=
 INFONALIA_PLATFORM_URL=
 INFONALIA_SMTP_HOST=
@@ -128,7 +128,9 @@ Todo ese contenido está excluido de Git salvo `.gitkeep` y `README_DATOS.md`.
 
 La raíz de Dropbox se configura mediante:
 
-La ruta se define en `INFONALIA_DROPBOX_ROOT` dentro del `.env` local. Puede usar variables del sistema como `%USERPROFILE%`, pero no debe fijarse en archivos versionados una ruta perteneciente a un equipo concreto.
+La ruta se define en `INFONALIA_DROPBOX_ROOT` dentro del `.env` local. Durante desarrollo y pruebas debe apuntar a `C:\ReplicaDb`, una réplica local de la estructura de Dropbox. Los marcadores `[IdLicitacion].llangon`, `EnSeguimiento.llangon`, la sincronización y el futuro monitor deben trabajar contra esa réplica, no contra Dropbox real.
+
+Si `INFONALIA_DROPBOX_ROOT` está definido pero la carpeta no existe, la app no intenta autodetectar Dropbox Desktop por detrás. En ese caso usará el flujo local interno hasta que se cree o corrija la ruta configurada.
 
 Si no se encuentra una ruta válida, la app puede usar `data/descargas/` como destino local. Esa carpeta también está ignorada.
 

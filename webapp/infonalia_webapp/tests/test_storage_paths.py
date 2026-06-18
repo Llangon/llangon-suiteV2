@@ -42,7 +42,7 @@ def test_normalize_relative_folder_path_preserves_safe_parts() -> None:
 
 
 def test_dropbox_relative_path_accepts_relative_and_absolute_under_root(tmp_path) -> None:
-    root = tmp_path / "Dropbox" / "00000 LLANGON"
+    root = tmp_path / "ReplicaDb"
     folder = root / "2026" / "JUNIO"
     folder.mkdir(parents=True)
 
@@ -51,7 +51,7 @@ def test_dropbox_relative_path_accepts_relative_and_absolute_under_root(tmp_path
 
 
 def test_folder_path_for_storage_keeps_non_dropbox_absolute_path(tmp_path) -> None:
-    root = tmp_path / "Dropbox"
+    root = tmp_path / "ReplicaDb"
     external = tmp_path / "externo" / "carpeta"
 
     assert folder_path_for_storage(str(external), root) == str(external)
