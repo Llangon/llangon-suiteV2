@@ -31,6 +31,8 @@ def temporary_download_app(app: ModuleType):
     old_db_path = app.DB_PATH
     old_launcher_path = app.LAUNCHER_PATH
     old_find_dropbox_root = app.find_dropbox_root
+    old_marker_allowed_roots = getattr(app, "marker_allowed_roots", None)
+    old_marker_dropbox_root = getattr(app, "marker_dropbox_root", None)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_root = Path(tmp_dir)
@@ -49,6 +51,10 @@ def temporary_download_app(app: ModuleType):
             app.DB_PATH = old_db_path
             app.LAUNCHER_PATH = old_launcher_path
             app.find_dropbox_root = old_find_dropbox_root
+            if old_marker_allowed_roots is not None:
+                app.marker_allowed_roots = old_marker_allowed_roots
+            if old_marker_dropbox_root is not None:
+                app.marker_dropbox_root = old_marker_dropbox_root
 
 
 def make_download_handler(

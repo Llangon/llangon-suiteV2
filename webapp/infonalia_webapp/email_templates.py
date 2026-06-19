@@ -51,28 +51,28 @@ def build_llangon_email_shell(
     return f"""<!doctype html>
 <html lang="es">
   <body style="margin:0; padding:0; background:#f5f7fb; font-family:Calibri, Segoe UI, Arial, sans-serif; color:#1f2937;">
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f7fb; padding:28px 14px; border-collapse:collapse;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f7fb; padding:22px 12px; border-collapse:collapse;">
       <tr>
         <td align="center">
           <table width="100%" cellpadding="0" cellspacing="0" style="max-width:680px; background:#ffffff; border:1px solid #d9e2ec; border-radius:10px; overflow:hidden; border-collapse:collapse;">
             <tr>
-              <td style="padding:24px 28px; border-bottom:1px solid #d9e2ec;">
+              <td style="padding:18px 24px; border-bottom:1px solid #d9e2ec;">
                 <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                   <tr>
                     <td style="vertical-align:middle;">
                       <p style="margin:0 0 4px 0; color:#667085; font-size:12px; font-weight:800; text-transform:uppercase;">{safe_eyebrow}</p>
-                      <h1 style="margin:0; color:#1f2937; font-size:22px; line-height:1.2;">{safe_title}</h1>
+                      <h1 style="margin:0; color:#1f2937; font-size:20px; line-height:1.2;">{safe_title}</h1>
                       {subtitle_html}
                     </td>
                     <td align="right" style="vertical-align:middle;">
-                      <img src="{LOGO_CID}" alt="{safe_logo_alt}" style="display:block; max-width:170px; height:auto;">
+                      <img src="{LOGO_CID}" alt="{safe_logo_alt}" style="display:block; max-width:128px; height:auto;">
                     </td>
                   </tr>
                 </table>
               </td>
             </tr>
             <tr>
-              <td style="padding:26px 28px;">
+              <td style="padding:22px 24px;">
                 {body_html}
               </td>
             </tr>

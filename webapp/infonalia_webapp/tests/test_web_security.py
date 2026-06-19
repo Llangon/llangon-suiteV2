@@ -175,17 +175,26 @@ def test_licitaciones_center_ui_is_simplified_and_has_detail_view() -> None:
     assert ".detail-dialog[open]" in styles
 
 
-def test_dropbox_marker_followup_ui_has_no_manual_tracking_controls() -> None:
+def test_dropbox_marker_followup_ui_has_admin_only_safe_marker_controls() -> None:
     html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
     script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
 
     assert 'id="sync-dropbox-markers-button"' in html
     assert "/api/storage/markers/sync" in script
+    assert "/markers/id" in script
+    assert "/markers/follow" in script
+    assert "/open-folder" in script
+    assert "data-marker-action" in script
+    assert "data-open-licitacion-folder" in script
+    assert "${renderLicitacionTracking(item)}" in script
+    assert "renderLicitacionMarkerActions(item, seguimiento)" in script
+    assert 'if (!isAdmin()) return "";' in script
+    assert "EnSeguimiento.llangon" in script
     assert "data-toggle-follow" not in script
+    assert "data-delete-follow" not in script
     assert "data-tracking-notes-for" not in script
     assert "Marcar en seguimiento" not in script
     assert "Dejar de seguir" not in script
-    assert "EnSeguimiento.llangon" not in script
 
 
 def test_licitacion_cards_and_detail_keep_hotfix_ux_noise_out() -> None:
@@ -205,7 +214,8 @@ def test_licitacion_cards_and_detail_keep_hotfix_ux_noise_out() -> None:
     assert "Descarga fallida" not in card_render
     assert "footer-state" not in card_render
     assert "Ver detalles" not in card_render
-    assert 'isAdmin() ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""' in card_render
+    assert "const showEditButton = options.showEditButton ?? isAdmin();" in card_render
+    assert 'showEditButton ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""' in card_render
     assert "card-side-id" in card_render
     assert "ID ${escapeHtml(item.id)}" in card_render
     assert "Duplicar" not in card_render
@@ -248,6 +258,15 @@ def test_agenda_pending_tasks_ui_is_admin_only_and_initial_route_by_role() -> No
     assert "showDaysView();" in script
     assert "select data-pending-state" in script
     assert "updatePendingTaskState" in script
+    assert "function pendingLicitacionCardItem" in script
+    assert "return renderCard(pendingLicitacionCardItem(item)" in script
+    assert "pending-licitacion-card" in script
+    assert "function renderPendingTaskCard" in script
+    assert "pending-task-card" in script
+    assert 'class="card-layout"' in script
+    assert "card-side-actions" in script
+    assert 'button[data-open-licitacion-detail]' in script
+    assert 'button[data-edit-id]' in script
 
 
 def test_monitor_history_ui_is_admin_only_and_inventory_ui_is_hidden() -> None:
@@ -257,19 +276,20 @@ def test_monitor_history_ui_is_admin_only_and_inventory_ui_is_hidden() -> None:
     assert 'id="monitor-button" class="nav-item" data-nav-section="monitor" data-admin-only hidden' in html
     assert 'id="monitor-section" hidden' in html
     assert 'id="monitor-task-type-filter"' in html
-    assert "Resumen agenda" in html
-    assert "Agenda diaria" in html
-    assert "Agenda semanal" in html
-    assert "Aviso 7 días" in html
-    assert "Aviso 3 días" in html
-    assert "Aviso mañana" in html
-    assert "Aviso hoy" in html
-    assert 'id="monitor-send-agenda-summary"' in html
+    assert "Pendientes de Agenda" in html
+    assert "Monitor licitaciones" in html
+    assert "Resumen agenda" not in html
+    assert "Agenda semanal" not in html
+    assert "Aviso 7 días" not in html
+    assert "Aviso 3 días" not in html
+    assert "Aviso mañana" not in html
+    assert "Aviso hoy" not in html
     assert 'id="monitor-send-agenda-daily"' in html
-    assert 'id="monitor-send-agenda-weekly"' in html
-    assert "Enviar resumen de agenda de prueba" in html
-    assert "Enviar agenda diaria de prueba" in html
-    assert "Enviar agenda semanal de prueba" in html
+    assert 'id="monitor-send-agenda-summary"' not in html
+    assert 'id="monitor-send-agenda-weekly"' not in html
+    assert "Enviar correo diario de Pendientes de prueba" in html
+    assert "Enviar resumen de agenda de prueba" not in html
+    assert "Enviar agenda semanal de prueba" not in html
     assert 'id="monitor-runs-board"' in html
     assert 'id="monitor-run-detail"' in html
     assert 'id="monitor-inventory-button"' not in html
@@ -280,12 +300,8 @@ def test_monitor_history_ui_is_admin_only_and_inventory_ui_is_hidden() -> None:
     assert 'params.set("task_type", monitorTaskTypeFilter.value)' in script
     assert "Elementos procesados" in script
     assert "function sendMonitorAgendaTask" in script
-    assert '"agenda_diaria"' in script
-    assert '"agenda_semanal"' in script
-    assert "aviso_vencimiento_7d" in script
-    assert "aviso_vencimiento_3d" in script
-    assert "aviso_vencimiento_1d" in script
-    assert "aviso_vencimiento_hoy" in script
+    assert '"agenda_pendientes_diaria"' in script
+    assert 'sendMonitorAgendaTask(\n  monitorSendAgendaDailyButton,\n  "agenda_pendientes_diaria"' in script
     assert "schedule_key" in script
     assert "monitorInventoryButton" not in script
     assert "Ficheros inventariados" not in script

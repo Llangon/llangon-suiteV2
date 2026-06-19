@@ -146,7 +146,9 @@ def _licitacion_tasks(conn: sqlite3.Connection, *, current: datetime) -> list[di
     placeholders = ",".join("?" for _ in PENDING_LICITACION_STATES)
     rows = conn.execute(
         f"""
-        SELECT id, expediente, objeto, organismo, fecha_limite, hora_limite, estado, provincia, plataforma
+        SELECT
+            id, expediente, objeto, organismo, tipo, presupuesto, fecha_limite, hora_limite,
+            estado, provincia, plataforma, enlace_perfil, enlace_infonalia, ruta_carpeta
         FROM licitaciones
         WHERE estado IN ({placeholders})
         """,
@@ -161,11 +163,16 @@ def _licitacion_tasks(conn: sqlite3.Connection, *, current: datetime) -> list[di
             "expediente": row["expediente"] or "",
             "organismo": row["organismo"] or "",
             "objeto": row["objeto"] or "",
+            "tipo": row["tipo"] or "",
+            "presupuesto": row["presupuesto"],
             "fecha_limite": row["fecha_limite"] or "",
             "hora_limite": row["hora_limite"] or "",
             "estado": row["estado"] or "",
             "provincia": row["provincia"] or "",
             "plataforma": row["plataforma"] or "",
+            "enlace_perfil": row["enlace_perfil"] or "",
+            "enlace_infonalia": row["enlace_infonalia"] or "",
+            "ruta_carpeta": row["ruta_carpeta"] or "",
         }]
         items.append({
             "id": f"licitacion:{row['id']}",
@@ -179,7 +186,17 @@ def _licitacion_tasks(conn: sqlite3.Connection, *, current: datetime) -> list[di
             "state": row["estado"] or "",
             "state_value": row["estado"] or "",
             "expediente": row["expediente"] or "",
+            "organismo": row["organismo"] or "",
+            "objeto": row["objeto"] or "",
+            "tipo": row["tipo"] or "",
+            "presupuesto": row["presupuesto"],
+            "fecha_limite": row["fecha_limite"] or "",
+            "hora_limite": row["hora_limite"] or "",
             "provincia": row["provincia"] or "",
+            "plataforma": row["plataforma"] or "",
+            "enlace_perfil": row["enlace_perfil"] or "",
+            "enlace_infonalia": row["enlace_infonalia"] or "",
+            "ruta_carpeta": row["ruta_carpeta"] or "",
             "linked_licitaciones": linked,
             "state_options": [{"value": state, "label": state} for state in ESTADOS_ORDEN],
             **_event_parts(event_dt, current=current),

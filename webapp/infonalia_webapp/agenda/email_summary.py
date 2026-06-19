@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import html
-from datetime import datetime
+import re
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 try:
     from ..email_templates import build_llangon_email_shell
-    from ..formatting import format_datetime_es
+    from ..formatting import format_date_es, format_datetime_es
     from ..normalization import clean_text
 except ImportError:
     from email_templates import build_llangon_email_shell
-    from formatting import format_datetime_es
+    from formatting import format_date_es, format_datetime_es
     from normalization import clean_text
 
 
@@ -39,6 +41,9 @@ TYPE_STYLES = {
         "border": "#d0d5dd",
     },
 }
+
+WEEKDAY_NAMES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+MADRID_TZ = ZoneInfo("Europe/Madrid")
 
 
 def _event_line(event: dict[str, object]) -> str:
@@ -115,10 +120,110 @@ def _item_expediente(item: dict[str, object]) -> str:
         for linked_item in linked:
             if not isinstance(linked_item, dict):
                 continue
-            expediente = clean_text(linked_item.get("expediente") or linked_item.get("id"))
-            if expediente:
+            expediente = clean_text(linked_item.get("expediente"))
+            if is_real_expediente(expediente):
                 return expediente
-    return clean_text(item.get("expediente") or item.get("source_id")) or "Sin expediente"
+    expediente = clean_text(item.get("expediente"))
+    return expediente if is_real_expediente(expediente) else ""
+
+
+def is_real_expediente(value: object) -> bool:
+    expediente = clean_text(value)
+    if not expediente:
+        return False
+    if expediente.isdigit():
+        return False
+    return bool(re.search(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ/-]", expediente))
+
+
+def email_day_section_title(day, *, current) -> str:
+    weekday = WEEKDAY_NAMES[day.weekday()].upper()
+    formatted = format_date_es(day.isoformat())
+    if day == current:
+        return f"HOY, {weekday} {formatted}"
+    if day == current + timedelta(days=1):
+        return f"MAÑANA, {weekday} {formatted}"
+    return f"{weekday} {formatted}"
+
+
+def local_email_reference(current: datetime | None = None) -> datetime:
+    value = current or datetime.now(MADRID_TZ)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=MADRID_TZ)
+    return value.astimezone(MADRID_TZ)
+
+
+def pending_day_bucket(item_date: date | None, *, current: datetime | None = None) -> tuple[str, str]:
+    today = local_email_reference(current).date()
+    if item_date is None:
+        return "sin_fecha", "SIN FECHA"
+    weekday = WEEKDAY_NAMES[item_date.weekday()].upper()
+    formatted = format_date_es(item_date.isoformat())
+    if item_date < today:
+        return "vencidos", "VENCIDOS"
+    if item_date == today:
+        return "hoy", f"HOY, {weekday} {formatted}"
+    if item_date == today + timedelta(days=1):
+        return "manana", f"MAÑANA, {weekday} {formatted}"
+    return item_date.isoformat(), f"{weekday} {formatted}"
+
+
+def _item_date_value(item: dict[str, object]) -> date | None:
+    value = clean_text(item.get("date") or item.get("datetime") or item.get("deadline_at") or item.get("fecha_limite"))
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return None
+
+
+def _pending_sort_key(item: dict[str, object]) -> tuple[object, ...]:
+    return (
+        item.get("datetime") or "9999-12-31T23:59:59",
+        clean_text(item.get("expediente")).lower(),
+        clean_text(item.get("title")).lower(),
+    )
+
+
+def _pending_sections(items: list[dict[str, object]], *, current: datetime) -> list[dict[str, object]]:
+    grouped: dict[str, dict[str, object]] = {}
+    order: list[str] = []
+    rank = {"vencidos": 0, "hoy": 1, "manana": 2, "sin_fecha": 9999}
+    for item in sorted(items, key=_pending_sort_key):
+        key, title = pending_day_bucket(_item_date_value(item), current=current)
+        if key not in grouped:
+            grouped[key] = {"key": key, "title": title, "items": []}
+            order.append(key)
+        grouped[key]["items"].append(item)
+    ordered_keys = sorted(order, key=lambda key: (rank.get(key, 100 + order.index(key)), key))
+    return [grouped[key] for key in ordered_keys]
+
+
+def build_pending_tasks_email_payload(
+    pending_response: dict[str, object],
+    *,
+    current: datetime | None = None,
+) -> dict[str, object]:
+    reference = local_email_reference(current)
+    items = [item for item in pending_response.get("items") or [] if isinstance(item, dict)]
+    today = reference.date()
+    counts = {
+        "total": len(items),
+        "overdue": sum(1 for item in items if (_item_date_value(item) is not None and _item_date_value(item) < today)),
+        "today": sum(1 for item in items if _item_date_value(item) == today),
+        "tomorrow": sum(1 for item in items if _item_date_value(item) == today + timedelta(days=1)),
+        "no_date": sum(1 for item in items if _item_date_value(item) is None),
+    }
+    counts["upcoming"] = max(0, counts["total"] - counts["overdue"] - counts["today"] - counts["no_date"])
+    return {
+        "active_date_label": format_date_es(today.isoformat()),
+        "heading": "Pendientes de Agenda",
+        "subtitle": "Tareas pendientes",
+        "sections": _pending_sections(items, current=reference),
+        "counts": counts,
+        "is_pending_digest": True,
+    }
 
 
 def _item_source_key(item: dict[str, object]) -> str:
@@ -146,9 +251,8 @@ def _item_linked_text(item: dict[str, object]) -> str:
             if not isinstance(linked_item, dict):
                 continue
             label = clean_text(
-                linked_item.get("expediente")
+                (_item_expediente(linked_item) if isinstance(linked_item, dict) else "")
                 or linked_item.get("organismo")
-                or linked_item.get("id")
             )
             if label:
                 labels.append(label)
@@ -175,6 +279,11 @@ def _item_row_html(item: dict[str, object], *, subdued: bool = False) -> str:
         if linked
         else ""
     )
+    expediente_html = (
+        f"<p style='margin:7px 0 0 0; color:#667085; font-size:12px; line-height:1.45;'>Expediente: {expediente}</p>"
+        if expediente
+        else ""
+    )
     return f"""
       <tr>
         <td style="padding:0 0 10px 0;">
@@ -186,14 +295,18 @@ def _item_row_html(item: dict[str, object], *, subdued: bool = False) -> str:
                     <td style="vertical-align:top;">
                       <span style="display:inline-block; padding:3px 8px; background:{style['background']}; color:{style['color']}; border:1px solid {style['border']}; border-radius:999px; font-size:11px; font-weight:800; text-transform:uppercase;">{html.escape(style['label'])}</span>
                     </td>
-                    <td align="right" style="vertical-align:top; color:#667085; font-size:12px; white-space:nowrap;">{date_label}</td>
+                    <td align="right" style="vertical-align:top;"></td>
                   </tr>
                 </table>
                 <p style="margin:9px 0 0 0; color:{opacity_color}; font-size:15px; font-weight:800; line-height:1.35;">{title}</p>
                 {description_html}
-                <p style="margin:7px 0 0 0; color:#667085; font-size:12px; line-height:1.45;">Expediente: {expediente}</p>
-                <p style="margin:3px 0 0 0; color:#667085; font-size:12px; line-height:1.45;">Estado: {status}</p>
-                <p style="margin:3px 0 0 0; color:#667085; font-size:12px; line-height:1.45;">Fecha/hora final: {date_label}</p>
+                {expediente_html}
+                <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin-top:9px;">
+                  <tr>
+                    <td style="padding:8px 10px; border:1px solid #d9e2ec; background:#f8fafc; color:#1f2937; font-size:13px; line-height:1.35;"><strong>Estado:</strong> {status}</td>
+                    <td style="padding:8px 10px; border:1px solid #d9e2ec; background:#f8fafc; color:#1f2937; font-size:13px; line-height:1.35;"><strong>Fecha/hora final:</strong> {date_label}</td>
+                  </tr>
+                </table>
                 {linked_html}
               </td>
             </tr>
@@ -272,6 +385,7 @@ def build_operational_email_payload(
         "counts": {
             "today": len(today_events),
             "week_rest": len(week_events),
+            "total_week": len(today_events) + len(week_events),
         },
     }
 
@@ -293,8 +407,10 @@ def build_operational_email_text(payload: dict[str, object]) -> str:
         for item in items[:16]:
             status = item.get("status") or ""
             source = item.get("source_type") or ""
+            expediente = _item_expediente(item)
+            expediente_text = f"Expediente: {expediente} | " if expediente else ""
             lines.append(
-                f"- [{source}] Expediente: {_item_expediente(item)} | "
+                f"- [{source}] {expediente_text}"
                 f"Título: {_item_title(item)} | Estado: {status} | "
                 f"Fecha/hora final: {_item_date(item)}"
             )
@@ -318,29 +434,48 @@ def build_operational_email_html(payload: dict[str, object], *, generated_at: ob
     ]
     counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
     today_count = html.escape(str(counts.get("today", 0)))
-    week_count = html.escape(str(counts.get("week_rest", 0)))
+    is_notice = isinstance(payload.get("notice"), dict)
+    is_pending = bool(payload.get("is_pending_digest"))
+    right_label = "Total aviso" if is_notice else "Total semana"
+    right_count_value = counts.get("total_notice") if is_notice else counts.get("total_week")
+    if is_pending:
+        summary_cells = [
+            ("Total pendientes", counts.get("total", 0)),
+            ("Vencidos", counts.get("overdue", 0)),
+            ("Vencen hoy", counts.get("today", 0)),
+            ("Próximos", counts.get("upcoming", 0)),
+        ]
+        if int(counts.get("no_date", 0) or 0):
+            summary_cells.append(("Sin fecha", counts.get("no_date", 0)))
+    else:
+        if right_count_value is None:
+            right_count_value = int(counts.get("today", 0) or 0) + int(counts.get("week_rest", 0) or 0)
+        summary_cells = [("Vence hoy", today_count), (right_label, right_count_value)]
     heading = html.escape(clean_text(payload.get("heading")) or "Agenda Llangón")
     subtitle = html.escape(clean_text(payload.get("subtitle")) or "Resumen operativo diario")
     sections_html = "".join(
         _section_html(section, subdued=index > 0)
         for index, section in enumerate(rendered_sections)
     )
+    summary_html = "".join(
+        f"<td style='padding:8px 10px; border:1px solid #d9e2ec; color:#1f2937; font-size:13px; font-weight:800;'>{html.escape(str(label))}: {html.escape(str(value))}</td>"
+        for label, value in summary_cells
+    )
     body_html = f"""
-    <table width="100%" cellpadding="0" cellspacing="0" style="border-left:5px solid #2dad2c; background:#ffffff; border-collapse:collapse; margin:0 0 22px 0;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-left:5px solid #2dad2c; background:#ffffff; border-collapse:collapse; margin:0 0 16px 0;">
       <tr>
-        <td style="padding:0 0 0 18px;">
-          <p style="margin:0 0 8px 0; color:#667085; font-size:12px; font-weight:800; text-transform:uppercase;">{subtitle}</p>
-          <h2 style="margin:0 0 10px 0; color:#1f2937; font-size:20px; line-height:1.25;">{heading}</h2>
+        <td style="padding:0 0 0 14px;">
+          <p style="margin:0 0 5px 0; color:#667085; font-size:12px; font-weight:800; text-transform:uppercase;">{subtitle}</p>
+          <h2 style="margin:0 0 7px 0; color:#1f2937; font-size:20px; line-height:1.25;">{heading}</h2>
           <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
             <tr>
               <td style="padding:0; color:#475467; font-size:13px; line-height:1.45;">Fecha: {date_label}</td>
               <td align="right" style="padding:0; color:#667085; font-size:13px; line-height:1.45;">Generado: {generated_label}</td>
             </tr>
           </table>
-          <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin-top:14px;">
+          <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin-top:10px;">
             <tr>
-              <td style="padding:9px 12px; border:1px solid #d9e2ec; color:#1f2937; font-size:13px; font-weight:800;">Hoy: {today_count}</td>
-              <td style="padding:9px 12px; border:1px solid #d9e2ec; color:#1f2937; font-size:13px; font-weight:800;">Semana: {week_count}</td>
+              {summary_html}
             </tr>
           </table>
         </td>

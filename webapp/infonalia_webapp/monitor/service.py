@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import json
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable, Iterable
+from zoneinfo import ZoneInfo
 
 from .config import MonitorConfigError, load_monitor_config
 from .email import prepare_monitor_emails
@@ -13,6 +15,7 @@ from .document_summary import build_document_summary
 from .platforms import check_followed_platforms
 from .repository import (
     TASK_TYPE_AGENDA_DIARIA,
+    TASK_TYPE_AGENDA_PENDIENTES_DIARIA,
     TASK_TYPE_AGENDA_SEMANAL,
     TASK_TYPE_AVISO_VENCIMIENTO_1D,
     TASK_TYPE_AVISO_VENCIMIENTO_3D,
@@ -33,18 +36,24 @@ from .scanner import MarkerRecord, MonitorIssue, ScanResult, scan_marker_tree
 
 try:
     from ..agenda.email_summary import (
+        build_pending_tasks_email_payload,
         build_operational_email_html,
         build_operational_email_payload,
         build_operational_email_text,
+        email_day_section_title,
     )
+    from ..agenda.pending_tasks import build_pending_tasks_response
     from ..agenda.service import active_date_label, agenda_week_bounds, build_agenda_events, build_agenda_response
     from ..normalization import clean_text
 except ImportError:
     from agenda.email_summary import (
+        build_pending_tasks_email_payload,
         build_operational_email_html,
         build_operational_email_payload,
         build_operational_email_text,
+        email_day_section_title,
     )
+    from agenda.pending_tasks import build_pending_tasks_response
     from agenda.service import active_date_label, agenda_week_bounds, build_agenda_events, build_agenda_response
     from normalization import clean_text
 
@@ -56,50 +65,76 @@ ALL_MODES = {"dry-run", "repair-routes", "inventory", "sync", "monitor"}
 EmailSender = Callable[[str, str, str, str], tuple[str | None, str | None]]
 AUTOMATION_MODE_MANUAL = "manual"
 AUTOMATION_MODE_AUTOMATIC = "automatic"
+DEFAULT_SCHEDULER_TIMEZONE = "Europe/Madrid"
+LEGACY_AUTOMATION_TASKS = {
+    TASK_TYPE_AGENDA_DIARIA,
+    TASK_TYPE_AGENDA_SEMANAL,
+    TASK_TYPE_AVISO_VENCIMIENTO_7D,
+    TASK_TYPE_AVISO_VENCIMIENTO_3D,
+    TASK_TYPE_AVISO_VENCIMIENTO_1D,
+    TASK_TYPE_AVISO_VENCIMIENTO_HOY,
+}
 MONITOR_AUTOMATION_SCHEDULES = {
+    TASK_TYPE_AGENDA_PENDIENTES_DIARIA: {
+        "frequency": "daily",
+        "time": os.environ.get("MONITOR_AGENDA_PENDING_DAILY_TIME", "06:00"),
+        "send_policy": "only_if_pending_tasks",
+    },
+    TASK_TYPE_MONITOR_LICITACIONES: {
+        "frequency": "weekdays",
+        "times": [
+            os.environ.get("MONITOR_LICITACIONES_TIME_1", "07:00"),
+            os.environ.get("MONITOR_LICITACIONES_TIME_2", "12:30"),
+            os.environ.get("MONITOR_LICITACIONES_TIME_3", "17:30"),
+        ],
+        "send_policy": "only_with_changes",
+    },
+}
+LEGACY_AUTOMATION_SCHEDULES = {
     TASK_TYPE_AGENDA_DIARIA: {
         "frequency": "daily",
         "time": "06:00",
-        "send_policy": "only_if_due_today",
+        "send_policy": "legacy_manual_alias",
+        "active": False,
     },
     TASK_TYPE_AGENDA_SEMANAL: {
         "frequency": "weekly",
         "weekday": "monday",
         "time": "05:30",
-        "send_policy": "always",
+        "send_policy": "legacy_manual_only",
+        "active": False,
     },
     TASK_TYPE_AVISO_VENCIMIENTO_7D: {
         "frequency": "daily",
         "time": "06:15",
         "notice_days": 7,
         "notice_level": "7d",
-        "send_policy": "only_if_new_alerts",
+        "send_policy": "legacy_manual_only",
+        "active": False,
     },
     TASK_TYPE_AVISO_VENCIMIENTO_3D: {
         "frequency": "daily",
         "time": "06:20",
         "notice_days": 3,
         "notice_level": "3d",
-        "send_policy": "only_if_new_alerts",
+        "send_policy": "legacy_manual_only",
+        "active": False,
     },
     TASK_TYPE_AVISO_VENCIMIENTO_1D: {
         "frequency": "daily",
         "time": "06:25",
         "notice_days": 1,
         "notice_level": "1d",
-        "send_policy": "only_if_new_alerts",
+        "send_policy": "legacy_manual_only",
+        "active": False,
     },
     TASK_TYPE_AVISO_VENCIMIENTO_HOY: {
         "frequency": "daily",
         "time": "06:30",
         "notice_days": 0,
         "notice_level": "hoy",
-        "send_policy": "only_if_new_alerts",
-    },
-    TASK_TYPE_MONITOR_LICITACIONES: {
-        "frequency": "weekdays",
-        "times": ["07:00", "12:30", "17:30"],
-        "send_policy": "only_with_changes",
+        "send_policy": "legacy_manual_only",
+        "active": False,
     },
 }
 NOTICE_TASK_TYPES = {
@@ -116,6 +151,30 @@ class MonitorError(RuntimeError):
 
 def now_iso() -> str:
     return datetime.now().replace(microsecond=0).isoformat()
+
+
+def scheduler_timezone() -> ZoneInfo:
+    name = clean_text(os.environ.get("MONITOR_SCHEDULER_TIMEZONE")) or DEFAULT_SCHEDULER_TIMEZONE
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return ZoneInfo(DEFAULT_SCHEDULER_TIMEZONE)
+
+
+def localize_scheduler_datetime(value: datetime | None = None) -> datetime:
+    tz = scheduler_timezone()
+    current = value or datetime.now(tz)
+    if current.tzinfo is None:
+        return current.replace(tzinfo=tz)
+    return current.astimezone(tz)
+
+
+def scheduler_now_iso(value: datetime | None = None) -> str:
+    return localize_scheduler_datetime(value).replace(microsecond=0).isoformat()
+
+
+def scheduler_naive_datetime(value: datetime) -> datetime:
+    return localize_scheduler_datetime(value).replace(tzinfo=None)
 
 
 def normalize_mode(mode: str) -> str:
@@ -551,6 +610,10 @@ def monitor_automation_schedules() -> dict[str, dict[str, object]]:
     return {key: dict(value) for key, value in MONITOR_AUTOMATION_SCHEDULES.items()}
 
 
+def automation_schedule_for_task(task_type: str) -> dict[str, object]:
+    return dict(MONITOR_AUTOMATION_SCHEDULES.get(task_type) or LEGACY_AUTOMATION_SCHEDULES.get(task_type) or {})
+
+
 def schedule_time_has_arrived(current: datetime, time_text: object) -> bool:
     parts = clean_text(time_text).split(":")
     if len(parts) != 2:
@@ -563,24 +626,38 @@ def schedule_time_has_arrived(current: datetime, time_text: object) -> bool:
     return (current.hour * 60 + current.minute) >= (hour * 60 + minute)
 
 
+def schedule_time_minutes(time_text: object) -> int | None:
+    parts = clean_text(time_text).split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]) * 60 + int(parts[1])
+    except ValueError:
+        return None
+
+
+def latest_arrived_schedule_time(current: datetime, times: Iterable[object]) -> str:
+    current_minutes = current.hour * 60 + current.minute
+    arrived: list[tuple[int, str]] = []
+    for time_text in times:
+        minutes = schedule_time_minutes(time_text)
+        if minutes is None or minutes > current_minutes:
+            continue
+        arrived.append((minutes, clean_text(time_text)))
+    if not arrived:
+        return ""
+    return max(arrived, key=lambda item: item[0])[1]
+
+
 def due_automation_task_types(current: datetime | None = None) -> list[str]:
-    target = current or datetime.now()
+    target = localize_scheduler_datetime(current)
     due: list[str] = []
-    daily_schedule = MONITOR_AUTOMATION_SCHEDULES[TASK_TYPE_AGENDA_DIARIA]
+    daily_schedule = MONITOR_AUTOMATION_SCHEDULES[TASK_TYPE_AGENDA_PENDIENTES_DIARIA]
     if schedule_time_has_arrived(target, daily_schedule.get("time")):
-        due.append(TASK_TYPE_AGENDA_DIARIA)
-    weekly_schedule = MONITOR_AUTOMATION_SCHEDULES[TASK_TYPE_AGENDA_SEMANAL]
-    if target.weekday() == 0 and schedule_time_has_arrived(target, weekly_schedule.get("time")):
-        due.append(TASK_TYPE_AGENDA_SEMANAL)
-    for task_type in (
-        TASK_TYPE_AVISO_VENCIMIENTO_7D,
-        TASK_TYPE_AVISO_VENCIMIENTO_3D,
-        TASK_TYPE_AVISO_VENCIMIENTO_1D,
-        TASK_TYPE_AVISO_VENCIMIENTO_HOY,
-    ):
-        schedule = MONITOR_AUTOMATION_SCHEDULES[task_type]
-        if schedule_time_has_arrived(target, schedule.get("time")):
-            due.append(task_type)
+        due.append(TASK_TYPE_AGENDA_PENDIENTES_DIARIA)
+    monitor_schedule = MONITOR_AUTOMATION_SCHEDULES[TASK_TYPE_MONITOR_LICITACIONES]
+    if target.weekday() < 5 and latest_arrived_schedule_time(target, monitor_schedule.get("times") or []):
+        due.append(TASK_TYPE_MONITOR_LICITACIONES)
     return due
 
 
@@ -592,7 +669,25 @@ def run_due_automation_tasks(
     email_sender: EmailSender | None = None,
     current: datetime | None = None,
 ) -> list[dict[str, object]]:
-    target = current or datetime.now()
+    target = localize_scheduler_datetime(current)
+    due_task_types = due_automation_task_types(target)
+    if not due_task_types:
+        return []
+    db_file = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
+    conn = connect_db(db_file, read_only=False)
+    try:
+        ensure_monitor_schema(conn)
+        record_scheduler_heartbeat(
+            conn,
+            checked_at=scheduler_now_iso(target),
+            status="checked",
+            next_task="",
+            next_run_at="",
+            timezone=DEFAULT_SCHEDULER_TIMEZONE,
+        )
+        conn.commit()
+    finally:
+        conn.close()
     return [
         run_automation_task(
             task_type,
@@ -603,34 +698,169 @@ def run_due_automation_tasks(
             current=target,
             trigger_mode=AUTOMATION_MODE_AUTOMATIC,
         )
-        for task_type in due_automation_task_types(target)
+        for task_type in due_task_types
     ]
 
 
 def schedule_key_for_task(task_type: str, current: datetime) -> str:
-    if task_type == TASK_TYPE_AGENDA_DIARIA or task_type in NOTICE_TASK_TYPES:
-        return f"{task_type}:{current.date().isoformat()}"
+    target = localize_scheduler_datetime(current)
+    if task_type in {TASK_TYPE_AGENDA_PENDIENTES_DIARIA, TASK_TYPE_AGENDA_DIARIA} or task_type in NOTICE_TASK_TYPES:
+        canonical = TASK_TYPE_AGENDA_PENDIENTES_DIARIA if task_type == TASK_TYPE_AGENDA_DIARIA else task_type
+        return f"{canonical}:{target.date().isoformat()}"
     if task_type == TASK_TYPE_AGENDA_SEMANAL:
-        calendar = current.date().isocalendar()
+        calendar = target.date().isocalendar()
         return f"{task_type}:{calendar.year}-W{calendar.week:02d}"
+    if task_type == TASK_TYPE_MONITOR_LICITACIONES:
+        schedule = MONITOR_AUTOMATION_SCHEDULES[TASK_TYPE_MONITOR_LICITACIONES]
+        slot = latest_arrived_schedule_time(target, schedule.get("times") or [])
+        slot_key = slot.replace(":", "")
+        return f"{task_type}:{target.date().isoformat()}:{slot_key}" if slot else f"{task_type}:{target.date().isoformat()}"
     return ""
 
 
-def successful_schedule_exists(conn: sqlite3.Connection, task_type: str, schedule_key: str) -> bool:
+def automatic_schedule_exists(
+    conn: sqlite3.Connection,
+    task_type: str,
+    schedule_key: str,
+    *,
+    statuses: tuple[str, ...] = ("completed",),
+) -> bool:
     if not schedule_key:
         return False
+    placeholders = ",".join("?" for _ in statuses)
     row = conn.execute(
-        """
+        f"""
         SELECT 1
         FROM monitor_runs
         WHERE task_type = ?
           AND schedule_key = ?
-          AND status = 'completed'
+          AND mode = ?
+          AND status IN ({placeholders})
         LIMIT 1
         """,
-        (task_type, schedule_key),
+        (task_type, schedule_key, AUTOMATION_MODE_AUTOMATIC, *statuses),
     ).fetchone()
     return row is not None
+
+
+def successful_schedule_exists(conn: sqlite3.Connection, task_type: str, schedule_key: str) -> bool:
+    return automatic_schedule_exists(conn, task_type, schedule_key, statuses=("completed",))
+
+
+def claim_automation_task(
+    conn: sqlite3.Connection,
+    *,
+    task_type: str,
+    schedule_key: str,
+    claimed_at: str,
+    worker_id: str = "",
+    lease_minutes: int = 30,
+) -> tuple[bool, dict[str, object]]:
+    if not schedule_key:
+        return True, {}
+    lease_until = (datetime.fromisoformat(claimed_at) + timedelta(minutes=lease_minutes)).replace(microsecond=0).isoformat()
+    conn.execute("BEGIN IMMEDIATE")
+    existing = conn.execute(
+        "SELECT * FROM monitor_automation_claims WHERE task_type = ? AND schedule_key = ?",
+        (task_type, schedule_key),
+    ).fetchone()
+    if existing:
+        status = clean_text(existing["status"])
+        current_lease = clean_text(existing["lease_until"])
+        lease_expired = bool(current_lease and current_lease < claimed_at)
+        if status in {"running", "smtp_uncertain"} and not lease_expired:
+            conn.commit()
+            return False, {"status": status, "schedule_key": schedule_key, "reason": "already_claimed"}
+        if status == "completed":
+            conn.commit()
+            return False, {"status": status, "schedule_key": schedule_key, "reason": "already_completed"}
+        if status == "smtp_uncertain":
+            conn.commit()
+            return False, {"status": status, "schedule_key": schedule_key, "reason": "smtp_uncertain"}
+        conn.execute(
+            """
+            UPDATE monitor_automation_claims
+            SET status = 'running',
+                claimed_at = ?,
+                lease_until = ?,
+                completed_at = NULL,
+                attempt_count = attempt_count + 1,
+                last_error = NULL,
+                worker_id = ?
+            WHERE task_type = ? AND schedule_key = ?
+            """,
+            (claimed_at, lease_until, worker_id, task_type, schedule_key),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO monitor_automation_claims (
+                task_type, schedule_key, status, claimed_at, lease_until, worker_id
+            )
+            VALUES (?, ?, 'running', ?, ?, ?)
+            """,
+            (task_type, schedule_key, claimed_at, lease_until, worker_id),
+        )
+    conn.commit()
+    return True, {"status": "running", "schedule_key": schedule_key}
+
+
+def complete_automation_claim(
+    conn: sqlite3.Connection,
+    *,
+    task_type: str,
+    schedule_key: str,
+    status: str,
+    completed_at: str,
+    run_id: int | None = None,
+    last_error: str = "",
+    email_attempted_at: str = "",
+) -> None:
+    if not schedule_key:
+        return
+    conn.execute(
+        """
+        UPDATE monitor_automation_claims
+        SET status = ?,
+            completed_at = ?,
+            lease_until = NULL,
+            run_id = COALESCE(?, run_id),
+            last_error = ?,
+            email_attempted_at = COALESCE(NULLIF(?, ''), email_attempted_at)
+        WHERE task_type = ? AND schedule_key = ?
+        """,
+        (status, completed_at, run_id, last_error, email_attempted_at, task_type, schedule_key),
+    )
+
+
+def record_scheduler_heartbeat(
+    conn: sqlite3.Connection,
+    *,
+    checked_at: str,
+    status: str,
+    next_task: str = "",
+    next_run_at: str = "",
+    timezone: str = DEFAULT_SCHEDULER_TIMEZONE,
+    last_error: str = "",
+    worker_id: str = "",
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO monitor_scheduler_heartbeat (
+            id, checked_at, status, next_task, next_run_at, timezone, last_error, worker_id
+        )
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            checked_at = excluded.checked_at,
+            status = excluded.status,
+            next_task = excluded.next_task,
+            next_run_at = excluded.next_run_at,
+            timezone = excluded.timezone,
+            last_error = excluded.last_error,
+            worker_id = excluded.worker_id
+        """,
+        (checked_at, status, next_task, next_run_at, timezone, last_error, worker_id),
+    )
 
 
 def event_date(value: object) -> date | None:
@@ -649,13 +879,14 @@ def agenda_events_for_exact_day(
     target: datetime,
 ) -> list[dict[str, object]]:
     target_day = target.date()
+    agenda_current = scheduler_naive_datetime(target)
     events = build_agenda_events(
         conn,
         view="all",
         target_date=target_day,
         type_filter="all",
         include_overdue=True,
-        current=target,
+        current=agenda_current,
     )
     return [event for event in events if event_date(event.get("date")) == target_day]
 
@@ -667,13 +898,14 @@ def agenda_events_for_week(
 ) -> tuple[date, date, list[dict[str, object]]]:
     target_day = target.date()
     start, end = agenda_week_bounds(target_day)
+    agenda_current = scheduler_naive_datetime(target)
     events = build_agenda_events(
         conn,
         view="all",
         target_date=target_day,
         type_filter="all",
         include_overdue=True,
-        current=target,
+        current=agenda_current,
     )
     return start, end, [
         event for event in events
@@ -681,9 +913,8 @@ def agenda_events_for_week(
     ]
 
 
-def day_section_title(day: date) -> str:
-    label = active_date_label(day, current=day)
-    return f"{label} ({day.isoformat()})"
+def day_section_title(day: date, *, current: date) -> str:
+    return email_day_section_title(day, current=current)
 
 
 def build_daily_agenda_email_payload(
@@ -705,6 +936,7 @@ def build_daily_agenda_email_payload(
         "counts": {
             "today": len(events),
             "week_rest": 0,
+            "total_week": len(events),
         },
     }
     return payload, events
@@ -721,7 +953,7 @@ def build_weekly_agenda_email_payload(
         day = start + timedelta(days=offset)
         day_items = [event for event in events if event_date(event.get("date")) == day]
         if day_items:
-            sections.append({"title": day_section_title(day), "items": day_items})
+            sections.append({"title": day_section_title(day, current=target.date()), "items": day_items})
     if not sections:
         sections.append({"title": f"Semana {start.isoformat()} a {end.isoformat()}", "items": []})
     payload = {
@@ -731,14 +963,15 @@ def build_weekly_agenda_email_payload(
         "sections": sections,
         "counts": {
             "today": sum(1 for event in events if event_date(event.get("date")) == target.date()),
-            "week_rest": len(events),
+            "week_rest": sum(1 for event in events if event_date(event.get("date")) != target.date()),
+            "total_week": len(events),
         },
     }
     return payload, events
 
 
 def notice_config(task_type: str) -> dict[str, object]:
-    return MONITOR_AUTOMATION_SCHEDULES.get(task_type, {})
+    return automation_schedule_for_task(task_type)
 
 
 def notice_label(days: int) -> str:
@@ -804,13 +1037,14 @@ def due_notice_events(
     days = int(config.get("notice_days", 0) or 0)
     notice_level = clean_text(config.get("notice_level")) or f"{days}d"
     due_date = target.date() + timedelta(days=days)
+    agenda_current = scheduler_naive_datetime(target)
     events = build_agenda_events(
         conn,
         view="all",
         target_date=target.date(),
         type_filter="all",
         include_overdue=True,
-        current=target,
+        current=agenda_current,
     )
     due_events = [
         event for event in events
@@ -852,6 +1086,7 @@ def build_notice_email_payload(
         "counts": {
             "today": len(events) if days == 0 else 0,
             "week_rest": len(events),
+            "total_notice": len(events),
         },
         "notice": {
             "task_type": task_type,
@@ -920,15 +1155,16 @@ def build_summary_agenda_email_payload(
     target: datetime,
 ) -> tuple[dict[str, object], int]:
     target_date = target.date().isoformat()
+    agenda_current = scheduler_naive_datetime(target)
     today_response = build_agenda_response(
         conn,
         params={"view": "day", "date": target_date, "type": "all"},
-        current=target,
+        current=agenda_current,
     )
     week_response = build_agenda_response(
         conn,
         params={"view": "week", "date": target_date, "type": "all"},
-        current=target,
+        current=agenda_current,
     )
     payload = build_operational_email_payload(today_response, week_response)
     counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
@@ -936,9 +1172,23 @@ def build_summary_agenda_email_payload(
     return payload, processed_items
 
 
-def automation_email_subject(task_type: str, target: datetime) -> str:
-    if task_type == TASK_TYPE_AGENDA_DIARIA:
-        return f"Agenda de hoy - vencimientos del día {target.date().isoformat()}"
+def build_pending_agenda_email_payload(
+    conn: sqlite3.Connection,
+    *,
+    target: datetime,
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    local_target = localize_scheduler_datetime(target)
+    response = build_pending_tasks_response(conn, current=local_target.replace(tzinfo=None))
+    items = list(response.get("items") or [])
+    return build_pending_tasks_email_payload(response, current=local_target), items
+
+
+def automation_email_subject(task_type: str, target: datetime, *, email_payload: dict[str, object] | None = None) -> str:
+    if task_type in {TASK_TYPE_AGENDA_PENDIENTES_DIARIA, TASK_TYPE_AGENDA_DIARIA}:
+        counts = (email_payload or {}).get("counts") if isinstance((email_payload or {}).get("counts"), dict) else {}
+        total = int(counts.get("total", 0) or 0)
+        noun = "elemento" if total == 1 else "elementos"
+        return f"Pendientes de Agenda — {total} {noun} — {target.date().isoformat()}"
     if task_type == TASK_TYPE_AGENDA_SEMANAL:
         start, end = agenda_week_bounds(target.date())
         return f"Resumen semanal de agenda {start.isoformat()} a {end.isoformat()}"
@@ -958,9 +1208,11 @@ def run_automation_task(
     clean_task_type = normalize_task_type(task_type, default="")
     supported_tasks = {
         TASK_TYPE_RESUMEN_AGENDA,
+        TASK_TYPE_AGENDA_PENDIENTES_DIARIA,
         TASK_TYPE_AGENDA_DIARIA,
         TASK_TYPE_AGENDA_SEMANAL,
         *NOTICE_TASK_TYPES,
+        TASK_TYPE_MONITOR_LICITACIONES,
     }
     if clean_task_type not in TASK_TYPES or clean_task_type not in supported_tasks:
         raise MonitorError(f"Tipo de tarea de monitor no valido: {task_type}")
@@ -974,9 +1226,52 @@ def run_automation_task(
         ensure_monitor_schema(conn)
         effective_dry_run = True if dry_run is None else bool(dry_run)
         requested_mode = AUTOMATION_MODE_AUTOMATIC if clean_text(trigger_mode).lower() == AUTOMATION_MODE_AUTOMATIC else AUTOMATION_MODE_MANUAL
-        target = current or datetime.now()
+        target = localize_scheduler_datetime(current)
         schedule_key = schedule_key_for_task(clean_task_type, target)
         run_mode = "dry-run" if effective_dry_run else requested_mode
+        if run_mode == AUTOMATION_MODE_AUTOMATIC:
+            canonical_task_type = TASK_TYPE_AGENDA_PENDIENTES_DIARIA if clean_task_type == TASK_TYPE_AGENDA_DIARIA else clean_task_type
+            claimed, claim_info = claim_automation_task(
+                conn,
+                task_type=canonical_task_type,
+                schedule_key=schedule_key,
+                claimed_at=scheduler_now_iso(target),
+            )
+            if not claimed:
+                return {
+                    "task_type": canonical_task_type,
+                    "mode": run_mode,
+                    "dry_run": effective_dry_run,
+                    "schedule_key": schedule_key,
+                    "root_path": "",
+                    "started_at": started_at,
+                    "finished_at": now_iso(),
+                    "status": "completed",
+                    "monitor_run_id": None,
+                    "processed_items_count": 0,
+                    "found_markers_count": 0,
+                    "route_updates_count": 0,
+                    "followed_count": 0,
+                    "folders_checked_count": 0,
+                    "folders_repaired_count": 0,
+                    "folders_broken_count": 0,
+                    "platforms_checked_count": 0,
+                    "changes_detected_count": 0,
+                    "emails_prepared_count": 0,
+                    "emails_sent_count": 0,
+                    "inventory_files_count": 0,
+                    "conflicts": [],
+                    "warnings": [],
+                    "error_message": "",
+                    "task_details": {
+                        "message": "Ejecución automática omitida: esta tarea ya se ejecutó o está en curso para el periodo.",
+                        "skipped_duplicate": True,
+                        "claim": claim_info,
+                        "schedule": automation_schedule_for_task(clean_task_type),
+                        "schedule_key": schedule_key,
+                        "trigger_mode": run_mode,
+                    },
+                }
         run_id = create_monitor_run(
             conn,
             task_type=clean_task_type,
@@ -998,34 +1293,36 @@ def run_automation_task(
         task_details: dict[str, object] = {
             "message": "Tarea automática ejecutada desde Monitor.",
             "email_sending_enabled": not effective_dry_run,
-            "schedule": MONITOR_AUTOMATION_SCHEDULES.get(clean_task_type, {}),
+            "schedule": automation_schedule_for_task(clean_task_type),
             "schedule_key": schedule_key,
             "trigger_mode": run_mode,
         }
-        if run_mode == AUTOMATION_MODE_AUTOMATIC and successful_schedule_exists(conn, clean_task_type, schedule_key):
+        if clean_task_type == TASK_TYPE_MONITOR_LICITACIONES:
             task_details.update(
                 {
-                    "message": "Ejecución automática omitida: esta tarea ya se ejecutó correctamente para el periodo.",
-                    "skipped_duplicate": True,
+                    "message": "Monitor de licitaciones programado y registrado. Consulta real de plataformas pendiente de activar.",
+                    "target_date": target.date().isoformat(),
+                    "preview": "Ejecución segura sin consulta externa en esta fase.",
                 }
             )
         elif table_exists(conn, "agenda_eventos"):
             if clean_task_type == TASK_TYPE_RESUMEN_AGENDA:
                 email_payload, processed_items = build_summary_agenda_email_payload(conn, target=target)
-            elif clean_task_type == TASK_TYPE_AGENDA_DIARIA:
-                email_payload, events = build_daily_agenda_email_payload(conn, target=target)
+            elif clean_task_type in {TASK_TYPE_AGENDA_PENDIENTES_DIARIA, TASK_TYPE_AGENDA_DIARIA}:
+                email_payload, events = build_pending_agenda_email_payload(conn, target=target)
                 processed_items = len(events)
                 if not events:
                     task_details.update(
                         {
-                            "message": "No se envía correo porque no hay vencimientos para hoy.",
+                            "message": "No se envía el correo porque no hay elementos en Tareas pendientes.",
                             "target_date": target.date().isoformat(),
-                            "counts": {"today": 0, "week_rest": 0},
+                            "counts": {"total": 0, "overdue": 0, "today": 0, "upcoming": 0, "no_date": 0},
                             "preview": "",
                         }
                     )
                     email_payload = {}
             elif clean_task_type == TASK_TYPE_AGENDA_SEMANAL:
+                # Legado: no programado. Se conserva solo para históricos antiguos.
                 email_payload, events = build_weekly_agenda_email_payload(conn, target=target)
                 processed_items = len(events)
             else:
@@ -1071,7 +1368,7 @@ def run_automation_task(
                 subject = (
                     notice_email_subject(notice_config_to_record, len(notice_events_to_record))
                     if clean_task_type in NOTICE_TASK_TYPES
-                    else automation_email_subject(clean_task_type, target)
+                    else automation_email_subject(clean_task_type, target, email_payload=email_payload)
                 )
                 body = build_operational_email_text(email_payload)
                 html_body = build_operational_email_html(
@@ -1149,6 +1446,17 @@ def run_automation_task(
             "task_details": task_details,
         }
         finish_monitor_run(conn, run_id, report, error_message)
+        if run_mode == AUTOMATION_MODE_AUTOMATIC:
+            complete_automation_claim(
+                conn,
+                task_type=TASK_TYPE_AGENDA_PENDIENTES_DIARIA if clean_task_type == TASK_TYPE_AGENDA_DIARIA else clean_task_type,
+                schedule_key=schedule_key,
+                status="failed" if error_message else "completed",
+                completed_at=scheduler_now_iso(target),
+                run_id=run_id,
+                last_error=error_message,
+                email_attempted_at=clean_text(task_details.get("sent_at")),
+            )
         conn.commit()
         return report
     except sqlite3.Error as exc:

@@ -17,9 +17,11 @@ from webapp.infonalia_webapp.monitor.config import (
 )
 from webapp.infonalia_webapp.monitor.markers import FOLLOW_MARKER_NAME, read_marker_id
 from webapp.infonalia_webapp.monitor.scanner import is_year_folder, iter_monitor_year_roots, scan_marker_tree
+from webapp.infonalia_webapp.monitor.scheduler import MonitorScheduler, scheduler_enabled_from_env
 from webapp.infonalia_webapp.monitor.service import (
     due_automation_task_types,
     monitor_automation_schedules,
+    run_due_automation_tasks,
     run_automation_task,
     run_monitor,
 )
@@ -335,26 +337,17 @@ def test_monitor_history_endpoint_filters_by_task_type_and_agenda_summary_skelet
 def test_monitor_automation_schedule_declares_agenda_tasks_and_licitaciones_proposal() -> None:
     schedules = monitor_automation_schedules()
 
-    assert schedules["agenda_diaria"]["time"] == "06:00"
-    assert schedules["agenda_semanal"]["weekday"] == "monday"
-    assert schedules["agenda_semanal"]["time"] == "05:30"
-    assert schedules["aviso_vencimiento_7d"]["time"] == "06:15"
-    assert schedules["aviso_vencimiento_3d"]["time"] == "06:20"
-    assert schedules["aviso_vencimiento_1d"]["time"] == "06:25"
-    assert schedules["aviso_vencimiento_hoy"]["time"] == "06:30"
+    assert set(schedules) == {"agenda_pendientes_diaria", "monitor_licitaciones"}
+    assert schedules["agenda_pendientes_diaria"]["time"] == "06:00"
     assert schedules["monitor_licitaciones"]["times"] == ["07:00", "12:30", "17:30"]
-    assert due_automation_task_types(datetime(2026, 6, 15, 5, 29)) == []
-    assert due_automation_task_types(datetime(2026, 6, 15, 5, 30)) == ["agenda_semanal"]
-    assert due_automation_task_types(datetime(2026, 6, 15, 6, 0)) == ["agenda_diaria", "agenda_semanal"]
-    assert due_automation_task_types(datetime(2026, 6, 16, 6, 14)) == ["agenda_diaria"]
-    assert due_automation_task_types(datetime(2026, 6, 16, 6, 30)) == [
-        "agenda_diaria",
-        "aviso_vencimiento_7d",
-        "aviso_vencimiento_3d",
-        "aviso_vencimiento_1d",
-        "aviso_vencimiento_hoy",
+    assert due_automation_task_types(datetime(2026, 6, 15, 5, 59)) == []
+    assert due_automation_task_types(datetime(2026, 6, 15, 6, 0)) == ["agenda_pendientes_diaria"]
+    assert due_automation_task_types(datetime(2026, 6, 16, 6, 14)) == ["agenda_pendientes_diaria"]
+    assert due_automation_task_types(datetime(2026, 6, 16, 7, 0)) == [
+        "agenda_pendientes_diaria",
+        "monitor_licitaciones",
     ]
-    assert due_automation_task_types(datetime(2026, 6, 16, 6, 0)) == ["agenda_diaria"]
+    assert due_automation_task_types(datetime(2026, 6, 20, 13, 0)) == ["agenda_pendientes_diaria"]
 
 
 def test_agenda_summary_task_sends_to_test_recipient_with_fake_sender(tmp_path: Path) -> None:
@@ -424,12 +417,87 @@ def test_agenda_daily_task_sends_only_due_today_with_required_fields(tmp_path: P
     assert report["emails_prepared_count"] == 1
     assert report["emails_sent_count"] == 1
     assert sent[0][0] == "monitor-test@example.test"
-    assert "Agenda de hoy - vencimientos del día" in sent[0][1]
+    assert "Pendientes de Agenda" in sent[0][1]
     assert "Expediente: EXP-88" in sent[0][2]
     assert "Título: EXP-88" in sent[0][2]
     assert "Estado: Preparar ficha" in sent[0][2]
     assert "Fecha/hora final: 2026-06-18T14:00:00" in sent[0][2]
     assert "Expediente: EXP-88" in sent[0][3]
+    assert "Fecha/hora final" in sent[0][3]
+    assert sent[0][3].count("Fecha/hora final") == 1
+
+
+def test_agenda_weekly_email_uses_single_today_and_tomorrow_labels(tmp_path: Path) -> None:
+    app = load_app_module()
+    sent: list[tuple[str, str, str, str]] = []
+    current = datetime(2026, 6, 18, 5, 30, 0)
+
+    with temporary_app_database(app):
+        with app.db_session() as conn:
+            for title, starts_at in [
+                ("Vence jueves", "2026-06-18T10:00:00"),
+                ("Vence viernes", "2026-06-19T10:00:00"),
+                ("Vence sábado", "2026-06-20T10:00:00"),
+            ]:
+                conn.execute(
+                    """
+                    INSERT INTO agenda_eventos (
+                        titulo, descripcion, starts_at, estado, created_by, created_at, updated_at
+                    )
+                    VALUES (?, '', ?, 'pendiente', 'admin_test',
+                            '2026-06-17T10:00:00', '2026-06-17T10:00:00')
+                    """,
+                    (title, starts_at),
+                )
+        report = run_automation_task(
+            "agenda_semanal",
+            dry_run=False,
+            db_path=app.DB_PATH,
+            recipient="monitor-test@example.test",
+            email_sender=lambda to, subject, body, html: sent.append((to, subject, body, html)) or ("2026-06-18T05:31:00", None),
+            current=current,
+        )
+
+    text_body = sent[0][2]
+    assert report["emails_sent_count"] == 1
+    assert text_body.count("HOY") == 1
+    assert text_body.count("MAÑANA") == 1
+    assert "HOY, JUEVES 18/06/2026" in text_body
+    assert "MAÑANA, VIERNES 19/06/2026" in text_body
+    assert "SÁBADO 20/06/2026" in text_body
+    assert "HOY, VIERNES" not in text_body
+
+
+def test_agenda_email_hides_internal_numeric_expediente(tmp_path: Path) -> None:
+    app = load_app_module()
+    sent: list[tuple[str, str, str, str]] = []
+    current = datetime(2026, 6, 18, 6, 0, 0)
+
+    with temporary_app_database(app):
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                INSERT INTO licitaciones (
+                    id, expediente, objeto, organismo, provincia, fecha_limite,
+                    hora_limite, enlace_perfil, estado, ruta_carpeta, created_at, updated_at
+                )
+                VALUES (3, '3', 'Suministro sin expediente real', 'Org', 'Madrid', '2026-06-18',
+                        '14:00', 'https://example.test', 'Preparar ficha', '',
+                        '2026-06-17T10:00:00', '2026-06-17T10:00:00')
+                """
+            )
+        report = run_automation_task(
+            "agenda_diaria",
+            dry_run=False,
+            db_path=app.DB_PATH,
+            recipient="monitor-test@example.test",
+            email_sender=lambda to, subject, body, html: sent.append((to, subject, body, html)) or ("2026-06-18T06:01:00", None),
+            current=current,
+        )
+
+    assert report["emails_sent_count"] == 1
+    assert "Expediente: 3" not in sent[0][2]
+    assert "Expediente: 3" not in sent[0][3]
     assert "Fecha/hora final" in sent[0][3]
 
 
@@ -460,7 +528,7 @@ def test_agenda_daily_task_without_due_items_registers_no_email(tmp_path: Path) 
     assert report["processed_items_count"] == 0
     assert report["emails_prepared_count"] == 0
     assert report["emails_sent_count"] == 0
-    assert "no hay vencimientos" in report["task_details"]["message"]
+    assert "Tareas pendientes" in report["task_details"]["message"]
     assert row["status"] == "completed"
     assert row["processed_items_count"] == 0
     assert row["emails_prepared_count"] == 0
@@ -535,7 +603,7 @@ def test_agenda_automatic_duplicate_is_skipped_but_manual_can_send(tmp_path: Pat
         )
 
     assert first["mode"] == "automatic"
-    assert first["schedule_key"] == "agenda_diaria:2026-06-18"
+    assert first["schedule_key"] == "agenda_pendientes_diaria:2026-06-18"
     assert first["emails_sent_count"] == 1
     assert second["mode"] == "automatic"
     assert second["emails_sent_count"] == 0
@@ -543,6 +611,64 @@ def test_agenda_automatic_duplicate_is_skipped_but_manual_can_send(tmp_path: Pat
     assert manual["mode"] == "manual"
     assert manual["emails_sent_count"] == 1
     assert sent == ["first", "manual"]
+
+
+def test_run_due_automation_tasks_filters_already_executed_schedule(tmp_path: Path) -> None:
+    app = load_app_module()
+    current = datetime(2026, 6, 16, 6, 0, 0)
+    sent: list[str] = []
+
+    with temporary_app_database(app):
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                INSERT INTO agenda_eventos (
+                    titulo, descripcion, starts_at, estado, created_by, created_at, updated_at
+                )
+                VALUES ('Vence una vez', '', '2026-06-16T10:00:00', 'pendiente',
+                        'admin_test', '2026-06-15T09:00:00', '2026-06-15T09:00:00')
+                """
+            )
+        first = run_due_automation_tasks(
+            dry_run=False,
+            db_path=app.DB_PATH,
+            recipient="monitor-test@example.test",
+            email_sender=lambda *_args: sent.append("sent") or ("2026-06-16T06:01:00", None),
+            current=current,
+        )
+        second = run_due_automation_tasks(
+            dry_run=False,
+            db_path=app.DB_PATH,
+            recipient="monitor-test@example.test",
+            email_sender=lambda *_args: (_ for _ in ()).throw(AssertionError("duplicate email")),
+            current=current,
+        )
+
+    assert [item["task_type"] for item in first] == ["agenda_pendientes_diaria"]
+    assert [item["task_details"]["skipped_duplicate"] for item in second] == [True]
+    assert sent == ["sent"]
+
+
+def test_monitor_licitaciones_scheduled_task_is_registered_without_external_calls(tmp_path: Path) -> None:
+    app = load_app_module()
+    current = datetime(2026, 6, 16, 7, 0, 0)
+
+    with temporary_app_database(app):
+        report = run_automation_task(
+            "monitor_licitaciones",
+            dry_run=False,
+            db_path=app.DB_PATH,
+            recipient="monitor-test@example.test",
+            email_sender=lambda *_args: (_ for _ in ()).throw(AssertionError("no email expected")),
+            current=current,
+            trigger_mode="automatic",
+        )
+
+    assert report["task_type"] == "monitor_licitaciones"
+    assert report["mode"] == "automatic"
+    assert report["schedule_key"] == "monitor_licitaciones:2026-06-16:0700"
+    assert report["emails_sent_count"] == 0
+    assert "sin consulta externa" in report["task_details"]["preview"]
 
 
 def test_due_notice_task_sends_grouped_email_records_alerts_and_blocks_same_level_duplicate(tmp_path: Path) -> None:
@@ -694,6 +820,8 @@ def test_agenda_summary_task_records_clear_error_without_test_recipient(tmp_path
 def test_monitor_run_endpoint_can_send_agenda_summary_with_fake_sender(tmp_path: Path, monkeypatch) -> None:
     app = load_app_module()
     sent: list[tuple[str, str, str, str]] = []
+    monkeypatch.delenv("MONITOR_TEST_EMAIL", raising=False)
+    monkeypatch.delenv("INFONALIA_MONITOR_TEST_EMAIL", raising=False)
 
     with temporary_app_database(app):
         with app.db_session() as conn:
@@ -733,3 +861,33 @@ def test_monitor_run_endpoint_can_send_agenda_summary_with_fake_sender(tmp_path:
     assert payload["emails_sent_count"] == 1
     assert sent
     assert sent[0][0] == "monitor-test@example.test"
+
+
+def test_monitor_scheduler_status_endpoint_is_available_to_admin() -> None:
+    app = load_app_module()
+    handler = make_handler(app, b"", "application/json", path="/api/monitor/scheduler")
+    handler.do_GET()
+
+    status, payload = handler.responses[-1]
+    assert status == HTTPStatus.OK
+    assert payload["scheduler"]["running"] is False
+    assert "due_now" in payload["scheduler"]
+
+
+def test_monitor_scheduler_can_run_once_and_stays_disabled_under_pytest(monkeypatch) -> None:
+    calls: list[datetime] = []
+    current = datetime(2026, 6, 18, 6, 0, 0)
+    scheduler = MonitorScheduler(
+        interval_seconds=5,
+        task_runner=lambda now: calls.append(now) or [{"task_type": "agenda_pendientes_diaria"}],
+        now_factory=lambda: current,
+    )
+
+    reports = scheduler.run_once()
+
+    monkeypatch.setenv("MONITOR_SCHEDULER_ENABLED", "1")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "test")
+    assert reports == [{"task_type": "agenda_pendientes_diaria"}]
+    assert calls[0].replace(tzinfo=None) == current
+    assert scheduler.status()["last_reports_count"] == 1
+    assert scheduler_enabled_from_env() is False

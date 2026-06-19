@@ -97,9 +97,8 @@ const monitorRunsBoard = document.getElementById("monitor-runs-board");
 const monitorRunDetail = document.getElementById("monitor-run-detail");
 const monitorTaskTypeFilter = document.getElementById("monitor-task-type-filter");
 const monitorActionResult = document.getElementById("monitor-action-result");
-const monitorSendAgendaSummaryButton = document.getElementById("monitor-send-agenda-summary");
+const monitorSchedulerStatus = document.getElementById("monitor-scheduler-status");
 const monitorSendAgendaDailyButton = document.getElementById("monitor-send-agenda-daily");
-const monitorSendAgendaWeeklyButton = document.getElementById("monitor-send-agenda-weekly");
 const newsForm = document.getElementById("news-form");
 const newsResult = document.getElementById("news-result");
 const newsFormTitle = document.getElementById("news-form-title");
@@ -159,14 +158,14 @@ const estadoLabels = {
 
 const monitorTaskTypeLabels = {
   licitaciones: "Licitaciones",
-  resumen_agenda: "Resumen agenda",
-  agenda_diaria: "Agenda diaria",
-  agenda_semanal: "Agenda semanal",
-  aviso_vencimiento_7d: "Aviso 7 días",
-  aviso_vencimiento_3d: "Aviso 3 días",
-  aviso_vencimiento_1d: "Aviso mañana",
-  aviso_vencimiento_hoy: "Aviso hoy",
-  avisos_vencimientos: "Avisos vencimientos",
+  agenda_pendientes_diaria: "Pendientes de Agenda",
+  agenda_diaria: "Agenda diaria (legado)",
+  agenda_semanal: "Agenda semanal (legado)",
+  aviso_vencimiento_7d: "Aviso 7 días (legado)",
+  aviso_vencimiento_3d: "Aviso 3 días (legado)",
+  aviso_vencimiento_1d: "Aviso mañana (legado)",
+  aviso_vencimiento_hoy: "Aviso hoy (legado)",
+  avisos_vencimientos: "Avisos vencimientos (legado)",
   tareas_pendientes: "Tareas pendientes",
   monitor_licitaciones: "Monitor licitaciones",
   otro: "Otro",
@@ -1977,8 +1976,78 @@ function agendaDayHeading(key) {
   return text ? text.charAt(0).toUpperCase() + text.slice(1) : "Sin fecha";
 }
 
+function pendingLicitacionCardItem(item) {
+  return {
+    ...item,
+    id: item.source_id,
+    expediente: item.expediente || item.title || `Licitación ${item.source_id}`,
+    organismo: item.organismo || item.description || "",
+    objeto: item.objeto || item.subtitle || "",
+    estado: item.state_value || item.status || item.state || "",
+    fecha_limite: item.fecha_limite || item.date || "",
+    hora_limite: item.hora_limite || agendaEventTime(item) || "",
+  };
+}
+
+function renderPendingTaskCard(item, colorClass) {
+  const token = `${item.source_type}:${item.source_id}`;
+  const linked = agendaLinkedText(item);
+  const dueText = [
+    item.date ? formatDate(item.date) : "Sin fecha",
+    agendaEventTime(item),
+  ].filter(Boolean).join(" ");
+  const sideActions = [
+    `<button type="button" data-agenda-open="${escapeHtml(token)}">Abrir</button>`,
+  ];
+  if (item.source_type === "actuacion") {
+    sideActions.push(`<button type="button" data-agenda-comment="${escapeHtml(item.source_id)}">Añadir comentario</button>`);
+    sideActions.push(`<button type="button" data-agenda-duplicate="${escapeHtml(item.source_id)}">Duplicar actuación</button>`);
+  }
+  return `
+    <article class="card compact-card agenda-card pending-task-card ${colorClass}" data-calendar-date="${escapeHtml(item.date || "sin-fecha")}">
+      <div class="card-layout">
+        <div class="card-content">
+          <div class="card-head">
+            <div class="card-title-block">
+              <p class="eyebrow">${escapeHtml(agendaTypeLabel(item))}</p>
+              <h2>${escapeHtml(item.title || "Sin título")}</h2>
+              <p class="card-organismo">${escapeHtml(linked ? `Licitación vinculada: ${linked}` : item.description || "")}</p>
+              <p class="object">${escapeHtml(item.subtitle || item.description || "Sin descripción")}</p>
+            </div>
+            <div class="card-flags">
+              <span class="badge">${escapeHtml(agendaStatusLabel(item))}</span>
+              <span class="due-chip ${colorClass}">${escapeHtml(item.is_overdue ? `Vencido · ${dueText}` : dueText)}</span>
+            </div>
+          </div>
+
+          <div class="details">
+            <div class="detail"><span>Tipo</span>${escapeHtml(agendaTypeLabel(item))}</div>
+            <div class="detail"><span>Estado</span>${escapeHtml(agendaStatusLabel(item))}</div>
+            <div class="detail"><span>Fecha límite</span>${escapeHtml(dueText)}</div>
+          </div>
+        </div>
+
+        <div class="card-side-actions">
+          ${sideActions.join("")}
+          ${renderPendingStateControl(item)}
+          <span class="card-side-id">ID ${escapeHtml(item.source_id)}</span>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
 function renderAgendaCompactCard(item) {
   const colorClass = agendaEventClass(item);
+  if (isPendingAgendaView() && item.source_type === "licitacion") {
+    return renderCard(pendingLicitacionCardItem(item), {
+      extraClass: `agenda-card pending-licitacion-card ${colorClass}`,
+      sideActionsExtra: renderPendingStateControl(item),
+    });
+  }
+  if (isPendingAgendaView()) {
+    return renderPendingTaskCard(item, colorClass);
+  }
   const linked = agendaLinkedText(item);
   return `
     <article class="radar-card agenda-card ${colorClass}" data-calendar-date="${escapeHtml(item.date || "sin-fecha")}">
@@ -2554,8 +2623,29 @@ function monitorIncidenceText(item) {
   return "Sin incidencias";
 }
 
+async function loadMonitorSchedulerStatus() {
+  if (!isAdmin() || !monitorSchedulerStatus) return;
+  try {
+    const response = await fetch("/api/monitor/scheduler/status");
+    const data = await response.json().catch(() => ({}));
+    const scheduler = data.scheduler || {};
+    if (!response.ok) {
+      monitorSchedulerStatus.textContent = "Scheduler: estado no disponible";
+      return;
+    }
+    const state = scheduler.enabled ? "configurado" : "desactivado";
+    const lastCheck = scheduler.last_check_at ? ` Última comprobación: ${formatDateTime(scheduler.last_check_at) || scheduler.last_check_at}.` : " Sin heartbeat reciente.";
+    const next = scheduler.next?.task_type ? ` Próxima tarea: ${monitorTaskTypeLabel(scheduler.next.task_type)} ${formatDateTime(scheduler.next.run_at) || scheduler.next.run_at}.` : "";
+    const error = scheduler.last_error ? ` Error: ${scheduler.last_error}` : "";
+    monitorSchedulerStatus.textContent = `Scheduler: ${state}. Zona horaria: ${scheduler.timezone || "Europe/Madrid"}.${lastCheck}${next}${error}`;
+  } catch (_error) {
+    monitorSchedulerStatus.textContent = "Scheduler: estado no disponible";
+  }
+}
+
 async function loadMonitorRuns() {
   if (!isAdmin() || !monitorRunsBoard) return;
+  await loadMonitorSchedulerStatus();
   monitorRunsBoard.innerHTML = `<div class="empty">Cargando histórico...</div>`;
   try {
     const params = new URLSearchParams({ limit: "50" });
@@ -2704,9 +2794,7 @@ async function sendMonitorAgendaTask(button, taskType, loadingText, errorText) {
   if (!isAdmin() || !button) return;
   const originalText = button.textContent;
   const monitorEmailButtons = [
-    monitorSendAgendaSummaryButton,
     monitorSendAgendaDailyButton,
-    monitorSendAgendaWeeklyButton,
   ].filter(Boolean);
   monitorEmailButtons.forEach((item) => { item.disabled = true; });
   button.textContent = "Enviando...";
@@ -2750,23 +2838,11 @@ syncDropboxMarkersButton?.addEventListener("click", syncDropboxMarkers);
 monitorDryRunButton?.addEventListener("click", () => runMonitorMode(monitorDryRunButton, "dry-run", "Simulando monitor..."));
 monitorRepairButton?.addEventListener("click", () => runMonitorMode(monitorRepairButton, "repair-routes", "Reparando rutas..."));
 refreshMonitorRunsButton?.addEventListener("click", loadMonitorRuns);
-monitorSendAgendaSummaryButton?.addEventListener("click", () => sendMonitorAgendaTask(
-  monitorSendAgendaSummaryButton,
-  "resumen_agenda",
-  "Preparando y enviando resumen de agenda...",
-  "No se pudo enviar el resumen de agenda.",
-));
 monitorSendAgendaDailyButton?.addEventListener("click", () => sendMonitorAgendaTask(
   monitorSendAgendaDailyButton,
-  "agenda_diaria",
-  "Preparando y enviando agenda diaria...",
-  "No se pudo enviar la agenda diaria.",
-));
-monitorSendAgendaWeeklyButton?.addEventListener("click", () => sendMonitorAgendaTask(
-  monitorSendAgendaWeeklyButton,
-  "agenda_semanal",
-  "Preparando y enviando agenda semanal...",
-  "No se pudo enviar la agenda semanal.",
+  "agenda_pendientes_diaria",
+  "Preparando y enviando Pendientes de Agenda...",
+  "No se pudo enviar el correo diario de Pendientes.",
 ));
 monitorTaskTypeFilter?.addEventListener("change", loadMonitorRuns);
 monitorRunsBoard?.addEventListener("click", (event) => {
@@ -2774,7 +2850,7 @@ monitorRunsBoard?.addEventListener("click", (event) => {
   if (button) openMonitorRun(button.dataset.monitorRun);
 });
 
-function renderCard(item) {
+function renderCard(item, options = {}) {
   const fechaLimite = [formatDate(item.fecha_limite), item.hora_limite].filter(Boolean).join(" ");
   const remainingDays = daysUntil(item.fecha_limite, item.hora_limite);
   const enlacePerfil = normalizeUrl(item.enlace_perfil);
@@ -2785,12 +2861,16 @@ function renderCard(item) {
   ].filter(Boolean).join("");
   const isReview = Boolean(appState.currentDiaId);
   const stateActions = isAdmin() ? adminReviewEstados : nuriaEstados;
-  const showStateActions = isReview;
+  const showStateActions = options.showStateActions ?? isReview;
   const dueText = dueLabel(remainingDays) || "Sin fecha";
   const dueClassName = remainingDays === null ? "" : dueClass(remainingDays);
+  const extraClass = options.extraClass ? ` ${options.extraClass}` : "";
+  const sideActionsExtra = options.sideActionsExtra || "";
+  const showEditButton = options.showEditButton ?? isAdmin();
+  const showNewActuacionButton = options.showNewActuacionButton ?? true;
 
   return `
-    <article class="card compact-card">
+    <article class="card compact-card${extraClass}">
       <div class="card-layout">
         <div class="card-content">
           <div class="card-head">
@@ -2824,8 +2904,9 @@ function renderCard(item) {
 
         <div class="card-side-actions">
           <button data-open-licitacion-detail="${escapeHtml(item.id)}">Abrir</button>
-          ${isAdmin() ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""}
-          <button data-new-actuacion-id="${escapeHtml(item.id)}">Crear nueva actuación</button>
+          ${showEditButton ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""}
+          ${showNewActuacionButton ? `<button data-new-actuacion-id="${escapeHtml(item.id)}">Crear nueva actuación</button>` : ""}
+          ${sideActionsExtra}
           <span class="card-side-id">ID ${escapeHtml(item.id)}</span>
         </div>
       </div>
@@ -2965,14 +3046,7 @@ function renderLicitacionDetailView(item) {
 
       <section class="expanded-panel">
         <div class="panel-head"><div><p class="eyebrow">Seguimiento</p><h3>${escapeHtml(seguimiento.activo ? "En seguimiento" : "No en seguimiento")}</h3></div></div>
-        <div class="detail-grid">
-          <div class="detail"><span>Estado</span>${escapeHtml(seguimiento.activo ? "En seguimiento" : "No en seguimiento")}</div>
-          <div class="detail"><span>Fuente</span>${escapeHtml(seguimiento.fuente || "marcador Dropbox")}</div>
-          <div class="detail full-width"><span>Carpeta detectada</span>${escapeHtml(seguimiento.folder_path || folder || "Sin carpeta")}</div>
-          <div class="detail"><span>Marcador ID</span>${escapeHtml(seguimiento.id_marker_exists ? "Correcto" : "No encontrado")}</div>
-          <div class="detail"><span>Última sincronización</span>${escapeHtml(seguimiento.ultima_sync || "Pendiente")}</div>
-          ${seguimiento.warning ? `<div class="detail full-width warning-detail"><span>Aviso</span>${escapeHtml(seguimiento.warning)}</div>` : ""}
-        </div>
+        ${renderLicitacionTracking(item)}
       </section>
 
       <section class="expanded-panel">
@@ -3095,6 +3169,31 @@ function renderLicitacionDocuments(item) {
   `;
 }
 
+function markerStatusText(value) {
+  return value ? "Existe" : "No consta";
+}
+
+function renderLicitacionMarkerActions(item, seguimiento) {
+  if (!isAdmin()) return "";
+  const id = item.id;
+  const folderExists = Boolean(seguimiento.folder_exists);
+  const idMarkerExists = Boolean(seguimiento.id_marker_exists);
+  const followMarkerExists = Boolean(seguimiento.follow_marker_exists);
+  const idFileName = `${id}.llangon`;
+  return `
+    <div class="marker-actions full-width">
+      <button type="button" data-marker-action="id" data-marker-licitacion-id="${escapeHtml(id)}" ${!folderExists || idMarkerExists ? "disabled" : ""}>
+        ${idMarkerExists ? "Ya existe" : `Crear ${escapeHtml(idFileName)}`}
+      </button>
+      <button type="button" data-marker-action="follow" data-marker-licitacion-id="${escapeHtml(id)}" ${!folderExists || followMarkerExists ? "disabled" : ""}>
+        ${followMarkerExists ? "Ya existe" : "Crear EnSeguimiento.llangon"}
+      </button>
+      <button type="button" data-open-licitacion-folder="${escapeHtml(id)}" ${!folderExists ? "disabled" : ""}>Abrir carpeta</button>
+      <small class="marker-action-result" data-marker-action-result="${escapeHtml(id)}"></small>
+    </div>
+  `;
+}
+
 function renderLicitacionTracking(item) {
   const seguimiento = item.seguimiento || {};
   const novedades = seguimiento.novedades || [];
@@ -3102,9 +3201,13 @@ function renderLicitacionTracking(item) {
     <div class="detail-grid">
       <div class="detail"><span>Estado</span>${escapeHtml(seguimiento.activo ? "En seguimiento" : "No en seguimiento")}</div>
       <div class="detail"><span>Fuente</span>${escapeHtml(seguimiento.fuente || "marcador Dropbox")}</div>
+      <div class="detail"><span>Carpeta</span>${escapeHtml(seguimiento.folder_exists ? "Localizada" : "No localizada")}</div>
+      <div class="detail"><span>${escapeHtml(`${item.id}.llangon`)}</span>${escapeHtml(markerStatusText(seguimiento.id_marker_exists))}</div>
+      <div class="detail"><span>EnSeguimiento.llangon</span>${escapeHtml(markerStatusText(seguimiento.follow_marker_exists))}</div>
       <div class="detail"><span>Última sincronización</span>${escapeHtml(seguimiento.ultima_sync || seguimiento.ultimo_check || "Pendiente")}</div>
       <div class="detail"><span>Última novedad</span>${escapeHtml(seguimiento.ultima_novedad || "Sin novedades")}</div>
       ${seguimiento.warning ? `<div class="detail full-width warning-detail"><span>Aviso</span>${escapeHtml(seguimiento.warning)}</div>` : ""}
+      ${renderLicitacionMarkerActions(item, seguimiento)}
     </div>
     ${novedades.length ? novedades.map((entry) => `
       <article class="history-row">
@@ -3297,6 +3400,76 @@ async function refreshLicitacionDetail(id) {
   const result = await response.json().catch(() => ({}));
   if (response.ok) {
     appState.cardDetails[id] = { ...(appState.cardDetails[id] || {}), item: result.item };
+  }
+}
+
+function markerActionMessage(result, fallback) {
+  if (result.created) return result.message || "Marcador creado.";
+  if (result.exists) return "Ya existe.";
+  return result.message || result.error || fallback;
+}
+
+function setMarkerActionResult(id, message, type = "", root = document) {
+  const scope = root && typeof root.querySelector === "function" ? root : document;
+  const target = scope.querySelector(`[data-marker-action-result="${id}"]`);
+  if (!target) return;
+  target.className = `marker-action-result ${type}`.trim();
+  target.textContent = message;
+}
+
+async function runLicitacionMarkerAction(id, action, button) {
+  if (!isAdmin() || !id || !action) return;
+  const endpoint = action === "follow"
+    ? `/api/licitaciones/${id}/markers/follow`
+    : `/api/licitaciones/${id}/markers/id`;
+  const originalText = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Creando...";
+  }
+  try {
+    const messageScope = button?.closest(".marker-actions") || document;
+    const response = await fetch(endpoint, { method: "POST", headers: csrfHeaders() });
+    const result = await response.json().catch(() => ({}));
+    const message = markerActionMessage(result, "No se pudo crear el marcador.");
+    if (!response.ok) {
+      setMarkerActionResult(id, message, "error", messageScope);
+      return;
+    }
+    await refreshLicitacionDetail(id);
+    renderBoard();
+    const detail = appState.cardDetails[id]?.item;
+    if (detail && licitacionDetailDialog.open) {
+      licitacionDetailTitle.textContent = detail.expediente || "Licitación";
+      licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
+      setMarkerActionResult(id, message, "success");
+    }
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
+
+async function openLicitacionFolder(id, button) {
+  if (!isAdmin() || !id) return;
+  const originalText = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Abriendo...";
+  }
+  try {
+    const messageScope = button?.closest(".marker-actions") || document;
+    const response = await fetch(`/api/licitaciones/${id}/open-folder`, { method: "POST", headers: csrfHeaders() });
+    const result = await response.json().catch(() => ({}));
+    const message = result.message || result.error || "No se pudo abrir la carpeta.";
+    setMarkerActionResult(id, message, response.ok ? "success" : "error", messageScope);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
   }
 }
 
@@ -3701,6 +3874,22 @@ licitacionDetailContent.addEventListener("click", (event) => {
     return;
   }
 
+  const markerActionButton = event.target.closest("button[data-marker-action]");
+  if (markerActionButton) {
+    runLicitacionMarkerAction(
+      markerActionButton.dataset.markerLicitacionId,
+      markerActionButton.dataset.markerAction,
+      markerActionButton,
+    );
+    return;
+  }
+
+  const openFolderButton = event.target.closest("button[data-open-licitacion-folder]");
+  if (openFolderButton) {
+    openLicitacionFolder(openFolderButton.dataset.openLicitacionFolder, openFolderButton);
+    return;
+  }
+
   const deleteButton = event.target.closest("button[data-delete-id]");
   if (deleteButton) {
     deleteLicitacion(deleteButton.dataset.deleteId);
@@ -3778,6 +3967,22 @@ board.addEventListener("click", (event) => {
   const newActuacionButton = event.target.closest("button[data-new-actuacion-id]");
   if (newActuacionButton) {
     openActuacionDialog(newActuacionButton.dataset.newActuacionId);
+    return;
+  }
+
+  const markerActionButton = event.target.closest("button[data-marker-action]");
+  if (markerActionButton) {
+    runLicitacionMarkerAction(
+      markerActionButton.dataset.markerLicitacionId,
+      markerActionButton.dataset.markerAction,
+      markerActionButton,
+    );
+    return;
+  }
+
+  const openFolderButton = event.target.closest("button[data-open-licitacion-folder]");
+  if (openFolderButton) {
+    openLicitacionFolder(openFolderButton.dataset.openLicitacionFolder, openFolderButton);
     return;
   }
 
@@ -3869,6 +4074,16 @@ calendarBoard.addEventListener("click", (event) => {
 });
 
 calendarRadar.addEventListener("click", (event) => {
+  const openDetailButton = event.target.closest("button[data-open-licitacion-detail]");
+  if (openDetailButton) {
+    openLicitacionDetail(openDetailButton.dataset.openLicitacionDetail);
+    return;
+  }
+  const editButton = event.target.closest("button[data-edit-id]");
+  if (editButton) {
+    openEditEditor(editButton.dataset.editId);
+    return;
+  }
   const openButton = event.target.closest("button[data-agenda-open]");
   if (openButton) {
     openAgendaOrigin(openButton.dataset.agendaOpen);
@@ -3915,6 +4130,16 @@ calendarRadar.addEventListener("change", (event) => {
 });
 
 calendarDayPanel.addEventListener("click", (event) => {
+  const openDetailButton = event.target.closest("button[data-open-licitacion-detail]");
+  if (openDetailButton) {
+    openLicitacionDetail(openDetailButton.dataset.openLicitacionDetail);
+    return;
+  }
+  const editButton = event.target.closest("button[data-edit-id]");
+  if (editButton) {
+    openEditEditor(editButton.dataset.editId);
+    return;
+  }
   const openButton = event.target.closest("button[data-agenda-open]");
   if (openButton) {
     openAgendaOrigin(openButton.dataset.agendaOpen);

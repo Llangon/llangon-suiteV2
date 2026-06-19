@@ -250,6 +250,21 @@ def test_pending_tasks_endpoint_filters_items_and_requires_admin() -> None:
     assert status == HTTPStatus.OK
     assert payload["ok"] is True
     titles_found = titles(payload["items"])
+    sample_licitacion = next(item for item in payload["items"] if item["source_type"] == "licitacion")
+    for key in (
+        "expediente",
+        "organismo",
+        "objeto",
+        "tipo",
+        "presupuesto",
+        "fecha_limite",
+        "hora_limite",
+        "plataforma",
+        "enlace_perfil",
+        "enlace_infonalia",
+        "ruta_carpeta",
+    ):
+        assert key in sample_licitacion
     assert set(visible_licitaciones) <= titles_found
     assert "PT actuación pendiente" in titles_found
     assert "PT actuación preparada" in titles_found

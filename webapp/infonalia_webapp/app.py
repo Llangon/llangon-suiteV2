@@ -338,27 +338,35 @@ except ImportError:
 
 try:
     from .seguimiento_markers import (
+        create_follow_marker_for_licitacion,
+        create_id_marker_for_licitacion,
         ensure_id_marker,
         get_marker_status_for_licitacion,
         marker_status_for_folder,
         monitor_year_bounds,
+        open_licitacion_folder,
         sync_marker_paths,
     )
 except ImportError:
     from seguimiento_markers import (
+        create_follow_marker_for_licitacion,
+        create_id_marker_for_licitacion,
         ensure_id_marker,
         get_marker_status_for_licitacion,
         marker_status_for_folder,
         monitor_year_bounds,
+        open_licitacion_folder,
         sync_marker_paths,
     )
 
 try:
     from .monitor.service import MonitorError, run_automation_task, run_monitor
     from .monitor.repository import ensure_monitor_schema, get_monitor_run, list_monitor_runs
+    from .monitor.scheduler import monitor_scheduler_status, start_monitor_scheduler, stop_monitor_scheduler
 except ImportError:
     from monitor.service import MonitorError, run_automation_task, run_monitor
     from monitor.repository import ensure_monitor_schema, get_monitor_run, list_monitor_runs
+    from monitor.scheduler import monitor_scheduler_status, start_monitor_scheduler, stop_monitor_scheduler
 
 try:
     from .actuacion_indicators import (
@@ -572,6 +580,7 @@ MONITOR_TEST_EMAIL = (
     or os.environ.get("INFONALIA_MONITOR_TEST_EMAIL")
     or ""
 ).strip()
+MONITOR_SCHEDULER_ENABLED = os.environ.get("MONITOR_SCHEDULER_ENABLED", "0") == "1"
 MONITOR_YEAR_MIN, MONITOR_YEAR_MAX = monitor_year_bounds()
 COOKIE_SECURE = os.environ.get("INFONALIA_COOKIE_SECURE", "0") == "1"
 SESSION_COOKIE = "infonalia_session"
@@ -1165,6 +1174,32 @@ def find_dropbox_root() -> Path | None:
         if candidate.exists() and candidate.is_dir():
             return candidate
     return None
+
+
+def marker_allowed_roots() -> list[Path]:
+    roots: list[Path] = []
+    configured = clean_text(os.environ.get("INFONALIA_DROPBOX_ROOT"))
+    if configured:
+        roots.append(Path(os.path.expandvars(configured)).expanduser())
+    roots.append(Path(r"C:\ReplicaDb"))
+    roots.append(DOWNLOAD_ROOT)
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root).casefold()
+        if key not in seen:
+            unique.append(root)
+            seen.add(key)
+    return unique
+
+
+def marker_dropbox_root() -> Path | None:
+    configured = clean_text(os.environ.get("INFONALIA_DROPBOX_ROOT"))
+    if not configured:
+        replica = Path(r"C:\ReplicaDb")
+        return replica if replica.exists() and replica.is_dir() else None
+    candidate = Path(os.path.expandvars(configured)).expanduser()
+    return candidate if candidate.exists() and candidate.is_dir() else None
 
 
 def is_internal_download_path(value: object) -> bool:
@@ -1809,6 +1844,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_storage_status()
         elif path == "/api/monitor/runs":
             self.api_monitor_runs(parsed.query)
+        elif path in {"/api/monitor/scheduler", "/api/monitor/scheduler/status"}:
+            self.api_monitor_scheduler_status()
         elif path.startswith("/api/monitor/runs/"):
             run_id = path.removeprefix("/api/monitor/runs/").strip("/")
             if not run_id.isdigit():
@@ -1894,6 +1931,24 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_download_licitacion(int(licitacion_id))
+        elif path.startswith("/api/licitaciones/") and path.endswith("/markers/id"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/markers/id").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_create_licitacion_marker(int(licitacion_id), marker_type="id")
+        elif path.startswith("/api/licitaciones/") and path.endswith("/markers/follow"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/markers/follow").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_create_licitacion_marker(int(licitacion_id), marker_type="follow")
+        elif path.startswith("/api/licitaciones/") and path.endswith("/open-folder"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/open-folder").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_open_licitacion_folder(int(licitacion_id))
         elif path.startswith("/api/licitaciones/") and path.endswith("/ia-preview/email"):
             licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ia-preview/email").strip("/")
             if not licitacion_id.isdigit():
@@ -2093,6 +2148,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 return True
             if path.startswith("/api/licitaciones/") and (
                 path.endswith("/descargar")
+                or path.endswith("/markers/id")
+                or path.endswith("/markers/follow")
+                or path.endswith("/open-folder")
                 or path.endswith("/ia-preview")
                 or path.endswith("/ia-preview/email")
                 or path.endswith("/actuaciones")
@@ -2278,6 +2336,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             return
         data = self.read_json()
         task_type = clean_text(data.get("task_type")) or "licitaciones"
+        if task_type == "agenda_diaria":
+            task_type = "agenda_pendientes_diaria"
         mode = clean_text(data.get("mode")) or "dry-run"
         dry_run_value = data.get("dry_run")
         try:
@@ -2339,6 +2399,11 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "Ejecucion de monitor no encontrada"}, HTTPStatus.NOT_FOUND)
             return
         self.send_json({"item": item})
+
+    def api_monitor_scheduler_status(self) -> None:
+        if not self.require_admin():
+            return
+        self.send_json({"scheduler": monitor_scheduler_status(DB_PATH)})
 
     def require_news_manager(self) -> bool:
         user = self.current_user()
@@ -3090,6 +3155,48 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 return
             items = list_licitacion_actuaciones(conn, licitacion_id, current=current)
         self.send_json({"items": items})
+
+    def api_create_licitacion_marker(self, licitacion_id: int, *, marker_type: str) -> None:
+        if not self.require_admin():
+            return
+        if marker_type not in {"id", "follow"}:
+            self.send_json({"error": "Tipo de marcador no valido"}, HTTPStatus.BAD_REQUEST)
+            return
+        with db_session() as conn:
+            row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+            if not row:
+                self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                return
+            roots = marker_allowed_roots()
+            dropbox_root = marker_dropbox_root()
+            if marker_type == "id":
+                result = create_id_marker_for_licitacion(row, allowed_roots=roots, dropbox_root=dropbox_root)
+            else:
+                result = create_follow_marker_for_licitacion(row, allowed_roots=roots, dropbox_root=dropbox_root)
+            result["seguimiento"] = get_marker_status_for_licitacion(row, dropbox_root)
+        status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
+        if not result.get("ok") and result.get("error"):
+            result["message"] = result["error"]
+        self.send_json(result, status)
+
+    def api_open_licitacion_folder(self, licitacion_id: int) -> None:
+        if not self.require_admin():
+            return
+        with db_session() as conn:
+            row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+            if not row:
+                self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                return
+            result = open_licitacion_folder(
+                row,
+                allowed_roots=marker_allowed_roots(),
+                dropbox_root=marker_dropbox_root(),
+                opener=getattr(os, "startfile", None),
+            )
+        status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
+        if not result.get("ok") and result.get("error"):
+            result["message"] = result["error"]
+        self.send_json(result, status)
 
     def api_search_licitaciones(self, query: str) -> None:
         params = parse_qs(query)
@@ -4406,7 +4513,11 @@ def run(host: str = "127.0.0.1", port: int = 8787) -> None:
     print(f"Usuario de revisión: {REVIEWER_USER}")
     if repaired:
         print(f"Rutas de descarga normalizadas: {repaired}")
-    server.serve_forever()
+    print("Scheduler Monitor: runner independiente; usar python -m webapp.infonalia_webapp.monitor.scheduler --once")
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

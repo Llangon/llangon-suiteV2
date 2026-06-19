@@ -9,10 +9,10 @@ from pathlib import Path
 
 try:
     from .normalization import clean_text
-    from .storage_paths import normalize_relative_folder_path
+    from .storage_paths import normalize_relative_folder_path, path_is_relative_to
 except ImportError:
     from normalization import clean_text
-    from storage_paths import normalize_relative_folder_path
+    from storage_paths import normalize_relative_folder_path, path_is_relative_to
 
 
 FOLLOW_MARKER_NAME = "EnSeguimiento.llangon"
@@ -82,7 +82,12 @@ def ensure_id_marker(licitacion_id: int, folder_path: Path | str) -> dict[str, o
             result["error"] = "El marcador existe pero no es un fichero."
         return result
     try:
-        marker_path.write_text("", encoding="utf-8")
+        with marker_path.open("x", encoding="utf-8"):
+            pass
+    except FileExistsError:
+        result["ok"] = marker_path.is_file()
+        result["exists"] = marker_path.is_file()
+        return result
     except OSError as exc:
         result["error"] = str(exc)
         return result
@@ -90,6 +95,143 @@ def ensure_id_marker(licitacion_id: int, folder_path: Path | str) -> dict[str, o
     result["created"] = True
     result["exists"] = True
     return result
+
+
+def _marker_result(
+    *,
+    ok: bool = False,
+    created: bool = False,
+    exists: bool = False,
+    path: Path | str = "",
+    folder_path: Path | str = "",
+    error: str = "",
+    message: str = "",
+) -> dict[str, object]:
+    return {
+        "ok": ok,
+        "created": created,
+        "exists": exists,
+        "path": str(path),
+        "folder_path": str(folder_path),
+        "error": error,
+        "message": message,
+    }
+
+
+def allowed_marker_folder(
+    row: sqlite3.Row | dict[str, object],
+    *,
+    allowed_roots: Iterable[Path | str],
+    dropbox_root: Path | None = None,
+) -> tuple[Path | None, str]:
+    folder = resolve_marker_folder(row, dropbox_root)
+    if folder is None:
+        return None, "Sin carpeta asignada."
+    if str(folder).startswith("\\\\"):
+        return None, "No se permiten rutas UNC para crear marcadores."
+    if not folder.exists() or not folder.is_dir():
+        return None, "Carpeta no encontrada."
+    if folder.is_symlink():
+        return None, "No se permiten enlaces simbólicos como carpeta de licitación."
+    try:
+        resolved = folder.resolve(strict=True)
+    except OSError:
+        return None, "No se pudo resolver la carpeta."
+    for root in allowed_roots:
+        root_path = Path(root)
+        if not root_path.exists() or not root_path.is_dir():
+            continue
+        if path_is_relative_to(resolved, root_path):
+            return resolved, ""
+    return None, "La carpeta queda fuera de las raíces permitidas."
+
+
+def create_marker_file(
+    marker_path: Path,
+    *,
+    folder_path: Path,
+) -> dict[str, object]:
+    if marker_path.parent.resolve(strict=True) != folder_path.resolve(strict=True):
+        return _marker_result(path=marker_path, folder_path=folder_path, error="Ruta de marcador no segura.")
+    if marker_path.exists():
+        if marker_path.is_file():
+            return _marker_result(
+                ok=True,
+                exists=True,
+                path=marker_path,
+                folder_path=folder_path,
+                message="El marcador ya existe.",
+            )
+        return _marker_result(path=marker_path, folder_path=folder_path, error="El marcador existe pero no es un fichero.")
+    try:
+        with marker_path.open("x", encoding="utf-8"):
+            pass
+    except FileExistsError:
+        return _marker_result(
+            ok=marker_path.is_file(),
+            exists=marker_path.is_file(),
+            path=marker_path,
+            folder_path=folder_path,
+            message="El marcador ya existe.",
+        )
+    except OSError as exc:
+        return _marker_result(path=marker_path, folder_path=folder_path, error=str(exc))
+    return _marker_result(
+        ok=True,
+        created=True,
+        exists=True,
+        path=marker_path,
+        folder_path=folder_path,
+        message="Marcador creado.",
+    )
+
+
+def create_id_marker_for_licitacion(
+    row: sqlite3.Row | dict[str, object],
+    *,
+    allowed_roots: Iterable[Path | str],
+    dropbox_root: Path | None = None,
+) -> dict[str, object]:
+    licitacion_id = int(_row_value(row, "id") or 0)
+    if licitacion_id <= 0:
+        return _marker_result(error="Id de licitación no válido.")
+    folder, error = allowed_marker_folder(row, allowed_roots=allowed_roots, dropbox_root=dropbox_root)
+    if folder is None:
+        return _marker_result(error=error)
+    marker_path = folder / f"{licitacion_id}.llangon"
+    return create_marker_file(marker_path, folder_path=folder)
+
+
+def create_follow_marker_for_licitacion(
+    row: sqlite3.Row | dict[str, object],
+    *,
+    allowed_roots: Iterable[Path | str],
+    dropbox_root: Path | None = None,
+) -> dict[str, object]:
+    folder, error = allowed_marker_folder(row, allowed_roots=allowed_roots, dropbox_root=dropbox_root)
+    if folder is None:
+        return _marker_result(error=error)
+    return create_marker_file(folder / FOLLOW_MARKER_NAME, folder_path=folder)
+
+
+def open_licitacion_folder(
+    row: sqlite3.Row | dict[str, object],
+    *,
+    allowed_roots: Iterable[Path | str],
+    dropbox_root: Path | None = None,
+    opener: Callable[[str], object] | None = None,
+) -> dict[str, object]:
+    folder, error = allowed_marker_folder(row, allowed_roots=allowed_roots, dropbox_root=dropbox_root)
+    if folder is None:
+        return {"ok": False, "folder_path": "", "error": error}
+    open_with = opener or getattr(os, "startfile", None)
+    if open_with is None:
+        return {"ok": False, "folder_path": str(folder), "error": "No hay mecanismo disponible para abrir la carpeta."}
+    try:
+        open_with(str(folder))
+    except OSError as exc:
+        return {"ok": False, "folder_path": str(folder), "error": str(exc)}
+    return {"ok": True, "folder_path": str(folder), "message": "Carpeta abierta."}
 
 
 def _row_value(row: sqlite3.Row | dict[str, object], key: str) -> object:
@@ -108,7 +250,17 @@ def resolve_marker_folder(row: sqlite3.Row | dict[str, object], dropbox_root: Pa
         return candidate
     if not dropbox_root:
         return candidate
-    return Path(dropbox_root) / normalize_relative_folder_path(ruta)
+    root = Path(dropbox_root)
+    relative = normalize_relative_folder_path(ruta)
+    direct = root / relative
+    if direct.exists():
+        return direct
+    parts = Path(relative).parts
+    if parts and not is_year_folder(parts[0]):
+        year_matches = [year_root / relative for year_root in iter_monitor_year_roots(root) if (year_root / relative).exists()]
+        if len(year_matches) == 1:
+            return year_matches[0]
+    return direct
 
 
 def marker_status_for_folder(licitacion_id: int, folder_path: Path | str | None) -> dict[str, object]:

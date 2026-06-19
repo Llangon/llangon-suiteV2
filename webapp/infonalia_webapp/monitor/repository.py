@@ -7,6 +7,7 @@ from pathlib import Path
 
 TASK_TYPE_LICITACIONES = "licitaciones"
 TASK_TYPE_RESUMEN_AGENDA = "resumen_agenda"
+TASK_TYPE_AGENDA_PENDIENTES_DIARIA = "agenda_pendientes_diaria"
 TASK_TYPE_AGENDA_DIARIA = "agenda_diaria"
 TASK_TYPE_AGENDA_SEMANAL = "agenda_semanal"
 TASK_TYPE_AVISO_VENCIMIENTO_7D = "aviso_vencimiento_7d"
@@ -20,6 +21,7 @@ TASK_TYPE_OTRO = "otro"
 TASK_TYPES = {
     TASK_TYPE_LICITACIONES,
     TASK_TYPE_RESUMEN_AGENDA,
+    TASK_TYPE_AGENDA_PENDIENTES_DIARIA,
     TASK_TYPE_AGENDA_DIARIA,
     TASK_TYPE_AGENDA_SEMANAL,
     TASK_TYPE_AVISO_VENCIMIENTO_7D,
@@ -185,6 +187,45 @@ def ensure_monitor_schema(conn: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_monitor_vencimiento_alerts_run
         ON monitor_vencimiento_alerts(monitor_run_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS monitor_automation_claims (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_type TEXT NOT NULL,
+            schedule_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            claimed_at TEXT NOT NULL,
+            lease_until TEXT,
+            completed_at TEXT,
+            run_id INTEGER,
+            attempt_count INTEGER NOT NULL DEFAULT 1,
+            last_error TEXT,
+            email_attempted_at TEXT,
+            worker_id TEXT,
+            UNIQUE(task_type, schedule_key)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_monitor_automation_claims_status
+        ON monitor_automation_claims(status, lease_until)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS monitor_scheduler_heartbeat (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            checked_at TEXT NOT NULL,
+            status TEXT NOT NULL,
+            next_task TEXT,
+            next_run_at TEXT,
+            timezone TEXT,
+            last_error TEXT,
+            worker_id TEXT
+        )
         """
     )
 

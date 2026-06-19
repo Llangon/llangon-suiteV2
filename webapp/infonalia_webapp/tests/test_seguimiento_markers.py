@@ -5,12 +5,17 @@ from pathlib import Path
 
 from webapp.infonalia_webapp.seguimiento_markers import (
     FOLLOW_MARKER_NAME,
+    allowed_marker_folder,
+    create_follow_marker_for_licitacion,
+    create_id_marker_for_licitacion,
     ensure_id_marker,
     find_id_markers,
     get_marker_status_for_licitacion,
     is_year_folder,
     iter_monitor_year_roots,
     monitor_year_bounds,
+    open_licitacion_folder,
+    resolve_marker_folder,
     scan_follow_markers,
     sync_marker_paths,
 )
@@ -175,3 +180,96 @@ def test_marker_status_is_derived_from_existing_files(tmp_path: Path) -> None:
     assert status["id_marker_exists"] is True
     assert status["follow_marker_exists"] is True
     assert status["warning"] == ""
+
+
+def test_marker_status_resolves_legacy_relative_path_inside_year_root(tmp_path: Path) -> None:
+    root = tmp_path / "ReplicaDb"
+    folder = root / "2026" / "06 JUNIO" / "licitacion X"
+    folder.mkdir(parents=True)
+    (folder / "33.llangon").write_text("", encoding="utf-8")
+    (folder / FOLLOW_MARKER_NAME).write_text("", encoding="utf-8")
+    row = {"id": 33, "ruta_carpeta": "06 JUNIO/licitacion X"}
+
+    resolved = resolve_marker_folder(row, root)
+    status = get_marker_status_for_licitacion(row, root)
+
+    assert resolved == folder
+    assert status["folder_exists"] is True
+    assert status["activo"] is True
+    assert status["follow_marker_exists"] is True
+
+
+def test_create_marker_helpers_create_exact_files_and_do_not_overwrite(tmp_path: Path) -> None:
+    root = tmp_path / "ReplicaDb"
+    folder = root / "2026" / "06 JUNIO" / "licitacion"
+    folder.mkdir(parents=True)
+    row = {"id": 33, "ruta_carpeta": str(folder)}
+
+    id_result = create_id_marker_for_licitacion(row, allowed_roots=[root])
+    follow_result = create_follow_marker_for_licitacion(row, allowed_roots=[root])
+
+    assert id_result["ok"] is True
+    assert id_result["created"] is True
+    assert follow_result["ok"] is True
+    assert follow_result["created"] is True
+    assert (folder / "33.llangon").is_file()
+    assert (folder / FOLLOW_MARKER_NAME).is_file()
+    assert not (folder / "[IdLicitacion].llangon").exists()
+
+    (folder / "33.llangon").write_text("manual", encoding="utf-8")
+    second = create_id_marker_for_licitacion(row, allowed_roots=[root])
+
+    assert second["ok"] is True
+    assert second["created"] is False
+    assert second["exists"] is True
+    assert (folder / "33.llangon").read_text(encoding="utf-8") == "manual"
+
+
+def test_create_marker_helpers_reject_missing_and_outside_folders(tmp_path: Path) -> None:
+    root = tmp_path / "ReplicaDb"
+    outside = tmp_path / "Outside"
+    missing = root / "2026" / "missing"
+    outside_folder = outside / "2026" / "licitacion"
+    root.mkdir()
+    outside_folder.mkdir(parents=True)
+
+    missing_result = create_id_marker_for_licitacion({"id": 33, "ruta_carpeta": str(missing)}, allowed_roots=[root])
+    outside_result = create_follow_marker_for_licitacion({"id": 33, "ruta_carpeta": str(outside_folder)}, allowed_roots=[root])
+
+    assert missing_result["ok"] is False
+    assert "Carpeta" in missing_result["error"]
+    assert outside_result["ok"] is False
+    assert "fuera" in outside_result["error"]
+    assert not (outside_folder / FOLLOW_MARKER_NAME).exists()
+
+
+def test_allowed_marker_folder_normalizes_relative_traversal_inside_root(tmp_path: Path) -> None:
+    root = tmp_path / "ReplicaDb"
+    safe_folder = root / "outside"
+    root.mkdir()
+    safe_folder.mkdir()
+
+    folder, error = allowed_marker_folder(
+        {"id": 33, "ruta_carpeta": "../outside"},
+        allowed_roots=[root],
+        dropbox_root=root,
+    )
+
+    assert folder == safe_folder.resolve()
+    assert error == ""
+
+
+def test_open_licitacion_folder_uses_mocked_opener_after_safe_validation(tmp_path: Path) -> None:
+    root = tmp_path / "ReplicaDb"
+    folder = root / "2026" / "licitacion"
+    folder.mkdir(parents=True)
+    opened: list[str] = []
+
+    result = open_licitacion_folder(
+        {"id": 33, "ruta_carpeta": str(folder)},
+        allowed_roots=[root],
+        opener=opened.append,
+    )
+
+    assert result["ok"] is True
+    assert opened == [str(folder.resolve())]

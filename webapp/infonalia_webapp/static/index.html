@@ -334,13 +334,12 @@
           <h2>Monitor</h2>
         </div>
         <div class="section-actions">
-          <button id="monitor-send-agenda-summary" class="secondary">Enviar resumen de agenda de prueba</button>
-          <button id="monitor-send-agenda-daily" class="secondary">Enviar agenda diaria de prueba</button>
-          <button id="monitor-send-agenda-weekly" class="secondary">Enviar agenda semanal de prueba</button>
+          <button id="monitor-send-agenda-daily" class="secondary">Enviar correo diario de Pendientes de prueba</button>
           <button id="refresh-monitor-runs" class="ghost">Actualizar</button>
         </div>
       </div>
       <div class="import-result" id="monitor-action-result"></div>
+      <div class="monitor-scheduler-status" id="monitor-scheduler-status">Scheduler: comprobando...</div>
 
       <section class="monitor-layout">
         <div class="monitor-panel">
@@ -354,15 +353,7 @@
             <select id="monitor-task-type-filter">
               <option value="">Todas</option>
               <option value="licitaciones">Licitaciones</option>
-              <option value="resumen_agenda">Resumen agenda</option>
-              <option value="agenda_diaria">Agenda diaria</option>
-              <option value="agenda_semanal">Agenda semanal</option>
-              <option value="aviso_vencimiento_7d">Aviso 7 días</option>
-              <option value="aviso_vencimiento_3d">Aviso 3 días</option>
-              <option value="aviso_vencimiento_1d">Aviso mañana</option>
-              <option value="aviso_vencimiento_hoy">Aviso hoy</option>
-              <option value="avisos_vencimientos">Avisos vencimientos</option>
-              <option value="tareas_pendientes">Tareas pendientes</option>
+              <option value="agenda_pendientes_diaria">Pendientes de Agenda</option>
               <option value="monitor_licitaciones">Monitor licitaciones</option>
               <option value="otro">Otro</option>
             </select>
