@@ -73,8 +73,20 @@
       </div>
 
       <section id="licitaciones-tabs" class="segmented" hidden>
-        <button type="button" data-licitaciones-view="live" class="active">Licitaciones vivas</button>
-        <button type="button" data-licitaciones-view="all">Todas las licitaciones</button>
+        <button type="button" data-licitaciones-view="live" class="active">En Plazo</button>
+        <button type="button" data-licitaciones-view="managed">Gestionadas</button>
+        <button type="button" data-licitaciones-view="all">Todas</button>
+      </section>
+
+      <section id="licitaciones-date-filters" class="licitation-date-filters" hidden>
+        <div class="filter-chip-row">
+          <span class="filter-chip-row-label">Ejercicio</span>
+          <div id="licitaciones-year-filters" class="filter-chip-scroll"></div>
+        </div>
+        <div class="filter-chip-row">
+          <span class="filter-chip-row-label">Mes</span>
+          <div id="licitaciones-month-filters" class="filter-chip-scroll"></div>
+        </div>
       </section>
 
       <section class="summary" id="summary" hidden></section>
@@ -429,6 +441,7 @@
             </label>
             <label>Remitente<input name="smtp_from" type="email"></label>
             <label>Email Agenda fallback<input name="agenda_email_to" type="email"></label>
+            <label>Email aviso ficha preparada<input name="prepared_notice_email_to" type="email" placeholder="info3@llangon.com"></label>
             <label>Emails seguimiento globales<input name="seguimiento_emails" placeholder="nuria@ejemplo.es,otro@ejemplo.es"></label>
             <label class="check-field">
               <input name="smtp_tls" type="checkbox" checked>
@@ -520,6 +533,52 @@
         <button type="submit" class="primary">Guardar</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="prepared-notice-dialog" class="notice-dialog">
+    <div class="dialog-head">
+      <div>
+        <p class="eyebrow">Aviso asistido</p>
+        <h2>Aviso de ficha preparada</h2>
+      </div>
+      <button type="button" class="icon-button" id="close-prepared-notice">×</button>
+    </div>
+
+    <div class="notice-preview">
+      <label>Para<input id="prepared-notice-to" readonly></label>
+      <label>Asunto<input id="prepared-notice-subject"></label>
+      <label>Mensaje<textarea id="prepared-notice-body" rows="9"></textarea></label>
+    </div>
+
+    <div class="import-result" id="prepared-notice-status"></div>
+
+    <div class="dialog-actions">
+      <button type="button" class="ghost" id="copy-prepared-notice">Copiar texto para WhatsApp</button>
+      <button type="button" class="ghost" id="cancel-prepared-notice">Cerrar / No enviar</button>
+      <button type="button" class="primary" id="send-prepared-notice">Enviar email</button>
+    </div>
+  </dialog>
+
+  <dialog id="download-folder-dialog" class="notice-dialog">
+    <div class="dialog-head">
+      <div>
+        <p class="eyebrow">Descarga</p>
+        <h2>Crear carpeta del expediente</h2>
+      </div>
+      <button type="button" class="icon-button" id="close-download-folder">×</button>
+    </div>
+
+    <p class="muted">La carpeta de esta licitación no existe. Revisa el nombre antes de crearla.</p>
+    <div class="notice-preview">
+      <label>Nombre de carpeta<input id="download-folder-name" maxlength="140"></label>
+    </div>
+
+    <div class="import-result" id="download-folder-status"></div>
+
+    <div class="dialog-actions">
+      <button type="button" class="ghost" id="cancel-download-folder">Cancelar</button>
+      <button type="button" class="primary" id="confirm-download-folder">Crear carpeta y descargar</button>
+    </div>
   </dialog>
 
   <dialog id="importer">

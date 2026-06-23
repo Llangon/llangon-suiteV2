@@ -13,6 +13,7 @@ from webapp.infonalia_webapp.services.download_storage_service import (
     storage_status_payload,
     test_dropbox_configuration as validate_dropbox_configuration,
 )
+from webapp.infonalia_webapp.dropbox_paths import DROPBOX_BASE_ENV, LEGACY_DROPBOX_ROOT_ENV
 from webapp.infonalia_webapp.tests.test_download_endpoint import make_download_handler
 from webapp.infonalia_webapp.tests.test_import_endpoints import VALID_CSRF_TOKEN, load_app_module
 
@@ -113,11 +114,12 @@ def test_storage_status_api_requires_admin_and_exposes_no_secrets(monkeypatch) -
 
 def test_storage_status_api_shows_local_dropbox_desktop_as_main_flow(monkeypatch, tmp_path: Path) -> None:
     app = load_app_module()
-    replica_root = tmp_path / "ReplicaDb"
-    replica_root.mkdir(parents=True)
+    dropbox_root = tmp_path / "Dropbox"
+    dropbox_root.mkdir(parents=True)
     monkeypatch.setenv("INFONALIA_STORAGE_BACKEND", "local")
     monkeypatch.setenv("INFONALIA_DROPBOX_ENABLED", "0")
-    monkeypatch.setattr(app, "find_dropbox_root", lambda: replica_root)
+    monkeypatch.setenv(DROPBOX_BASE_ENV, str(dropbox_root))
+    monkeypatch.delenv(LEGACY_DROPBOX_ROOT_ENV, raising=False)
     handler = make_download_handler(app, path="/api/storage/status")
 
     handler.do_GET()
@@ -126,23 +128,71 @@ def test_storage_status_api_shows_local_dropbox_desktop_as_main_flow(monkeypatch
     assert status == HTTPStatus.OK
     assert payload["backend"] == "local"
     assert payload["current_mode_label"] == "local / Dropbox Desktop"
-    assert payload["local_flow_label"] == "Dropbox Desktop"
+    assert payload["local_flow_label"] == "Dropbox Desktop (LLANGON_DROPBOX_BASE_PATH)"
     assert payload["dropbox_desktop_detected"] is True
-    assert payload["dropbox_desktop_root"] == str(replica_root)
-    assert payload["local_download_root"] == str(replica_root)
+    assert payload["dropbox_desktop_root"] == str(dropbox_root)
+    assert payload["local_download_root"] == str(dropbox_root)
+    assert payload["dropbox_base"]["source"] == "env"
+    assert payload["dropbox_base"]["env_var"] == DROPBOX_BASE_ENV
     assert payload["dropbox_api_status"] == "experimental_disabled"
 
 
-def test_configured_dropbox_root_never_falls_back_to_real_dropbox(monkeypatch, tmp_path: Path) -> None:
+def test_storage_status_uses_configured_dropbox_before_legacy(monkeypatch, tmp_path: Path) -> None:
+    app = load_app_module()
+    dropbox_root = tmp_path / "Dropbox"
+    replica_root = tmp_path / "ReplicaDb"
+    dropbox_root.mkdir()
+    replica_root.mkdir()
+    monkeypatch.setenv(DROPBOX_BASE_ENV, str(dropbox_root))
+    monkeypatch.setenv(LEGACY_DROPBOX_ROOT_ENV, str(replica_root))
+
+    handler = make_download_handler(app, path="/api/storage/status")
+    handler.do_GET()
+
+    status, payload = handler.responses[-1]
+
+    assert status == HTTPStatus.OK
+    assert app.find_dropbox_root() == dropbox_root
+    assert payload["local_download_root"] == str(dropbox_root)
+    assert payload["dropbox_base"]["source"] == "env"
+
+
+def test_storage_status_uses_legacy_root_as_fallback(monkeypatch, tmp_path: Path) -> None:
     app = load_app_module()
     replica_root = tmp_path / "ReplicaDb"
-    monkeypatch.setenv("INFONALIA_DROPBOX_ROOT", str(replica_root))
+    monkeypatch.delenv(DROPBOX_BASE_ENV, raising=False)
+    monkeypatch.setenv(LEGACY_DROPBOX_ROOT_ENV, str(replica_root))
 
     assert app.find_dropbox_root() is None
 
     replica_root.mkdir()
 
     assert app.find_dropbox_root() == replica_root
+    handler = make_download_handler(app, path="/api/storage/status")
+    handler.do_GET()
+
+    status, payload = handler.responses[-1]
+
+    assert status == HTTPStatus.OK
+    assert payload["local_flow_label"] == "Dropbox Desktop (fallback / legado)"
+    assert payload["local_download_root"] == str(replica_root)
+    assert payload["dropbox_base"]["source"] == "legacy"
+
+
+def test_storage_status_without_dropbox_config_keeps_internal_folder(monkeypatch) -> None:
+    app = load_app_module()
+    monkeypatch.delenv(DROPBOX_BASE_ENV, raising=False)
+    monkeypatch.delenv(LEGACY_DROPBOX_ROOT_ENV, raising=False)
+
+    handler = make_download_handler(app, path="/api/storage/status")
+    handler.do_GET()
+
+    status, payload = handler.responses[-1]
+
+    assert status == HTTPStatus.OK
+    assert payload["dropbox_desktop_detected"] is False
+    assert payload["dropbox_base"]["source"] == "none"
+    assert payload["local_flow_label"] == "carpeta local interna"
 
 
 def test_storage_dropbox_posts_require_csrf_before_running(monkeypatch) -> None:

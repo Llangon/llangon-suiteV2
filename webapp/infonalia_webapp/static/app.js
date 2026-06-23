@@ -34,11 +34,18 @@ const appState = {
   calendarSelectedDate: "",
   nuriaDaysView: "pending",
   licitacionesView: "live",
+  licitacionesYear: String(new Date().getFullYear()),
+  licitacionesMonth: String(new Date().getMonth() + 1),
+  licitacionesDateFilters: { years: [], month_counts: {} },
   lastSection: "days",
   config: null,
   storage: null,
   expandedCards: new Set(),
   cardDetails: {},
+  preparedNoticePreview: null,
+  preparedNoticeSending: false,
+  downloadFolder: null,
+  downloadFolderSubmitting: false,
 };
 
 const daysSection = document.getElementById("days-section");
@@ -53,6 +60,9 @@ const daysBoard = document.getElementById("days-board");
 const daysSummary = document.getElementById("days-summary");
 const nuriaDaysTabs = document.getElementById("nuria-days-tabs");
 const licitacionesTabs = document.getElementById("licitaciones-tabs");
+const licitacionesDateFilters = document.getElementById("licitaciones-date-filters");
+const licitacionesYearFilters = document.getElementById("licitaciones-year-filters");
+const licitacionesMonthFilters = document.getElementById("licitaciones-month-filters");
 const board = document.getElementById("board");
 const summary = document.getElementById("summary");
 const stateFilter = document.getElementById("state-filter");
@@ -115,6 +125,17 @@ const capturePlatformResult = document.getElementById("capture-platform-result")
 const licitacionDetailDialog = document.getElementById("licitacion-detail-dialog");
 const licitacionDetailTitle = document.getElementById("licitacion-detail-title");
 const licitacionDetailContent = document.getElementById("licitacion-detail-content");
+const preparedNoticeDialog = document.getElementById("prepared-notice-dialog");
+const preparedNoticeTo = document.getElementById("prepared-notice-to");
+const preparedNoticeSubject = document.getElementById("prepared-notice-subject");
+const preparedNoticeBody = document.getElementById("prepared-notice-body");
+const preparedNoticeStatus = document.getElementById("prepared-notice-status");
+const sendPreparedNoticeButton = document.getElementById("send-prepared-notice");
+const copyPreparedNoticeButton = document.getElementById("copy-prepared-notice");
+const downloadFolderDialog = document.getElementById("download-folder-dialog");
+const downloadFolderName = document.getElementById("download-folder-name");
+const downloadFolderStatus = document.getElementById("download-folder-status");
+const confirmDownloadFolderButton = document.getElementById("confirm-download-folder");
 const importer = document.getElementById("importer");
 const importForm = document.getElementById("import-form");
 const importResult = document.getElementById("import-result");
@@ -152,6 +173,7 @@ const estadoLabels = {
   "Enviada a Nuria": "Enviada a Nuria",
   "Descargar para ver": "Descargar para ver",
   "Preparar ficha": "Preparar ficha",
+  "Preparar": "Preparar",
   "Preparada": "Preparada",
   "Oferta enviada": "Oferta enviada",
 };
@@ -177,6 +199,21 @@ const nuriaDefaultReviewEstados = ["Enviada a Nuria", "Descargar para ver", "Pre
 const nuriaVisibleEstados = [...nuriaDefaultReviewEstados, "Descartada"];
 const nuriaLicitacionesEstados = ["Descargar para ver", "Preparar ficha", "Preparada"];
 const calendarioEstados = ["Descargar para ver", "Preparar ficha", "Preparada"];
+const gestionadasEstados = ["Oferta enviada", "Preparada", "Descargar para ver", "Preparar ficha", "Preparar"];
+const monthFilterLabels = [
+  "Ene",
+  "Feb",
+  "Mar",
+  "Abr",
+  "May",
+  "Jun",
+  "Jul",
+  "Ago",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dic",
+];
 const nuriaDayFilterOptions = [
   { value: "__nuria_active", label: "No descartadas", filter: "active" },
   { value: "__nuria_all", label: "Todas", filter: "all" },
@@ -568,7 +605,7 @@ function showLicitacionesView({ diaId = "", title = "Centro de licitaciones", vi
   appState.currentDiaTitle = title;
   appState.licitacionesView = diaId ? "all" : view;
   if (diaId && isNuria()) stateFilter.value = "__nuria_active";
-  if (!diaId) dateOrder.value = appState.licitacionesView === "live" ? "asc" : "desc";
+  if (!diaId) dateOrder.value = appState.licitacionesView === "all" ? "desc" : "asc";
   currentDayTitle.textContent = title;
   appState.lastSection = "licitaciones";
   setActiveNav("licitaciones");
@@ -582,6 +619,7 @@ function showLicitacionesView({ diaId = "", title = "Centro de licitaciones", vi
   monitorSection.hidden = true;
   configSection.hidden = true;
   renderLicitacionesTabs();
+  renderLicitacionesDateFilters();
   loadItems();
 }
 
@@ -600,14 +638,40 @@ function showCalendarView() {
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
   configSection.hidden = true;
-  loadCalendarItems();
+  return loadCalendarItems();
 }
 
-function showInitialView() {
+function agendaDeepLinkToken() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("agenda_source") || "";
+}
+
+function clearAgendaDeepLinkToken() {
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has("agenda_source")) return;
+  params.delete("agenda_source");
+  const query = params.toString();
+  const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash || ""}`;
+  window.history.replaceState({}, "", nextUrl);
+}
+
+async function openAgendaDeepLink(token) {
+  if (!isAdmin() || !token) return false;
+  appState.agendaView = "pending";
+  appState.calendarSelectedDate = dateKey(new Date());
+  await showCalendarView();
+  openAgendaOrigin(token);
+  clearAgendaDeepLinkToken();
+  return true;
+}
+
+async function showInitialView() {
+  const token = agendaDeepLinkToken();
+  if (token && await openAgendaDeepLink(token)) return;
   if (isAdmin()) {
     appState.agendaView = "pending";
     appState.calendarSelectedDate = dateKey(new Date());
-    showCalendarView();
+    await showCalendarView();
     return;
   }
   showDaysView();
@@ -1306,6 +1370,13 @@ async function loadItems() {
   if (!isNuriaDayReview() && estado && estado !== "Todos") params.set("estado", estado);
   if (appState.currentDiaId) params.set("dia_id", appState.currentDiaId);
   if (!appState.currentDiaId && appState.licitacionesView === "live") params.set("vivas", "1");
+  if (!appState.currentDiaId && appState.licitacionesView === "managed") params.set("gestionadas", "1");
+  if (!appState.currentDiaId && appState.licitacionesYear && appState.licitacionesYear !== "Todos") {
+    params.set("ejercicio", appState.licitacionesYear);
+  }
+  if (!appState.currentDiaId && appState.licitacionesMonth && appState.licitacionesMonth !== "Todos") {
+    params.set("mes", appState.licitacionesMonth);
+  }
   params.set("orden_fecha", ordenFecha);
   if (q) params.set("q", q);
   if (licitacionesActuacionesFilter.value) params.set("actuaciones", licitacionesActuacionesFilter.value);
@@ -1327,6 +1398,7 @@ async function loadItems() {
   appState.items = data.items;
   appState.estados = data.estados;
   appState.totals = data.totals;
+  appState.licitacionesDateFilters = data.date_filters || { years: [], month_counts: {} };
   appState.currentDayPendingReview = data.day_pending_review;
   appState.currentDayPendingAdmin = data.day_pending_admin;
   appState.currentDaySentNuriaAt = data.day_sent_nuria_at || "";
@@ -1335,6 +1407,7 @@ async function loadItems() {
   appState.currentDayReviewedAt = data.day_reviewed_at || "";
   appState.currentDayNuriaTotal = data.day_nuria_total;
   renderLicitacionesTabs();
+  renderLicitacionesDateFilters();
   renderStateFilter();
   renderSummary();
   renderReviewButton();
@@ -1353,9 +1426,55 @@ function renderLicitacionesTabs() {
   });
 }
 
+function renderLicitacionesDateFilters() {
+  const showFilters = !appState.currentDiaId;
+  licitacionesDateFilters.hidden = !showFilters;
+  if (!showFilters) return;
+
+  const filterData = appState.licitacionesDateFilters || {};
+  const years = (filterData.years || []).map((year) => String(year));
+  const selectedYear = appState.licitacionesYear || "Todos";
+  const selectedMonth = appState.licitacionesMonth || "Todos";
+  const yearAllCount = Number(filterData.year_all_count || 0);
+  const monthAllCount = Number(filterData.month_all_count || 0);
+  const yearValues = ["Todos", ...years];
+  if (selectedYear !== "Todos" && !yearValues.includes(selectedYear)) {
+    yearValues.splice(1, 0, selectedYear);
+  }
+
+  licitacionesYearFilters.innerHTML = yearValues.map((year) => `
+    <button type="button"
+      class="filter-chip ${year === selectedYear ? "active" : ""}"
+      data-licitaciones-year="${escapeHtml(year)}">
+      ${escapeHtml(year === "Todos" ? `Todos (${yearAllCount})` : year)}
+    </button>
+  `).join("");
+
+  const monthCounts = filterData.month_counts || {};
+  const monthButtons = [
+    `<button type="button" class="filter-chip ${selectedMonth === "Todos" ? "active" : ""}" data-licitaciones-month="Todos">Todos (${monthAllCount})</button>`,
+  ];
+  monthFilterLabels.forEach((label, index) => {
+    const monthValue = String(index + 1);
+    const paddedMonth = monthValue.padStart(2, "0");
+    const count = Number(monthCounts[monthValue] ?? monthCounts[paddedMonth] ?? 0);
+    monthButtons.push(`
+      <button type="button"
+        class="filter-chip ${selectedMonth === monthValue ? "active" : ""}"
+        data-licitaciones-month="${monthValue}">
+        ${escapeHtml(label)} (${count})
+      </button>
+    `);
+  });
+  licitacionesMonthFilters.innerHTML = monthButtons.join("");
+}
+
 function visibleStateOrder() {
   if (!appState.currentDiaId && appState.licitacionesView === "live") {
     return isAdmin() ? calendarioEstados : nuriaLicitacionesEstados;
+  }
+  if (!appState.currentDiaId && appState.licitacionesView === "managed") {
+    return gestionadasEstados;
   }
   if (appState.currentDiaId && isAdmin()) return ["Importada", ...adminReviewEstados];
   if (isAdmin()) return estadoOrden;
@@ -2318,6 +2437,7 @@ function renderSettingsConfig() {
   settingsForm.elements.smtp_user.value = settings.smtp_user || "";
   settingsForm.elements.smtp_from.value = settings.smtp_from || "";
   settingsForm.elements.agenda_email_to.value = settings.agenda_email_to || "";
+  settingsForm.elements.prepared_notice_email_to.value = settings.prepared_notice_email_to || "info3@llangon.com";
   settingsForm.elements.seguimiento_emails.value = settings.seguimiento_emails || "";
   settingsForm.elements.smtp_tls.checked = settings.smtp_tls !== "0";
   settingsForm.elements.smtp_ssl.checked = settings.smtp_ssl === "1";
@@ -2341,16 +2461,26 @@ function renderStorageConfig() {
     return;
   }
   const warnings = storage.warnings || [];
+  const dropboxBase = storage.dropbox_base || {};
+  const dropboxBaseWarnings = [];
+  if (dropboxBase.error && dropboxBase.configured) {
+    dropboxBaseWarnings.push(dropboxBase.error);
+  }
+  if (dropboxBase.source === "legacy") {
+    dropboxBaseWarnings.push("Usando fallback / legado. Configura LLANGON_DROPBOX_BASE_PATH para usar Dropbox real.");
+  }
   const apiStatus = storage.dropbox_api_status === "experimental_enabled"
     ? "experimental activo"
     : "experimental desactivado";
   storageStatusBoard.innerHTML = `
-    <div class="storage-status-row"><span>Modo actual</span><strong>${escapeHtml(storageValue(storage.current_mode_label || storage.backend))}</strong></div>
+    <div class="storage-status-row"><span>Modo actual</span><strong>${escapeHtml(storageValue(storage.local_flow_label || storage.current_mode_label || storage.backend))}</strong></div>
     <div class="storage-status-row"><span>Carpeta local</span><strong>${escapeHtml(storageValue(storage.local_download_root))}</strong></div>
-    <div class="storage-status-row"><span>Dropbox Desktop</span><strong>${escapeHtml(storage.dropbox_desktop_detected ? "detectado" : "no detectado")}</strong></div>
+    <div class="storage-status-row"><span>Configuración local</span><strong>${escapeHtml(storageValue(dropboxBase.label || dropboxBase.env_var))}</strong></div>
+    <div class="storage-status-row"><span>Dropbox Desktop</span><strong>${escapeHtml(storage.dropbox_desktop_detected ? "detectado / activo" : "no detectado")}</strong></div>
     <div class="storage-status-row"><span>Escaneo marcadores</span><strong>${escapeHtml(`${storage.monitor_year_min || 2000}-${storage.monitor_year_max || 2300}`)}</strong></div>
     <div class="storage-status-row"><span>Dropbox API</span><strong>${escapeHtml(apiStatus)}</strong></div>
     <div class="storage-status-row"><span>Raíz API remota</span><strong>${escapeHtml(storageValue(storage.root))}</strong></div>
+    ${dropboxBaseWarnings.length ? `<div class="notification-warning">${dropboxBaseWarnings.map(escapeHtml).join("<br>")}</div>` : ""}
     ${warnings.length ? `<div class="notification-warning">${warnings.map(escapeHtml).join("<br>")}</div>` : ""}
   `;
 }
@@ -2428,6 +2558,7 @@ function settingsPayload() {
     smtp_user: settingsForm.elements.smtp_user.value.trim(),
     smtp_from: settingsForm.elements.smtp_from.value.trim(),
     agenda_email_to: settingsForm.elements.agenda_email_to.value.trim(),
+    prepared_notice_email_to: settingsForm.elements.prepared_notice_email_to.value.trim(),
     seguimiento_emails: settingsForm.elements.seguimiento_emails.value.trim(),
     smtp_tls: settingsForm.elements.smtp_tls.checked ? "1" : "0",
     smtp_ssl: settingsForm.elements.smtp_ssl.checked ? "1" : "0",
@@ -2633,11 +2764,18 @@ async function loadMonitorSchedulerStatus() {
       monitorSchedulerStatus.textContent = "Scheduler: estado no disponible";
       return;
     }
-    const state = scheduler.enabled ? "configurado" : "desactivado";
+    const state = scheduler.enabled ? "activo" : "desactivado";
+    const recipients = Array.isArray(scheduler.agenda_pending_recipients) && scheduler.agenda_pending_recipients.length
+      ? scheduler.agenda_pending_recipients.join(", ")
+      : "sin destinatarios";
     const lastCheck = scheduler.last_check_at ? ` Última comprobación: ${formatDateTime(scheduler.last_check_at) || scheduler.last_check_at}.` : " Sin heartbeat reciente.";
-    const next = scheduler.next?.task_type ? ` Próxima tarea: ${monitorTaskTypeLabel(scheduler.next.task_type)} ${formatDateTime(scheduler.next.run_at) || scheduler.next.run_at}.` : "";
+    const lastRun = scheduler.last_automatic_run?.started_at
+      ? ` Última ejecución automática: ${formatDateTime(scheduler.last_automatic_run.started_at) || scheduler.last_automatic_run.started_at} (${monitorStatusLabel(scheduler.last_automatic_run.status)}).`
+      : " Sin ejecución automática registrada.";
+    const next = scheduler.next?.task_type ? ` Próxima ejecución: ${monitorTaskTypeLabel(scheduler.next.task_type)} ${formatDateTime(scheduler.next.run_at) || scheduler.next.run_at}.` : " Sin próxima ejecución activa.";
+    const licitaciones = scheduler.monitor_licitaciones_schedule_enabled ? " Monitor licitaciones: programado." : " Monitor licitaciones: desactivado.";
     const error = scheduler.last_error ? ` Error: ${scheduler.last_error}` : "";
-    monitorSchedulerStatus.textContent = `Scheduler: ${state}. Zona horaria: ${scheduler.timezone || "Europe/Madrid"}.${lastCheck}${next}${error}`;
+    monitorSchedulerStatus.textContent = `Scheduler: ${state}. Pendientes: ${recipients}.${lastCheck}${lastRun}${next}${licitaciones}${error}`;
   } catch (_error) {
     monitorSchedulerStatus.textContent = "Scheduler: estado no disponible";
   }
@@ -2971,7 +3109,8 @@ function renderExpandedCard(item, detail) {
 function renderLicitacionDetailView(item) {
   const actuaciones = item.actuaciones || [];
   const seguimiento = item.seguimiento || {};
-  const folder = item.ruta_carpeta || "";
+  const folder = folderDisplayPath(item);
+  const folderLabel = folderStatusLabel(item);
   const folderUrl = fileUrl(folder);
   const profile = normalizeUrl(item.enlace_perfil);
   const infonalia = normalizeUrl(item.enlace_infonalia);
@@ -3037,7 +3176,8 @@ function renderLicitacionDetailView(item) {
           ${folderUrl ? `<a class="no-print" href="${escapeHtml(folderUrl)}" target="_blank" rel="noreferrer">Abrir carpeta</a>` : ""}
         </div>
         <div class="detail-grid">
-          <div class="detail full-width"><span>Carpeta</span>${escapeHtml(folder || "Sin carpeta")}</div>
+          <div class="detail"><span>Estado carpeta</span>${escapeHtml(folderLabel)}</div>
+          <div class="detail full-width"><span>Ruta carpeta</span>${escapeHtml(folder || item.ruta_carpeta || "Sin carpeta")}</div>
           <div class="detail"><span>Estado descarga</span>${escapeHtml(item.descarga_fallida ? "Descarga fallida" : item.documentacion_descargada ? "Con documentación" : "Pendiente")}</div>
           <div class="detail"><span>Error descarga</span>${escapeHtml(item.download_error || "Sin errores")}</div>
         </div>
@@ -3061,10 +3201,11 @@ function renderLicitacionDetailView(item) {
 }
 
 function renderLicitacionSummary(item) {
-  const folder = item.ruta_carpeta || "";
+  const folder = folderDisplayPath(item);
   const profile = normalizeUrl(item.enlace_perfil);
   const infonalia = normalizeUrl(item.enlace_infonalia);
   const folderUrl = fileUrl(folder);
+  const folderLabel = folderStatusLabel(item);
   const rows = [
     ["Objeto", item.objeto],
     ["Organismo", item.organismo],
@@ -3075,7 +3216,7 @@ function renderLicitacionSummary(item) {
     ["Estado interno", item.estado_interno || "Nueva"],
     ["Revisión", item.revisada ? "Revisada" : "No revisada"],
     ["Seguimiento", item.seguimiento_activo ? "Sí" : "No"],
-    ["Ruta carpeta", folder || "Sin carpeta"],
+    ["Carpeta", folderLabel],
   ];
   return `
     <div class="detail-grid">
@@ -3087,6 +3228,18 @@ function renderLicitacionSummary(item) {
       ${infonalia ? `<a href="${escapeHtml(infonalia)}" target="_blank" rel="noreferrer">Abrir Infonalia</a>` : ""}
     </div>
   `;
+}
+
+function folderDisplayPath(item) {
+  const status = item?.folder_status || {};
+  return String(status.path || item?.ruta_carpeta || "").trim();
+}
+
+function folderStatusLabel(item) {
+  const status = item?.folder_status || {};
+  if (status.label) return status.label;
+  if (item?.ruta_carpeta) return "Ruta registrada";
+  return "Carpeta no configurada";
 }
 
 function renderLicitacionMainActions(item) {
@@ -3280,6 +3433,87 @@ async function updateEstado(id, estado) {
     return;
   }
   await loadItems();
+  showPreparedNoticeFromResult(result);
+}
+
+function setPreparedNoticeStatus(message = "", type = "") {
+  if (!preparedNoticeStatus) return;
+  preparedNoticeStatus.textContent = message;
+  preparedNoticeStatus.className = `import-result ${type}`.trim();
+}
+
+function showPreparedNoticeFromResult(result) {
+  const preview = result?.prepared_notice_preview;
+  if (!preview || !preparedNoticeDialog) return;
+  appState.preparedNoticePreview = preview;
+  appState.preparedNoticeSending = false;
+  preparedNoticeTo.value = preview.to || "";
+  preparedNoticeSubject.value = preview.subject || "";
+  preparedNoticeBody.value = preview.email_body || "";
+  sendPreparedNoticeButton.textContent = "Enviar email";
+  sendPreparedNoticeButton.disabled = !preview.can_send_email;
+  setPreparedNoticeStatus(preview.email_warning || "", preview.email_warning ? "error" : "");
+  if (typeof preparedNoticeDialog.showModal === "function") {
+    preparedNoticeDialog.showModal();
+  } else {
+    alert("Ficha preparada. Revisa el aviso asistido.");
+  }
+}
+
+function closePreparedNotice() {
+  if (preparedNoticeDialog?.open) preparedNoticeDialog.close();
+  appState.preparedNoticePreview = null;
+  appState.preparedNoticeSending = false;
+}
+
+async function copyPreparedNoticeText() {
+  const preview = appState.preparedNoticePreview;
+  if (!preview) return;
+  const text = preview.whatsapp_text || preparedNoticeBody.value || "";
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const helper = document.createElement("textarea");
+    helper.value = text;
+    helper.setAttribute("readonly", "");
+    helper.style.position = "fixed";
+    helper.style.opacity = "0";
+    document.body.appendChild(helper);
+    helper.select();
+    document.execCommand("copy");
+    helper.remove();
+  }
+  setPreparedNoticeStatus("Texto copiado para WhatsApp.", "success");
+}
+
+async function sendPreparedNoticeEmail() {
+  const preview = appState.preparedNoticePreview;
+  if (!preview || appState.preparedNoticeSending) return;
+  appState.preparedNoticeSending = true;
+  sendPreparedNoticeButton.disabled = true;
+  sendPreparedNoticeButton.textContent = "Enviando...";
+  setPreparedNoticeStatus("Enviando email...", "");
+  try {
+    const response = await fetch(`/api/licitaciones/${preview.licitacion_id}/prepared-notice/email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...csrfHeaders() },
+      body: JSON.stringify({
+        subject: preparedNoticeSubject.value.trim(),
+        email_body: preparedNoticeBody.value.trim(),
+      }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(result.message || result.error || "No se ha podido enviar el email. La licitación se ha guardado correctamente.");
+    }
+    sendPreparedNoticeButton.textContent = "Email enviado";
+    setPreparedNoticeStatus(result.message || "Email enviado correctamente.", "success");
+  } catch (error) {
+    appState.preparedNoticeSending = false;
+    sendPreparedNoticeButton.disabled = !preview.can_send_email;
+    sendPreparedNoticeButton.textContent = "Enviar email";
+    setPreparedNoticeStatus(error.message || "No se ha podido enviar el email. La licitación se ha guardado correctamente.", "error");
+  }
 }
 
 async function markDayReviewed() {
@@ -3331,26 +3565,104 @@ async function sendDayToNuria() {
   }
 }
 
-async function downloadLicitacion(id, button) {
-  const originalText = button.textContent;
-  button.disabled = true;
-  button.textContent = "Descargando...";
+function setDownloadFolderStatus(message = "", type = "") {
+  if (!downloadFolderStatus) return;
+  downloadFolderStatus.textContent = message;
+  downloadFolderStatus.className = `import-result ${type}`.trim();
+}
+
+function closeDownloadFolderDialog() {
+  if (downloadFolderDialog?.open) downloadFolderDialog.close();
+  appState.downloadFolder = null;
+  appState.downloadFolderSubmitting = false;
+  setDownloadFolderStatus("");
+}
+
+function showDownloadFolderDialog(id, suggestedFolderName, button) {
+  appState.downloadFolder = {
+    id,
+    button,
+    originalText: button?.textContent || "Descargar",
+  };
+  appState.downloadFolderSubmitting = false;
+  downloadFolderName.value = suggestedFolderName || "";
+  confirmDownloadFolderButton.disabled = false;
+  confirmDownloadFolderButton.textContent = "Crear carpeta y descargar";
+  setDownloadFolderStatus("");
+  downloadFolderDialog.showModal();
+  downloadFolderName.focus();
+  downloadFolderName.select();
+}
+
+async function finishDownload(result) {
+  alert(`Descarga completada.\n\nCarpeta:\n${result.carpeta}`);
+  await loadItems();
+}
+
+async function downloadLicitacion(id, button, options = {}) {
+  const originalText = button?.textContent || "Descargar";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Descargando...";
+  }
 
   try {
+    const hasConfirmedName = Object.prototype.hasOwnProperty.call(options, "folderName");
+    const body = hasConfirmedName ? JSON.stringify({ folder_name_confirmed: options.folderName }) : undefined;
     const response = await fetch(`/api/licitaciones/${id}/descargar`, {
       method: "POST",
-      headers: csrfHeaders(),
+      headers: hasConfirmedName
+        ? { "Content-Type": "application/json", ...csrfHeaders() }
+        : csrfHeaders(),
+      body,
     });
-    const result = await response.json();
+    const result = await response.json().catch(() => ({}));
+    if (result.needs_folder_confirmation) {
+      showDownloadFolderDialog(id, result.suggested_folder_name, button);
+      return;
+    }
     if (!response.ok) {
       alert(result.error || result.salida || "No se pudo completar la descarga.");
       return;
     }
-    alert(`Descarga completada.\n\nCarpeta:\n${result.carpeta}`);
-    await loadItems();
+    await finishDownload(result);
   } finally {
-    button.disabled = false;
-    button.textContent = originalText;
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
+
+async function confirmDownloadFolder() {
+  const pending = appState.downloadFolder;
+  if (!pending || appState.downloadFolderSubmitting) return;
+  const folderName = downloadFolderName.value.trim();
+  if (!folderName) {
+    setDownloadFolderStatus("El nombre de carpeta es obligatorio.", "error");
+    return;
+  }
+  appState.downloadFolderSubmitting = true;
+  confirmDownloadFolderButton.disabled = true;
+  confirmDownloadFolderButton.textContent = "Creando...";
+  setDownloadFolderStatus("Creando carpeta y descargando documentación...", "");
+  try {
+    const response = await fetch(`/api/licitaciones/${pending.id}/descargar`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...csrfHeaders() },
+      body: JSON.stringify({ folder_name_confirmed: folderName }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(result.error || result.salida || "No se pudo completar la descarga.");
+    }
+    closeDownloadFolderDialog();
+    await finishDownload(result);
+  } catch (error) {
+    appState.downloadFolderSubmitting = false;
+    confirmDownloadFolderButton.disabled = false;
+    confirmDownloadFolderButton.textContent = "Crear carpeta y descargar";
+    setDownloadFolderStatus(error.message || "No se pudo completar la descarga.", "error");
   }
 }
 
@@ -3492,6 +3804,7 @@ async function patchLicitacionWork(id, payload) {
     licitacionDetailTitle.textContent = detail.expediente || "Licitación";
     licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
   }
+  showPreparedNoticeFromResult(result);
   return true;
 }
 
@@ -3678,8 +3991,22 @@ licitacionesTabs.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-licitaciones-view]");
   if (!button) return;
   appState.licitacionesView = button.dataset.licitacionesView;
-  dateOrder.value = appState.licitacionesView === "live" ? "asc" : "desc";
+  dateOrder.value = appState.licitacionesView === "all" ? "desc" : "asc";
   renderLicitacionesTabs();
+  loadItems();
+});
+licitacionesYearFilters.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-licitaciones-year]");
+  if (!button) return;
+  appState.licitacionesYear = button.dataset.licitacionesYear || "Todos";
+  renderLicitacionesDateFilters();
+  loadItems();
+});
+licitacionesMonthFilters.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-licitaciones-month]");
+  if (!button) return;
+  appState.licitacionesMonth = button.dataset.licitacionesMonth || "Todos";
+  renderLicitacionesDateFilters();
   loadItems();
 });
 nuriaDaysTabs.addEventListener("click", (event) => {
@@ -3700,6 +4027,19 @@ document.getElementById("import-button").addEventListener("click", () => {
 });
 document.getElementById("close-importer").addEventListener("click", () => importer.close());
 document.getElementById("cancel-importer").addEventListener("click", () => importer.close());
+document.getElementById("close-prepared-notice").addEventListener("click", closePreparedNotice);
+document.getElementById("cancel-prepared-notice").addEventListener("click", closePreparedNotice);
+sendPreparedNoticeButton.addEventListener("click", sendPreparedNoticeEmail);
+copyPreparedNoticeButton.addEventListener("click", copyPreparedNoticeText);
+document.getElementById("close-download-folder").addEventListener("click", closeDownloadFolderDialog);
+document.getElementById("cancel-download-folder").addEventListener("click", closeDownloadFolderDialog);
+confirmDownloadFolderButton.addEventListener("click", confirmDownloadFolder);
+downloadFolderName.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    confirmDownloadFolder();
+  }
+});
 stateFilter.addEventListener("change", loadItems);
 dateOrder.addEventListener("change", loadItems);
 licitacionesActuacionesFilter.addEventListener("change", loadItems);
@@ -4190,10 +4530,10 @@ form.addEventListener("submit", async (event) => {
     headers: { "Content-Type": "application/json", ...csrfHeaders() },
     body: JSON.stringify(data),
   });
+  const result = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const error = await response.json();
-    alert(error.error || "No se pudo guardar la licitación.");
+    alert(result.error || "No se pudo guardar la licitación.");
     return;
   }
 
@@ -4202,9 +4542,11 @@ form.addEventListener("submit", async (event) => {
   await loadDias();
   if (appState.lastSection === "calendar") {
     await loadCalendarItems();
+    showPreparedNoticeFromResult(result);
     return;
   }
   showLicitacionesView({ diaId: appState.currentDiaId, title: appState.currentDiaTitle });
+  showPreparedNoticeFromResult(result);
 });
 
 importForm.addEventListener("submit", async (event) => {

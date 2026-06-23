@@ -48,6 +48,7 @@ firebase/public_firebase/.firebaserc
 *.tmp
 .local_backups/
 .local_runtime/
+runtime/
 *.zip
 *.7z
 *.rar

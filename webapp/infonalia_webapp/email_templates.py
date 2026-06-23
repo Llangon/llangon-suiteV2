@@ -16,6 +16,7 @@ def build_llangon_email_shell(
     footer_right_html: str = "",
     closing_html: str = "",
     logo_alt: str = "Asesores Llangón",
+    compact: bool = False,
 ) -> str:
     safe_eyebrow = html.escape(eyebrow)
     safe_title = html.escape(title)
@@ -47,16 +48,20 @@ def build_llangon_email_shell(
                 {closing_html}
               </td>
             </tr>"""
+    outer_padding = "14px 10px" if compact else "22px 12px"
+    header_padding = "12px 20px" if compact else "18px 24px"
+    body_padding = "18px 20px" if compact else "22px 24px"
+    logo_width = "96px" if compact else "128px"
 
     return f"""<!doctype html>
 <html lang="es">
   <body style="margin:0; padding:0; background:#f5f7fb; font-family:Calibri, Segoe UI, Arial, sans-serif; color:#1f2937;">
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f7fb; padding:22px 12px; border-collapse:collapse;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f7fb; padding:{outer_padding}; border-collapse:collapse;">
       <tr>
         <td align="center">
           <table width="100%" cellpadding="0" cellspacing="0" style="max-width:680px; background:#ffffff; border:1px solid #d9e2ec; border-radius:10px; overflow:hidden; border-collapse:collapse;">
             <tr>
-              <td style="padding:18px 24px; border-bottom:1px solid #d9e2ec;">
+              <td style="padding:{header_padding}; border-bottom:1px solid #d9e2ec;">
                 <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                   <tr>
                     <td style="vertical-align:middle;">
@@ -65,14 +70,14 @@ def build_llangon_email_shell(
                       {subtitle_html}
                     </td>
                     <td align="right" style="vertical-align:middle;">
-                      <img src="{LOGO_CID}" alt="{safe_logo_alt}" style="display:block; max-width:128px; height:auto;">
+                      <img src="{LOGO_CID}" alt="{safe_logo_alt}" style="display:block; max-width:{logo_width}; height:auto;">
                     </td>
                   </tr>
                 </table>
               </td>
             </tr>
             <tr>
-              <td style="padding:22px 24px;">
+              <td style="padding:{body_padding};">
                 {body_html}
               </td>
             </tr>

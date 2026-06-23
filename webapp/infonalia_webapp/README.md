@@ -86,6 +86,7 @@ INFONALIA_REVIEWER_EMAIL=
 INFONALIA_ENABLE_ADMIN_ALIAS=0
 INFONALIA_HOST=127.0.0.1
 INFONALIA_PORT=8787
+LLANGON_DROPBOX_BASE_PATH=
 INFONALIA_DROPBOX_ROOT=C:\ReplicaDb
 INFONALIA_PDFTOTEXT=
 INFONALIA_PLATFORM_URL=
@@ -126,11 +127,21 @@ Todo ese contenido está excluido de Git salvo `.gitkeep` y `README_DATOS.md`.
 
 ## Dropbox
 
-La raíz de Dropbox se configura mediante:
+La raíz real de Dropbox se configura mediante `LLANGON_DROPBOX_BASE_PATH`:
 
-La ruta se define en `INFONALIA_DROPBOX_ROOT` dentro del `.env` local. Durante desarrollo y pruebas debe apuntar a `C:\ReplicaDb`, una réplica local de la estructura de Dropbox. Los marcadores `[IdLicitacion].llangon`, `EnSeguimiento.llangon`, la sincronización y el futuro monitor deben trabajar contra esa réplica, no contra Dropbox real.
+```powershell
+$env:LLANGON_DROPBOX_BASE_PATH="C:\Users\USUARIO\Dropbox\ASESORES LLANGON SL"
+```
 
-Si `INFONALIA_DROPBOX_ROOT` está definido pero la carpeta no existe, la app no intenta autodetectar Dropbox Desktop por detrás. En ese caso usará el flujo local interno hasta que se cree o corrija la ruta configurada.
+En este equipo:
+
+```powershell
+$env:LLANGON_DROPBOX_BASE_PATH="C:\Users\LLangon03\Dropbox\00000 LLANGON"
+```
+
+No se debe hardcodear esa ruta en el código. Si la variable no está configurada, la app conserva el flujo local/de pruebas. `INFONALIA_DROPBOX_ROOT` queda como compatibilidad histórica para réplicas locales, por ejemplo `C:\ReplicaDb`, pero la variable principal para Dropbox real es `LLANGON_DROPBOX_BASE_PATH`.
+
+Si `LLANGON_DROPBOX_BASE_PATH` está definida pero la carpeta no existe, las funciones que necesitan Dropbox real devuelven un error controlado. Si una ruta de expediente queda fuera de la base configurada, se muestra como “La ruta está fuera de la carpeta base de Dropbox”.
 
 Si no se encuentra una ruta válida, la app puede usar `data/descargas/` como destino local. Esa carpeta también está ignorada.
 

@@ -14,11 +14,14 @@ from .service import (
     DEFAULT_DB_PATH,
     DEFAULT_SCHEDULER_TIMEZONE,
     EmailSender,
+    env_bool,
     due_automation_task_types,
     localize_scheduler_datetime,
     monitor_automation_schedules,
     record_scheduler_heartbeat,
+    reset_scheduler_test_state,
     run_due_automation_tasks,
+    schedule_runs_on_date,
     scheduler_now_iso,
 )
 
@@ -163,7 +166,7 @@ def next_schedule_preview(current: datetime | None = None) -> dict[str, object]:
         times = config.get("times") if isinstance(config.get("times"), list) else [config.get("time")]
         for day_offset in range(0, 8):
             day = now.date() + timedelta(days=day_offset)
-            if config.get("frequency") == "weekdays" and day.weekday() >= 5:
+            if not schedule_runs_on_date(config, day):
                 continue
             for time_text in times:
                 if not time_text:
@@ -180,6 +183,7 @@ def next_schedule_preview(current: datetime | None = None) -> dict[str, object]:
 
 def monitor_scheduler_status(db_path: str | Path | None = None) -> dict[str, object]:
     enabled = scheduler_enabled_from_env()
+    schedules = monitor_automation_schedules()
     status = {
         "enabled": enabled,
         "running": False,
@@ -190,6 +194,11 @@ def monitor_scheduler_status(db_path: str | Path | None = None) -> dict[str, obj
         "due_now": due_automation_task_types(),
         "timezone": DEFAULT_SCHEDULER_TIMEZONE,
         "next": next_schedule_preview(),
+        "schedules": schedules,
+        "agenda_pending_recipients": configured_agenda_pending_recipients(db_path),
+        "monitor_licitaciones_schedule_enabled": "monitor_licitaciones" in schedules,
+        "monitor_licitaciones_real_enabled": env_bool("MONITOR_LICITACIONES_REAL_ENABLED", False),
+        "last_automatic_run": None,
     }
     db_file = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
     try:
@@ -197,18 +206,81 @@ def monitor_scheduler_status(db_path: str | Path | None = None) -> dict[str, obj
         ensure_monitor_schema(conn)
         row = conn.execute("SELECT * FROM monitor_scheduler_heartbeat WHERE id = 1").fetchone()
         if row:
+            heartbeat_next_task = row["next_task"] or ""
+            heartbeat_next_run_at = row["next_run_at"] or ""
             status.update(
                 {
                     "last_check_at": row["checked_at"],
                     "last_error": row["last_error"] or "",
                     "heartbeat_status": row["status"],
-                    "next": {"task_type": row["next_task"] or "", "run_at": row["next_run_at"] or ""},
                 }
             )
+            if heartbeat_next_task or heartbeat_next_run_at:
+                status["next"] = {"task_type": heartbeat_next_task, "run_at": heartbeat_next_run_at}
+        last_run = conn.execute(
+            """
+            SELECT id, task_type, mode, schedule_key, started_at, finished_at, status,
+                   emails_prepared_count, emails_sent_count, error_message
+            FROM monitor_runs
+            WHERE task_type = 'agenda_pendientes_diaria'
+              AND mode = 'automatic'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if last_run:
+            status["last_automatic_run"] = {
+                "id": last_run["id"],
+                "task_type": last_run["task_type"],
+                "mode": last_run["mode"],
+                "schedule_key": last_run["schedule_key"] or "",
+                "started_at": last_run["started_at"] or "",
+                "finished_at": last_run["finished_at"] or "",
+                "status": last_run["status"] or "",
+                "emails_prepared_count": last_run["emails_prepared_count"],
+                "emails_sent_count": last_run["emails_sent_count"],
+                "error_message": last_run["error_message"] or "",
+            }
         conn.close()
     except Exception as exc:  # pragma: no cover
         status["last_error"] = str(exc)
     return status
+
+
+def split_email_recipients(value: object) -> list[str]:
+    import re
+
+    recipients: list[str] = []
+    for part in re.split(r"[;,]", str(value or "")):
+        email = part.strip()
+        if email and email not in recipients:
+            recipients.append(email)
+    return recipients
+
+
+def configured_agenda_pending_recipients(db_path: str | Path | None = None) -> list[str]:
+    env_value = os.environ.get("MONITOR_AGENDA_PENDING_EMAIL_TO", "")
+    if env_value.strip():
+        return split_email_recipients(env_value)
+    db_file = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
+    try:
+        conn = connect_db(db_file)
+        rows = conn.execute(
+            """
+            SELECT key, value
+            FROM app_settings
+            WHERE key IN ('monitor_agenda_pending_email_to', 'monitor_test_email', 'agenda_email_to')
+            """
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return []
+    values = {row["key"]: row["value"] or "" for row in rows}
+    return split_email_recipients(
+        values.get("monitor_agenda_pending_email_to")
+        or values.get("monitor_test_email")
+        or values.get("agenda_email_to")
+    )
 
 
 def parse_now(value: str | None) -> datetime | None:
@@ -239,10 +311,10 @@ def run_once(
     effective_recipient = recipient
     effective_email_sender = email_sender
     if not dry_run and (not effective_recipient or effective_email_sender is None):
-        from ..app import get_settings, monitor_test_recipient, send_monitor_email
+        from ..app import get_settings, monitor_agenda_pending_recipient, send_monitor_email
 
         settings = get_settings()
-        effective_recipient = effective_recipient or monitor_test_recipient(settings=settings)
+        effective_recipient = effective_recipient or monitor_agenda_pending_recipient(settings=settings)
         effective_email_sender = effective_email_sender or (
             lambda to, subject, body, html: send_monitor_email(to, subject, body, html, settings=settings)
         )
@@ -269,15 +341,39 @@ def run_once(
     )
 
 
+def reset_test_state(
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+    schedule_keys: list[str] | None = None,
+    task_type: str = "agenda_pendientes_diaria",
+) -> dict[str, object]:
+    conn = connect_db(db_path)
+    ensure_monitor_schema(conn)
+    result = reset_scheduler_test_state(conn, task_type=task_type, schedule_keys=schedule_keys)
+    conn.commit()
+    conn.close()
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Runner independiente del scheduler de LlangonSuiteV2.")
     parser.add_argument("--once", action="store_true", help="Comprueba tareas pendientes y termina.")
     parser.add_argument("--dry-run", action="store_true", help="Muestra qué ejecutaría sin enviar correos.")
     parser.add_argument("--list-schedule", action="store_true", help="Lista tareas activas y próxima ejecución.")
+    parser.add_argument("--reset-test-state", action="store_true", help="Limpia estado temporal del scheduler sin borrar histórico.")
+    parser.add_argument("--schedule-key", action="append", default=[], help="Schedule key que se puede liberar para repetir una prueba.")
+    parser.add_argument("--task-type", default="agenda_pendientes_diaria", help="Tipo de tarea para reset-test-state.")
     parser.add_argument("--now", help="Fecha/hora ISO simulada en Europe/Madrid si no incluye zona.")
     parser.add_argument("--db-path", default=str(DEFAULT_DB_PATH))
     args = parser.parse_args(argv)
     now = parse_now(args.now)
+    if args.reset_test_state:
+        print(json.dumps(
+            reset_test_state(db_path=args.db_path, schedule_keys=args.schedule_key, task_type=args.task_type),
+            ensure_ascii=False,
+            indent=2,
+        ))
+        return 0
     if args.list_schedule:
         print(json.dumps(list_schedule(now), ensure_ascii=False, indent=2))
         return 0

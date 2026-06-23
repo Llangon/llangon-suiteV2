@@ -44,6 +44,7 @@ try:
     )
     from ..agenda.pending_tasks import build_pending_tasks_response
     from ..agenda.service import active_date_label, agenda_week_bounds, build_agenda_events, build_agenda_response
+    from ..environment import load_env_file
     from ..normalization import clean_text
 except ImportError:
     from agenda.email_summary import (
@@ -55,17 +56,20 @@ except ImportError:
     )
     from agenda.pending_tasks import build_pending_tasks_response
     from agenda.service import active_date_label, agenda_week_bounds, build_agenda_events, build_agenda_response
+    from environment import load_env_file
     from normalization import clean_text
 
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB_PATH = APP_ROOT / "data" / "infonalia.db"
+load_env_file(APP_ROOT / ".env")
 SOURCE_LOCAL_DROPBOX = "local_dropbox"
 ALL_MODES = {"dry-run", "repair-routes", "inventory", "sync", "monitor"}
 EmailSender = Callable[[str, str, str, str], tuple[str | None, str | None]]
 AUTOMATION_MODE_MANUAL = "manual"
 AUTOMATION_MODE_AUTOMATIC = "automatic"
 DEFAULT_SCHEDULER_TIMEZONE = "Europe/Madrid"
+SPANISH_WEEKDAYS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 LEGACY_AUTOMATION_TASKS = {
     TASK_TYPE_AGENDA_DIARIA,
     TASK_TYPE_AGENDA_SEMANAL,
@@ -74,19 +78,15 @@ LEGACY_AUTOMATION_TASKS = {
     TASK_TYPE_AVISO_VENCIMIENTO_1D,
     TASK_TYPE_AVISO_VENCIMIENTO_HOY,
 }
-MONITOR_AUTOMATION_SCHEDULES = {
+DEFAULT_MONITOR_AUTOMATION_SCHEDULES = {
     TASK_TYPE_AGENDA_PENDIENTES_DIARIA: {
         "frequency": "daily",
-        "time": os.environ.get("MONITOR_AGENDA_PENDING_DAILY_TIME", "06:00"),
+        "time": "06:00",
         "send_policy": "only_if_pending_tasks",
     },
     TASK_TYPE_MONITOR_LICITACIONES: {
         "frequency": "weekdays",
-        "times": [
-            os.environ.get("MONITOR_LICITACIONES_TIME_1", "07:00"),
-            os.environ.get("MONITOR_LICITACIONES_TIME_2", "12:30"),
-            os.environ.get("MONITOR_LICITACIONES_TIME_3", "17:30"),
-        ],
+        "times": ["07:00", "12:30", "17:30"],
         "send_policy": "only_with_changes",
     },
 }
@@ -175,6 +175,34 @@ def scheduler_now_iso(value: datetime | None = None) -> str:
 
 def scheduler_naive_datetime(value: datetime) -> datetime:
     return localize_scheduler_datetime(value).replace(tzinfo=None)
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return clean_text(raw).lower() in {"1", "true", "yes", "on", "si", "sí"}
+
+
+def active_monitor_automation_schedules() -> dict[str, dict[str, object]]:
+    schedules: dict[str, dict[str, object]] = {}
+    if env_bool("MONITOR_AGENDA_PENDING_DAILY_ENABLED", True):
+        schedules[TASK_TYPE_AGENDA_PENDIENTES_DIARIA] = {
+            **DEFAULT_MONITOR_AUTOMATION_SCHEDULES[TASK_TYPE_AGENDA_PENDIENTES_DIARIA],
+            "time": os.environ.get("MONITOR_AGENDA_PENDING_DAILY_TIME", "06:00"),
+            "weekdays_only": env_bool("MONITOR_AGENDA_PENDING_DAILY_WEEKDAYS_ONLY", True),
+        }
+    if env_bool("MONITOR_LICITACIONES_SCHEDULE_ENABLED", False):
+        schedules[TASK_TYPE_MONITOR_LICITACIONES] = {
+            **DEFAULT_MONITOR_AUTOMATION_SCHEDULES[TASK_TYPE_MONITOR_LICITACIONES],
+            "times": [
+                os.environ.get("MONITOR_LICITACIONES_TIME_1", "07:00"),
+                os.environ.get("MONITOR_LICITACIONES_TIME_2", "12:30"),
+                os.environ.get("MONITOR_LICITACIONES_TIME_3", "17:30"),
+            ],
+            "real_enabled": env_bool("MONITOR_LICITACIONES_REAL_ENABLED", False),
+        }
+    return schedules
 
 
 def normalize_mode(mode: str) -> str:
@@ -607,11 +635,16 @@ def run_monitor(
 
 
 def monitor_automation_schedules() -> dict[str, dict[str, object]]:
-    return {key: dict(value) for key, value in MONITOR_AUTOMATION_SCHEDULES.items()}
+    return {key: dict(value) for key, value in active_monitor_automation_schedules().items()}
 
 
 def automation_schedule_for_task(task_type: str) -> dict[str, object]:
-    return dict(MONITOR_AUTOMATION_SCHEDULES.get(task_type) or LEGACY_AUTOMATION_SCHEDULES.get(task_type) or {})
+    return dict(
+        active_monitor_automation_schedules().get(task_type)
+        or DEFAULT_MONITOR_AUTOMATION_SCHEDULES.get(task_type)
+        or LEGACY_AUTOMATION_SCHEDULES.get(task_type)
+        or {}
+    )
 
 
 def schedule_time_has_arrived(current: datetime, time_text: object) -> bool:
@@ -624,6 +657,12 @@ def schedule_time_has_arrived(current: datetime, time_text: object) -> bool:
     except ValueError:
         return False
     return (current.hour * 60 + current.minute) >= (hour * 60 + minute)
+
+
+def schedule_runs_on_date(config: dict[str, object], day: date) -> bool:
+    if config.get("frequency") == "weekdays" or bool(config.get("weekdays_only")):
+        return day.weekday() < 5
+    return True
 
 
 def schedule_time_minutes(time_text: object) -> int | None:
@@ -652,11 +691,20 @@ def latest_arrived_schedule_time(current: datetime, times: Iterable[object]) -> 
 def due_automation_task_types(current: datetime | None = None) -> list[str]:
     target = localize_scheduler_datetime(current)
     due: list[str] = []
-    daily_schedule = MONITOR_AUTOMATION_SCHEDULES[TASK_TYPE_AGENDA_PENDIENTES_DIARIA]
-    if schedule_time_has_arrived(target, daily_schedule.get("time")):
+    schedules = active_monitor_automation_schedules()
+    daily_schedule = schedules.get(TASK_TYPE_AGENDA_PENDIENTES_DIARIA)
+    if (
+        daily_schedule
+        and schedule_runs_on_date(daily_schedule, target.date())
+        and schedule_time_has_arrived(target, daily_schedule.get("time"))
+    ):
         due.append(TASK_TYPE_AGENDA_PENDIENTES_DIARIA)
-    monitor_schedule = MONITOR_AUTOMATION_SCHEDULES[TASK_TYPE_MONITOR_LICITACIONES]
-    if target.weekday() < 5 and latest_arrived_schedule_time(target, monitor_schedule.get("times") or []):
+    monitor_schedule = schedules.get(TASK_TYPE_MONITOR_LICITACIONES)
+    if (
+        monitor_schedule
+        and schedule_runs_on_date(monitor_schedule, target.date())
+        and latest_arrived_schedule_time(target, monitor_schedule.get("times") or [])
+    ):
         due.append(TASK_TYPE_MONITOR_LICITACIONES)
     return due
 
@@ -711,11 +759,62 @@ def schedule_key_for_task(task_type: str, current: datetime) -> str:
         calendar = target.date().isocalendar()
         return f"{task_type}:{calendar.year}-W{calendar.week:02d}"
     if task_type == TASK_TYPE_MONITOR_LICITACIONES:
-        schedule = MONITOR_AUTOMATION_SCHEDULES[TASK_TYPE_MONITOR_LICITACIONES]
+        schedule = automation_schedule_for_task(TASK_TYPE_MONITOR_LICITACIONES)
         slot = latest_arrived_schedule_time(target, schedule.get("times") or [])
         slot_key = slot.replace(":", "")
         return f"{task_type}:{target.date().isoformat()}:{slot_key}" if slot else f"{task_type}:{target.date().isoformat()}"
     return ""
+
+
+def reset_scheduler_test_state(
+    conn: sqlite3.Connection,
+    *,
+    task_type: str = TASK_TYPE_AGENDA_PENDIENTES_DIARIA,
+    schedule_keys: Iterable[str] | None = None,
+    reset_heartbeat: bool = True,
+) -> dict[str, object]:
+    keys = [clean_text(key) for key in (schedule_keys or []) if clean_text(key)]
+    deleted_claims = 0
+    cleared_run_keys = 0
+    if keys:
+        placeholders = ",".join("?" for _ in keys)
+        deleted_claims = conn.execute(
+            f"""
+            DELETE FROM monitor_automation_claims
+            WHERE task_type = ?
+              AND schedule_key IN ({placeholders})
+            """,
+            (task_type, *keys),
+        ).rowcount
+        cleared_run_keys = conn.execute(
+            f"""
+            UPDATE monitor_runs
+            SET schedule_key = NULL
+            WHERE task_type = ?
+              AND mode = ?
+              AND schedule_key IN ({placeholders})
+            """,
+            (task_type, AUTOMATION_MODE_AUTOMATIC, *keys),
+        ).rowcount
+    else:
+        deleted_claims = conn.execute(
+            """
+            DELETE FROM monitor_automation_claims
+            WHERE task_type = ?
+              AND status IN ('running', 'failed', 'smtp_uncertain')
+            """,
+            (task_type,),
+        ).rowcount
+    deleted_heartbeat = 0
+    if reset_heartbeat:
+        deleted_heartbeat = conn.execute("DELETE FROM monitor_scheduler_heartbeat WHERE id = 1").rowcount
+    return {
+        "task_type": task_type,
+        "schedule_keys": keys,
+        "claims_deleted": deleted_claims,
+        "monitor_run_schedule_keys_cleared": cleared_run_keys,
+        "heartbeat_deleted": deleted_heartbeat,
+    }
 
 
 def automatic_schedule_exists(
@@ -1185,10 +1284,10 @@ def build_pending_agenda_email_payload(
 
 def automation_email_subject(task_type: str, target: datetime, *, email_payload: dict[str, object] | None = None) -> str:
     if task_type in {TASK_TYPE_AGENDA_PENDIENTES_DIARIA, TASK_TYPE_AGENDA_DIARIA}:
-        counts = (email_payload or {}).get("counts") if isinstance((email_payload or {}).get("counts"), dict) else {}
-        total = int(counts.get("total", 0) or 0)
-        noun = "elemento" if total == 1 else "elementos"
-        return f"Pendientes de Agenda — {total} {noun} — {target.date().isoformat()}"
+        local_target = localize_scheduler_datetime(target)
+        target_date = local_target.date()
+        weekday = SPANISH_WEEKDAYS[target_date.weekday()]
+        return f"Agenda Llangón {weekday} {target_date.strftime('%d-%m-%Y')}"
     if task_type == TASK_TYPE_AGENDA_SEMANAL:
         start, end = agenda_week_bounds(target.date())
         return f"Resumen semanal de agenda {start.isoformat()} a {end.isoformat()}"

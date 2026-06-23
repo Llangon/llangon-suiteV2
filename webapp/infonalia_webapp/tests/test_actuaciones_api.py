@@ -293,10 +293,10 @@ def test_centro_licitaciones_vivas_and_all_order_and_filters() -> None:
         ("CENTRO-IMPORTADA", "Importada", "2026-06-15"),
         ("CENTRO-DESCARTADA", "Descartada", "2026-06-16"),
         ("CENTRO-NURIA", "Enviada a Nuria", "2026-06-17"),
-        ("CENTRO-DESCARGAR", "Descargar para ver", "2026-06-18"),
-        ("CENTRO-PREPARAR", "Preparar ficha", "2026-06-19"),
-        ("CENTRO-PREPARADA", "Preparada", "2030-06-20"),
-        ("CENTRO-OFERTA", "Oferta enviada", "2026-06-21"),
+        ("CENTRO-DESCARGAR", "Descargar para ver", "2030-06-18"),
+        ("CENTRO-PREPARAR", "Preparar ficha", "2030-06-19"),
+        ("CENTRO-PREPARADA", "Preparada", "2030-06-21"),
+        ("CENTRO-OFERTA", "Oferta enviada", "2030-06-20"),
     ]
     with temporary_app_database(app):
         dia_id = insert_dia(app)
@@ -313,6 +313,8 @@ def test_centro_licitaciones_vivas_and_all_order_and_filters() -> None:
                 )
 
         live = list_licitaciones(app, "?vivas=1&orden_fecha=asc")["items"]
+        managed = list_licitaciones(app, "?gestionadas=1&orden_fecha=asc")["items"]
+        managed_default = list_licitaciones(app, "?gestionadas=1")["items"]
         all_items = list_licitaciones(app, "?orden_fecha=desc")["items"]
         by_estado = list_licitaciones(app, "?estado=Preparar%20ficha")["items"]
         by_search = list_licitaciones(app, "?q=PREPARADA")["items"]
@@ -322,9 +324,72 @@ def test_centro_licitaciones_vivas_and_all_order_and_filters() -> None:
         "CENTRO-PREPARAR",
         "CENTRO-PREPARADA",
     ]
+    assert [item["expediente"] for item in managed] == [
+        "CENTRO-DESCARGAR",
+        "CENTRO-PREPARAR",
+        "CENTRO-OFERTA",
+        "CENTRO-PREPARADA",
+    ]
+    assert [item["expediente"] for item in managed_default] == [
+        "CENTRO-DESCARGAR",
+        "CENTRO-PREPARAR",
+        "CENTRO-OFERTA",
+        "CENTRO-PREPARADA",
+    ]
     assert [item["expediente"] for item in all_items][:2] == ["CENTRO-PREPARADA", "CENTRO-OFERTA"]
     assert [item["expediente"] for item in by_estado] == ["CENTRO-PREPARAR"]
     assert [item["expediente"] for item in by_search] == ["CENTRO-PREPARADA"]
+
+
+def test_centro_licitaciones_date_hierarchy_filters_by_fecha_presentacion() -> None:
+    app = load_app_module()
+    rows = [
+        ("FILTRO-JUNIO", "Descargar para ver", "2030-06-10"),
+        ("FILTRO-JULIO", "Preparar ficha", "2030-07-11"),
+        ("FILTRO-DESCARTADA", "Descartada", "2030-06-12"),
+        ("FILTRO-2029", "Preparada", "2029-05-02"),
+        ("FILTRO-SIN-FECHA", "Descargar para ver", ""),
+        ("FILTRO-PREPARAR-TEXTO", "preparar", "2030-08-01"),
+        ("FILTRO-FECHA-RARA", "Preparada", "sin fecha"),
+    ]
+    with temporary_app_database(app):
+        dia_id = insert_dia(app)
+        for expediente, estado, fecha_limite in rows:
+            licitacion_id = insert_licitacion(app, dia_id, expediente)
+            with app.db_session() as conn:
+                conn.execute(
+                    """
+                    UPDATE licitaciones
+                    SET estado = ?, fecha_limite = ?, hora_limite = ?
+                    WHERE id = ?
+                    """,
+                    (estado, fecha_limite, "12:00", licitacion_id),
+                )
+
+        junio_live = list_licitaciones(app, "?vivas=1&ejercicio=2030&mes=6&orden_fecha=asc")
+        gestionadas = list_licitaciones(app, "?gestionadas=1&ejercicio=2030&orden_fecha=asc")
+        gestionadas_default = list_licitaciones(app, "?gestionadas=1")
+        todas = list_licitaciones(app, "?orden_fecha=asc")
+        todas_2030 = list_licitaciones(app, "?ejercicio=2030&orden_fecha=asc")
+
+    assert [item["expediente"] for item in junio_live["items"]] == ["FILTRO-JUNIO"]
+    assert "2030" in junio_live["date_filters"]["years"]
+    assert "2029" in junio_live["date_filters"]["years"]
+    assert junio_live["date_filters"]["year_all_count"] == 3
+    assert junio_live["date_filters"]["month_all_count"] == 2
+    assert junio_live["date_filters"]["month_counts"]["6"] == 1
+    assert junio_live["date_filters"]["month_counts"]["7"] == 1
+    assert "FILTRO-SIN-FECHA" in {item["expediente"] for item in todas["items"]}
+    assert "FILTRO-PREPARAR-TEXTO" in {item["expediente"] for item in gestionadas["items"]}
+    assert set(item["expediente"] for item in gestionadas_default["items"][-2:]) == {
+        "FILTRO-FECHA-RARA",
+        "FILTRO-SIN-FECHA",
+    }
+    assert gestionadas["date_filters"]["month_counts"]["8"] == 1
+    assert todas["date_filters"]["year_all_count"] == 7
+    assert todas["date_filters"]["month_all_count"] == 7
+    assert "FILTRO-SIN-FECHA" not in {item["expediente"] for item in todas_2030["items"]}
+    assert todas_2030["date_filters"]["month_all_count"] == 4
 
 
 def test_licitacion_review_state_transitions_for_admin_and_nuria() -> None:

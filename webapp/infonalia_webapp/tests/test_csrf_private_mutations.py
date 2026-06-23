@@ -27,6 +27,7 @@ POST_CASES = [
     ("POST", "/api/licitaciones/9/descargar", "api_download_licitacion", (9,)),
     ("POST", "/api/licitaciones/9/open-folder", "api_open_licitacion_folder", (9,)),
     ("POST", "/api/licitaciones/9/ia-preview/email", "api_send_ai_preview_email", (9,)),
+    ("POST", "/api/licitaciones/9/prepared-notice/email", "api_send_prepared_notice_email", (9,)),
     ("POST", "/api/licitaciones/9/ia-preview", "api_generate_ai_preview", (9,)),
     ("POST", "/api/actuaciones", "api_create_actuacion", ()),
     ("POST", "/api/licitaciones/9/actuaciones", "api_create_actuacion", (9,)),

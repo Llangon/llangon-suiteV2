@@ -143,6 +143,7 @@ try:
         ESTADO_DESCARTADA,
         ESTADO_ENVIADA_NURIA,
         ESTADO_IMPORTADA,
+        ESTADO_OFERTA_ENVIADA,
         ESTADO_PREPARADA,
         ESTADO_PREPARAR_FICHA,
         ESTADOS_ORDEN,
@@ -172,6 +173,7 @@ except ImportError:
         ESTADO_DESCARTADA,
         ESTADO_ENVIADA_NURIA,
         ESTADO_IMPORTADA,
+        ESTADO_OFERTA_ENVIADA,
         ESTADO_PREPARADA,
         ESTADO_PREPARAR_FICHA,
         ESTADOS_ORDEN,
@@ -285,6 +287,27 @@ except ImportError:
         dropbox_relative_path as storage_dropbox_relative_path,
         is_internal_download_path as storage_is_internal_download_path,
         resolve_destination_folder as storage_resolve_destination_folder,
+    )
+
+try:
+    from .dropbox_paths import (
+        DropboxPathError,
+        dropbox_base_status,
+        folder_status_label,
+        preferred_dropbox_base_path,
+        resolve_licitacion_folder,
+        stored_folder_path_for_base,
+        validate_dropbox_base_path,
+    )
+except ImportError:
+    from dropbox_paths import (
+        DropboxPathError,
+        dropbox_base_status,
+        folder_status_label,
+        preferred_dropbox_base_path,
+        resolve_licitacion_folder,
+        stored_folder_path_for_base,
+        validate_dropbox_base_path,
     )
 
 try:
@@ -580,6 +603,11 @@ MONITOR_TEST_EMAIL = (
     or os.environ.get("INFONALIA_MONITOR_TEST_EMAIL")
     or ""
 ).strip()
+MONITOR_AGENDA_PENDING_EMAIL_TO = os.environ.get("MONITOR_AGENDA_PENDING_EMAIL_TO", "").strip()
+PREPARED_NOTICE_EMAIL_TO = (
+    os.environ.get("INFONALIA_PREPARED_NOTICE_EMAIL_TO", "").strip()
+    or "info3@llangon.com"
+)
 MONITOR_SCHEDULER_ENABLED = os.environ.get("MONITOR_SCHEDULER_ENABLED", "0") == "1"
 MONITOR_YEAR_MIN, MONITOR_YEAR_MAX = monitor_year_bounds()
 COOKIE_SECURE = os.environ.get("INFONALIA_COOKIE_SECURE", "0") == "1"
@@ -599,6 +627,13 @@ NURIA_ESTADOS = NURIA_VISIBLE_STATES
 NURIA_ESTADOS_VALIDOS = set(NURIA_REVIEW_STATES)
 NURIA_LICITACIONES_ESTADOS = AGENDA_LICITACION_STATES
 CALENDARIO_ESTADOS = AGENDA_LICITACION_STATES
+GESTIONADAS_ESTADOS = [
+    ESTADO_OFERTA_ENVIADA,
+    ESTADO_PREPARADA,
+    ESTADO_DESCARGAR_PARA_VER,
+    ESTADO_PREPARAR_FICHA,
+    "Preparar",
+]
 
 USERS = {
     ADMIN_USER: {
@@ -642,8 +677,10 @@ DEFAULT_SETTINGS = {
     "smtp_ssl": "1" if SMTP_USE_SSL else "0",
     "email_dry_run": "1" if EMAIL_DRY_RUN else "0",
     "agenda_email_to": AGENDA_EMAIL_TO,
+    "prepared_notice_email_to": PREPARED_NOTICE_EMAIL_TO,
     "seguimiento_emails": SEGUIMIENTO_EMAILS,
     "monitor_test_email": MONITOR_TEST_EMAIL,
+    "monitor_agenda_pending_email_to": MONITOR_AGENDA_PENDING_EMAIL_TO,
 }
 
 DIA_ESTADOS_ORDEN = [
@@ -1110,12 +1147,18 @@ def now_iso() -> str:
 
 
 def row_to_dict(row: sqlite3.Row) -> dict:
-    return licitation_row_to_dict(
+    item = licitation_row_to_dict(
         row,
         detect_platform=detectar_plataforma,
         normalize_url_value=normalize_url,
         normalize_folder_path=folder_path_for_storage,
     )
+    resolution = resolve_licitacion_folder(item, dropbox_base=find_dropbox_root())
+    item["folder_status"] = {
+        **resolution.to_dict(),
+        "label": folder_status_label(resolution),
+    }
+    return item
 
 
 def get_user_record(username: object, include_password: bool = False) -> dict | None:
@@ -1159,28 +1202,17 @@ def maintenance_mode_enabled() -> bool:
 
 
 def find_dropbox_root() -> Path | None:
-    configured = clean_text(os.environ.get("INFONALIA_DROPBOX_ROOT"))
-    if configured:
-        candidate = Path(os.path.expandvars(configured)).expanduser()
-        if candidate.exists() and candidate.is_dir():
-            return candidate
+    try:
+        return validate_dropbox_base_path()
+    except DropboxPathError:
         return None
-
-    home = Path.home()
-    for candidate in [
-        home / "Dropbox" / "00000 LLANGON",
-        home / "Dropbox",
-    ]:
-        if candidate.exists() and candidate.is_dir():
-            return candidate
-    return None
 
 
 def marker_allowed_roots() -> list[Path]:
     roots: list[Path] = []
-    configured = clean_text(os.environ.get("INFONALIA_DROPBOX_ROOT"))
+    configured = preferred_dropbox_base_path()
     if configured:
-        roots.append(Path(os.path.expandvars(configured)).expanduser())
+        roots.append(configured)
     roots.append(Path(r"C:\ReplicaDb"))
     roots.append(DOWNLOAD_ROOT)
     unique: list[Path] = []
@@ -1194,12 +1226,11 @@ def marker_allowed_roots() -> list[Path]:
 
 
 def marker_dropbox_root() -> Path | None:
-    configured = clean_text(os.environ.get("INFONALIA_DROPBOX_ROOT"))
-    if not configured:
-        replica = Path(r"C:\ReplicaDb")
-        return replica if replica.exists() and replica.is_dir() else None
-    candidate = Path(os.path.expandvars(configured)).expanduser()
-    return candidate if candidate.exists() and candidate.is_dir() else None
+    configured = preferred_dropbox_base_path()
+    if configured:
+        return configured if configured.exists() and configured.is_dir() else None
+    replica = Path(r"C:\ReplicaDb")
+    return replica if replica.exists() and replica.is_dir() else None
 
 
 def is_internal_download_path(value: object) -> bool:
@@ -1216,13 +1247,7 @@ def dropbox_relative_path(value: object, dropbox_root: Path | None = None) -> st
 
 
 def folder_path_for_storage(value: object, dropbox_root: Path | None = None) -> str:
-    text = clean_text(value)
-    if not text:
-        return ""
-    relative = dropbox_relative_path(text, dropbox_root)
-    if relative:
-        return relative
-    return text
+    return stored_folder_path_for_base(value, dropbox_root or find_dropbox_root())
 
 
 def get_or_create_dia(conn: sqlite3.Connection, fecha_infonalia: str) -> int:
@@ -1625,6 +1650,30 @@ def resolve_destination_folder(row: sqlite3.Row | dict) -> Path:
     )
 
 
+WINDOWS_FOLDER_NAME_INVALID_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def validate_confirmed_download_folder_name(value: object) -> str:
+    name = clean_text(value)
+    if not name:
+        raise DownloadSafetyError("El nombre de carpeta es obligatorio.")
+    if len(name) > 140:
+        raise DownloadSafetyError("El nombre de carpeta es demasiado largo.")
+    if name in {".", ".."} or ".." in name:
+        raise DownloadSafetyError("El nombre de carpeta no puede contener '..'.")
+    if Path(name).is_absolute() or re.match(r"^[A-Za-z]:", name):
+        raise DownloadSafetyError("El nombre de carpeta no puede ser una ruta absoluta.")
+    if WINDOWS_FOLDER_NAME_INVALID_RE.search(name):
+        raise DownloadSafetyError("El nombre de carpeta contiene caracteres no permitidos.")
+    if name.endswith("."):
+        raise DownloadSafetyError("El nombre de carpeta no puede terminar en punto.")
+    return name
+
+
+def confirmed_download_destination(default_destination: Path, folder_name: object) -> Path:
+    return default_destination.parent / validate_confirmed_download_folder_name(folder_name)
+
+
 def repair_internal_download_routes() -> int:
     dropbox_root = find_dropbox_root()
     if not dropbox_root:
@@ -1722,6 +1771,110 @@ def monitor_test_recipient(user: dict | None = None, settings: dict[str, str] | 
     )
 
 
+def split_email_recipients(value: object) -> list[str]:
+    recipients: list[str] = []
+    for part in re.split(r"[;,]", clean_text(value)):
+        email = clean_text(part)
+        if email and email not in recipients:
+            recipients.append(email)
+    return recipients
+
+
+def is_valid_email_address(value: object) -> bool:
+    email = clean_text(value)
+    return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email))
+
+
+def shorten_text(value: object, max_length: int) -> str:
+    text = clean_text(value)
+    if max_length <= 1 or len(text) <= max_length:
+        return text
+    return text[: max_length - 1].rstrip() + "…"
+
+
+def prepared_notice_recipient(settings: dict[str, str] | None = None) -> str:
+    settings = settings or get_settings()
+    return clean_text(settings.get("prepared_notice_email_to")) or PREPARED_NOTICE_EMAIL_TO
+
+
+def is_prepared_state_transition(old_estado: object, new_estado: object) -> bool:
+    old_normalized = normalize_licitacion_estado(old_estado, default=clean_text(old_estado))
+    new_normalized = normalize_licitacion_estado(new_estado, default=clean_text(new_estado))
+    return old_normalized != ESTADO_PREPARADA and new_normalized == ESTADO_PREPARADA
+
+
+def prepared_notice_limit(row: sqlite3.Row) -> str:
+    fecha = format_date_es(row["fecha_limite"]) if row["fecha_limite"] else ""
+    hora = clean_text(row["hora_limite"])
+    if fecha and hora:
+        return f"{fecha} {hora}"
+    return fecha or "No consta"
+
+
+def build_prepared_notice_preview(
+    row: sqlite3.Row,
+    *,
+    previous_state: object,
+    current_state: object,
+    user: dict | None,
+    settings: dict[str, str] | None = None,
+) -> dict:
+    settings = settings or get_settings()
+    recipient = prepared_notice_recipient(settings)
+    valid_recipient = is_valid_email_address(recipient)
+    expediente = clean_text(row["expediente"]) or "Sin expediente"
+    titulo = clean_text(row["objeto"]) or "Sin título"
+    titulo_corto = shorten_text(titulo, 58)
+    subject = shorten_text(f"Ficha preparada — {expediente} — {titulo_corto}", 120)
+    ruta = clean_text(row["ruta_carpeta"])
+    ruta_line = ruta or "No consta una ruta de Dropbox asociada a esta licitación."
+    actor = clean_text((user or {}).get("display_name")) or clean_text((user or {}).get("username")) or "No consta"
+    estado_anterior = clean_text(previous_state) or "No consta"
+    estado_nuevo = normalize_licitacion_estado(current_state, default=clean_text(current_state)) or ESTADO_PREPARADA
+    fecha_limite = prepared_notice_limit(row)
+    body = "\n".join(
+        [
+            f"El estado del expediente {expediente} – {titulo} ha cambiado a {estado_nuevo}.",
+            "",
+            f"Estado anterior: {estado_anterior}",
+            f"Estado nuevo: {estado_nuevo}",
+            f"Fecha presentación: {fecha_limite}",
+            f"Ruta Dropbox: {ruta_line}",
+            f"Cambio realizado por: {actor}",
+        ]
+    )
+    whatsapp_text = "\n".join(
+        [
+            "Ficha preparada.",
+            f"Expediente: {expediente}",
+            f"Título: {titulo}",
+            f"Estado: {estado_nuevo}",
+            f"Ruta Dropbox: {ruta_line}",
+        ]
+    )
+    warning = "" if valid_recipient else "Configura un email válido para poder enviar el aviso."
+    if not valid_recipient:
+        print(f"Aviso ficha preparada sin destinatario valido para licitacion {row['id']}: {recipient}", file=sys.stderr)
+    return {
+        "licitacion_id": row["id"],
+        "to": recipient,
+        "subject": subject,
+        "email_body": body,
+        "whatsapp_text": whatsapp_text,
+        "can_send_email": valid_recipient,
+        "email_warning": warning,
+    }
+
+
+def monitor_agenda_pending_recipient(settings: dict[str, str] | None = None) -> str:
+    settings = settings or get_settings()
+    return clean_text(
+        os.environ.get("MONITOR_AGENDA_PENDING_EMAIL_TO")
+        or settings.get("monitor_agenda_pending_email_to")
+        or monitor_test_recipient(settings=settings)
+    )
+
+
 def send_monitor_email(
     recipient: str,
     subject: str,
@@ -1730,9 +1883,10 @@ def send_monitor_email(
     *,
     settings: dict[str, str] | None = None,
 ) -> tuple[str | None, str | None]:
+    recipients = split_email_recipients(recipient)
     return send_notification_email_with_settings(
         settings=settings or get_settings(),
-        recipients=[recipient],
+        recipients=recipients,
         subject=subject,
         body=body,
         html_body=html_body,
@@ -1787,6 +1941,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if path == "/api/public/noticias":
             self.api_public_news()
             return
+        if path == "/api/health":
+            self.send_json({"status": "ok"})
+            return
 
         if path in PUBLIC_ROUTES or path.startswith("/noticias/"):
             self.send_public_page()
@@ -1798,8 +1955,6 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         if path == "/app" or path.startswith("/app/"):
             self.send_file(STATIC_ROOT / "index.html")
-        elif path == "/api/health":
-            self.send_json({"ok": True})
         elif path == "/api/me":
             self.api_me()
         elif path == "/api/dias":
@@ -1955,6 +2110,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_send_ai_preview_email(int(licitacion_id))
+        elif path.startswith("/api/licitaciones/") and path.endswith("/prepared-notice/email"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/prepared-notice/email").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_send_prepared_notice_email(int(licitacion_id))
         elif path.startswith("/api/licitaciones/") and path.endswith("/ia-preview"):
             licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ia-preview").strip("/")
             if not licitacion_id.isdigit():
@@ -2153,6 +2314,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 or path.endswith("/open-folder")
                 or path.endswith("/ia-preview")
                 or path.endswith("/ia-preview/email")
+                or path.endswith("/prepared-notice/email")
                 or path.endswith("/actuaciones")
             ):
                 return True
@@ -2278,14 +2440,25 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             return
         try:
             payload = storage_status_payload()
+            base_status = dropbox_base_status()
             dropbox_root = find_dropbox_root()
-            local_download_root = dropbox_root or DOWNLOAD_ROOT
+            local_download_root = base_status.path if base_status.configured else str(DOWNLOAD_ROOT)
+            if dropbox_root:
+                if base_status.source == "legacy":
+                    local_flow_label = "Dropbox Desktop (fallback / legado)"
+                else:
+                    local_flow_label = "Dropbox Desktop (LLANGON_DROPBOX_BASE_PATH)"
+            elif base_status.configured and base_status.source == "env":
+                local_flow_label = "Dropbox Desktop (ruta no encontrada)"
+            else:
+                local_flow_label = "carpeta local interna"
             payload.update(
                 {
                     "local_download_root": str(local_download_root),
+                    "dropbox_base": base_status.to_dict(),
                     "dropbox_desktop_detected": bool(dropbox_root),
                     "dropbox_desktop_root": str(dropbox_root) if dropbox_root else "",
-                    "local_flow_label": "Dropbox Desktop" if dropbox_root else "carpeta local interna",
+                    "local_flow_label": local_flow_label,
                     "monitor_year_min": MONITOR_YEAR_MIN,
                     "monitor_year_max": MONITOR_YEAR_MAX,
                 }
@@ -2349,7 +2522,11 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 )
             else:
                 settings = get_settings()
-                recipient = monitor_test_recipient(self.current_user(), settings)
+                recipient = (
+                    monitor_agenda_pending_recipient(settings)
+                    if task_type == "agenda_pendientes_diaria"
+                    else monitor_test_recipient(self.current_user(), settings)
+                )
                 report = run_automation_task(
                     task_type,
                     dry_run=False if dry_run_value is None else bool_text(dry_run_value),
@@ -2923,11 +3100,14 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         estado = clean_text(params.get("estado", [""])[0])
         search = clean_text(params.get("q", [""])[0])
         dia_id = clean_text(params.get("dia_id", [""])[0])
+        ejercicio_text = clean_text(params.get("ejercicio", [""])[0])
+        mes_text = clean_text(params.get("mes", [""])[0])
         vigentes = clean_text(params.get("vigentes", [""])[0]) == "1"
         vivas = clean_text(params.get("vivas", [""])[0]) == "1"
+        gestionadas = clean_text(params.get("gestionadas", [""])[0]) == "1"
         calendario = clean_text(params.get("calendario", [""])[0]) == "1"
         nuria_filter = clean_text(params.get("nuria_filter", [""])[0]).lower()
-        default_order = "asc" if vivas or calendario else "desc"
+        default_order = "asc" if vivas or gestionadas or calendario else "desc"
         orden_fecha = clean_text(params.get("orden_fecha", [default_order])[0]).lower()
         actuaciones_filter = clean_text(params.get("actuaciones", [""])[0]).lower()
         revision_filter = clean_text(params.get("revision", [""])[0]).lower()
@@ -2935,14 +3115,20 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         documentacion_filter = clean_text(params.get("documentacion", [""])[0]).lower()
         estado_interno_filter = clean_text(params.get("estado_interno", [""])[0])
         direccion_fecha = "DESC" if orden_fecha == "desc" else "ASC"
+        selected_year = int(ejercicio_text) if ejercicio_text.isdigit() and len(ejercicio_text) == 4 else None
+        selected_month = int(mes_text) if mes_text.isdigit() and 1 <= int(mes_text) <= 12 else None
         nuria_visible_states = None
         calendario_estados = CALENDARIO_ESTADOS
         vivas_estados = CALENDARIO_ESTADOS
+        gestionadas_estados = GESTIONADAS_ESTADOS
         if calendario:
             if estado and estado != "Todos" and estado not in calendario_estados:
                 estado = ""
         elif vivas:
             if estado and estado != "Todos" and estado not in vivas_estados:
+                estado = ""
+        elif gestionadas:
+            if estado and estado != "Todos" and estado not in gestionadas_estados:
                 estado = ""
         elif user.get("role") == "nuria":
             if dia_id.isdigit():
@@ -2971,6 +3157,10 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             placeholders = ", ".join("?" for _ in vivas_estados)
             where.append(f"estado IN ({placeholders})")
             values.extend(vivas_estados)
+        elif gestionadas:
+            placeholders = ", ".join("?" for _ in gestionadas_estados)
+            where.append(f"LOWER(estado) IN ({placeholders})")
+            values.extend([item.lower() for item in gestionadas_estados])
         elif user.get("role") == "nuria" and not (estado and estado != "Todos"):
             placeholders = ", ".join("?" for _ in nuria_visible_states)
             where.append(f"estado IN ({placeholders})")
@@ -2978,12 +3168,11 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if dia_id.isdigit():
             where.append("infonalia_dia_id = ?")
             values.append(int(dia_id))
-        elif vigentes:
+        elif vigentes or vivas:
             current = datetime.now()
             where.append(
                 """
-                fecha_limite IS NOT NULL
-                AND fecha_limite <> ''
+                fecha_limite GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
                 AND (
                     fecha_limite > ?
                     OR (
@@ -3027,12 +3216,25 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             values.append(estado_interno_filter)
         current = datetime.now().replace(microsecond=0)
         apply_licitacion_actuaciones_filter(where, values, actuaciones_filter, now_text=current.isoformat())
+        date_filter_base_where = list(where)
+        date_filter_base_values = list(values)
+        if not dia_id.isdigit():
+            if selected_year is not None:
+                where.append("fecha_limite >= ? AND fecha_limite < ?")
+                values.extend([f"{selected_year:04d}-01-01", f"{selected_year + 1:04d}-01-01"])
+            if selected_month is not None:
+                where.append("fecha_limite GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'")
+                where.append("substr(fecha_limite, 6, 2) = ?")
+                values.append(f"{selected_month:02d}")
+
+        def build_where_sql(clauses: list[str]) -> str:
+            return " WHERE " + " AND ".join(clauses) if clauses else ""
 
         sql = "SELECT * FROM licitaciones"
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += (
-            " ORDER BY CASE WHEN fecha_limite IS NULL OR fecha_limite = '' THEN 1 ELSE 0 END ASC, "
+            " ORDER BY CASE WHEN fecha_limite GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' THEN 0 ELSE 1 END ASC, "
             f"fecha_limite {direccion_fecha}, "
             f"hora_limite {direccion_fecha}, "
             "id DESC"
@@ -3064,6 +3266,67 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             for row in conn.execute(totals_sql, values):
                 normalized_state = normalize_licitacion_estado(row["estado"])
                 totals[normalized_state] = totals.get(normalized_state, 0) + int(row["total"] or 0)
+            date_filters = {"years": [], "month_counts": {}, "year_all_count": 0, "month_all_count": 0}
+            if not dia_id.isdigit():
+                valid_fecha_clause = (
+                    "fecha_limite GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'"
+                )
+                year_all_count_sql = (
+                    "SELECT COUNT(*) AS total FROM licitaciones"
+                    f"{build_where_sql(date_filter_base_where)}"
+                )
+                year_all_count = int(
+                    conn.execute(year_all_count_sql, date_filter_base_values).fetchone()["total"] or 0
+                )
+
+                years_where = [*date_filter_base_where, valid_fecha_clause]
+                years_sql = (
+                    "SELECT DISTINCT substr(fecha_limite, 1, 4) AS ejercicio "
+                    "FROM licitaciones"
+                    f"{build_where_sql(years_where)} "
+                    "ORDER BY ejercicio DESC"
+                )
+                years = [
+                    str(row["ejercicio"])
+                    for row in conn.execute(years_sql, date_filter_base_values)
+                    if row["ejercicio"]
+                ]
+
+                month_all_where = list(date_filter_base_where)
+                month_all_values = list(date_filter_base_values)
+                if selected_year is not None:
+                    month_all_where.append("fecha_limite >= ? AND fecha_limite < ?")
+                    month_all_values.extend([f"{selected_year:04d}-01-01", f"{selected_year + 1:04d}-01-01"])
+                month_all_count_sql = (
+                    "SELECT COUNT(*) AS total FROM licitaciones"
+                    f"{build_where_sql(month_all_where)}"
+                )
+                month_all_count = int(
+                    conn.execute(month_all_count_sql, month_all_values).fetchone()["total"] or 0
+                )
+
+                month_where = [*date_filter_base_where, valid_fecha_clause]
+                month_values = list(date_filter_base_values)
+                if selected_year is not None:
+                    month_where.append("fecha_limite >= ? AND fecha_limite < ?")
+                    month_values.extend([f"{selected_year:04d}-01-01", f"{selected_year + 1:04d}-01-01"])
+                month_counts_sql = (
+                    "SELECT CAST(substr(fecha_limite, 6, 2) AS INTEGER) AS mes, COUNT(*) AS total "
+                    "FROM licitaciones"
+                    f"{build_where_sql(month_where)} "
+                    "GROUP BY mes"
+                )
+                month_counts = {
+                    str(int(row["mes"])): int(row["total"] or 0)
+                    for row in conn.execute(month_counts_sql, month_values)
+                    if row["mes"]
+                }
+                date_filters = {
+                    "years": years,
+                    "month_counts": month_counts,
+                    "year_all_count": year_all_count,
+                    "month_all_count": month_all_count,
+                }
             day_pending_review = None
             day_pending_admin = None
             day_sent_nuria_at = None
@@ -3098,6 +3361,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             estados = calendario_estados
         elif vivas:
             estados = vivas_estados
+        elif gestionadas:
+            estados = gestionadas_estados
         elif user.get("role") == "nuria":
             estados = nuria_visible_states if dia_id.isdigit() else CALENDARIO_ESTADOS
         else:
@@ -3107,6 +3372,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "items": rows,
                 "totals": totals,
                 "estados": estados,
+                "date_filters": date_filters,
                 "day_pending_review": day_pending_review,
                 "day_pending_admin": day_pending_admin,
                 "day_sent_nuria_at": day_sent_nuria_at,
@@ -3963,8 +4229,81 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         self.send_json({"ok": True, "message": "Vista preliminar enviada al buzón y al email configurado."})
 
+    def api_send_prepared_notice_email(self, licitacion_id: int) -> None:
+        if not self.require_admin():
+            return
+        try:
+            data = self.read_json()
+        except json.JSONDecodeError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        subject = shorten_text(data.get("subject"), 120)
+        body = clean_text(data.get("email_body"))
+        if not subject:
+            self.send_json({"error": "El asunto del aviso es obligatorio."}, HTTPStatus.BAD_REQUEST)
+            return
+        if not body:
+            self.send_json({"error": "El mensaje del aviso es obligatorio."}, HTTPStatus.BAD_REQUEST)
+            return
+
+        with db_session() as conn:
+            row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+        if not row:
+            self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
+            return
+
+        settings = get_settings()
+        recipient = prepared_notice_recipient(settings)
+        if not is_valid_email_address(recipient):
+            self.send_json(
+                {"error": "El email configurado para el aviso de ficha preparada no es válido."},
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        sent_at, error = send_notification_email_with_settings(
+            settings=settings,
+            recipients=[recipient],
+            subject=subject,
+            body=body,
+            html_body=render_notification_email_html(subject, body, None),
+            logo_path=STATIC_ROOT / "logo-llangon.png",
+            now=now_iso,
+            smtp_factory=smtplib.SMTP,
+            smtp_ssl_factory=smtplib.SMTP_SSL,
+        )
+        if error:
+            print(f"No se pudo enviar aviso de ficha preparada {licitacion_id}: {error}", file=sys.stderr)
+            self.send_json(
+                {
+                    "ok": False,
+                    "error": error,
+                    "message": "No se ha podido enviar el email. La licitación se ha guardado correctamente.",
+                },
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        print(f"Aviso de ficha preparada enviado para licitacion {licitacion_id} a {recipient}", file=sys.stderr)
+        self.send_json(
+            {
+                "ok": True,
+                "sent_at": sent_at,
+                "recipient": recipient,
+                "message": "Email enviado correctamente.",
+            }
+        )
+
     def api_download_licitacion(self, licitacion_id: int) -> None:
         if not self.require_admin():
+            return
+        try:
+            data = self.read_json()
+        except AttributeError:
+            data = {}
+        except json.JSONDecodeError as exc:
+            self.send_json({"error": f"Solicitud no válida: {exc}"}, HTTPStatus.BAD_REQUEST)
             return
 
         with db_session() as conn:
@@ -3988,13 +4327,57 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             return
 
         download_root = download_staging_root_for_backend(REPOSITORY_ROOT, DOWNLOAD_ROOT)
+        base_status = dropbox_base_status()
+        if not uses_dropbox_api_backend() and base_status.configured and not base_status.ok:
+            self.send_json(
+                {"error": base_status.error or "La carpeta base de Dropbox no es valida."},
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+
         dropbox_root = None if uses_dropbox_api_backend() else find_dropbox_root()
         allowed_destination_roots = [download_root]
         if dropbox_root:
             allowed_destination_roots.append(dropbox_root)
 
         try:
-            destino = validate_resolved_destination(resolve_destination_folder(row), allowed_destination_roots)
+            destino_sugerido = validate_resolved_destination(resolve_destination_folder(row), allowed_destination_roots)
+            folder_name_confirmed = clean_text(
+                data.get("folder_name_confirmed")
+                or data.get("create_folder_name")
+            )
+            if folder_name_confirmed:
+                destino = validate_resolved_destination(
+                    confirmed_download_destination(destino_sugerido, folder_name_confirmed),
+                    allowed_destination_roots,
+                )
+                if destino.exists():
+                    self.send_json(
+                        {
+                            "error": "La carpeta ya existe. Revisa el nombre o continúa si corresponde.",
+                            "folder_exists": True,
+                            "carpeta": str(destino),
+                        },
+                        HTTPStatus.CONFLICT,
+                    )
+                    return
+            else:
+                destino = destino_sugerido
+                if not destino.exists():
+                    self.send_json(
+                        {
+                            "needs_folder_confirmation": True,
+                            "suggested_folder_name": destino.name,
+                            "message": "La carpeta de esta licitación no existe. Revisa el nombre antes de crearla.",
+                        }
+                    )
+                    return
+                if not destino.is_dir():
+                    self.send_json(
+                        {"error": "La ruta de destino existe pero no es una carpeta."},
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                    return
         except DownloadSafetyError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -4335,7 +4718,15 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 if mark_for_nuria:
                     mark_dia_nuria_dirty(conn, int(row["infonalia_dia_id"]))
                 refresh_dia_estado(conn, int(row["infonalia_dia_id"]))
-        self.send_json(row_to_dict(row))
+        response = row_to_dict(row)
+        if row and is_prepared_state_transition(old_row["estado"], row["estado"]):
+            response["prepared_notice_preview"] = build_prepared_notice_preview(
+                row,
+                previous_state=old_row["estado"],
+                current_state=row["estado"],
+                user=user,
+            )
+        self.send_json(response)
 
     def api_delete_licitacion(self, licitacion_id: int) -> None:
         if not self.require_admin():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime
@@ -22,6 +23,7 @@ from webapp.infonalia_webapp.tests.test_import_endpoints import (
 def default_download_storage_env(monkeypatch):
     monkeypatch.setenv("INFONALIA_STORAGE_BACKEND", "local")
     monkeypatch.delenv("INFONALIA_DOWNLOAD_STAGING_ROOT", raising=False)
+    monkeypatch.delenv("LLANGON_DROPBOX_BASE_PATH", raising=False)
 
 
 @contextmanager
@@ -62,12 +64,18 @@ def make_download_handler(
     *,
     path: str = "/api/licitaciones/1/descargar",
     csrf_token: str | None = None,
+    payload: dict | None = None,
 ):
+    body = json.dumps(payload or {}).encode("utf-8") if payload is not None else b""
     handler = object.__new__(app.InfonaliaHandler)
-    handler.headers = {}
+    handler.headers = {
+        "Content-Type": "application/json",
+        "Content-Length": str(len(body)),
+    }
     if csrf_token is not None:
         handler.headers[app.CSRF_HEADER] = csrf_token
     handler.path = path
+    handler.rfile = io.BytesIO(body)
     handler.responses = []
     handler.current_user = lambda: {
         "username": "admin_test",
@@ -82,6 +90,20 @@ def make_download_handler(
 
     handler.send_json = send_json
     return handler
+
+
+def suggested_download_folder_name(app: ModuleType, licitacion_id: int) -> str:
+    return default_download_destination(app, licitacion_id).name
+
+
+def default_download_destination(app: ModuleType, licitacion_id: int) -> Path:
+    with app.db_session() as conn:
+        row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+    return app.resolve_destination_folder(row)
+
+
+def confirmed_download_payload(app: ModuleType, licitacion_id: int, folder_name: str | None = None) -> dict:
+    return {"folder_name_confirmed": folder_name or suggested_download_folder_name(app, licitacion_id)}
 
 
 def insert_fake_licitacion(
@@ -207,7 +229,7 @@ def test_download_endpoint_success_updates_ruta_carpeta_with_mocked_subprocess()
             Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
             return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
 
-        handler = make_download_handler(app)
+        handler = make_download_handler(app, payload=confirmed_download_payload(app, licitacion_id))
         with mocked_subprocess_run(app, fake_run):
             handler.api_download_licitacion(licitacion_id)
 
@@ -273,7 +295,7 @@ def test_download_endpoint_keeps_reviewed_day_closed() -> None:
             Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
             return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
 
-        handler = make_download_handler(app)
+        handler = make_download_handler(app, payload=confirmed_download_payload(app, licitacion_id))
         with mocked_subprocess_run(app, fake_run):
             handler.api_download_licitacion(licitacion_id)
 
@@ -300,7 +322,7 @@ def test_download_endpoint_dropbox_dry_run_records_incremental_storage(monkeypat
             Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
             return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
 
-        handler = make_download_handler(app)
+        handler = make_download_handler(app, payload=confirmed_download_payload(app, licitacion_id))
         with mocked_subprocess_run(app, fake_run):
             handler.api_download_licitacion(licitacion_id)
 
@@ -343,7 +365,7 @@ def test_download_endpoint_dropbox_backend_uses_staging_outside_dropbox_desktop(
             Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
             return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
 
-        handler = make_download_handler(app)
+        handler = make_download_handler(app, payload=confirmed_download_payload(app, licitacion_id))
         with mocked_subprocess_run(app, fake_run):
             handler.api_download_licitacion(licitacion_id)
 
@@ -370,6 +392,7 @@ def test_download_route_success_with_valid_csrf_and_mocked_subprocess() -> None:
             app,
             path=f"/api/licitaciones/{licitacion_id}/descargar",
             csrf_token=VALID_CSRF_TOKEN,
+            payload=confirmed_download_payload(app, licitacion_id),
         )
         with mocked_subprocess_run(app, fake_run):
             handler.do_POST()
@@ -378,6 +401,222 @@ def test_download_route_success_with_valid_csrf_and_mocked_subprocess() -> None:
         assert status == HTTPStatus.OK
         assert payload["ok"] is True
         assert get_ruta_carpeta(app, licitacion_id) == payload["ruta_carpeta"]
+
+
+def test_download_existing_folder_does_not_request_confirmation() -> None:
+    app = load_app_module()
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app)
+        destination = default_download_destination(app, licitacion_id)
+        destination.mkdir(parents=True)
+        calls = []
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            calls.append(cwd)
+            Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
+            return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
+
+        handler = make_download_handler(app)
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        status, payload = handler.responses[-1]
+
+    assert status == HTTPStatus.OK
+    assert payload["ok"] is True
+    assert "needs_folder_confirmation" not in payload
+    assert calls == [str(destination)]
+
+
+def test_download_missing_folder_returns_confirmation_without_creating_folder() -> None:
+    app = load_app_module()
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app)
+        destination = default_download_destination(app, licitacion_id)
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            raise AssertionError("subprocess.run must not be called before folder confirmation")
+
+        handler = make_download_handler(app)
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        status, payload = handler.responses[-1]
+        ruta_carpeta = get_ruta_carpeta(app, licitacion_id)
+        jobs = get_download_jobs(app, licitacion_id)
+        destination_exists = destination.exists()
+
+    assert status == HTTPStatus.OK
+    assert payload["needs_folder_confirmation"] is True
+    assert payload["suggested_folder_name"] == destination.name
+    assert not destination_exists
+    assert ruta_carpeta == ""
+    assert jobs == []
+
+
+def test_download_suggested_folder_name_is_windows_safe() -> None:
+    app = load_app_module()
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app)
+        handler = make_download_handler(app)
+        handler.api_download_licitacion(licitacion_id)
+
+        suggested = handler.responses[-1][1]["suggested_folder_name"]
+
+    assert suggested
+    assert not any(char in suggested for char in '\\/:*?"<>|')
+    assert ".." not in suggested
+
+
+def test_download_confirmed_folder_name_creates_edited_folder_and_runs_download() -> None:
+    app = load_app_module()
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app)
+        default_destination = default_download_destination(app, licitacion_id)
+        edited_name = "30 JUNIO 1200 MADRID NOMBRE EDITADO TEST"
+        calls = []
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            calls.append(Path(cwd))
+            Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
+            return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
+
+        handler = make_download_handler(
+            app,
+            payload={"folder_name_confirmed": edited_name},
+        )
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        status, payload = handler.responses[-1]
+        edited_destination = default_destination.parent / edited_name
+        ruta_carpeta = get_ruta_carpeta(app, licitacion_id)
+        edited_exists = edited_destination.exists()
+
+    assert status == HTTPStatus.OK
+    assert payload["ok"] is True
+    assert edited_exists
+    assert calls == [edited_destination]
+    assert ruta_carpeta.endswith(edited_name)
+
+
+@pytest.mark.parametrize(
+    "folder_name",
+    [
+        "../fuera",
+        "..\\fuera",
+        "C:\\fuera",
+        "/fuera",
+        "carpeta/con/barra",
+        "carpeta\\con\\barra",
+        'carpeta:con*caracteres?"<malos>|',
+        "..",
+    ],
+)
+def test_download_rejects_invalid_confirmed_folder_names(folder_name: str) -> None:
+    app = load_app_module()
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app)
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            raise AssertionError("subprocess.run must not be called for invalid folder names")
+
+        handler = make_download_handler(app, payload={"folder_name_confirmed": folder_name})
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        status, payload = handler.responses[-1]
+        jobs = get_download_jobs(app, licitacion_id)
+
+    assert status == HTTPStatus.BAD_REQUEST
+    assert "carpeta" in payload["error"].lower()
+    assert jobs == []
+
+
+def test_download_rejects_confirmed_folder_that_already_exists_without_overwriting() -> None:
+    app = load_app_module()
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app)
+        destination = default_download_destination(app, licitacion_id)
+        existing_name = "CARPETA EXISTENTE"
+        existing = destination.parent / existing_name
+        existing.mkdir(parents=True)
+        marker = existing / "manual.txt"
+        marker.write_text("no tocar", encoding="utf-8")
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            raise AssertionError("subprocess.run must not be called when confirmed folder already exists")
+
+        handler = make_download_handler(app, payload={"folder_name_confirmed": existing_name})
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        status, payload = handler.responses[-1]
+        marker_text = marker.read_text(encoding="utf-8")
+        ruta_carpeta = get_ruta_carpeta(app, licitacion_id)
+        jobs = get_download_jobs(app, licitacion_id)
+
+    assert status == HTTPStatus.CONFLICT
+    assert payload["folder_exists"] is True
+    assert marker_text == "no tocar"
+    assert ruta_carpeta == ""
+    assert jobs == []
+
+
+def test_download_rejects_missing_configured_dropbox_base(monkeypatch, tmp_path: Path) -> None:
+    app = load_app_module()
+    missing_base = tmp_path / "Dropbox inexistente"
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(missing_base))
+
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app)
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            raise AssertionError("subprocess.run must not be called with invalid Dropbox base")
+
+        handler = make_download_handler(app, payload=confirmed_download_payload(app, licitacion_id))
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        status, payload = handler.responses[-1]
+        jobs = get_download_jobs(app, licitacion_id)
+
+    assert status == HTTPStatus.BAD_REQUEST
+    assert "Dropbox" in payload["error"]
+    assert jobs == []
+
+
+def test_download_uses_llangon_dropbox_base_before_legacy_root(monkeypatch, tmp_path: Path) -> None:
+    app = load_app_module()
+    dropbox_root = tmp_path / "Dropbox"
+    legacy_root = tmp_path / "ReplicaDb"
+    dropbox_root.mkdir()
+    legacy_root.mkdir()
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(dropbox_root))
+    monkeypatch.setenv("INFONALIA_DROPBOX_ROOT", str(legacy_root))
+
+    with temporary_download_app(app):
+        app.find_dropbox_root = lambda: dropbox_root
+        licitacion_id = insert_fake_licitacion(app)
+        calls = []
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            calls.append(Path(cwd))
+            Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
+            return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
+
+        handler = make_download_handler(app, payload=confirmed_download_payload(app, licitacion_id))
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        status, payload = handler.responses[-1]
+        cwd = calls[0].resolve()
+
+    assert status == HTTPStatus.OK
+    assert payload["ok"] is True
+    assert cwd.is_relative_to(dropbox_root.resolve())
+    assert not cwd.is_relative_to(legacy_root.resolve())
+    assert Path(payload["carpeta"]).resolve() == cwd
 
 
 def test_download_route_rejects_missing_csrf_before_subprocess() -> None:
@@ -423,7 +662,7 @@ def test_download_endpoint_failure_does_not_update_ruta_carpeta() -> None:
             Path(cwd, "salida-parcial.tmp").write_text("parcial", encoding="utf-8")
             return SimpleNamespace(returncode=2, stdout="", stderr="fallo ficticio")
 
-        handler = make_download_handler(app)
+        handler = make_download_handler(app, payload=confirmed_download_payload(app, licitacion_id))
         with mocked_subprocess_run(app, fake_run):
             handler.api_download_licitacion(licitacion_id)
 
@@ -450,7 +689,7 @@ def test_download_endpoint_timeout_does_not_update_ruta_carpeta() -> None:
         def fake_run(args, cwd, capture_output, text, timeout):
             raise app.subprocess.TimeoutExpired(cmd=args, timeout=timeout)
 
-        handler = make_download_handler(app)
+        handler = make_download_handler(app, payload=confirmed_download_payload(app, licitacion_id))
         with mocked_subprocess_run(app, fake_run):
             handler.api_download_licitacion(licitacion_id)
 
@@ -479,7 +718,7 @@ def test_download_endpoint_folder_limit_failure_does_not_update_ruta_carpeta() -
                 Path(cwd, "b.txt").write_text("b", encoding="utf-8")
                 return SimpleNamespace(returncode=0, stdout="ok", stderr="")
 
-            handler = make_download_handler(app)
+            handler = make_download_handler(app, payload=confirmed_download_payload(app, licitacion_id))
             with mocked_subprocess_run(app, fake_run):
                 handler.api_download_licitacion(licitacion_id)
 

@@ -221,11 +221,15 @@ def resolve_destination_folder(row: Any, *, download_root: Path, dropbox_root: P
 
 def write_http_url(folder: Path, url: str) -> None:
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / "HTTP.url").write_text(
-        "[InternetShortcut]\n" f"URL={url}\n",
-        encoding="utf-8",
-    )
-    (folder / DOWNLOAD_BAT_FILENAME).write_text(DOWNLOAD_BAT_CONTENT, encoding="utf-8")
+    http_url = folder / "HTTP.url"
+    if not http_url.exists():
+        http_url.write_text(
+            "[InternetShortcut]\n" f"URL={url}\n",
+            encoding="utf-8",
+        )
+    bat_path = folder / DOWNLOAD_BAT_FILENAME
+    if not bat_path.exists():
+        bat_path.write_text(DOWNLOAD_BAT_CONTENT, encoding="utf-8")
 
 
 def storage_root_for_destination(destination: Path, allowed_roots: list[Path]) -> Path:

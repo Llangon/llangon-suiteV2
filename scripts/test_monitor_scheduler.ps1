@@ -1,6 +1,8 @@
 param(
   [switch]$DryRun,
   [switch]$ListSchedule,
+  [switch]$ResetTestState,
+  [string[]]$ScheduleKey = @(),
   [string]$Now = ""
 )
 
@@ -14,6 +16,11 @@ if (!(Test-Path -LiteralPath $Python)) {
 $ArgsList = @("-m", "webapp.infonalia_webapp.monitor.scheduler")
 if ($ListSchedule) {
   $ArgsList += "--list-schedule"
+} elseif ($ResetTestState) {
+  $ArgsList += "--reset-test-state"
+  foreach ($Key in $ScheduleKey) {
+    $ArgsList += @("--schedule-key", $Key)
+  }
 } elseif ($DryRun) {
   $ArgsList += "--dry-run"
 } else {

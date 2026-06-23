@@ -267,6 +267,9 @@ def test_agenda_pending_tasks_ui_is_admin_only_and_initial_route_by_role() -> No
     assert "card-side-actions" in script
     assert 'button[data-open-licitacion-detail]' in script
     assert 'button[data-edit-id]' in script
+    assert "agendaDeepLinkToken" in script
+    assert 'params.get("agenda_source")' in script
+    assert "openAgendaOrigin(token)" in script
 
 
 def test_monitor_history_ui_is_admin_only_and_inventory_ui_is_hidden() -> None:

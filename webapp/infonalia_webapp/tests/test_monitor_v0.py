@@ -8,6 +8,11 @@ from pathlib import Path
 
 import pytest
 
+from webapp.infonalia_webapp.agenda.email_summary import (
+    build_operational_email_html,
+    build_operational_email_text,
+    build_pending_tasks_email_payload,
+)
 from webapp.infonalia_webapp.monitor.cli import main as monitor_cli_main
 from webapp.infonalia_webapp.monitor.config import (
     DEFAULT_YEAR_MAX,
@@ -17,13 +22,14 @@ from webapp.infonalia_webapp.monitor.config import (
 )
 from webapp.infonalia_webapp.monitor.markers import FOLLOW_MARKER_NAME, read_marker_id
 from webapp.infonalia_webapp.monitor.scanner import is_year_folder, iter_monitor_year_roots, scan_marker_tree
-from webapp.infonalia_webapp.monitor.scheduler import MonitorScheduler, scheduler_enabled_from_env
+from webapp.infonalia_webapp.monitor.scheduler import MonitorScheduler, list_schedule, next_schedule_preview, scheduler_enabled_from_env
 from webapp.infonalia_webapp.monitor.service import (
     due_automation_task_types,
     monitor_automation_schedules,
     run_due_automation_tasks,
     run_automation_task,
     run_monitor,
+    reset_scheduler_test_state,
 )
 from webapp.infonalia_webapp.tests.test_import_endpoints import (
     VALID_CSRF_TOKEN,
@@ -238,6 +244,7 @@ def test_monitor_endpoint_runs_with_csrf_and_reports_summary(tmp_path: Path, mon
 
     with temporary_app_database(app):
         with app.db_session() as conn:
+            app.ensure_monitor_schema(conn)
             conn.execute(
                 """
                 INSERT INTO licitaciones (
@@ -334,7 +341,14 @@ def test_monitor_history_endpoint_filters_by_task_type_and_agenda_summary_skelet
     assert payload["items"][0]["processed_items_count"] == 1
 
 
-def test_monitor_automation_schedule_declares_agenda_tasks_and_licitaciones_proposal() -> None:
+def test_monitor_automation_schedule_declares_agenda_tasks_and_licitaciones_proposal(monkeypatch) -> None:
+    monkeypatch.setenv("MONITOR_AGENDA_PENDING_DAILY_ENABLED", "1")
+    monkeypatch.setenv("MONITOR_AGENDA_PENDING_DAILY_TIME", "06:00")
+    monkeypatch.setenv("MONITOR_AGENDA_PENDING_DAILY_WEEKDAYS_ONLY", "1")
+    monkeypatch.setenv("MONITOR_LICITACIONES_SCHEDULE_ENABLED", "1")
+    monkeypatch.setenv("MONITOR_LICITACIONES_TIME_1", "07:00")
+    monkeypatch.setenv("MONITOR_LICITACIONES_TIME_2", "12:30")
+    monkeypatch.setenv("MONITOR_LICITACIONES_TIME_3", "17:30")
     schedules = monitor_automation_schedules()
 
     assert set(schedules) == {"agenda_pendientes_diaria", "monitor_licitaciones"}
@@ -347,7 +361,80 @@ def test_monitor_automation_schedule_declares_agenda_tasks_and_licitaciones_prop
         "agenda_pendientes_diaria",
         "monitor_licitaciones",
     ]
-    assert due_automation_task_types(datetime(2026, 6, 20, 13, 0)) == ["agenda_pendientes_diaria"]
+    assert due_automation_task_types(datetime(2026, 6, 20, 13, 0)) == []
+    assert due_automation_task_types(datetime(2026, 6, 21, 13, 0)) == []
+
+
+def test_monitor_licitaciones_schedule_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("MONITOR_AGENDA_PENDING_DAILY_ENABLED", "1")
+    monkeypatch.setenv("MONITOR_AGENDA_PENDING_DAILY_WEEKDAYS_ONLY", "1")
+    monkeypatch.setenv("MONITOR_LICITACIONES_SCHEDULE_ENABLED", "0")
+
+    schedules = monitor_automation_schedules()
+
+    assert set(schedules) == {"agenda_pendientes_diaria"}
+    assert due_automation_task_types(datetime(2026, 6, 16, 17, 30)) == ["agenda_pendientes_diaria"]
+
+
+def test_agenda_pending_weekdays_only_rules_and_next_schedule(monkeypatch) -> None:
+    monkeypatch.setenv("MONITOR_AGENDA_PENDING_DAILY_ENABLED", "1")
+    monkeypatch.setenv("MONITOR_AGENDA_PENDING_DAILY_TIME", "06:00")
+    monkeypatch.setenv("MONITOR_AGENDA_PENDING_DAILY_WEEKDAYS_ONLY", "1")
+    monkeypatch.setenv("MONITOR_LICITACIONES_SCHEDULE_ENABLED", "0")
+
+    assert due_automation_task_types(datetime(2026, 6, 20, 6, 1)) == []
+    assert due_automation_task_types(datetime(2026, 6, 21, 6, 1)) == []
+    assert due_automation_task_types(datetime(2026, 6, 22, 6, 1)) == ["agenda_pendientes_diaria"]
+    assert next_schedule_preview(datetime(2026, 6, 19, 18, 0)) == {
+        "task_type": "agenda_pendientes_diaria",
+        "run_at": "2026-06-22T06:00:00+02:00",
+    }
+    assert next_schedule_preview(datetime(2026, 6, 20, 6, 1)) == {
+        "task_type": "agenda_pendientes_diaria",
+        "run_at": "2026-06-22T06:00:00+02:00",
+    }
+    assert next_schedule_preview(datetime(2026, 6, 21, 6, 1)) == {
+        "task_type": "agenda_pendientes_diaria",
+        "run_at": "2026-06-22T06:00:00+02:00",
+    }
+    schedule = list_schedule(datetime(2026, 6, 21, 6, 1))[0]
+    assert schedule["schedules"][0]["weekdays_only"] is True
+    assert schedule["next"]["run_at"] == "2026-06-22T06:00:00+02:00"
+
+
+def test_agenda_pending_weekend_once_creates_no_monitor_run_and_no_friday_catchup(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MONITOR_AGENDA_PENDING_DAILY_ENABLED", "1")
+    monkeypatch.setenv("MONITOR_AGENDA_PENDING_DAILY_TIME", "06:00")
+    monkeypatch.setenv("MONITOR_AGENDA_PENDING_DAILY_WEEKDAYS_ONLY", "1")
+    monkeypatch.setenv("MONITOR_LICITACIONES_SCHEDULE_ENABLED", "0")
+    app = load_app_module()
+
+    with temporary_app_database(app):
+        with app.db_session() as conn:
+            app.ensure_monitor_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO agenda_eventos (
+                    titulo, descripcion, starts_at, estado, created_by, created_at, updated_at
+                )
+                VALUES ('Pendiente del viernes', '', '2026-06-19T10:00:00', 'pendiente',
+                        'admin_test', '2026-06-18T09:00:00', '2026-06-18T09:00:00')
+                """
+            )
+        reports = run_due_automation_tasks(
+            dry_run=False,
+            db_path=app.DB_PATH,
+            recipient="monitor-test@example.test",
+            email_sender=lambda *_args: (_ for _ in ()).throw(AssertionError("weekend email")),
+            current=datetime(2026, 6, 20, 6, 1),
+        )
+        with app.db_session() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM monitor_runs WHERE task_type = 'agenda_pendientes_diaria'"
+            ).fetchone()[0]
+
+    assert reports == []
+    assert count == 0
 
 
 def test_agenda_summary_task_sends_to_test_recipient_with_fake_sender(tmp_path: Path) -> None:
@@ -417,14 +504,129 @@ def test_agenda_daily_task_sends_only_due_today_with_required_fields(tmp_path: P
     assert report["emails_prepared_count"] == 1
     assert report["emails_sent_count"] == 1
     assert sent[0][0] == "monitor-test@example.test"
-    assert "Pendientes de Agenda" in sent[0][1]
+    assert sent[0][1] == "Agenda Llangón jueves 18-06-2026"
     assert "Expediente: EXP-88" in sent[0][2]
     assert "Título: EXP-88" in sent[0][2]
     assert "Estado: Preparar ficha" in sent[0][2]
-    assert "Fecha/hora final: 2026-06-18T14:00:00" in sent[0][2]
+    assert "Vence: 2026-06-18T14:00:00" in sent[0][2]
+    assert "Ver perfil del contratante: https://example.test" in sent[0][2]
     assert "Expediente: EXP-88" in sent[0][3]
-    assert "Fecha/hora final" in sent[0][3]
-    assert sent[0][3].count("Fecha/hora final") == 1
+    assert "Fecha/hora final" not in sent[0][3]
+    assert "Vence: 18/06/2026 14:00" in sent[0][3]
+    assert "Ver perfil del contratante" in sent[0][3]
+
+
+def test_pending_agenda_email_groups_cards_links_and_visual_state(monkeypatch) -> None:
+    long_description = "Suministro de víveres con descripción completa sin recorte visible en el correo."
+    payload = build_pending_tasks_email_payload(
+        {
+            "items": [
+                {
+                    "source_type": "licitacion",
+                    "source_id": 88,
+                    "title": "EXP-88",
+                    "subtitle": long_description,
+                    "expediente": "EXP-88",
+                    "datetime": "2026-06-18T14:00:00",
+                    "date": "2026-06-18",
+                    "status": "Preparar ficha",
+                    "tipo": "Licitación",
+                    "enlace_perfil": "https://perfil.example.test/exp-88",
+                    "linked_licitaciones": [{"expediente": "EXP-88"}],
+                },
+                {
+                    "source_type": "licitacion",
+                    "source_id": 89,
+                    "title": "EXP-89",
+                    "subtitle": "Suministro de mañana",
+                    "expediente": "EXP-89",
+                    "datetime": "2026-06-19T08:30:00",
+                    "date": "2026-06-19",
+                    "status": "Descargar para ver",
+                    "tipo": "Licitación",
+                    "enlace_perfil": "ftp://perfil-no-valido.example/exp-89",
+                },
+                {
+                    "source_type": "actuacion",
+                    "source_id": 9,
+                    "title": "Actuación próxima",
+                    "description": "Preparar documentación",
+                    "datetime": "2026-06-20T09:00:00",
+                    "date": "2026-06-20",
+                    "status": "Pendiente",
+                    "tipo": "subsanacion",
+                    "linked_licitaciones": [{"enlace_perfil": "https://perfil.example.test/actuacion-9"}],
+                },
+                {
+                    "source_type": "interno",
+                    "source_id": 7,
+                    "title": "Revisión futura",
+                    "description": "Revisar agenda",
+                    "datetime": "2026-06-30T10:00:00",
+                    "date": "2026-06-30",
+                    "status": "Preparada",
+                    "tipo": "Interno",
+                },
+            ]
+        },
+        current=datetime(2026, 6, 18, 6, 0),
+    )
+
+    text = build_operational_email_text(payload)
+    html = build_operational_email_html(payload, generated_at="2026-06-18T06:01:00")
+
+    assert [section["title"] for section in payload["sections"]] == [
+        "HOY",
+        "PRÓXIMOS 7 DÍAS",
+        "PRÓXIMAMENTE",
+    ]
+    assert text.index("HOY") < text.index("PRÓXIMOS 7 DÍAS") < text.index("PRÓXIMAMENTE")
+    assert "VIERNES 19/06/2026" in text
+    assert "SÁBADO 20/06/2026" in text
+    assert "MARTES 30/06/2026" in text
+    assert "URGENTE" not in text
+    assert "ESTA SEMANA" not in text
+    assert "Licitaciones:" not in text
+    assert "Licitaciones:" not in html
+    assert long_description in html
+    assert "Ver en Llangón Suite" not in html
+    assert "agenda_source=" not in html
+    assert html.count("Ver perfil del contratante") == 2
+    assert "https://perfil.example.test/exp-88" in html
+    assert "https://perfil.example.test/actuacion-9" in html
+    assert "perfil-no-valido" not in html
+    assert "Fecha/hora final" not in html
+    assert "Vence: 18/06/2026 14:00" in html
+    assert "#fef3f2" in html
+    assert "#fff7ed" in html
+    assert "#eff8ff" in html
+    assert "#ecfdf3" in html
+    assert "max-width:96px" in html
+    assert "padding:12px 20px" in html
+
+
+def test_pending_agenda_email_omits_profile_link_without_valid_url() -> None:
+    payload = build_pending_tasks_email_payload(
+        {
+            "items": [
+                {
+                    "source_type": "licitacion",
+                    "source_id": 88,
+                    "title": "EXP-88",
+                    "datetime": "2026-06-18T14:00:00",
+                    "date": "2026-06-18",
+                    "status": "Preparada",
+                    "enlace_perfil": "file:///tmp/perfil.html",
+                }
+            ]
+        },
+        current=datetime(2026, 6, 18, 6, 0),
+    )
+
+    html = build_operational_email_html(payload)
+
+    assert "Ver en Llangón Suite" not in html
+    assert "Ver perfil del contratante" not in html
 
 
 def test_agenda_weekly_email_uses_single_today_and_tomorrow_labels(tmp_path: Path) -> None:
@@ -498,7 +700,8 @@ def test_agenda_email_hides_internal_numeric_expediente(tmp_path: Path) -> None:
     assert report["emails_sent_count"] == 1
     assert "Expediente: 3" not in sent[0][2]
     assert "Expediente: 3" not in sent[0][3]
-    assert "Fecha/hora final" in sent[0][3]
+    assert "Fecha/hora final" not in sent[0][3]
+    assert "Vence: 18/06/2026 14:00" in sent[0][3]
 
 
 def test_agenda_daily_task_without_due_items_registers_no_email(tmp_path: Path) -> None:
@@ -863,6 +1066,37 @@ def test_monitor_run_endpoint_can_send_agenda_summary_with_fake_sender(tmp_path:
     assert sent[0][0] == "monitor-test@example.test"
 
 
+def test_monitor_pending_email_uses_multiple_configured_recipients(monkeypatch) -> None:
+    app = load_app_module()
+    captured: dict[str, object] = {}
+    settings = {
+        "monitor_agenda_pending_email_to": "info3@llangon.com; info@llangon.com",
+        "smtp_host": "smtp.example.test",
+        "smtp_port": "2525",
+        "smtp_from": "monitor@example.test",
+        "smtp_tls": "0",
+        "smtp_ssl": "0",
+    }
+    monkeypatch.delenv("MONITOR_AGENDA_PENDING_EMAIL_TO", raising=False)
+    monkeypatch.setattr(
+        app,
+        "send_notification_email_with_settings",
+        lambda **kwargs: captured.update(kwargs) or ("2026-06-18T10:05:00", None),
+    )
+
+    sent_at, error = app.send_monitor_email(
+        app.monitor_agenda_pending_recipient(settings),
+        "Pendientes",
+        "Texto",
+        "<p>Texto</p>",
+        settings=settings,
+    )
+
+    assert sent_at == "2026-06-18T10:05:00"
+    assert error is None
+    assert captured["recipients"] == ["info3@llangon.com", "info@llangon.com"]
+
+
 def test_monitor_scheduler_status_endpoint_is_available_to_admin() -> None:
     app = load_app_module()
     handler = make_handler(app, b"", "application/json", path="/api/monitor/scheduler")
@@ -891,3 +1125,73 @@ def test_monitor_scheduler_can_run_once_and_stays_disabled_under_pytest(monkeypa
     assert calls[0].replace(tzinfo=None) == current
     assert scheduler.status()["last_reports_count"] == 1
     assert scheduler_enabled_from_env() is False
+
+
+def test_scheduler_reset_test_state_clears_claims_and_keys_without_deleting_history(tmp_path: Path) -> None:
+    app = load_app_module()
+    schedule_key = "agenda_pendientes_diaria:2026-06-21"
+
+    with temporary_app_database(app):
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                INSERT INTO monitor_runs (
+                    task_type, mode, root_path, started_at, status, dry_run, schedule_key,
+                    details_json
+                )
+                VALUES ('agenda_pendientes_diaria', 'automatic', '', '2026-06-21T06:01:00',
+                        'completed', 0, ?, '{}')
+                """,
+                (schedule_key,),
+            )
+            run_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+            conn.execute(
+                """
+                INSERT INTO monitor_automation_claims (
+                    task_type, schedule_key, status, claimed_at, run_id
+                )
+                VALUES ('agenda_pendientes_diaria', ?, 'completed', '2026-06-21T06:00:00', ?)
+                """,
+                (schedule_key, run_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO monitor_scheduler_heartbeat (
+                    id, checked_at, status, next_task, next_run_at, timezone
+                )
+                VALUES (1, '2026-06-21T06:02:00', 'checked', '', '', 'Europe/Madrid')
+                """
+            )
+            result = reset_scheduler_test_state(conn, schedule_keys=[schedule_key])
+            run = conn.execute("SELECT id, schedule_key FROM monitor_runs WHERE id = ?", (run_id,)).fetchone()
+            claims = conn.execute("SELECT COUNT(*) FROM monitor_automation_claims").fetchone()[0]
+            heartbeat = conn.execute("SELECT COUNT(*) FROM monitor_scheduler_heartbeat").fetchone()[0]
+
+    assert result["claims_deleted"] == 1
+    assert result["monitor_run_schedule_keys_cleared"] == 1
+    assert run["id"] == run_id
+    assert run["schedule_key"] is None
+    assert claims == 0
+    assert heartbeat == 0
+
+
+def test_scheduler_scripts_install_real_windows_task_without_flask() -> None:
+    root = Path(__file__).resolve().parents[3]
+    install_script = (root / "scripts" / "install_monitor_scheduler.ps1").read_text(encoding="utf-8")
+    runner_script = (root / "scripts" / "run_monitor_scheduler_once.ps1").read_text(encoding="utf-8")
+    hidden_runner_script = (root / "scripts" / "run_monitor_scheduler_hidden.vbs").read_text(encoding="utf-8")
+    test_script = (root / "scripts" / "test_monitor_scheduler.ps1").read_text(encoding="utf-8")
+
+    assert "New-ScheduledTaskTrigger" in install_script
+    assert "New-TimeSpan -Minutes 5" in install_script
+    assert "MultipleInstances IgnoreNew" in install_script
+    assert "run_monitor_scheduler_once.ps1" in install_script
+    assert "run_monitor_scheduler_hidden.vbs" in install_script
+    assert "wscript.exe" in install_script
+    assert "ServiceAccount" in install_script
+    assert "--once" in runner_script
+    assert "monitor_scheduler.log" in runner_script
+    assert "Move-Item" in runner_script
+    assert "WindowStyle Hidden" in hidden_runner_script
+    assert "shell.Run(command, 0, True)" in hidden_runner_script
+    assert "--reset-test-state" in test_script

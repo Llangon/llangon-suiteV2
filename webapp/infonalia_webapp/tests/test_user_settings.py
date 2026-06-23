@@ -214,6 +214,7 @@ def test_public_settings_payload_preserves_current_public_shape() -> None:
         "smtp_ssl": "0",
         "email_dry_run": "1",
         "agenda_email_to": "",
+        "prepared_notice_email_to": "info3@llangon.com",
         "seguimiento_emails": "",
         "smtp_password_set": True,
     }
@@ -237,6 +238,7 @@ def test_config_payload_combines_users_and_public_settings_without_password() ->
                 "smtp_ssl": "0",
                 "email_dry_run": "1",
                 "agenda_email_to": "",
+                "prepared_notice_email_to": "info3@llangon.com",
                 "seguimiento_emails": "",
                 "smtp_password_set": False,
         },
@@ -252,6 +254,7 @@ def test_settings_update_payload_preserves_current_normalization() -> None:
             "smtp_user": "user",
             "smtp_tls": "0",
             "smtp_ssl": "on",
+            "prepared_notice_email_to": " info3@llangon.com ",
             "smtp_password": " secret ",
             "ignored": "value",
         }
@@ -264,6 +267,7 @@ def test_settings_update_payload_preserves_current_normalization() -> None:
         "smtp_user": "user",
         "smtp_tls": "0",
         "smtp_ssl": "1",
+        "prepared_notice_email_to": "info3@llangon.com",
         "smtp_password": "secret",
     }
 
@@ -283,6 +287,15 @@ def test_settings_update_payload_rejects_invalid_smtp_port() -> None:
             assert str(exc) == "Puerto SMTP no valido."
         else:
             raise AssertionError(f"accepted invalid port: {value!r}")
+
+
+def test_settings_update_payload_rejects_invalid_prepared_notice_email() -> None:
+    try:
+        settings_update_payload({"prepared_notice_email_to": "sin-arroba"})
+    except ValueError as exc:
+        assert str(exc) == "Email aviso ficha preparada no valido."
+    else:
+        raise AssertionError("accepted invalid prepared notice email")
 
 
 def test_update_settings_upserts_values_with_timestamp() -> None:

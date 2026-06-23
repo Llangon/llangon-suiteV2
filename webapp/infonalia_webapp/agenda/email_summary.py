@@ -42,6 +42,16 @@ TYPE_STYLES = {
     },
 }
 
+STATE_STYLES = {
+    "preparada": {"color": "#067647", "background": "#ecfdf3", "border": "#abefc6"},
+    "preparado": {"color": "#067647", "background": "#ecfdf3", "border": "#abefc6"},
+    "pendiente": {"color": "#b54708", "background": "#fff7ed", "border": "#fed7aa"},
+    "descargar para ver": {"color": "#175cd3", "background": "#eff8ff", "border": "#b2ddff"},
+    "preparar ficha": {"color": "#b42318", "background": "#fef3f2", "border": "#fecdca"},
+}
+
+DEFAULT_STATE_STYLE = {"color": "#344054", "background": "#f8fafc", "border": "#d0d5dd"}
+
 WEEKDAY_NAMES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 MADRID_TZ = ZoneInfo("Europe/Madrid")
 
@@ -55,7 +65,7 @@ def _event_line(event: dict[str, object]) -> str:
             str(item.get("expediente") or item.get("organismo") or item.get("id") or "")
             for item in linked
         ]
-        linked_text = f" | Licitaciones: {', '.join(label for label in labels if label)}"
+        linked_text = f" | Asociado: {', '.join(label for label in labels if label)}"
     return (
         f"- [{event.get('source_type')}] {event.get('title')} | "
         f"{date_text} | {event.get('status')}{linked_text}"
@@ -187,17 +197,45 @@ def _pending_sort_key(item: dict[str, object]) -> tuple[object, ...]:
 
 
 def _pending_sections(items: list[dict[str, object]], *, current: datetime) -> list[dict[str, object]]:
-    grouped: dict[str, dict[str, object]] = {}
-    order: list[str] = []
-    rank = {"vencidos": 0, "hoy": 1, "manana": 2, "sin_fecha": 9999}
+    today = current.date()
+    week_limit = today + timedelta(days=7)
+    grouped = {
+        "today": {"title": "HOY", "items": []},
+        "next_7_days": {"title": "PRÓXIMOS 7 DÍAS", "items": [], "group_by_date": True},
+        "later": {"title": "PRÓXIMAMENTE", "items": [], "group_by_date": True},
+    }
     for item in sorted(items, key=_pending_sort_key):
-        key, title = pending_day_bucket(_item_date_value(item), current=current)
-        if key not in grouped:
-            grouped[key] = {"key": key, "title": title, "items": []}
-            order.append(key)
-        grouped[key]["items"].append(item)
-    ordered_keys = sorted(order, key=lambda key: (rank.get(key, 100 + order.index(key)), key))
-    return [grouped[key] for key in ordered_keys]
+        item_day = _item_date_value(item)
+        if item_day == today:
+            grouped["today"]["items"].append(item)
+        elif item_day is not None and today < item_day <= week_limit:
+            grouped["next_7_days"]["items"].append(item)
+        elif item_day is None or item_day > week_limit:
+            grouped["later"]["items"].append(item)
+        else:
+            continue
+    return [section for section in grouped.values() if section["items"]]
+
+
+def _valid_profile_url(value: object) -> str:
+    url = clean_text(value)
+    if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+        return ""
+    return url
+
+
+def _item_profile_url(item: dict[str, object]) -> str:
+    url = _valid_profile_url(item.get("enlace_perfil"))
+    if url:
+        return url
+    linked = item.get("linked_licitaciones") or []
+    if isinstance(linked, list):
+        for linked_item in linked:
+            if isinstance(linked_item, dict):
+                url = _valid_profile_url(linked_item.get("enlace_perfil"))
+                if url:
+                    return url
+    return ""
 
 
 def build_pending_tasks_email_payload(
@@ -216,11 +254,14 @@ def build_pending_tasks_email_payload(
         "no_date": sum(1 for item in items if _item_date_value(item) is None),
     }
     counts["upcoming"] = max(0, counts["total"] - counts["overdue"] - counts["today"] - counts["no_date"])
+    sections = _pending_sections(items, current=reference)
+    counts["next_7_days"] = sum(len(section["items"]) for section in sections if section["title"] == "PRÓXIMOS 7 DÍAS")
+    counts["later"] = sum(len(section["items"]) for section in sections if section["title"] == "PRÓXIMAMENTE")
     return {
         "active_date_label": format_date_es(today.isoformat()),
         "heading": "Pendientes de Agenda",
         "subtitle": "Tareas pendientes",
-        "sections": _pending_sections(items, current=reference),
+        "sections": sections,
         "counts": counts,
         "is_pending_digest": True,
     }
@@ -259,30 +300,59 @@ def _item_linked_text(item: dict[str, object]) -> str:
     return ", ".join(labels)
 
 
-def _item_row_html(item: dict[str, object], *, subdued: bool = False) -> str:
+def _item_status_style(status: str) -> dict[str, str]:
+    normalized = clean_text(status).lower()
+    return STATE_STYLES.get(normalized, DEFAULT_STATE_STYLE)
+
+
+def _item_type_label(item: dict[str, object], *, source_key: str) -> str:
+    return clean_text(item.get("tipo")) or TYPE_STYLES[source_key]["label"]
+
+
+def _item_row_html(item: dict[str, object], *, subdued: bool = False, pending_digest: bool = False) -> str:
     source_key = _item_source_key(item)
     style = TYPE_STYLES[source_key]
     title = html.escape(_item_title(item))
     date_label = html.escape(format_datetime_es(_item_date(item)))
     expediente = html.escape(_item_expediente(item))
-    status = html.escape(clean_text(item.get("status")) or "Sin estado")
+    status_text = clean_text(item.get("status")) or "Sin estado"
+    status = html.escape(status_text)
+    status_style = _item_status_style(status_text)
+    type_label = html.escape(_item_type_label(item, source_key=source_key))
     description = html.escape(_item_description(item))
-    linked = html.escape(_item_linked_text(item))
+    profile_url = html.escape(_item_profile_url(item))
     opacity_color = "#475467" if subdued else "#1f2937"
+    due_badge_html = ""
+    if pending_digest and _item_date_value(item) is not None:
+        due_badge_html = (
+            f"<span style='display:inline-block; padding:5px 9px; border:1px solid #b6d7a8; "
+            f"background:#f0f9ec; color:#1f7a4d; border-radius:999px; font-size:12px; "
+            f"font-weight:900; white-space:nowrap;'>Vence: {date_label}</span>"
+        )
     description_html = (
         f"<p style='margin:6px 0 0 0; color:#475467; font-size:13px; line-height:1.35;'>{description}</p>"
         if description
-        else ""
-    )
-    linked_html = (
-        f"<p style='margin:7px 0 0 0; color:#667085; font-size:12px; line-height:1.35;'>Licitaciones: {linked}</p>"
-        if linked
         else ""
     )
     expediente_html = (
         f"<p style='margin:7px 0 0 0; color:#667085; font-size:12px; line-height:1.45;'>Expediente: {expediente}</p>"
         if expediente
         else ""
+    )
+    profile_link_html = (
+        f"<p style='margin:10px 0 0 0; font-size:13px; line-height:1.35;'><a href='{profile_url}' style='color:#1f7a4d; font-weight:800; text-decoration:underline;'>Ver perfil del contratante</a></p>"
+        if profile_url
+        else ""
+    )
+    detail_cells = [
+        f"<td style=\"padding:8px 10px; border:1px solid #d9e2ec; background:#f8fafc; color:#1f2937; font-size:13px; line-height:1.35;\"><strong>Estado:</strong> <span style=\"display:inline-block; padding:2px 7px; border:1px solid {status_style['border']}; background:{status_style['background']}; color:{status_style['color']}; border-radius:999px; font-weight:800;\">{status}</span></td>",
+    ]
+    if not pending_digest:
+        detail_cells.append(
+            f"<td style=\"padding:8px 10px; border:1px solid #d9e2ec; background:#f8fafc; color:#1f2937; font-size:13px; line-height:1.35;\"><strong>Fecha/hora final:</strong> {date_label}</td>"
+        )
+    detail_cells.append(
+        f"<td style=\"padding:8px 10px; border:1px solid #d9e2ec; background:#f8fafc; color:#1f2937; font-size:13px; line-height:1.35;\"><strong>Tipo:</strong> {type_label}</td>"
     )
     return f"""
       <tr>
@@ -295,7 +365,7 @@ def _item_row_html(item: dict[str, object], *, subdued: bool = False) -> str:
                     <td style="vertical-align:top;">
                       <span style="display:inline-block; padding:3px 8px; background:{style['background']}; color:{style['color']}; border:1px solid {style['border']}; border-radius:999px; font-size:11px; font-weight:800; text-transform:uppercase;">{html.escape(style['label'])}</span>
                     </td>
-                    <td align="right" style="vertical-align:top;"></td>
+                    <td align="right" style="vertical-align:top;">{due_badge_html}</td>
                   </tr>
                 </table>
                 <p style="margin:9px 0 0 0; color:{opacity_color}; font-size:15px; font-weight:800; line-height:1.35;">{title}</p>
@@ -303,11 +373,10 @@ def _item_row_html(item: dict[str, object], *, subdued: bool = False) -> str:
                 {expediente_html}
                 <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin-top:9px;">
                   <tr>
-                    <td style="padding:8px 10px; border:1px solid #d9e2ec; background:#f8fafc; color:#1f2937; font-size:13px; line-height:1.35;"><strong>Estado:</strong> {status}</td>
-                    <td style="padding:8px 10px; border:1px solid #d9e2ec; background:#f8fafc; color:#1f2937; font-size:13px; line-height:1.35;"><strong>Fecha/hora final:</strong> {date_label}</td>
+                    {"".join(detail_cells)}
                   </tr>
                 </table>
-                {linked_html}
+                {profile_link_html}
               </td>
             </tr>
           </table>
@@ -315,11 +384,45 @@ def _item_row_html(item: dict[str, object], *, subdued: bool = False) -> str:
       </tr>"""
 
 
-def _section_html(section: dict[str, object], *, subdued: bool = False) -> str:
+def _date_group_title(item_date: date | None) -> str:
+    if item_date is None:
+        return "SIN FECHA"
+    weekday = WEEKDAY_NAMES[item_date.weekday()].upper()
+    return f"{weekday} {format_date_es(item_date.isoformat())}"
+
+
+def _items_grouped_by_date(items: list[dict[str, object]]) -> list[tuple[date | None, list[dict[str, object]]]]:
+    groups: list[tuple[date | None, list[dict[str, object]]]] = []
+    for item in sorted(items, key=_pending_sort_key):
+        item_date = _item_date_value(item)
+        if not groups or groups[-1][0] != item_date:
+            groups.append((item_date, []))
+        groups[-1][1].append(item)
+    return groups
+
+
+def _date_group_rows(items: list[dict[str, object]], *, pending_digest: bool) -> str:
+    rows = []
+    for item_date, group_items in _items_grouped_by_date(items):
+        rows.append(f"""
+      <tr>
+        <td style="padding:2px 0 8px 0; color:#667085; font-size:12px; font-weight:900; text-transform:uppercase;">
+          {html.escape(_date_group_title(item_date))}
+        </td>
+      </tr>""")
+        rows.extend(_item_row_html(item, pending_digest=pending_digest, subdued=True) for item in group_items)
+    return "".join(rows)
+
+
+def _section_html(section: dict[str, object], *, subdued: bool = False, pending_digest: bool = False) -> str:
     title = clean_text(section.get("title") or "Sección").upper()
     items = section.get("items") or []
     if items:
-        rows = "".join(_item_row_html(item, subdued=subdued) for item in items[:16] if isinstance(item, dict))
+        section_items = [item for item in items if isinstance(item, dict)]
+        if pending_digest and bool(section.get("group_by_date")):
+            rows = _date_group_rows(section_items, pending_digest=pending_digest)
+        else:
+            rows = "".join(_item_row_html(item, subdued=subdued, pending_digest=pending_digest) for item in section_items)
     else:
         rows = """
       <tr>
@@ -399,21 +502,37 @@ def build_operational_email_text(payload: dict[str, object]) -> str:
         f"Fecha: {payload.get('active_date_label') or ''}",
         "",
     ]
+    is_pending = bool(payload.get("is_pending_digest"))
     for section in payload.get("sections") or []:
         lines.append(str(section.get("title") or "Sección").upper())
         items = section.get("items") or []
         if not items:
             lines.append("- Sin elementos")
-        for item in items[:16]:
-            status = item.get("status") or ""
-            source = item.get("source_type") or ""
-            expediente = _item_expediente(item)
-            expediente_text = f"Expediente: {expediente} | " if expediente else ""
-            lines.append(
-                f"- [{source}] {expediente_text}"
-                f"Título: {_item_title(item)} | Estado: {status} | "
-                f"Fecha/hora final: {_item_date(item)}"
-            )
+        item_groups = (
+            _items_grouped_by_date([item for item in items if isinstance(item, dict)])
+            if is_pending and bool(section.get("group_by_date"))
+            else [(None, [item for item in items if isinstance(item, dict)])]
+        )
+        for item_date, group_items in item_groups:
+            if is_pending and bool(section.get("group_by_date")):
+                lines.append(_date_group_title(item_date))
+            for item in group_items:
+                status = item.get("status") or ""
+                source = item.get("source_type") or ""
+                expediente = _item_expediente(item)
+                expediente_text = f"Expediente: {expediente} | " if expediente else ""
+                profile_url = _item_profile_url(item)
+                link_text = f" | Ver perfil del contratante: {profile_url}" if profile_url else ""
+                if is_pending:
+                    due_text = f"Vence: {_item_date(item)} | " if _item_date_value(item) is not None else ""
+                else:
+                    due_text = f"Fecha/hora final: {_item_date(item)} | "
+                lines.append(
+                    f"- [{source}] {expediente_text}"
+                    f"Título: {_item_title(item)} | Estado: {status} | "
+                    f"{due_text}Tipo: {_item_type_label(item, source_key=_item_source_key(item))}"
+                    f"{link_text}"
+                )
         lines.append("")
     lines.extend(
         [
@@ -428,22 +547,24 @@ def build_operational_email_html(payload: dict[str, object], *, generated_at: ob
     date_label = html.escape(clean_text(payload.get("active_date_label")) or "Fecha no disponible")
     generated_label = html.escape(format_datetime_es(generated_at or datetime.now().replace(microsecond=0).isoformat()))
     sections = payload.get("sections") or []
-    rendered_sections = [section for section in sections if isinstance(section, dict)] or [
-        {"title": "Principal / Hoy", "items": []},
-        {"title": "Resto de la semana hasta domingo", "items": []},
-    ]
+    is_pending = bool(payload.get("is_pending_digest"))
+    rendered_sections = [section for section in sections if isinstance(section, dict)]
+    if not rendered_sections and not is_pending:
+        rendered_sections = [
+            {"title": "Principal / Hoy", "items": []},
+            {"title": "Resto de la semana hasta domingo", "items": []},
+        ]
     counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
     today_count = html.escape(str(counts.get("today", 0)))
     is_notice = isinstance(payload.get("notice"), dict)
-    is_pending = bool(payload.get("is_pending_digest"))
     right_label = "Total aviso" if is_notice else "Total semana"
     right_count_value = counts.get("total_notice") if is_notice else counts.get("total_week")
     if is_pending:
         summary_cells = [
             ("Total pendientes", counts.get("total", 0)),
-            ("Vencidos", counts.get("overdue", 0)),
             ("Vencen hoy", counts.get("today", 0)),
-            ("Próximos", counts.get("upcoming", 0)),
+            ("Próximos 7 días", counts.get("next_7_days", 0)),
+            ("Próximamente", counts.get("later", 0)),
         ]
         if int(counts.get("no_date", 0) or 0):
             summary_cells.append(("Sin fecha", counts.get("no_date", 0)))
@@ -454,7 +575,7 @@ def build_operational_email_html(payload: dict[str, object], *, generated_at: ob
     heading = html.escape(clean_text(payload.get("heading")) or "Agenda Llangón")
     subtitle = html.escape(clean_text(payload.get("subtitle")) or "Resumen operativo diario")
     sections_html = "".join(
-        _section_html(section, subdued=index > 0)
+        _section_html(section, subdued=index > 0, pending_digest=is_pending)
         for index, section in enumerate(rendered_sections)
     )
     summary_html = "".join(
@@ -493,4 +614,5 @@ def build_operational_email_html(payload: dict[str, object], *, generated_at: ob
             "Este es tu resumen operativo de Agenda.<br>"
             "Consulta la aplicación para acceder al detalle completo."
         ),
+        compact=is_pending,
     )

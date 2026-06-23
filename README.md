@@ -71,6 +71,51 @@ INFONALIA_ENABLE_ADMIN_ALIAS=0
 
 Después puede iniciarse manualmente con `python app.py`. No usar datos reales, descargas ni acceso de red hasta validar la configuración local.
 
+Para ejecutar la suite en Windows sin mantener una consola abierta, ver [docs/DESPLIEGUE_LOCAL_WINDOWS.md](docs/DESPLIEGUE_LOCAL_WINDOWS.md). Ese modo registra tareas programadas locales para web, scheduler y copias SQLite, manteniendo la web en `127.0.0.1:8787`.
+
+## Dropbox local sincronizado
+
+La suite puede trabajar con la carpeta local sincronizada por Dropbox Desktop. La ruta base se configura siempre por variable de entorno; no debe hardcodearse en el código ni en commits.
+
+Variable principal:
+
+```text
+LLANGON_DROPBOX_BASE_PATH=
+```
+
+Ejemplo temporal en Windows PowerShell:
+
+```powershell
+$env:LLANGON_DROPBOX_BASE_PATH="C:\Users\USUARIO\Dropbox\ASESORES LLANGON SL"
+```
+
+En este equipo de trabajo:
+
+```powershell
+$env:LLANGON_DROPBOX_BASE_PATH="C:\Users\LLangon03\Dropbox\00000 LLANGON"
+```
+
+Para dejarlo en `.env`, añadir:
+
+```text
+LLANGON_DROPBOX_BASE_PATH=C:\Users\USUARIO\Dropbox\ASESORES LLANGON SL
+```
+
+En este equipo:
+
+```text
+LLANGON_DROPBOX_BASE_PATH=C:\Users\LLangon03\Dropbox\00000 LLANGON
+```
+
+Si `LLANGON_DROPBOX_BASE_PATH` no está definida, el entorno de desarrollo y tests siguen usando las rutas locales/de prueba actuales. Las funciones que necesitan validar Dropbox real devuelven mensajes controlados como “Carpeta no configurada”, “La ruta no existe” o “La ruta está fuera de la carpeta base de Dropbox”.
+
+Reglas de seguridad:
+
+- Las rutas de expedientes se resuelven siempre dentro de la base configurada cuando se indica una ruta relativa.
+- Se bloquean rutas absolutas enviadas como relativas y cualquier intento de `..`.
+- Si una ficha conserva una ruta absoluta antigua, se puede seguir mostrando y usando, pero queda identificada si está fuera de la base configurada.
+- Las operaciones locales son conservadoras: no deben borrar ni sobrescribir ficheros existentes.
+
 ## Agenda operativa y email
 
 La pantalla Agenda usa listas limpias por día, semana, calendario mensual y vista completa. La bandeja operativa queda disponible para servicios internos, pero no se muestra como bloque principal.

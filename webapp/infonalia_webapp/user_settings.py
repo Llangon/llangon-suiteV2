@@ -21,6 +21,7 @@ SETTINGS_UPDATE_KEYS = {
     "smtp_ssl",
     "email_dry_run",
     "agenda_email_to",
+    "prepared_notice_email_to",
     "seguimiento_emails",
 }
 BOOLEAN_SETTINGS = {"maintenance_mode", "smtp_enabled", "smtp_tls", "smtp_ssl", "email_dry_run"}
@@ -95,6 +96,7 @@ def public_settings_payload(settings: Mapping[str, object]) -> dict[str, object]
         "smtp_ssl": settings.get("smtp_ssl", "0"),
         "email_dry_run": settings.get("email_dry_run", "1"),
         "agenda_email_to": settings.get("agenda_email_to", ""),
+        "prepared_notice_email_to": settings.get("prepared_notice_email_to", "info3@llangon.com"),
         "seguimiento_emails": settings.get("seguimiento_emails", ""),
         "smtp_password_set": bool(clean_text(settings.get("smtp_password"))),
     }
@@ -120,6 +122,11 @@ def settings_update_payload(data: Mapping[str, object]) -> dict[str, object]:
     for key in BOOLEAN_SETTINGS:
         if key in updates:
             updates[key] = "1" if bool_text(updates[key]) else "0"
+    if "prepared_notice_email_to" in updates:
+        email = clean_text(updates["prepared_notice_email_to"])
+        if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+            raise ValueError("Email aviso ficha preparada no valido.")
+        updates["prepared_notice_email_to"] = email
     if clean_text(data.get("smtp_password")):
         updates["smtp_password"] = clean_text(data.get("smtp_password"))
     elif data.get("clear_smtp_password"):
