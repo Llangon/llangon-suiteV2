@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from typing import Protocol
 
 from .config import AIConfig, get_ai_config
-from .document_selector import select_relevant_documents
+from .document_selector import inspect_document_selection
 from .gemini_provider import AIProviderError, GeminiProvider, ProviderResult
 from .hashing import hash_documents
 from .queue import (
@@ -80,7 +80,21 @@ def _job_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
     }
 
 
-def _base_payload(config: AIConfig, selected_documents: list[dict[str, object]], document_hash: str = "") -> dict[str, object]:
+def _select_documents(config: AIConfig, row: sqlite3.Row) -> tuple[list[dict[str, object]], dict[str, object]]:
+    selection = inspect_document_selection(
+        row,
+        max_documents=config.max_documents_per_analysis,
+        max_file_mb=config.max_file_mb,
+    )
+    return list(selection["selected_documents"]), dict(selection["diagnostics"])
+
+
+def _base_payload(
+    config: AIConfig,
+    selected_documents: list[dict[str, object]],
+    document_hash: str = "",
+    diagnostics: dict[str, object] | None = None,
+) -> dict[str, object]:
     configured = config.configured
     reason = ""
     if not config.enabled:
@@ -88,7 +102,7 @@ def _base_payload(config: AIConfig, selected_documents: list[dict[str, object]],
     elif not configured:
         reason = "IA no configurada"
     elif not selected_documents:
-        reason = "No hay documentos aptos para análisis IA"
+        reason = str((diagnostics or {}).get("final_reason") or "No hay documentos aptos para análisis IA")
     return {
         **config.public_status(),
         "has_summary": False,
@@ -96,6 +110,7 @@ def _base_payload(config: AIConfig, selected_documents: list[dict[str, object]],
         "job_status": "",
         "job": None,
         "selected_documents": selected_documents,
+        "document_diagnostics": diagnostics or {},
         "document_hash": document_hash,
         "puede_generar": bool(config.enabled and configured and selected_documents),
         "motivo_si_no_puede_generar": reason,
@@ -107,13 +122,9 @@ def get_ai_summary_payload(conn: sqlite3.Connection, licitacion_id: int) -> dict
     row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
     if not row:
         raise ValueError("Licitacion no encontrada")
-    selected = select_relevant_documents(
-        row,
-        max_documents=config.max_documents_per_analysis,
-        max_file_mb=config.max_file_mb,
-    )
+    selected, diagnostics = _select_documents(config, row)
     document_hash = hash_documents(selected) if selected else ""
-    payload = _base_payload(config, selected, document_hash)
+    payload = _base_payload(config, selected, document_hash, diagnostics)
     summary = latest_summary(conn, licitacion_id, document_hash) if document_hash else latest_summary(conn, licitacion_id)
     job = active_job(conn, licitacion_id, document_hash) if document_hash else None
     if not job:
@@ -141,23 +152,19 @@ def request_ai_analysis(
     row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
     if not row:
         raise ValueError("Licitacion no encontrada")
-    selected = select_relevant_documents(
-        row,
-        max_documents=config.max_documents_per_analysis,
-        max_file_mb=config.max_file_mb,
-    )
+    selected, diagnostics = _select_documents(config, row)
     if not selected:
-        return _base_payload(config, selected)
+        return _base_payload(config, selected, diagnostics=diagnostics)
     document_hash = hash_documents(selected)
     if not force:
         summary = latest_summary(conn, licitacion_id, document_hash)
         if summary:
-            payload = _base_payload(config, selected, document_hash)
+            payload = _base_payload(config, selected, document_hash, diagnostics)
             payload.update({"has_summary": True, "summary": _summary_payload(summary), "job_status": "completed"})
             return payload
         existing_job = active_job(conn, licitacion_id, document_hash)
         if existing_job:
-            payload = _base_payload(config, selected, document_hash)
+            payload = _base_payload(config, selected, document_hash, diagnostics)
             payload.update({"job_status": existing_job["status"], "job": _job_payload(existing_job)})
             return payload
 
@@ -173,7 +180,7 @@ def request_ai_analysis(
             error_code="DISABLED" if not config.enabled else "NOT_CONFIGURED",
             error_message="IA desactivada" if not config.enabled else "Gemini no esta configurado.",
         )
-        payload = _base_payload(config, selected, document_hash)
+        payload = _base_payload(config, selected, document_hash, diagnostics)
         job = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
         payload.update({"job_status": "disabled", "job": _job_payload(job)})
         return payload

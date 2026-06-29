@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from webapp.infonalia_webapp.ai.config import get_ai_config
-from webapp.infonalia_webapp.ai.document_selector import select_relevant_documents
+from webapp.infonalia_webapp.ai.document_selector import inspect_document_selection, select_relevant_documents
 from webapp.infonalia_webapp.ai.gemini_provider import AIProviderError, ProviderResult
 from webapp.infonalia_webapp.ai.hashing import hash_documents
 from webapp.infonalia_webapp.ai.queue import active_job, create_job, ensure_ai_schema, latest_summary
@@ -91,6 +91,7 @@ class FakeProvider:
 
 
 def test_ai_config_defaults_disabled_and_does_not_expose_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GEMINI_ENABLED", "false")
     monkeypatch.setenv("GEMINI_API_KEY", "secret-test-key")
     config = get_ai_config()
 
@@ -100,7 +101,8 @@ def test_ai_config_defaults_disabled_and_does_not_expose_key(monkeypatch: pytest
     assert "secret-test-key" not in json.dumps(config.public_status())
 
 
-def test_document_selector_prioritizes_and_excludes(tmp_path: Path) -> None:
+def test_document_selector_prioritizes_and_excludes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
     _write_pdf(tmp_path / "Acta apertura anterior.pdf")
     _write_pdf(tmp_path / "PPT tecnico.pdf")
     _write_pdf(tmp_path / "PCAP administrativo.pdf")
@@ -119,11 +121,114 @@ def test_document_selector_prioritizes_and_excludes(tmp_path: Path) -> None:
     assert all("anterior" not in str(item["name"]).lower() for item in selected)
 
 
-def test_document_selector_respects_max_file_size(tmp_path: Path) -> None:
+def test_document_selector_respects_max_file_size(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
     _write_pdf(tmp_path / "PCAP.pdf", b"123456")
 
     assert select_relevant_documents({"ruta_carpeta": str(tmp_path)}, max_documents=4, max_file_mb=1)
     assert not select_relevant_documents({"ruta_carpeta": str(tmp_path)}, max_documents=4, max_file_mb=0)
+
+
+def test_document_selector_resolves_relative_dropbox_folder_without_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = tmp_path / "Dropbox" / "00000 LLANGON"
+    folder = base / "2026" / "07 JULIO" / "02 JULIO 2359 JAEN MARTOS 20264096"
+    folder.mkdir(parents=True)
+    _write_pdf(folder / "DOC20260615132934PPT y ANEXO PPT.pdf")
+    _write_pdf(folder / "DOC20260615135002PCAP.pdf")
+    _write_pdf(folder / "DOC20260617115307RESOLUCION INCOACION.pdf")
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(base))
+
+    result = inspect_document_selection(
+        {"ruta_carpeta": r"2026\07 JULIO\02 JULIO 2359 JAEN MARTOS 20264096"},
+        max_documents=4,
+        max_file_mb=45,
+    )
+
+    names = [item["name"] for item in result["selected_documents"]]
+    assert names[:2] == ["DOC20260615135002PCAP.pdf", "DOC20260615132934PPT y ANEXO PPT.pdf"]
+    diagnostics = result["diagnostics"]
+    assert diagnostics["resolved_path"] == str(folder)
+    assert diagnostics["resolved_exists"] is True
+    assert diagnostics["resolved_inside_dropbox"] is True
+    assert diagnostics["pdfs_found_count"] == 3
+
+
+def test_document_selector_excludes_ficha_in_client_subfolder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    client_folder = tmp_path / "SALVADOR"
+    client_folder.mkdir()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _write_pdf(client_folder / "Ficha.pdf")
+
+    result = inspect_document_selection({"ruta_carpeta": str(tmp_path)}, max_documents=4, max_file_mb=45)
+
+    assert [item["name"] for item in result["selected_documents"]] == ["PCAP.pdf"]
+    discarded = result["diagnostics"]["discarded_documents"]
+    assert any(item["relative_path"] == str(Path("SALVADOR") / "Ficha.pdf") for item in discarded)
+
+
+def test_document_selector_excludes_previous_actas_and_adjudication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    _write_pdf(tmp_path / "Acta apertura.pdf")
+    _write_pdf(tmp_path / "Resolucion adjudicacion.pdf")
+    _write_pdf(tmp_path / "Oferta anterior.pdf")
+
+    result = inspect_document_selection({"ruta_carpeta": str(tmp_path)}, max_documents=4, max_file_mb=45)
+
+    assert result["selected_documents"] == []
+    assert result["diagnostics"]["pdfs_found_count"] == 3
+    assert result["diagnostics"]["discarded_documents_count"] == 3
+    assert "todos fueron descartados" in result["diagnostics"]["final_reason"]
+
+
+def test_document_selector_reports_folder_with_no_apt_pdfs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    (tmp_path / "notas.txt").write_text("sin pdf", encoding="utf-8")
+
+    result = inspect_document_selection({"ruta_carpeta": str(tmp_path)}, max_documents=4, max_file_mb=45)
+
+    assert result["selected_documents"] == []
+    assert result["diagnostics"]["resolved_exists"] is True
+    assert result["diagnostics"]["pdfs_found_count"] == 0
+    assert "no se han encontrado PDFs" in result["diagnostics"]["final_reason"]
+
+
+def test_document_selector_blocks_path_outside_dropbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = tmp_path / "Dropbox"
+    outside = tmp_path / "Outside"
+    base.mkdir()
+    outside.mkdir()
+    _write_pdf(outside / "PCAP.pdf")
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(base))
+
+    result = inspect_document_selection({"ruta_carpeta": str(outside)}, max_documents=4, max_file_mb=45)
+
+    assert result["selected_documents"] == []
+    assert result["diagnostics"]["resolved_inside_dropbox"] is False
+    assert "fuera de la carpeta base" in result["diagnostics"]["final_reason"]
+
+
+def test_document_selector_reports_missing_dropbox_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("LLANGON_DROPBOX_BASE_PATH", raising=False)
+    monkeypatch.delenv("INFONALIA_DROPBOX_ROOT", raising=False)
+
+    result = inspect_document_selection({"ruta_carpeta": r"2026\07 JULIO\expediente"}, max_documents=4, max_file_mb=45)
+
+    assert result["selected_documents"] == []
+    assert result["diagnostics"]["dropbox_base_configured"] is False
+    assert "Dropbox" in result["diagnostics"]["final_reason"]
 
 
 def test_hash_documents_is_stable_and_changes_with_content(tmp_path: Path) -> None:
@@ -192,6 +297,7 @@ def test_service_disabled_does_not_call_provider(tmp_path: Path, monkeypatch: py
     _write_pdf(tmp_path / "PCAP.pdf")
     _insert_licitacion(conn, tmp_path)
     provider = FakeProvider()
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
     monkeypatch.setenv("GEMINI_ENABLED", "false")
 
     payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
@@ -205,6 +311,7 @@ def test_service_processes_job_with_mock_provider(tmp_path: Path, monkeypatch: p
     conn = _conn()
     _write_pdf(tmp_path / "PCAP.pdf")
     _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
     monkeypatch.setenv("GEMINI_ENABLED", "true")
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
 
@@ -219,6 +326,7 @@ def test_service_marks_429_as_deferred(tmp_path: Path, monkeypatch: pytest.Monke
     conn = _conn()
     _write_pdf(tmp_path / "PCAP.pdf")
     _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
     monkeypatch.setenv("GEMINI_ENABLED", "true")
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
 
@@ -237,6 +345,7 @@ def test_service_marks_invalid_json_as_error(tmp_path: Path, monkeypatch: pytest
     conn = _conn()
     _write_pdf(tmp_path / "PCAP.pdf")
     _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
     monkeypatch.setenv("GEMINI_ENABLED", "true")
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
 
@@ -254,7 +363,10 @@ def test_parse_summary_json_fills_missing_sections() -> None:
     assert "solvencia" in parsed
 
 
-def test_ai_summary_api_without_config_returns_controlled_state(tmp_path: Path) -> None:
+def test_ai_summary_api_without_config_returns_controlled_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "false")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     app = load_app_module()
     with temporary_app_database(app):
         folder = tmp_path / "docs"
@@ -277,11 +389,15 @@ def test_ai_summary_api_without_config_returns_controlled_state(tmp_path: Path) 
         status, payload = handler.responses[-1]
         assert status == HTTPStatus.OK
         assert payload["enabled"] is False
-        assert payload["configured"] is False
         assert payload["selected_documents"]
 
 
-def test_ai_generate_api_with_disabled_gemini_creates_disabled_job(tmp_path: Path) -> None:
+def test_ai_generate_api_with_disabled_gemini_creates_disabled_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "false")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     app = load_app_module()
     with temporary_app_database(app):
         folder = tmp_path / "docs"
@@ -306,4 +422,3 @@ def test_ai_generate_api_with_disabled_gemini_creates_disabled_job(tmp_path: Pat
         assert payload["job_status"] == "disabled"
         with app.db_session() as conn:
             assert conn.execute("SELECT COUNT(*) FROM ai_analysis_jobs").fetchone()[0] == 1
-

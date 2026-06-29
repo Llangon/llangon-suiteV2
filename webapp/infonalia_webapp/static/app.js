@@ -3637,6 +3637,28 @@ function renderAiSummaryBlocks(payload) {
   `;
 }
 
+function renderAiDocumentDiagnostics(payload) {
+  const diagnostics = payload.document_diagnostics || {};
+  const selectedDocs = payload.selected_documents || [];
+  if (selectedDocs.length) return "";
+  const parts = [];
+  if (diagnostics.resolved_message) parts.push(diagnostics.resolved_message);
+  if (diagnostics.pdfs_found_count !== undefined) parts.push(`${diagnostics.pdfs_found_count} PDF(s) encontrados`);
+  if (diagnostics.discarded_documents_count) parts.push(`${diagnostics.discarded_documents_count} descartado(s) por reglas de selección`);
+  const message = diagnostics.final_reason || payload.motivo_si_no_puede_generar || "";
+  const adminDetails = isAdmin()
+    ? `<details class="ai-technical-json"><summary>Diagnóstico documental</summary><pre>${escapeHtml(JSON.stringify(diagnostics, null, 2))}</pre></details>`
+    : "";
+  if (!message && !parts.length && !adminDetails) return "";
+  return `
+    <div class="ai-warning">
+      ${message ? `<strong>${escapeHtml(message)}</strong>` : ""}
+      ${parts.length ? `<p>${escapeHtml(parts.join(" · "))}</p>` : ""}
+    </div>
+    ${adminDetails}
+  `;
+}
+
 function renderAiSummaryContent(licitacionId, payload) {
   const selectedDocs = payload.selected_documents || [];
   const job = payload.job || {};
@@ -3655,6 +3677,7 @@ function renderAiSummaryContent(licitacionId, payload) {
       </div>
     </div>
     ${reason ? `<div class="ai-reason">${escapeHtml(reason)}</div>` : ""}
+    ${renderAiDocumentDiagnostics(payload)}
     ${selectedDocs.length ? `
       <div class="ai-documents">
         ${selectedDocs.map((doc) => `<span title="${escapeHtml(doc.path || "")}">${escapeHtml(doc.name || doc.relative_path || "Documento")} · ${escapeHtml(doc.reason || "")}</span>`).join("")}
