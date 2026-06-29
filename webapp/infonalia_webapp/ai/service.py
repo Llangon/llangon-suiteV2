@@ -101,6 +101,8 @@ def _job_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
         "sent_documents_names": raw_usage.get("sent_documents_names") or raw_diagnostics.get("sent_documents_names") or [],
         "total_pdf_bytes_sent": raw_usage.get("total_pdf_bytes_sent") or raw_diagnostics.get("total_pdf_bytes_sent") or 0,
         "response_text_length": raw_diagnostics.get("text_length", 0),
+        "duration_seconds": raw_usage.get("duration_seconds") or raw_diagnostics.get("duration_seconds") or 0,
+        "timeout_seconds": raw_usage.get("timeout_seconds") or raw_diagnostics.get("timeout_seconds") or 0,
         "usage_metadata": {
             key: value
             for key, value in raw_usage.items()

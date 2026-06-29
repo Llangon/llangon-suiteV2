@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,6 +26,7 @@ class ProviderResult:
 
 
 MAX_RESPONSE_PREVIEW = 1500
+LOGGER = logging.getLogger(__name__)
 
 
 def _usage_to_dict(value: object) -> dict[str, Any]:
@@ -159,9 +162,11 @@ def parse_gemini_response(response: object) -> tuple[dict[str, Any], dict[str, A
 def classify_gemini_exception(exc: Exception, *, secrets: tuple[str, ...] = ()) -> AIProviderError:
     text = str(exc)
     safe_text = _redact(text, secrets)
+    exc_type = type(exc).__name__
     upper = text.upper()
+    upper_type = exc_type.upper()
     diagnostics = {
-        "provider_exception_type": type(exc).__name__,
+        "provider_exception_type": exc_type,
         "provider_error_preview": _preview(safe_text),
     }
     if "429" in upper or "RESOURCE_EXHAUSTED" in upper:
@@ -176,8 +181,14 @@ def classify_gemini_exception(exc: Exception, *, secrets: tuple[str, ...] = ()) 
         return AIProviderError("Gemini no ha autorizado la petición. Revisa la configuración.", code="AUTH_ERROR", diagnostics=diagnostics)
     if "404" in upper or "MODEL NOT FOUND" in upper or "NOT_FOUND" in upper:
         return AIProviderError("El modelo Gemini configurado no existe o no está disponible.", code="MODEL_ERROR", diagnostics=diagnostics)
-    if "TIMEOUT" in upper or "TIMED OUT" in upper:
-        return AIProviderError("Tiempo de espera agotado al consultar Gemini.", code="TIMEOUT", diagnostics=diagnostics)
+    if "TIMEOUT" in upper or "TIMED OUT" in upper or "TIMEOUT" in upper_type:
+        return AIProviderError(
+            "Gemini no respondió dentro del tiempo configurado.",
+            code="GEMINI_TIMEOUT",
+            diagnostics=diagnostics,
+        )
+    if "CONNECTERROR" in upper_type or "CONNECTION" in upper or "NETWORK" in upper:
+        return AIProviderError("Error de conexión consultando Gemini.", code="NETWORK_ERROR", diagnostics=diagnostics)
     return AIProviderError("Error consultando Gemini.", code="PROVIDER_ERROR", diagnostics=diagnostics)
 
 
@@ -189,6 +200,11 @@ def _json_generation_config(types: Any, *, with_schema: bool) -> Any:
     if with_schema:
         kwargs["response_schema"] = {"type": "object"}
     return types.GenerateContentConfig(**kwargs)
+
+
+def _http_options(types: Any, timeout_seconds: int) -> Any:
+    # google-genai define HttpOptions.timeout en milisegundos y lo convierte internamente a segundos para httpx.
+    return types.HttpOptions(timeout=max(1, int(timeout_seconds)) * 1000)
 
 
 def _context_payload(licitacion: dict[str, object], documents: list[dict[str, object]]) -> dict[str, object]:
@@ -284,9 +300,14 @@ class GeminiProvider:
         except Exception as exc:
             raise AIProviderError("Falta instalar google-genai.", code="SDK_NOT_INSTALLED") from exc
 
-        send_diagnostics: dict[str, Any] = {"model": self.config.model}
+        send_diagnostics: dict[str, Any] = {
+            "model": self.config.model,
+            "timeout_seconds": self.config.timeout_seconds,
+            "timeout_milliseconds": self.config.timeout_seconds * 1000,
+        }
+        started = time.perf_counter()
         try:
-            client = genai.Client(api_key=self.config.api_key)
+            client = genai.Client(api_key=self.config.api_key, http_options=_http_options(types, self.config.timeout_seconds))
             contents, send_diagnostics = build_gemini_contents(
                 types,
                 licitacion,
@@ -294,6 +315,15 @@ class GeminiProvider:
                 max_file_mb=self.config.max_file_mb,
             )
             send_diagnostics["model"] = self.config.model
+            send_diagnostics["timeout_seconds"] = self.config.timeout_seconds
+            send_diagnostics["timeout_milliseconds"] = self.config.timeout_seconds * 1000
+            LOGGER.info(
+                "Inicio llamada Gemini model=%s pdfs=%s bytes=%s timeout=%ss",
+                self.config.model,
+                send_diagnostics.get("sent_documents_count", 0),
+                send_diagnostics.get("total_pdf_bytes_sent", 0),
+                self.config.timeout_seconds,
+            )
             try:
                 response = client.models.generate_content(
                     model=self.config.model,
@@ -303,6 +333,7 @@ class GeminiProvider:
             except Exception as exc:
                 if not _is_schema_config_error(exc):
                     raise
+                LOGGER.info("Gemini response_schema no aceptado; reintentando solo con response_mime_type.")
                 response = client.models.generate_content(
                     model=self.config.model,
                     contents=contents,
@@ -312,12 +343,26 @@ class GeminiProvider:
             raise
         except Exception as exc:
             error = classify_gemini_exception(exc, secrets=(self.config.api_key,))
+            send_diagnostics["duration_seconds"] = round(time.perf_counter() - started, 3)
             error.diagnostics.update(send_diagnostics)
+            LOGGER.warning(
+                "Error llamada Gemini code=%s model=%s duration=%ss",
+                error.code,
+                self.config.model,
+                send_diagnostics["duration_seconds"],
+            )
             raise error from exc
 
         payload, parse_diagnostics = parse_gemini_response(response)
+        send_diagnostics["duration_seconds"] = round(time.perf_counter() - started, 3)
         parse_diagnostics.update(send_diagnostics)
         raw_usage = _usage_to_dict(getattr(response, "usage_metadata", None))
         raw_usage.update(send_diagnostics)
         raw_usage["parse_diagnostics"] = parse_diagnostics
+        LOGGER.info(
+            "Fin llamada Gemini model=%s duration=%ss text_length=%s",
+            self.config.model,
+            send_diagnostics["duration_seconds"],
+            parse_diagnostics.get("text_length", 0),
+        )
         return ProviderResult(summary=payload, raw_usage=raw_usage)

@@ -54,6 +54,5 @@ def get_ai_config() -> AIConfig:
         cooldown_on_429_minutes=max(1, _int_env("GEMINI_COOLDOWN_ON_429_MINUTES", 15)),
         max_documents_per_analysis=max(1, _int_env("GEMINI_MAX_DOCUMENTS_PER_ANALYSIS", 4)),
         max_file_mb=max(1, _int_env("GEMINI_MAX_FILE_MB", 45)),
-        timeout_seconds=max(10, _int_env("GEMINI_TIMEOUT_SECONDS", 120)),
+        timeout_seconds=max(1, _int_env("GEMINI_TIMEOUT_SECONDS", 120)),
     )
-

@@ -20,6 +20,7 @@ from webapp.infonalia_webapp.ai.gemini_provider import (
     parse_gemini_response,
 )
 from webapp.infonalia_webapp.ai.hashing import hash_documents
+from webapp.infonalia_webapp.ai.manual_test import build_preflight_report, mark_interrupted_job
 from webapp.infonalia_webapp.ai.queue import active_job, create_job, ensure_ai_schema, latest_summary
 from webapp.infonalia_webapp.ai.rate_limit import check_rate_limit
 from webapp.infonalia_webapp.ai.schemas import parse_summary_json, summary_quality_check
@@ -198,6 +199,13 @@ def test_gemini_503_is_classified_as_unavailable() -> None:
 
     assert error.code == "GEMINI_UNAVAILABLE"
     assert "Reintentar" in str(error)
+
+
+def test_gemini_timeout_is_classified() -> None:
+    error = classify_gemini_exception(TimeoutError("timed out waiting for response"))
+
+    assert error.code == "GEMINI_TIMEOUT"
+    assert "tiempo configurado" in str(error)
 
 
 def test_gemini_error_diagnostics_redact_api_key() -> None:
@@ -587,6 +595,47 @@ def test_service_stores_invalid_json_provider_diagnostics(tmp_path: Path, monkey
     assert payload["job"]["parse_attempts"] == ["response.text:root_type:list"]
 
 
+def test_mark_interrupted_job_sets_status_and_error(tmp_path: Path) -> None:
+    conn = _conn()
+    _insert_licitacion(conn, tmp_path)
+    job_id = create_job(
+        conn,
+        licitacion_id=1,
+        document_hash="hash",
+        selected_documents=[],
+        model="gemini-test",
+        requested_by="manual_test",
+        status="processing",
+    )
+
+    assert mark_interrupted_job(conn, job_id) is True
+
+    row = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
+    assert row["status"] == "error"
+    assert row["error_code"] == "INTERRUPTED"
+    assert row["finished_at"]
+    assert conn.execute("SELECT COUNT(*) FROM ai_usage_log WHERE error_code = 'INTERRUPTED'").fetchone()[0] == 1
+
+
+def test_manual_preflight_report_has_timeout_and_no_api_key(tmp_path: Path) -> None:
+    pdf = _write_pdf(tmp_path / "PCAP.pdf", b"%PDF-1.4\n")
+
+    report = build_preflight_report(
+        job_id=9,
+        model="gemini-3.1-flash-lite",
+        selected_documents=[{"name": "PCAP.pdf", "size_bytes": pdf.stat().st_size}],
+        timeout_seconds=12,
+    )
+
+    serialized = json.dumps(report, ensure_ascii=False)
+    assert report["job_id"] == 9
+    assert report["GEMINI_TIMEOUT_SECONDS"] == 12
+    assert report["sent_documents_count"] == 1
+    assert report["total_pdf_bytes_sent"] == pdf.stat().st_size
+    assert "GEMINI_API_KEY" not in serialized
+    assert "secret" not in serialized.lower()
+
+
 def test_parse_summary_json_fills_missing_sections() -> None:
     parsed = parse_summary_json({"metadata": {"expediente": "EXP"}, "resumen_ejecutivo": {"texto": "ok"}})
 
@@ -660,4 +709,6 @@ def test_manual_test_exposes_force_regeneration_flag() -> None:
     source = Path("webapp/infonalia_webapp/ai/manual_test.py").read_text(encoding="utf-8")
 
     assert '"--force"' in source
+    assert '"--timeout"' in source
     assert "force=args.force" in source
+    assert "mark_interrupted_job" in source
