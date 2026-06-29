@@ -6,7 +6,8 @@ $ProjectRoot = Resolve-Path (Join-Path $ScriptRoot "..\..")
 $RuntimeRoot = Join-Path $ProjectRoot "runtime"
 New-Item -ItemType Directory -Force -Path (Join-Path $RuntimeRoot "logs"), (Join-Path $RuntimeRoot "locks") | Out-Null
 
-$PowerShellExe = (Get-Command powershell.exe).Source
+$ScriptHostExe = (Get-Command wscript.exe).Source
+$HiddenRunner = Join-Path $ScriptRoot "run_powershell_hidden.vbs"
 $SchedulerMinutes = 5
 if ($env:MONITOR_SCHEDULER_POLL_MINUTES) {
     $Parsed = 0
@@ -24,8 +25,8 @@ function Register-LlangonTask {
         [TimeSpan]$ExecutionTimeLimit
     )
 
-    $Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptPath`""
-    $Action = New-ScheduledTaskAction -Execute $PowerShellExe -Argument $Arguments -WorkingDirectory $ProjectRoot
+    $Arguments = "`"$HiddenRunner`" `"$ScriptPath`""
+    $Action = New-ScheduledTaskAction -Execute $ScriptHostExe -Argument $Arguments -WorkingDirectory $ProjectRoot
     $Settings = New-ScheduledTaskSettingsSet `
         -MultipleInstances IgnoreNew `
         -StartWhenAvailable `
@@ -59,7 +60,7 @@ Register-LlangonTask `
     -ScriptPath $WebScript `
     -Trigger $WebTrigger `
     -Description "Servidor local de Llangon Suite en 127.0.0.1:8787." `
-    -ExecutionTimeLimit (New-TimeSpan -Days 0)
+    -ExecutionTimeLimit (New-TimeSpan -Days 3650)
 
 Register-LlangonTask `
     -Name "LlangonSuite-Scheduler" `
@@ -79,4 +80,3 @@ Write-Host "Tareas instaladas o actualizadas:"
 Write-Host " - LlangonSuite-Web"
 Write-Host " - LlangonSuite-Scheduler"
 Write-Host " - LlangonSuite-Backup"
-

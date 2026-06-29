@@ -20,6 +20,7 @@ from webapp.infonalia_webapp.web_security import (
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 STATIC_ROOT = Path(__file__).resolve().parents[1] / "static"
 FIREBASE_ROOT = REPOSITORY_ROOT / "firebase" / "public_firebase"
+FIREBASE_CONFIG = REPOSITORY_ROOT / "firebase.json"
 
 
 def test_web_security_import_does_not_import_app_or_side_effect_modules() -> None:
@@ -84,8 +85,17 @@ def test_public_html_entrypoints_do_not_need_inline_scripts() -> None:
         assert not re.search(r"<[^>]+\son[a-z]+\s*=", html)
 
 
+def test_login_back_link_points_to_firebase_public_site() -> None:
+    html = (STATIC_ROOT / "login.html").read_text(encoding="utf-8")
+
+    assert 'class="ghost login-back-link"' in html
+    assert 'href="/"' not in html
+    assert 'href="https://llangon-web-publica-prueba.web.app/"' in html
+
+
 def test_firebase_hosting_headers_include_public_csp() -> None:
-    config = json.loads((FIREBASE_ROOT / "firebase.json").read_text(encoding="utf-8"))
+    config = json.loads(FIREBASE_CONFIG.read_text(encoding="utf-8"))
+    assert config["hosting"]["public"] == "firebase/public_firebase"
     headers = config["hosting"]["headers"]
     global_headers = next(entry["headers"] for entry in headers if entry["source"] == "**")
     header_map = {entry["key"]: entry["value"] for entry in global_headers}
@@ -165,14 +175,22 @@ def test_licitaciones_center_ui_is_simplified_and_has_detail_view() -> None:
     assert 'data-licitaciones-view="active"' not in html
     assert 'id="summary" hidden' in html
     assert 'id="licitacion-detail-dialog"' in html
+    assert "Detalle de trabajo" in html
     assert "PRÓXIMOS MÓDULOS" not in html
     assert "Clientes" not in html
     assert "Requerimientos" not in html
     assert 'data-open-licitacion-detail="${escapeHtml(item.id)}"' in script
     assert "function renderLicitacionDetailView" in script
+    assert "data-detail-tab=\"resumen\"" in script
+    assert "data-detail-tab-panel=\"documentos\"" in script
+    assert "data-document-filter" in script
+    assert "Copiar ruta" in script
     assert "Crear nueva actuación" in script
     assert "@media print" in styles
     assert ".detail-dialog[open]" in styles
+    assert ".detail-cover" in styles
+    assert ".detail-tabs" in styles
+    assert ".document-card-list" in styles
 
 
 def test_dropbox_marker_followup_ui_has_admin_only_safe_marker_controls() -> None:
@@ -223,13 +241,18 @@ def test_licitacion_cards_and_detail_keep_hotfix_ux_noise_out() -> None:
     assert ">Abrir</button>" in card_render
     assert "Crear nueva actuación" in card_render
 
-    assert "Notas internas" not in detail_render
-    assert "Histórico" not in detail_render
-    assert "Último inventario" not in detail_render
-    assert "document_summary" not in detail_render
-    assert "document_groups" not in detail_render
-    assert "renderLicitacionWorkFields" not in detail_render
-    assert "renderLicitacionHistory" not in detail_render
+    summary_render = detail_render.split('data-detail-tab-panel="resumen"', 1)[1].split('data-detail-tab-panel="actuaciones"', 1)[0]
+    documents_render = detail_render.split('data-detail-tab-panel="documentos"', 1)[1].split('data-detail-tab-panel="seguimiento"', 1)[0]
+
+    assert "renderLicitacionDocuments(item)" not in summary_render
+    assert "Ruta registrada" not in summary_render
+    assert "Error descarga" not in summary_render
+    assert "renderLicitacionDocuments(item)" in documents_render
+    assert "renderFolderPanel" in documents_render
+    assert "renderDocumentSummary(item)" in documents_render
+    assert "renderLicitacionWorkFields" in detail_render
+    assert "renderLicitacionHistory" in detail_render
+    assert "file:///" not in script
 
 
 def test_nuria_day_review_filter_defaults_to_not_discarded() -> None:
@@ -270,6 +293,67 @@ def test_agenda_pending_tasks_ui_is_admin_only_and_initial_route_by_role() -> No
     assert "agendaDeepLinkToken" in script
     assert 'params.get("agenda_source")' in script
     assert "openAgendaOrigin(token)" in script
+
+
+def test_private_app_has_mobile_drawer_shell() -> None:
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_ROOT / "styles.css").read_text(encoding="utf-8")
+
+    assert 'class="mobile-topbar"' in html
+    assert 'id="mobile-menu-button"' in html
+    assert 'aria-controls="app-sidebar"' in html
+    assert 'id="sidebar-overlay"' in html
+    assert 'id="app-sidebar" class="sidebar"' in html
+    assert 'id="mobile-menu-close"' in html
+
+    assert "function openSidebar" in script
+    assert "function closeSidebar" in script
+    assert "function toggleSidebar" in script
+    assert 'document.body.classList.add("sidebar-open")' in script
+    assert 'document.body.classList.remove("sidebar-open")' in script
+    assert 'event.key === "Escape"' in script
+    assert 'document.querySelectorAll(".sidebar [data-nav-section]")' in script
+
+    assert ".mobile-topbar" in styles
+    assert "body.sidebar-open .sidebar" in styles
+    assert ".sidebar-overlay:not([hidden])" in styles
+    assert "transform: translateX(-105%)" in styles
+    assert "position: fixed;" in styles
+
+
+def test_private_app_mobile_responsive_controls_stay_compact_without_horizontal_cutoff() -> None:
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_ROOT / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="notifications-menu-button"' in html
+    assert 'class="section-title-block"' in html
+    assert 'document.body.dataset.activeSection = section || "";' in script
+    assert 'licitacionesSection.classList.toggle("has-day-context", Boolean(diaId));' in script
+
+    assert "@media (max-width: 980px)" in styles
+    assert "@media (max-width: 760px)" in styles
+    assert "body[data-active-section=\"licitaciones\"] .topbar-actions" in styles
+    assert "#licitaciones-section:not(.has-day-context) > .section-head .section-title-block" in styles
+    assert "#calendar-section > .section-head .section-title-block" in styles
+    assert "#actuaciones-section > .section-head .section-title-block" in styles
+    assert ".filter-chip-scroll" in styles
+    assert "flex-wrap: wrap;" in styles
+    assert "overflow-x: visible;" in styles
+    assert "#actuaciones-summary .metric" in styles
+
+
+def test_desktop_layout_keeps_sidebar_topbar_fixed_and_scrolls_central_content() -> None:
+    styles = (STATIC_ROOT / "styles.css").read_text(encoding="utf-8")
+
+    assert "@media (min-width: 981px)" in styles
+    assert "body {\n    overflow: hidden;" in styles
+    assert ".app-layout {\n    height: 100vh;" in styles
+    assert ".main-area {\n    display: flex;" in styles
+    assert "overflow: hidden;" in styles
+    assert ".shell {\n    flex: 1 1 auto;" in styles
+    assert "overflow-y: auto;" in styles
 
 
 def test_monitor_history_ui_is_admin_only_and_inventory_ui_is_hidden() -> None:
@@ -320,9 +404,11 @@ def test_new_licitacion_platform_capture_ui_exists_and_preserves_manual_values()
     assert 'id="capture-platform-result"' in html
     assert "Pega la URL XML del pliego" in script
     assert 'fetch("/api/licitaciones/capture"' in script
-    assert "profile_url: profileUrl" in script
+    assert "profile_url: profileUrlForCapture" in script
     assert "form.elements[target].value = value" in script
-    assert 'if (String(form.elements[target].value || "").trim())' in script
+    assert "function isPlaceDocumentUrl" in script
+    assert "shouldReplaceDocumentProfile" in script
+    assert "currentValue && !shouldReplaceDocumentProfile" in script
     assert "campo ya tenía valor, no se ha sobrescrito" in script
 
 

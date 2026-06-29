@@ -54,8 +54,11 @@ scripts/windows/
 | `install_local_deployment.ps1` | Registra las tareas programadas. |
 | `status_local_deployment.ps1` | Comprueba tareas, logs y healthcheck. |
 | `uninstall_local_deployment.ps1` | Quita las tareas programadas sin borrar datos. |
+| `run_powershell_hidden.vbs` | Lanzador oculto usado por las tareas para evitar ventanas de consola. |
 
 Los scripts calculan la ruta del proyecto desde su propia ubicacion. No dependen de una ruta fija tipo `C:\Users\...`.
+
+Las tareas programadas se registran mediante `wscript.exe` + `run_powershell_hidden.vbs`. Ese lanzador ejecuta PowerShell con `-NonInteractive` y `-WindowStyle Hidden`, por lo que no debe aparecer ninguna ventana fugaz al iniciar sesion ni al ejecutarse scheduler o backup.
 
 ## Instalacion
 
@@ -88,17 +91,46 @@ Healthcheck esperado:
 
 Este endpoint no devuelve usuarios, rutas, configuracion ni informacion sensible.
 
+## Prueba manual de la web
+
+Para probar el arranque sin instalar nada mas:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\start_web_production.ps1
+```
+
+Este script ejecuta el servidor Python en primer plano. El propio servidor verifica `/api/health` tras arrancar y escribe el resultado en `runtime/logs/web.log`. Si se ejecuta en una ventana manual, esa ventana queda ocupada mientras la web siga levantada.
+
+En otra ventana:
+
+```powershell
+Invoke-WebRequest http://127.0.0.1:8787/api/health -UseBasicParsing
+netstat -ano | findstr :8787
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\status_local_deployment.ps1
+```
+
+Debe verse:
+
+```text
+Healthcheck web: OK
+TCP 127.0.0.1:8787 ... LISTENING
+```
+
+Para detener una prueba manual, cerrar la ventana donde esta corriendo `start_web_production.ps1` o detener el PID que muestre `status_local_deployment.ps1`.
+
 ## Logs
 
 Por defecto:
 
 ```text
 runtime/logs/web.log
+runtime/logs/web.stdout.log
+runtime/logs/web.stderr.log
 runtime/logs/scheduler.log
 runtime/logs/backup.log
 ```
 
-El servidor web tambien usa rotacion interna de log para evitar crecimiento indefinido.
+`web.log` contiene el arranque, healthcheck posterior, PID y codigo de salida del proceso. El servidor web tambien usa rotacion interna de log para evitar crecimiento indefinido.
 
 ## Copias SQLite
 
@@ -175,4 +207,3 @@ foreach ($file in $files) {
     [scriptblock]::Create((Get-Content -Raw -LiteralPath $file.FullName)) | Out-Null
 }
 ```
-

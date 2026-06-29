@@ -1189,7 +1189,7 @@ Cambios aplicados:
 - la URL privada pasa a `data-private-app-url` en el `<body>`;
 - `public.js` lee esa URL desde `document.body.dataset.privateAppUrl`;
 - se añade CSP pública desde `build_security_headers(is_private=False)`;
-- `firebase/public_firebase/firebase.json` añade headers globales de seguridad, incluida la misma CSP pública;
+- `firebase.json` añade headers globales de seguridad para `firebase/public_firebase`, incluida la misma CSP pública;
 - la política pública usa recursos propios: `default-src 'self'`, `script-src 'self'`, `style-src 'self'`, `connect-src 'self'`, `img-src 'self'`, `font-src 'self'`;
 - no se usa `unsafe-inline` ni `unsafe-eval`.
 

@@ -7,14 +7,27 @@
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
+  <header class="mobile-topbar" aria-label="Cabecera móvil">
+    <button id="mobile-menu-button" class="mobile-menu-button" type="button" aria-label="Abrir menú" aria-controls="app-sidebar" aria-expanded="false">☰</button>
+    <div class="mobile-brand">
+      <img src="/static/logo-llangon.png" alt="Asesores Llangon">
+      <div>
+        <p>Panel privado</p>
+        <strong>Llangón Web App</strong>
+      </div>
+    </div>
+    <button id="mobile-logout-button" class="mobile-logout-button" type="button">Salir</button>
+  </header>
+  <button id="sidebar-overlay" class="sidebar-overlay" type="button" aria-label="Cerrar menú" hidden></button>
   <div class="app-layout">
-    <aside class="sidebar">
+    <aside id="app-sidebar" class="sidebar" aria-label="Menú principal">
       <div class="sidebar-brand">
         <img src="/static/logo-llangon.png" alt="Asesores Llangon" class="sidebar-logo">
         <div>
           <p class="eyebrow">Panel privado</p>
           <h1>Llangón Web App</h1>
         </div>
+        <button id="mobile-menu-close" class="mobile-menu-close" type="button" aria-label="Cerrar menú">×</button>
       </div>
 
       <nav class="sidebar-nav" aria-label="Navegación principal">
@@ -23,6 +36,7 @@
         <button id="list-button" class="nav-item" data-nav-section="licitaciones">Centro de licitaciones</button>
         <button id="calendar-button" class="nav-item" data-nav-section="calendar">Agenda</button>
         <button id="actuaciones-button" class="nav-item" data-nav-section="actuaciones">Actuaciones</button>
+        <button id="notifications-menu-button" class="nav-item" data-nav-section="notifications">Buzón</button>
 
         <p class="nav-group-title" data-admin-only hidden>Administración</p>
         <button id="news-admin-button" class="nav-item" data-nav-section="news-admin" data-admin-only hidden>Noticias</button>
@@ -61,7 +75,7 @@
 
     <section id="licitaciones-section" hidden>
       <div class="section-head">
-        <div>
+        <div class="section-title-block">
           <p class="eyebrow">Detalle</p>
           <h2 id="current-day-title">Licitaciones</h2>
         </div>
@@ -140,17 +154,17 @@
     <dialog id="licitacion-detail-dialog" class="detail-dialog">
       <div class="dialog-head">
         <div>
-          <p class="eyebrow">Ficha ampliada</p>
-          <h2 id="licitacion-detail-title">Licitación</h2>
+          <p class="eyebrow">Detalle de trabajo</p>
+          <h2 id="licitacion-detail-title">Ficha de licitación</h2>
         </div>
-        <button type="button" class="icon-button no-print" id="close-licitacion-detail">×</button>
+        <button type="button" class="ghost no-print detail-back-button" id="close-licitacion-detail">Volver</button>
       </div>
       <section id="licitacion-detail-content" class="licitacion-detail-view"></section>
     </dialog>
 
     <section id="calendar-section" hidden>
       <div class="section-head">
-        <div>
+        <div class="section-title-block">
           <p class="eyebrow">Agenda</p>
           <h2 id="calendar-month-title">Hoy</h2>
         </div>
@@ -220,7 +234,7 @@
 
     <section id="actuaciones-section" hidden>
       <div class="section-head">
-        <div>
+        <div class="section-title-block">
           <p class="eyebrow">Actuaciones y vencimientos</p>
           <h2>Actuaciones</h2>
         </div>
@@ -545,7 +559,7 @@
     </div>
 
     <div class="notice-preview">
-      <label>Para<input id="prepared-notice-to" readonly></label>
+      <label>Para<input id="prepared-notice-to" type="email"></label>
       <label>Asunto<input id="prepared-notice-subject"></label>
       <label>Mensaje<textarea id="prepared-notice-body" rows="9"></textarea></label>
     </div>

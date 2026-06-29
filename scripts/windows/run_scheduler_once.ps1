@@ -30,12 +30,17 @@ New-Item -ItemType File -Path $LockPath -Force | Out-Null
 try {
     Set-Location -LiteralPath $ProjectRoot
     "[$(Get-Date -Format s)] Ejecutando scheduler una vez..." | Out-File -FilePath $LogPath -Append -Encoding utf8
-    & $Python -m webapp.infonalia_webapp.monitor.scheduler --once 2>&1 | Tee-Object -FilePath $LogPath -Append
-    exit $LASTEXITCODE
+    & $Python -m webapp.infonalia_webapp.monitor.scheduler --once 2>&1 | ForEach-Object {
+        $_ | Out-File -FilePath $LogPath -Append -Encoding utf8
+    }
+    $ExitCode = $LASTEXITCODE
+    if ($null -eq $ExitCode) {
+        $ExitCode = 0
+    }
+    exit $ExitCode
 }
 finally {
     if (Test-Path -LiteralPath $LockPath) {
         Remove-Item -LiteralPath $LockPath -Force
     }
 }
-

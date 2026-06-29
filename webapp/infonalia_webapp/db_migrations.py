@@ -31,6 +31,11 @@ try:
 except ImportError:
     from monitor.repository import ensure_monitor_schema as _ensure_monitor_schema
 
+try:
+    from .ai.queue import ensure_ai_schema as _ensure_ai_schema
+except ImportError:
+    from ai.queue import ensure_ai_schema as _ensure_ai_schema
+
 
 MIGRATIONS_TABLE = "schema_migrations"
 
@@ -523,6 +528,12 @@ def _monitor_inventory_v05_schema(conn: sqlite3.Connection) -> None:
     _ensure_monitor_schema(conn)
 
 
+def _ai_analysis_phase1_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "licitaciones"):
+        return
+    _ensure_ai_schema(conn)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version="0001_baseline_schema",
@@ -583,6 +594,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version="0012_monitor_inventory_v05",
         description="Clasificacion documental del inventario Monitor V0.5",
         apply=_monitor_inventory_v05_schema,
+    ),
+    Migration(
+        version="0013_ai_analysis_phase1",
+        description="Analisis IA Gemini Fase 1 con jobs, summaries y usage log",
+        apply=_ai_analysis_phase1_schema,
     ),
 )
 

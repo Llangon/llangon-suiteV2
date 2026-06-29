@@ -557,7 +557,39 @@ def test_nuria_center_list_is_not_changed_by_day_review_filter() -> None:
 
     assert handler.responses[-1][0] == HTTPStatus.OK
     expedientes = {item["expediente"] for item in handler.responses[-1][1]["items"]}
-    assert expedientes == {"CENTRO-NURIA-DESCARGAR", "CENTRO-NURIA-PREPARAR", "CENTRO-NURIA-PREPARADA"}
+    assert expedientes == set(states)
+
+
+def test_nuria_and_admin_center_receive_same_general_licitacion_items() -> None:
+    app = load_app_module()
+    with temporary_app_database(app):
+        dia_id = insert_dia(app)
+        states = {
+            "CENTRO-COMUN-IMPORTADA": "Importada",
+            "CENTRO-COMUN-DESCARTADA": "Descartada",
+            "CENTRO-COMUN-ENVIADA": "Enviada a Nuria",
+            "CENTRO-COMUN-DESCARGAR": "Descargar para ver",
+            "CENTRO-COMUN-PREPARAR": "Preparar ficha",
+            "CENTRO-COMUN-PREPARADA": "Preparada",
+            "CENTRO-COMUN-OFERTA": "Oferta enviada",
+        }
+        inserted = []
+        for expediente, estado in states.items():
+            inserted.append((insert_licitacion(app, dia_id, expediente), estado))
+        with app.db_session() as conn:
+            for licitacion_id, estado in inserted:
+                conn.execute("UPDATE licitaciones SET estado = ? WHERE id = ?", (estado, licitacion_id))
+
+        admin = make_handler(app, "GET", "/api/licitaciones", username="admin_test", role="admin")
+        nuria = make_handler(app, "GET", "/api/licitaciones", username="reviewer_test", role="nuria")
+        dispatch(admin, "GET")
+        dispatch(nuria, "GET")
+
+    assert admin.responses[-1][0] == HTTPStatus.OK
+    assert nuria.responses[-1][0] == HTTPStatus.OK
+    admin_exp = {item["expediente"] for item in admin.responses[-1][1]["items"]}
+    nuria_exp = {item["expediente"] for item in nuria.responses[-1][1]["items"]}
+    assert admin_exp == nuria_exp == set(states)
 
 
 def test_licitacion_detail_lists_linked_actuaciones_and_comment_summary() -> None:

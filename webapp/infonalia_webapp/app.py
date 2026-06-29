@@ -322,6 +322,21 @@ except ImportError:
     )
 
 try:
+    from .ai.service import (
+        get_ai_summary_payload,
+        list_ai_jobs,
+        process_ai_job,
+        request_ai_analysis,
+    )
+except ImportError:
+    from ai.service import (
+        get_ai_summary_payload,
+        list_ai_jobs,
+        process_ai_job,
+        request_ai_analysis,
+    )
+
+try:
     from .notification_rendering import (
         build_notification_email_html,
         notification_body_parts,
@@ -1743,9 +1758,14 @@ def attach_notification_logo(message: EmailMessage) -> None:
     attach_logo_to_message(message, STATIC_ROOT / "logo-llangon.png")
 
 
-def send_notification_email(usuario_destino: str | None, asunto: str, cuerpo: str) -> tuple[str | None, str | None]:
+def send_notification_email(
+    usuario_destino: str | None,
+    asunto: str,
+    cuerpo: str,
+    email_recipients: list[str] | None = None,
+) -> tuple[str | None, str | None]:
     settings = get_settings()
-    recipients = notification_recipients(usuario_destino)
+    recipients = email_recipients if email_recipients is not None else notification_recipients(usuario_destino)
     return send_notification_email_with_settings(
         settings=settings,
         recipients=recipients,
@@ -1904,8 +1924,9 @@ def create_notification(
     asunto: str,
     cuerpo: str,
     ficheros_adjuntos: str = "",
+    email_recipients: list[str] | None = None,
 ) -> int:
-    sent_at, email_error = send_notification_email(usuario_destino, asunto, cuerpo)
+    sent_at, email_error = send_notification_email(usuario_destino, asunto, cuerpo, email_recipients=email_recipients)
     return create_notification_record(
         conn,
         usuario_origen=usuario_origen,
@@ -1930,7 +1951,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/login":
-            self.send_file(STATIC_ROOT / "login.html")
+            self.send_login_page()
             return
         if path == "/logout":
             self.send_json({"error": "Usa POST para cerrar sesión."}, HTTPStatus.METHOD_NOT_ALLOWED)
@@ -1969,6 +1990,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_search_licitaciones(parsed.query)
         elif path == "/api/licitaciones":
             self.api_list_licitaciones(parsed.query)
+        elif path.startswith("/api/licitaciones/") and path.endswith("/ai-summary"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ai-summary").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_get_ai_summary(int(licitacion_id))
         elif path.startswith("/api/licitaciones/") and path.endswith("/actuaciones"):
             licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/actuaciones").strip("/")
             if not licitacion_id.isdigit():
@@ -2007,6 +2034,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_monitor_run_detail(int(run_id))
+        elif path == "/api/ai/jobs":
+            self.api_list_ai_jobs()
         elif path == "/api/news":
             self.api_list_news()
         else:
@@ -2104,6 +2133,24 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_open_licitacion_folder(int(licitacion_id))
+        elif path.startswith("/api/licitaciones/") and path.endswith("/ai-summary/generate"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ai-summary/generate").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_generate_ai_summary(int(licitacion_id), force=False)
+        elif path.startswith("/api/licitaciones/") and path.endswith("/ai-summary/regenerate"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ai-summary/regenerate").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_generate_ai_summary(int(licitacion_id), force=True)
+        elif path.startswith("/api/ai/jobs/") and path.endswith("/run"):
+            job_id = path.removeprefix("/api/ai/jobs/").removesuffix("/run").strip("/")
+            if not job_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_run_ai_job(int(job_id))
         elif path.startswith("/api/licitaciones/") and path.endswith("/ia-preview/email"):
             licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ia-preview/email").strip("/")
             if not licitacion_id.isdigit():
@@ -2312,11 +2359,15 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 or path.endswith("/markers/id")
                 or path.endswith("/markers/follow")
                 or path.endswith("/open-folder")
+                or path.endswith("/ai-summary/generate")
+                or path.endswith("/ai-summary/regenerate")
                 or path.endswith("/ia-preview")
                 or path.endswith("/ia-preview/email")
                 or path.endswith("/prepared-notice/email")
                 or path.endswith("/actuaciones")
             ):
+                return True
+            if path.startswith("/api/ai/jobs/") and path.endswith("/run"):
                 return True
             if path.startswith("/api/actuaciones/") and (
                 path.endswith("/cerrar")
@@ -2428,7 +2479,11 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
     def config_payload(self) -> dict:
         settings = get_settings()
-        return settings_config_payload(list_user_records(active_only=False), settings)
+        payload = settings_config_payload(list_user_records(active_only=False), settings)
+        reviewer = get_user_record(REVIEWER_USER) or {}
+        default_review_email = clean_text(reviewer.get("email")) or REVIEWER_EMAIL or PREPARED_NOTICE_EMAIL_TO
+        payload["settings"]["nuria_review_email_to"] = default_review_email
+        return payload
 
     def api_get_config(self) -> None:
         if not self.require_admin():
@@ -3130,16 +3185,13 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         elif gestionadas:
             if estado and estado != "Todos" and estado not in gestionadas_estados:
                 estado = ""
-        elif user.get("role") == "nuria":
-            if dia_id.isdigit():
-                if nuria_filter in {"all", "todas"}:
-                    nuria_visible_states = NURIA_VISIBLE_STATES
-                elif nuria_filter in {"discarded", "descartadas"}:
-                    nuria_visible_states = NURIA_DISCARDED_STATES
-                else:
-                    nuria_visible_states = NURIA_DEFAULT_REVIEW_STATES
+        elif user.get("role") == "nuria" and dia_id.isdigit():
+            if nuria_filter in {"all", "todas"}:
+                nuria_visible_states = NURIA_VISIBLE_STATES
+            elif nuria_filter in {"discarded", "descartadas"}:
+                nuria_visible_states = NURIA_DISCARDED_STATES
             else:
-                nuria_visible_states = CALENDARIO_ESTADOS
+                nuria_visible_states = NURIA_DEFAULT_REVIEW_STATES
             if estado and estado != "Todos" and estado not in nuria_visible_states:
                 estado = ""
 
@@ -3161,7 +3213,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             placeholders = ", ".join("?" for _ in gestionadas_estados)
             where.append(f"LOWER(estado) IN ({placeholders})")
             values.extend([item.lower() for item in gestionadas_estados])
-        elif user.get("role") == "nuria" and not (estado and estado != "Todos"):
+        elif user.get("role") == "nuria" and dia_id.isdigit() and not (estado and estado != "Todos"):
             placeholders = ", ".join("?" for _ in nuria_visible_states)
             where.append(f"estado IN ({placeholders})")
             values.extend(nuria_visible_states)
@@ -3363,8 +3415,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             estados = vivas_estados
         elif gestionadas:
             estados = gestionadas_estados
-        elif user.get("role") == "nuria":
-            estados = nuria_visible_states if dia_id.isdigit() else CALENDARIO_ESTADOS
+        elif user.get("role") == "nuria" and dia_id.isdigit():
+            estados = nuria_visible_states
         else:
             estados = ESTADOS_ORDEN
         self.send_json(
@@ -3998,6 +4050,15 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if not self.require_admin():
             return
 
+        data = self.read_json()
+        email_recipients: list[str] | None = None
+        if "notification_email" in data:
+            notification_email = clean_text(data.get("notification_email"))
+            if not notification_email or not is_valid_email_address(notification_email):
+                self.send_json({"error": "El correo de destino no es valido."}, HTTPStatus.BAD_REQUEST)
+                return
+            email_recipients = [notification_email]
+
         user = self.current_user() or {}
         with db_session() as conn:
             day = conn.execute("SELECT * FROM infonalia_dias WHERE id = ?", (dia_id,)).fetchone()
@@ -4104,6 +4165,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 REVIEWER_USER,
                 asunto,
                 cuerpo,
+                email_recipients=email_recipients,
             )
             row = conn.execute("SELECT * FROM infonalia_dias WHERE id = ?", (dia_id,)).fetchone()
             item = dia_to_dict(conn, row)
@@ -4199,6 +4261,59 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         self.send_json(item)
 
+    def api_get_ai_summary(self, licitacion_id: int) -> None:
+        try:
+            with db_session() as conn:
+                payload = get_ai_summary_payload(conn, licitacion_id)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            return
+        except Exception:
+            self.send_json({"error": "No se pudo consultar el analisis IA."}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(payload)
+
+    def api_generate_ai_summary(self, licitacion_id: int, *, force: bool = False) -> None:
+        if force and not self.require_admin():
+            return
+        user = self.current_user() or {}
+        try:
+            with db_session() as conn:
+                payload = request_ai_analysis(
+                    conn,
+                    licitacion_id,
+                    requested_by=clean_text(user.get("username")),
+                    force=force,
+                )
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            return
+        except Exception:
+            self.send_json({"error": "No se pudo generar el analisis IA."}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(payload)
+
+    def api_run_ai_job(self, job_id: int) -> None:
+        if not self.require_admin():
+            return
+        try:
+            with db_session() as conn:
+                payload = process_ai_job(conn, job_id)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            return
+        except Exception:
+            self.send_json({"error": "No se pudo ejecutar el job IA."}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(payload)
+
+    def api_list_ai_jobs(self) -> None:
+        if not self.require_admin():
+            return
+        with db_session() as conn:
+            items = list_ai_jobs(conn)
+        self.send_json({"items": items})
+
     def api_generate_ai_preview(self, licitacion_id: int) -> None:
         try:
             preview = build_ai_preview_payload(licitacion_id)
@@ -4254,10 +4369,10 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             return
 
         settings = get_settings()
-        recipient = prepared_notice_recipient(settings)
+        recipient = clean_text(data.get("to")) or prepared_notice_recipient(settings)
         if not is_valid_email_address(recipient):
             self.send_json(
-                {"error": "El email configurado para el aviso de ficha preparada no es válido."},
+                {"error": "El email de destino del aviso de ficha preparada no es válido."},
                 HTTPStatus.BAD_REQUEST,
             )
             return
@@ -4820,6 +4935,22 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         body = path.read_text(encoding="utf-8").replace("__PRIVATE_APP_URL__", html.escape(private_url)).encode("utf-8")
         self.send_response(HTTPStatus.OK)
         self.send_security_headers(is_private=False)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_login_page(self) -> None:
+        path = STATIC_ROOT / "login.html"
+        if not path.exists():
+            self.send_error(HTTPStatus.NOT_FOUND, "No encontrado")
+            return
+
+        default_public_site_url = "https://llangon-web-publica-prueba.web.app/"
+        public_site_url = clean_text(os.environ.get("LLANGON_PUBLIC_SITE_URL")) or default_public_site_url
+        body = path.read_text(encoding="utf-8").replace(default_public_site_url, html.escape(public_site_url)).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_security_headers(is_private=True)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()

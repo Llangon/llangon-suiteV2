@@ -11,6 +11,7 @@ Llangon-SuiteV2/
 ├─ INVENTARIO_MIGRACION.md
 ├─ MIGRACION_LOG.md
 ├─ SANEAMIENTO_REPOSITORIO.md
+├─ firebase.json
 ├─ webapp/infonalia_webapp/
 ├─ firebase/public_firebase/
 ├─ herramientas_python/
@@ -21,6 +22,7 @@ Llangon-SuiteV2/
 
 - `webapp/infonalia_webapp/`: aplicación privada Python, frontend y plantilla de configuración.
 - `firebase/public_firebase/`: web pública estática para Firebase Hosting.
+- `firebase.json`: configuración de Firebase Hosting; publica únicamente `firebase/public_firebase`.
 - `herramientas_python/`: descargadores y utilidades auxiliares. No deben ejecutarse sin una prueba controlada.
 - `macros/`: módulos VBA de apoyo.
 - `docs/`: documentación operativa vigente.
@@ -70,6 +72,12 @@ INFONALIA_ENABLE_ADMIN_ALIAS=0
 ```
 
 Después puede iniciarse manualmente con `python app.py`. No usar datos reales, descargas ni acceso de red hasta validar la configuración local.
+
+El enlace “Volver a la web pública” de la pantalla de login usa `LLANGON_PUBLIC_SITE_URL`. Si no se configura, apunta a la web pública de prueba en Firebase:
+
+```text
+LLANGON_PUBLIC_SITE_URL=https://llangon-web-publica-prueba.web.app/
+```
 
 Para ejecutar la suite en Windows sin mantener una consola abierta, ver [docs/DESPLIEGUE_LOCAL_WINDOWS.md](docs/DESPLIEGUE_LOCAL_WINDOWS.md). Ese modo registra tareas programadas locales para web, scheduler y copias SQLite, manteniendo la web en `127.0.0.1:8787`.
 
@@ -135,7 +143,55 @@ El flujo de documentos recomendado sigue siendo Dropbox local/Desktop con `INFON
 
 La pantalla Licitaciones es el centro de trabajo diario. Cada expediente puede marcarse como revisado, tener estado interno, notas internas, actuaciones vinculadas y seguimiento activo. El seguimiento automático real queda preparado, pero no implementado: el futuro monitor será un script externo de Windows y enviará un email por cada licitación con novedades a los destinatarios globales de `INFONALIA_SEGUIMIENTO_EMAILS`.
 
-La IA queda aparcada: no se muestra ningún botón de ficha, análisis o resumen IA en la interfaz principal.
+## Análisis IA documental con Gemini
+
+La Fase 1 de IA permite analizar manualmente los PDFs principales de un expediente y guardar un JSON estructurado en SQLite. Está pensada como apoyo interno: no genera todavía una ficha PDF final para cliente y no analiza licitaciones anteriores.
+
+Por seguridad, Gemini está apagado por defecto y la app arranca sin clave:
+
+```text
+GEMINI_ENABLED=false
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-3.5-flash
+GEMINI_MAX_REQUESTS_PER_MINUTE=2
+GEMINI_MAX_REQUESTS_PER_DAY=20
+GEMINI_COOLDOWN_ON_429_MINUTES=15
+GEMINI_MAX_DOCUMENTS_PER_ANALYSIS=4
+GEMINI_MAX_FILE_MB=45
+GEMINI_TIMEOUT_SECONDS=120
+```
+
+Para activarlo en local, completar `.env`:
+
+```text
+GEMINI_ENABLED=true
+GEMINI_API_KEY=TU_CLAVE_PRIVADA
+```
+
+No subir nunca `GEMINI_API_KEY` a Git. La clave no se imprime en logs ni se devuelve al frontend.
+
+El flujo desde la ficha ampliada es manual:
+
+- abrir una licitación;
+- entrar en la pestaña `Análisis IA`;
+- pulsar `Generar análisis IA`;
+- reutilizar el resumen existente si los documentos no han cambiado;
+- usar `Regenerar análisis IA` solo como administrador.
+
+La selección de documentos es conservadora: solo PDFs, priorizando `Cuadro`, `PCAP/PCA`, `PPT`, `Pliego` y `Anexos`, con límite de tamaño y número de documentos. Los documentos de licitaciones anteriores, actas, aperturas y valoraciones se excluyen en esta fase.
+
+Prueba manual controlada:
+
+```powershell
+cd C:\Users\LLangon03\Documents\Codex\Llangon-SuiteV2
+.\.venv\Scripts\python.exe -m webapp.infonalia_webapp.ai.manual_test --licitacion-id 123
+```
+
+Para crear/procesar job si Gemini está configurado:
+
+```powershell
+.\.venv\Scripts\python.exe -m webapp.infonalia_webapp.ai.manual_test --licitacion-id 123 --generate
+```
 
 ## Orden de lectura
 

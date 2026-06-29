@@ -47,6 +47,13 @@ PLACE_XML = """<?xml version="1.0" encoding="UTF-8"?>
   xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
   <cbc:ContractFolderID>XML-33/2026</cbc:ContractFolderID>
   <cbc:ContractFolderStatusCode>EV</cbc:ContractFolderStatusCode>
+  <cac:AdditionalDocumentReference>
+    <cac:Attachment>
+      <cac:ExternalReference>
+        <cbc:URI>https://contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&amp;idEvl=test</cbc:URI>
+      </cac:ExternalReference>
+    </cac:Attachment>
+  </cac:AdditionalDocumentReference>
   <ext:LocatedContractingParty>
     <cac:Party>
       <cac:PartyName>
@@ -143,6 +150,12 @@ def test_parse_place_document_xml_extracts_codice_fields_and_preserves_profile_u
     assert fields["duracion"] == "12"
     assert fields["plataforma"] == "PLACE"
     assert fields["enlace_perfil"] == PLACE_URL
+
+
+def test_parse_place_document_xml_derives_profile_url_when_current_profile_is_xml_document() -> None:
+    payload = parse_place_document_xml(PLACE_XML, PLACE_XML_URL, profile_url=PLACE_XML_URL)
+
+    assert payload["fields"]["enlace_perfil"] == PLACE_URL
 
 
 def test_parse_place_detail_html_omits_missing_and_ambiguous_fields() -> None:

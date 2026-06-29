@@ -34,6 +34,7 @@ La memoria del proyecto debe vivir en archivos versionados y revisables. Una con
 - `webapp/infonalia_webapp/`: servidor Python, frontend, SQLite local e importación de mensajes.
 - `herramientas_python/`: descargadores y orquestador.
 - `firebase/public_firebase/`: web pública estática.
+- `firebase.json`: configuración de Firebase Hosting que apunta a `firebase/public_firebase`.
 - `macros/`: automatizaciones VBA.
 - `docs/`: operación y colaboración.
 - `documentos_contexto/`: documentos históricos, no instrucciones vigentes por sí solos.

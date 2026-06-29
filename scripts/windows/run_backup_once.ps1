@@ -16,6 +16,11 @@ $LogPath = Join-Path $LogDir "backup.log"
 Set-Location -LiteralPath $ProjectRoot
 
 "[$(Get-Date -Format s)] Ejecutando copia SQLite..." | Out-File -FilePath $LogPath -Append -Encoding utf8
-& $Python -m webapp.infonalia_webapp.backup_sqlite 2>&1 | Tee-Object -FilePath $LogPath -Append
-exit $LASTEXITCODE
-
+& $Python -m webapp.infonalia_webapp.backup_sqlite 2>&1 | ForEach-Object {
+    $_ | Out-File -FilePath $LogPath -Append -Encoding utf8
+}
+$ExitCode = $LASTEXITCODE
+if ($null -eq $ExitCode) {
+    $ExitCode = 0
+}
+exit $ExitCode

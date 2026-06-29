@@ -156,6 +156,10 @@ const pageTitle = document.getElementById("page-title");
 const pageKicker = document.getElementById("page-kicker");
 const sessionUser = document.getElementById("session-user");
 const logoutButton = document.getElementById("logout-button");
+const mobileMenuButton = document.getElementById("mobile-menu-button");
+const mobileMenuClose = document.getElementById("mobile-menu-close");
+const sidebarOverlay = document.getElementById("sidebar-overlay");
+const mobileLogoutButton = document.getElementById("mobile-logout-button");
 
 const estadoOrden = [
   "Importada",
@@ -554,8 +558,32 @@ function csrfHeaders() {
   return appState.csrfToken ? { "X-CSRF-Token": appState.csrfToken } : {};
 }
 
+function defaultNuriaReviewEmail() {
+  const settings = appState.config?.settings || {};
+  return (
+    settings.nuria_review_email_to ||
+    settings.prepared_notice_email_to ||
+    "info3@llangon.com"
+  ).trim();
+}
+
+function confirmNuriaReviewEmail() {
+  const email = window.prompt(
+    "Confirma el correo de destino para avisar a Nuria:",
+    defaultNuriaReviewEmail(),
+  );
+  if (email === null) return null;
+  const trimmedEmail = email.trim();
+  if (!trimmedEmail) {
+    alert("Debes indicar un correo de destino.");
+    return null;
+  }
+  return trimmedEmail;
+}
+
 async function logout() {
   if (logoutButton) logoutButton.disabled = true;
+  if (mobileLogoutButton) mobileLogoutButton.disabled = true;
   try {
     const response = await fetch("/logout", {
       method: "POST",
@@ -569,6 +597,7 @@ async function logout() {
     location.href = "/login";
   } finally {
     if (logoutButton) logoutButton.disabled = false;
+    if (mobileLogoutButton) mobileLogoutButton.disabled = false;
   }
 }
 
@@ -576,11 +605,32 @@ function setActiveNav(section) {
   document.querySelectorAll("[data-nav-section]").forEach((button) => {
     button.classList.toggle("active", button.dataset.navSection === section);
   });
+  document.body.dataset.activeSection = section || "";
 }
 
 function setPageHeader(title, kicker = "Panel privado") {
   if (pageTitle) pageTitle.textContent = title;
   if (pageKicker) pageKicker.textContent = kicker;
+}
+
+function openSidebar() {
+  document.body.classList.add("sidebar-open");
+  if (sidebarOverlay) sidebarOverlay.hidden = false;
+  if (mobileMenuButton) mobileMenuButton.setAttribute("aria-expanded", "true");
+}
+
+function closeSidebar() {
+  document.body.classList.remove("sidebar-open");
+  if (sidebarOverlay) sidebarOverlay.hidden = true;
+  if (mobileMenuButton) mobileMenuButton.setAttribute("aria-expanded", "false");
+}
+
+function toggleSidebar() {
+  if (document.body.classList.contains("sidebar-open")) {
+    closeSidebar();
+  } else {
+    openSidebar();
+  }
 }
 
 function showDaysView() {
@@ -612,6 +662,7 @@ function showLicitacionesView({ diaId = "", title = "Centro de licitaciones", vi
   setPageHeader(diaId ? "Revisión de día" : "Centro de licitaciones", diaId ? title : "Bandeja");
   daysSection.hidden = true;
   licitacionesSection.hidden = false;
+  licitacionesSection.classList.toggle("has-day-context", Boolean(diaId));
   calendarSection.hidden = true;
   actuacionesSection.hidden = true;
   notificationsSection.hidden = true;
@@ -1471,14 +1522,14 @@ function renderLicitacionesDateFilters() {
 
 function visibleStateOrder() {
   if (!appState.currentDiaId && appState.licitacionesView === "live") {
-    return isAdmin() ? calendarioEstados : nuriaLicitacionesEstados;
+    return calendarioEstados;
   }
   if (!appState.currentDiaId && appState.licitacionesView === "managed") {
     return gestionadasEstados;
   }
   if (appState.currentDiaId && isAdmin()) return ["Importada", ...adminReviewEstados];
-  if (isAdmin()) return estadoOrden;
-  return appState.currentDiaId ? nuriaDefaultReviewEstados : nuriaLicitacionesEstados;
+  if (appState.currentDiaId) return nuriaDefaultReviewEstados;
+  return estadoOrden;
 }
 
 function renderStateFilter() {
@@ -2997,6 +3048,9 @@ function renderCard(item, options = {}) {
     enlacePerfil ? `<a href="${escapeHtml(enlacePerfil)}" target="_blank" rel="noreferrer">Perfil del contratante</a>` : "",
     enlaceInfonalia ? `<a href="${escapeHtml(enlaceInfonalia)}" target="_blank" rel="noreferrer">Anuncio Infonalia</a>` : "",
   ].filter(Boolean).join("");
+  const folderPath = folderDisplayPath(item);
+  const folderText = folderPath ? compactFolderDisplayPath(folderPath) : "Carpeta no localizada";
+  const folderClass = folderPath ? "" : " muted";
   const isReview = Boolean(appState.currentDiaId);
   const stateActions = isAdmin() ? adminReviewEstados : nuriaEstados;
   const showStateActions = options.showStateActions ?? isReview;
@@ -3013,7 +3067,6 @@ function renderCard(item, options = {}) {
         <div class="card-content">
           <div class="card-head">
             <div class="card-title-block">
-              <p class="eyebrow">Expediente</p>
               <h2>${escapeHtml(item.expediente)}</h2>
               <p class="card-organismo">${escapeHtml(item.organismo)}</p>
               <p class="object">${escapeHtml(item.objeto || "Sin objeto informado")}</p>
@@ -3031,7 +3084,7 @@ function renderCard(item, options = {}) {
             <div class="detail"><span>Fecha límite</span>${escapeHtml(fechaLimite)}</div>
           </div>
 
-          ${links ? `<div class="links">${links}</div>` : ""}
+          ${(links || folderText) ? `<div class="links card-footer-links">${links}<span class="card-folder-path${folderClass}" title="${escapeHtml(folderPath || folderText)}" data-folder-path="${escapeHtml(folderPath || "")}">${escapeHtml(folderText)}</span></div>` : ""}
 
           ${showStateActions ? `<div class="card-actions state-actions">
             ${stateActions.map((estado) => `
@@ -3111,44 +3164,77 @@ function renderLicitacionDetailView(item) {
   const seguimiento = item.seguimiento || {};
   const folder = folderDisplayPath(item);
   const folderLabel = folderStatusLabel(item);
-  const folderUrl = fileUrl(folder);
   const profile = normalizeUrl(item.enlace_perfil);
   const infonalia = normalizeUrl(item.enlace_infonalia);
   const fechaLimite = [formatDate(item.fecha_limite), item.hora_limite].filter(Boolean).join(" ");
   const documentCount = documentCountLabel(item);
+  const folderTone = folderStatusTone(item);
+  const summaryRows = [
+    ["Órgano / organismo", item.organismo],
+    ["Lugar / provincia", item.provincia],
+    ["Tipo de contrato", item.tipo],
+    ["Procedimiento", item.procedimiento],
+    ["CPV", item.cpv],
+    ["Cliente / representada", item.cliente || item.representada],
+  ];
+  const technicalRows = [
+    ["ID interno", item.id],
+    ["Expediente", item.expediente],
+    ["Plataforma", item.plataforma],
+    ["Fecha Infonalia", formatDate(item.fecha_infonalia)],
+    ["Estado interno", item.estado_interno || "Nueva"],
+    ["Revisada", item.revisada ? "Sí" : "No"],
+    ["Seguimiento activo", item.seguimiento_activo ? "Sí" : "No"],
+    ["Ruta registrada", folder || item.ruta_carpeta],
+    ["Enlace plataforma", profile],
+    ["Enlace Infonalia", infonalia],
+  ];
+  if (item.descarga_fallida || item.download_error) {
+    technicalRows.push(["Error descarga", item.download_error || "Descarga fallida"]);
+  }
+
   return `
-    <article class="licitacion-print-sheet">
-      <section class="expanded-panel detail-hero">
-        <div>
+    <article class="licitacion-detail-workspace">
+      <section class="detail-cover">
+        <div class="detail-cover-main">
           <p class="eyebrow">Expediente</p>
           <h2>${escapeHtml(item.expediente || "Sin expediente")}</h2>
-          <p>${escapeHtml(item.organismo || "Organismo no informado")}</p>
+          <p class="detail-cover-object">${escapeHtml(item.objeto || "Sin objeto informado")}</p>
+          <p class="detail-cover-meta">${escapeHtml([item.organismo, item.provincia].filter(Boolean).join(" · "))}</p>
         </div>
-        <div class="card-flags">
+        <div class="detail-cover-side">
           <span class="badge ${badgeClass(item.estado)}">${escapeHtml(estadoLabel(item.estado))}</span>
-          ${fechaLimite ? `<span class="due-chip">${escapeHtml(fechaLimite)}</span>` : ""}
-          ${item.plataforma ? `<span class="province-chip">${escapeHtml(item.plataforma)}</span>` : ""}
-          ${item.provincia ? `<span class="province-chip">${escapeHtml(item.provincia)}</span>` : ""}
+          ${fechaLimite ? `<div class="detail-kpi"><span>Fecha límite</span><strong>${escapeHtml(fechaLimite)}</strong></div>` : ""}
+          ${item.presupuesto ? `<div class="detail-kpi"><span>Presupuesto</span><strong>${escapeHtml(formatMoney(item.presupuesto))}</strong></div>` : ""}
+          <span class="folder-status-chip ${escapeHtml(folderTone)}">Carpeta: ${escapeHtml(folderLabel)}</span>
         </div>
       </section>
 
-      <section class="expanded-panel no-print">
-        <div class="card-actions state-actions">
-          ${isAdmin() ? `<button class="download-button" data-download-id="${escapeHtml(item.id)}">Descargar</button>` : ""}
+      <nav class="detail-tabs no-print" aria-label="Secciones de la ficha">
+        <button type="button" class="detail-tab-button active" data-detail-tab="resumen">Resumen</button>
+        <button type="button" class="detail-tab-button" data-detail-tab="actuaciones">Actuaciones</button>
+        <button type="button" class="detail-tab-button" data-detail-tab="documentos">Documentos</button>
+        <button type="button" class="detail-tab-button" data-detail-tab="ai">Análisis IA</button>
+        <button type="button" class="detail-tab-button" data-detail-tab="seguimiento">Seguimiento</button>
+        <button type="button" class="detail-tab-button" data-detail-tab="tecnico">Técnico</button>
+      </nav>
+
+      <section class="detail-tab-panel active" data-detail-tab-panel="resumen">
+        <div class="detail-panel-head">
+          <div>
+            <p class="eyebrow">Resumen</p>
+            <h3>Información esencial</h3>
+          </div>
+        </div>
+        ${renderCleanDetailGrid(summaryRows)}
+        ${item.comentario ? `<div class="internal-note"><span>Observaciones</span>${escapeHtml(item.comentario)}</div>` : ""}
+        ${item.notas_internas ? `<div class="internal-note"><span>Notas internas</span>${escapeHtml(item.notas_internas)}</div>` : ""}
+        <div class="detail-action-bar no-print">
+          ${isAdmin() ? `<button class="download-button primary" data-download-id="${escapeHtml(item.id)}">Descargar documentación</button>` : ""}
+          <button data-new-actuacion-id="${escapeHtml(item.id)}">Crear actuación</button>
           ${isAdmin() ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""}
           ${isAdmin() ? `<button data-duplicate-id="${escapeHtml(item.id)}">Duplicar</button>` : ""}
-          ${isAdmin() ? `<button data-new-actuacion-id="${escapeHtml(item.id)}">Crear nueva actuación</button>` : ""}
           ${isAdmin() ? `<button class="danger" data-delete-id="${escapeHtml(item.id)}">Borrar</button>` : ""}
-        </div>
-      </section>
-
-      <section class="expanded-panel">
-        <div class="panel-head"><div><p class="eyebrow">Resumen de la licitación</p><h3>Información principal</h3></div></div>
-        <div class="detail-grid">
-          <div class="detail full-width"><span>Objeto</span>${escapeHtml(item.objeto || "No informado")}</div>
-          <div class="detail"><span>Presupuesto</span>${escapeHtml(formatMoney(item.presupuesto))}</div>
-          <div class="detail"><span>Estado</span>${escapeHtml(estadoLabel(item.estado))}</div>
-          <div class="detail full-width"><span>Observaciones</span>${escapeHtml(item.comentario || "Sin observaciones")}</div>
         </div>
         <div class="links no-print">
           ${profile ? `<a href="${escapeHtml(profile)}" target="_blank" rel="noreferrer">Abrir enlace plataforma</a>` : ""}
@@ -3156,46 +3242,69 @@ function renderLicitacionDetailView(item) {
         </div>
       </section>
 
-      <section class="expanded-panel">
-        <div class="panel-head"><div><p class="eyebrow">Datos administrativos</p><h3>Contratación</h3></div></div>
-        <div class="detail-grid">
-          <div class="detail"><span>Expediente</span>${escapeHtml(item.expediente || "No informado")}</div>
-          <div class="detail"><span>Órgano / organismo</span>${escapeHtml(item.organismo || "No informado")}</div>
-          <div class="detail"><span>Tipo de contrato</span>${escapeHtml(item.tipo || "No informado")}</div>
-          <div class="detail"><span>Procedimiento</span>${escapeHtml(item.procedimiento || "No informado")}</div>
-          <div class="detail"><span>CPV</span>${escapeHtml(item.cpv || "No informado")}</div>
-          <div class="detail"><span>Lugar ejecución</span>${escapeHtml(item.provincia || "No informado")}</div>
-          <div class="detail"><span>Fecha presentación</span>${escapeHtml(fechaLimite || "No informado")}</div>
-          <div class="detail"><span>Fecha Infonalia</span>${escapeHtml(formatDate(item.fecha_infonalia) || "No informado")}</div>
+      <section class="detail-tab-panel" data-detail-tab-panel="actuaciones">
+        <div class="detail-panel-head">
+          <div>
+            <p class="eyebrow">Actuaciones / Agenda</p>
+            <h3>${escapeHtml(actuaciones.length ? `${actuaciones.length} actuación(es) vinculada(s)` : "Sin actuaciones vinculadas")}</h3>
+          </div>
+          <button type="button" data-new-actuacion-id="${escapeHtml(item.id)}">Crear actuación</button>
         </div>
+        ${actuaciones.length ? renderLinkedActuaciones(actuaciones) : `<div class="empty">No hay actuaciones ni hitos vinculados a esta licitación.</div>`}
       </section>
 
-      <section class="expanded-panel">
-        <div class="panel-head">
-          <div><p class="eyebrow">Documentación</p><h3>${escapeHtml(documentCount)}</h3></div>
-          ${folderUrl ? `<a class="no-print" href="${escapeHtml(folderUrl)}" target="_blank" rel="noreferrer">Abrir carpeta</a>` : ""}
+      <section class="detail-tab-panel" data-detail-tab-panel="documentos">
+        <div class="detail-panel-head">
+          <div>
+            <p class="eyebrow">Documentación</p>
+            <h3>${escapeHtml(documentCount)}</h3>
+          </div>
+          ${isAdmin() ? `<button class="download-button" data-download-id="${escapeHtml(item.id)}">Descargar / actualizar</button>` : ""}
         </div>
-        <div class="detail-grid">
-          <div class="detail"><span>Estado carpeta</span>${escapeHtml(folderLabel)}</div>
-          <div class="detail full-width"><span>Ruta carpeta</span>${escapeHtml(folder || item.ruta_carpeta || "Sin carpeta")}</div>
-          <div class="detail"><span>Estado descarga</span>${escapeHtml(item.descarga_fallida ? "Descarga fallida" : item.documentacion_descargada ? "Con documentación" : "Pendiente")}</div>
-          <div class="detail"><span>Error descarga</span>${escapeHtml(item.download_error || "Sin errores")}</div>
-        </div>
+        ${renderFolderPanel(item, folder, folderLabel)}
+        ${item.descarga_fallida || item.download_error ? `<div class="warning-detail document-warning"><strong>Error de descarga</strong><span>${escapeHtml(item.download_error || "La última descarga falló.")}</span></div>` : ""}
+        ${renderDocumentSummary(item)}
         ${renderLicitacionDocuments(item)}
       </section>
 
-      <section class="expanded-panel">
-        <div class="panel-head"><div><p class="eyebrow">Seguimiento</p><h3>${escapeHtml(seguimiento.activo ? "En seguimiento" : "No en seguimiento")}</h3></div></div>
+      <section class="detail-tab-panel" data-detail-tab-panel="ai">
+        <div class="detail-panel-head">
+          <div>
+            <p class="eyebrow">Análisis IA del expediente</p>
+            <h3>Resumen estructurado</h3>
+          </div>
+        </div>
+        <div class="ai-summary-panel" data-ai-summary-panel="${escapeHtml(item.id)}">
+          <div class="empty">Cargando estado IA...</div>
+        </div>
+      </section>
+
+      <section class="detail-tab-panel" data-detail-tab-panel="seguimiento">
+        <div class="detail-panel-head">
+          <div>
+            <p class="eyebrow">Seguimiento</p>
+            <h3>${escapeHtml(seguimiento.activo ? "En seguimiento" : "Sin seguimiento activo")}</h3>
+          </div>
+        </div>
         ${renderLicitacionTracking(item)}
       </section>
 
-      <section class="expanded-panel">
-        <div class="panel-head">
-          <div><p class="eyebrow">Actuaciones vinculadas</p><h3>${escapeHtml(actuaciones.length ? `${actuaciones.length} actuación(es)` : "Sin actuaciones vinculadas")}</h3></div>
+      <section class="detail-tab-panel" data-detail-tab-panel="tecnico">
+        <div class="detail-panel-head">
+          <div>
+            <p class="eyebrow">Historial / Técnico</p>
+            <h3>Datos secundarios</h3>
+          </div>
         </div>
-        ${actuaciones.length ? renderLinkedActuaciones(actuaciones) : `<div class="empty">No hay actuaciones vinculadas a esta licitación.</div>`}
+        ${renderCleanDetailGrid(technicalRows, { technical: true })}
+        ${isAdmin() ? `
+          <div class="technical-work-panel">
+            ${renderLicitacionWorkFields(item)}
+            <button data-save-licitacion-work="${escapeHtml(item.id)}">Guardar datos internos</button>
+          </div>
+        ` : ""}
+        ${renderLicitacionHistory(item)}
       </section>
-
     </article>
   `;
 }
@@ -3235,11 +3344,78 @@ function folderDisplayPath(item) {
   return String(status.path || item?.ruta_carpeta || "").trim();
 }
 
+function compactFolderDisplayPath(path) {
+  const parts = String(path || "")
+    .replaceAll("/", "\\")
+    .split("\\")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!parts.length) return "";
+
+  const monthIndex = parts.findIndex((part) => /^\d{2}\s+[A-ZÁÉÍÓÚÜÑ]+$/i.test(part));
+  if (monthIndex >= 0) return parts.slice(monthIndex).join("\\");
+
+  const yearIndex = parts.findIndex((part) => /^\d{4}$/.test(part));
+  if (yearIndex >= 0 && yearIndex < parts.length - 1) {
+    return parts.slice(yearIndex + 1).join("\\");
+  }
+
+  return parts.slice(Math.max(0, parts.length - 2)).join("\\");
+}
+
 function folderStatusLabel(item) {
   const status = item?.folder_status || {};
   if (status.label) return status.label;
   if (item?.ruta_carpeta) return "Ruta registrada";
   return "Carpeta no configurada";
+}
+
+function folderStatusTone(item) {
+  const status = item?.folder_status || {};
+  const label = folderStatusLabel(item).toLowerCase();
+  if (status.inside_dropbox_base === false || label.includes("fuera")) return "warning";
+  if (status.exists === true || label.includes("correcta") || label.includes("válida") || label.includes("valida")) return "ok";
+  if (!item?.ruta_carpeta || label.includes("no configurada")) return "muted";
+  if (status.exists === false || label.includes("no existe")) return "danger";
+  return "muted";
+}
+
+function renderCleanDetailGrid(rows, options = {}) {
+  const visibleRows = rows
+    .map(([label, value]) => [label, String(value ?? "").trim()])
+    .filter(([, value]) => value);
+  if (!visibleRows.length) return `<div class="empty">Sin datos relevantes para mostrar.</div>`;
+  const className = options.technical ? "detail-grid clean-detail-grid technical-detail-grid" : "detail-grid clean-detail-grid";
+  return `
+    <div class="${className}">
+      ${visibleRows.map(([label, value]) => `
+        <div class="detail ${value.length > 90 ? "full-width" : ""}">
+          <span>${escapeHtml(label)}</span>${escapeHtml(value)}
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderFolderPanel(item, folder, folderLabel) {
+  const tone = folderStatusTone(item);
+  const hasFolder = Boolean(String(folder || item.ruta_carpeta || "").trim());
+  const fullPath = String(folder || item.ruta_carpeta || "").trim();
+  const shortPath = fullPath.length > 92 ? `...${fullPath.slice(-89)}` : fullPath;
+  const outsideDropbox = tone === "warning";
+  return `
+    <section class="folder-panel ${escapeHtml(tone)}">
+      <div>
+        <span class="folder-status-chip ${escapeHtml(tone)}">Carpeta: ${escapeHtml(folderLabel)}</span>
+        ${outsideDropbox ? `<p>La carpeta registrada está fuera de la base de Dropbox configurada.</p>` : ""}
+        ${!hasFolder ? `<p>No hay carpeta documental registrada todavía.</p>` : `<code title="${escapeHtml(fullPath)}">${escapeHtml(shortPath)}</code>`}
+      </div>
+      <div class="folder-panel-actions">
+        ${hasFolder ? `<button type="button" data-copy-text="${escapeHtml(fullPath)}">Copiar ruta</button>` : ""}
+        ${isAdmin() ? `<button type="button" class="download-button" data-download-id="${escapeHtml(item.id)}">${hasFolder ? "Actualizar carpeta" : "Crear carpeta"}</button>` : ""}
+      </div>
+    </section>
+  `;
 }
 
 function renderLicitacionMainActions(item) {
@@ -3256,11 +3432,6 @@ function renderLicitacionMainActions(item) {
 }
 
 function fileUrl(path) {
-  const value = String(path || "").trim();
-  if (!value) return "";
-  const normalized = value.replaceAll("\\", "/");
-  if (/^[a-zA-Z]:\//.test(normalized)) return `file:///${encodeURI(normalized)}`;
-  if (normalized.startsWith("/")) return `file://${encodeURI(normalized)}`;
   return "";
 }
 
@@ -3269,6 +3440,11 @@ function formatBytes(value) {
   if (size >= 1048576) return `${(size / 1048576).toFixed(1)} MB`;
   if (size >= 1024) return `${Math.round(size / 1024)} KB`;
   return `${size} B`;
+}
+
+function safeDocumentOpenUrl(value) {
+  const url = normalizeUrl(value);
+  return /^https?:\/\//i.test(url) ? url : "";
 }
 
 function documentCountLabel(item) {
@@ -3303,23 +3479,233 @@ function renderDocumentSummary(item) {
 function renderLicitacionDocuments(item) {
   const docs = item.documentos || [];
   if (!docs.length) return `<div class="empty">Sin documentación registrada.</div>`;
+  const categories = [...new Set(docs.map((doc) => String(doc.category || "Otros").trim() || "Otros"))];
   return `
-    <div class="document-table-wrap">
-      <table class="document-table">
-        <thead><tr><th>Tipo</th><th>Documento</th><th>Tamaño</th><th></th></tr></thead>
-        <tbody>
-          ${docs.map((doc) => `
-            <tr>
-              <td><span class="badge">${escapeHtml(doc.category || "Otros")}</span></td>
-              <td><strong>${escapeHtml(doc.name)}</strong><small>${escapeHtml(doc.relative_path || "")}</small></td>
-              <td>${escapeHtml(formatBytes(doc.size_bytes))}</td>
-              <td>${doc.open_url ? `<a href="${escapeHtml(doc.open_url)}" target="_blank" rel="noreferrer">Abrir</a>` : ""}</td>
-            </tr>
-          `).join("")}
-        </tbody>
-      </table>
+    <div class="document-filter-row no-print" aria-label="Filtrar documentos por tipo">
+      <button type="button" class="filter-chip active" data-document-filter="Todos">Todos (${docs.length})</button>
+      ${categories.map((category) => {
+        const count = docs.filter((doc) => (String(doc.category || "Otros").trim() || "Otros") === category).length;
+        return `<button type="button" class="filter-chip" data-document-filter="${escapeHtml(category)}">${escapeHtml(category)} (${count})</button>`;
+      }).join("")}
+    </div>
+    <div class="document-card-list">
+      ${docs.map((doc) => {
+        const category = String(doc.category || "Otros").trim() || "Otros";
+        const openUrl = safeDocumentOpenUrl(doc.open_url);
+        const relative = String(doc.relative_path || "").trim();
+        return `
+          <article class="document-card" data-document-category="${escapeHtml(category)}">
+            <div>
+              <span class="badge">${escapeHtml(category)}</span>
+              <strong>${escapeHtml(doc.name || relative || "Documento")}</strong>
+              ${relative && relative !== doc.name ? `<small>${escapeHtml(relative)}</small>` : ""}
+            </div>
+            <div class="document-card-meta">
+              <span>${escapeHtml(formatBytes(doc.size_bytes))}</span>
+              ${openUrl ? `<a href="${escapeHtml(openUrl)}" target="_blank" rel="noreferrer">Ver online</a>` : `<span class="muted">En carpeta</span>`}
+            </div>
+          </article>
+        `;
+      }).join("")}
     </div>
   `;
+}
+
+function aiStatusLabel(payload) {
+  if (!payload.enabled) return "IA desactivada";
+  if (!payload.configured) return "IA no configurada";
+  if (payload.job_status === "pending") return "Pendiente";
+  if (payload.job_status === "processing") return "Procesando";
+  if (payload.job_status === "deferred") return "Límite alcanzado, reintento posterior";
+  if (payload.job_status === "error") return "Error";
+  if (payload.has_summary) return "Completado";
+  return "Sin análisis";
+}
+
+function aiStatusClass(payload) {
+  if (payload.has_summary) return "ok";
+  if (!payload.enabled || !payload.configured) return "muted";
+  if (payload.job_status === "error") return "danger";
+  if (payload.job_status === "deferred") return "warning";
+  if (payload.job_status === "pending" || payload.job_status === "processing") return "warning";
+  return "muted";
+}
+
+function renderAiArray(items) {
+  const list = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (!list.length) return `<div class="empty compact">Sin datos.</div>`;
+  return `<ul class="ai-list">${list.map((item) => `<li>${escapeHtml(typeof item === "object" ? JSON.stringify(item) : item)}</li>`).join("")}</ul>`;
+}
+
+function renderAiCards(items, fields) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return `<div class="empty compact">Sin datos.</div>`;
+  return `
+    <div class="ai-card-list">
+      ${list.map((item) => `
+        <article class="ai-mini-card">
+          ${fields.map(([label, key]) => item?.[key] ? `<p><span>${escapeHtml(label)}</span>${escapeHtml(item[key])}</p>` : "").join("")}
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderAiSummaryBlocks(payload) {
+  const record = payload.summary || {};
+  const data = record.summary || {};
+  if (!data || !Object.keys(data).length) return `<div class="empty">Todavía no hay análisis guardado.</div>`;
+  const metadata = data.metadata || {};
+  const ejecutivo = data.resumen_ejecutivo || {};
+  const economicos = data.datos_economicos || {};
+  const garantias = data.garantias || {};
+  const presentacion = data.presentacion || {};
+  const muestras = data.muestras_fichas_memoria || {};
+  const solvencia = data.solvencia || {};
+  const subcontratacion = data.subcontratacion || {};
+  const logistica = data.logistica_entrega || {};
+  const calidad = data.control_calidad || {};
+  return `
+    <div class="ai-warning">Análisis automático. Revisar siempre contra los pliegos antes de enviar información al cliente.</div>
+    <div class="ai-section-grid">
+      <section class="ai-section full">
+        <h4>Resumen</h4>
+        <p>${escapeHtml(ejecutivo.texto || record.summary_text || "Sin resumen ejecutivo.")}</p>
+        ${renderAiArray(ejecutivo.aspectos_clave)}
+      </section>
+      <section class="ai-section">
+        <h4>Datos clave</h4>
+        <dl>
+          <dt>Expediente</dt><dd>${escapeHtml(metadata.expediente || "")}</dd>
+          <dt>Organismo</dt><dd>${escapeHtml(metadata.organismo || "")}</dd>
+          <dt>Tipo</dt><dd>${escapeHtml(metadata.tipo_contrato || "")}</dd>
+          <dt>Fecha límite</dt><dd>${escapeHtml([metadata.fecha_limite_presentacion, metadata.hora_limite_presentacion].filter(Boolean).join(" "))}</dd>
+          <dt>Presupuesto</dt><dd>${escapeHtml(economicos.presupuesto_base ?? "")}</dd>
+          <dt>Valor estimado</dt><dd>${escapeHtml(economicos.valor_estimado ?? "")}</dd>
+        </dl>
+      </section>
+      <section class="ai-section">
+        <h4>Alertas</h4>
+        ${renderAiCards(data.alertas, [["Nivel", "nivel"], ["Título", "titulo"], ["Acción", "accion_recomendada"]])}
+      </section>
+      <section class="ai-section">
+        <h4>Lotes</h4>
+        ${renderAiCards(data.lotes, [["Lote", "numero_lote"], ["Denominación", "denominacion"], ["Presupuesto", "presupuesto"]])}
+      </section>
+      <section class="ai-section">
+        <h4>Criterios</h4>
+        ${renderAiCards(data.criterios_adjudicacion, [["Nombre", "nombre"], ["Tipo", "tipo"], ["Puntos", "puntuacion_maxima"]])}
+      </section>
+      <section class="ai-section">
+        <h4>Documentación</h4>
+        ${renderAiArray([...(presentacion.documentacion_administrativa || []), ...(presentacion.documentacion_tecnica || []), ...(presentacion.documentacion_economica || []), ...(presentacion.anexos_relevantes || [])])}
+      </section>
+      <section class="ai-section">
+        <h4>Solvencia</h4>
+        ${renderAiCards([...(solvencia.economica || []), ...(solvencia.tecnica || [])], [["Objeto", "objeto"], ["Importe mínimo", "importe_minimo"], ["Detalle", "detalle"]])}
+      </section>
+      <section class="ai-section">
+        <h4>Subcontratación</h4>
+        <p>${escapeHtml(subcontratacion.comentario_practico || subcontratacion.restricciones || "Sin datos.")}</p>
+      </section>
+      <section class="ai-section">
+        <h4>Logística / observaciones</h4>
+        ${renderAiArray([
+          ...(logistica.lugares_entrega || []),
+          ...(logistica.horarios_entrega || []),
+          ...(logistica.plazos_entrega_desde_pedido || []),
+          logistica.periodicidad,
+          logistica.transporte,
+          logistica.descarga,
+        ])}
+      </section>
+      <section class="ai-section">
+        <h4>Muestras / fichas / memoria</h4>
+        <dl>
+          <dt>Muestras</dt><dd>${escapeHtml(muestras.muestras?.detalle || "")}</dd>
+          <dt>Fichas técnicas</dt><dd>${escapeHtml(muestras.fichas_tecnicas?.detalle || "")}</dd>
+          <dt>Memoria técnica</dt><dd>${escapeHtml(muestras.memoria_tecnica?.detalle || "")}</dd>
+          <dt>Adscripción medios</dt><dd>${escapeHtml(muestras.adscripcion_medios?.detalle || "")}</dd>
+        </dl>
+      </section>
+      <section class="ai-section">
+        <h4>Control de calidad</h4>
+        ${renderAiArray([...(calidad.campos_no_encontrados || []), ...(calidad.campos_con_baja_confianza || []), ...(calidad.advertencias || [])])}
+      </section>
+    </div>
+    ${isAdmin() ? `<details class="ai-technical-json"><summary>Ver JSON técnico</summary><pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre></details>` : ""}
+  `;
+}
+
+function renderAiSummaryContent(licitacionId, payload) {
+  const selectedDocs = payload.selected_documents || [];
+  const job = payload.job || {};
+  const canGenerate = Boolean(payload.puede_generar);
+  const canRetry = payload.job_status === "error" || payload.job_status === "deferred";
+  const reason = payload.motivo_si_no_puede_generar || job.error_message || "";
+  return `
+    <div class="ai-summary-toolbar">
+      <span class="ai-status ${aiStatusClass(payload)}">${escapeHtml(aiStatusLabel(payload))}</span>
+      <span>${escapeHtml(selectedDocs.length ? `${selectedDocs.length} documento(s) seleccionado(s)` : "Sin documentos aptos")}</span>
+      ${payload.document_hash ? `<code title="${escapeHtml(payload.document_hash)}">${escapeHtml(payload.document_hash.slice(0, 12))}</code>` : ""}
+      <div class="ai-actions">
+        <button type="button" data-ai-generate="${escapeHtml(licitacionId)}" ${canGenerate && !payload.has_summary ? "" : "disabled"}>Generar análisis IA</button>
+        ${isAdmin() ? `<button type="button" data-ai-regenerate="${escapeHtml(licitacionId)}" ${canGenerate ? "" : "disabled"}>Regenerar análisis IA</button>` : ""}
+        <button type="button" data-ai-generate="${escapeHtml(licitacionId)}" ${canRetry && canGenerate ? "" : "disabled"}>Reintentar</button>
+      </div>
+    </div>
+    ${reason ? `<div class="ai-reason">${escapeHtml(reason)}</div>` : ""}
+    ${selectedDocs.length ? `
+      <div class="ai-documents">
+        ${selectedDocs.map((doc) => `<span title="${escapeHtml(doc.path || "")}">${escapeHtml(doc.name || doc.relative_path || "Documento")} · ${escapeHtml(doc.reason || "")}</span>`).join("")}
+      </div>
+    ` : ""}
+    ${renderAiSummaryBlocks(payload)}
+  `;
+}
+
+async function loadAiSummary(licitacionId) {
+  const panel = licitacionDetailContent.querySelector(`[data-ai-summary-panel="${licitacionId}"]`);
+  if (!panel) return;
+  panel.innerHTML = `<div class="empty">Cargando estado IA...</div>`;
+  try {
+    const response = await fetch(`/api/licitaciones/${licitacionId}/ai-summary`);
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      panel.innerHTML = `<div class="empty">${escapeHtml(result.error || "No se pudo consultar el análisis IA.")}</div>`;
+      return;
+    }
+    panel.innerHTML = renderAiSummaryContent(licitacionId, result);
+  } catch (error) {
+    panel.innerHTML = `<div class="empty">${escapeHtml(error.message || "No se pudo consultar el análisis IA.")}</div>`;
+  }
+}
+
+async function generateAiSummary(licitacionId, button, force = false) {
+  const panel = licitacionDetailContent.querySelector(`[data-ai-summary-panel="${licitacionId}"]`);
+  const originalText = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = force ? "Regenerando..." : "Generando...";
+  }
+  try {
+    const endpoint = force
+      ? `/api/licitaciones/${licitacionId}/ai-summary/regenerate`
+      : `/api/licitaciones/${licitacionId}/ai-summary/generate`;
+    if (panel) panel.innerHTML = `<div class="empty">Procesando análisis IA...</div>`;
+    const response = await fetch(endpoint, { method: "POST", headers: csrfHeaders() });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (panel) panel.innerHTML = `<div class="empty">${escapeHtml(result.error || "No se pudo generar el análisis IA.")}</div>`;
+      return;
+    }
+    if (panel) panel.innerHTML = renderAiSummaryContent(licitacionId, result);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
 }
 
 function markerStatusText(value) {
@@ -3451,7 +3837,7 @@ function showPreparedNoticeFromResult(result) {
   preparedNoticeSubject.value = preview.subject || "";
   preparedNoticeBody.value = preview.email_body || "";
   sendPreparedNoticeButton.textContent = "Enviar email";
-  sendPreparedNoticeButton.disabled = !preview.can_send_email;
+  sendPreparedNoticeButton.disabled = false;
   setPreparedNoticeStatus(preview.email_warning || "", preview.email_warning ? "error" : "");
   if (typeof preparedNoticeDialog.showModal === "function") {
     preparedNoticeDialog.showModal();
@@ -3470,6 +3856,11 @@ async function copyPreparedNoticeText() {
   const preview = appState.preparedNoticePreview;
   if (!preview) return;
   const text = preview.whatsapp_text || preparedNoticeBody.value || "";
+  await copyTextToClipboard(text);
+  setPreparedNoticeStatus("Texto copiado para WhatsApp.", "success");
+}
+
+async function copyTextToClipboard(text) {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
@@ -3483,7 +3874,6 @@ async function copyPreparedNoticeText() {
     document.execCommand("copy");
     helper.remove();
   }
-  setPreparedNoticeStatus("Texto copiado para WhatsApp.", "success");
 }
 
 async function sendPreparedNoticeEmail() {
@@ -3498,6 +3888,7 @@ async function sendPreparedNoticeEmail() {
       method: "POST",
       headers: { "Content-Type": "application/json", ...csrfHeaders() },
       body: JSON.stringify({
+        to: preparedNoticeTo.value.trim(),
         subject: preparedNoticeSubject.value.trim(),
         email_body: preparedNoticeBody.value.trim(),
       }),
@@ -3510,7 +3901,7 @@ async function sendPreparedNoticeEmail() {
     setPreparedNoticeStatus(result.message || "Email enviado correctamente.", "success");
   } catch (error) {
     appState.preparedNoticeSending = false;
-    sendPreparedNoticeButton.disabled = !preview.can_send_email;
+    sendPreparedNoticeButton.disabled = false;
     sendPreparedNoticeButton.textContent = "Enviar email";
     setPreparedNoticeStatus(error.message || "No se ha podido enviar el email. La licitación se ha guardado correctamente.", "error");
   }
@@ -3546,12 +3937,16 @@ async function markDayReviewed() {
 async function sendDayToNuria() {
   if (!appState.currentDiaId || sendNuriaButton.disabled) return;
 
+  const notificationEmail = confirmNuriaReviewEmail();
+  if (notificationEmail === null) return;
+
   sendNuriaButton.disabled = true;
   sendNuriaButton.textContent = "Enviando...";
   try {
     const response = await fetch(`/api/dias/${appState.currentDiaId}/enviar-nuria`, {
       method: "POST",
-      headers: csrfHeaders(),
+      headers: { "Content-Type": "application/json", ...csrfHeaders() },
+      body: JSON.stringify({ notification_email: notificationEmail }),
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -3692,7 +4087,7 @@ async function toggleDetails(id) {
 }
 
 async function openLicitacionDetail(id) {
-  licitacionDetailTitle.textContent = "Cargando licitación...";
+  licitacionDetailTitle.textContent = "Ficha de licitación";
   licitacionDetailContent.innerHTML = `<div class="empty">Cargando ficha ampliada...</div>`;
   licitacionDetailDialog.showModal();
   const response = await fetch(`/api/licitaciones/${id}`);
@@ -3703,8 +4098,9 @@ async function openLicitacionDetail(id) {
   }
   const item = result.item;
   appState.cardDetails[id] = { ...(appState.cardDetails[id] || {}), item };
-  licitacionDetailTitle.textContent = item.expediente || "Licitación";
+  licitacionDetailTitle.textContent = "Ficha de licitación";
   licitacionDetailContent.innerHTML = renderLicitacionDetailView(item);
+  loadAiSummary(id);
 }
 
 async function refreshLicitacionDetail(id) {
@@ -3752,8 +4148,9 @@ async function runLicitacionMarkerAction(id, action, button) {
     renderBoard();
     const detail = appState.cardDetails[id]?.item;
     if (detail && licitacionDetailDialog.open) {
-      licitacionDetailTitle.textContent = detail.expediente || "Licitación";
+      licitacionDetailTitle.textContent = "Ficha de licitación";
       licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
+      loadAiSummary(id);
       setMarkerActionResult(id, message, "success");
     }
   } finally {
@@ -3801,8 +4198,9 @@ async function patchLicitacionWork(id, payload) {
   renderBoard();
   const detail = appState.cardDetails[id]?.item;
   if (detail && licitacionDetailDialog.open) {
-    licitacionDetailTitle.textContent = detail.expediente || "Licitación";
+    licitacionDetailTitle.textContent = "Ficha de licitación";
     licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
+    loadAiSummary(id);
   }
   showPreparedNoticeFromResult(result);
   return true;
@@ -3812,6 +4210,11 @@ function renderCaptureResult(message, type = "", details = []) {
   capturePlatformResult.className = `import-result capture-result ${type}`.trim();
   const detailItems = details.filter(Boolean).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
   capturePlatformResult.innerHTML = `${escapeHtml(message)}${detailItems ? `<ul>${detailItems}</ul>` : ""}`;
+}
+
+function isPlaceDocumentUrl(value) {
+  const text = String(value || "").toLowerCase();
+  return text.includes("getdocumentbyidservlet") || text.includes("documentidparam=");
 }
 
 function applyCapturedFields(fields) {
@@ -3824,7 +4227,10 @@ function applyCapturedFields(fields) {
     if (!value || !target || !form.elements[target] || seenTargets.has(target)) return;
     seenTargets.add(target);
     const label = captureFieldLabels[field] || field;
-    if (String(form.elements[target].value || "").trim()) {
+    const currentValue = String(form.elements[target].value || "").trim();
+    const shouldReplaceDocumentProfile =
+      field === "enlace_perfil" && isPlaceDocumentUrl(currentValue) && !isPlaceDocumentUrl(value);
+    if (currentValue && !shouldReplaceDocumentProfile) {
       skipped.push(label);
       return;
     }
@@ -3837,7 +4243,8 @@ function applyCapturedFields(fields) {
 async function capturePlatformData() {
   if (!isAdmin()) return;
   const profileUrl = String(form.elements.enlace_perfil?.value || "").trim();
-  const defaultCaptureUrl = profileUrl.includes("GetDocumentByIdServlet") ? profileUrl : "";
+  const defaultCaptureUrl = isPlaceDocumentUrl(profileUrl) ? profileUrl : "";
+  const profileUrlForCapture = isPlaceDocumentUrl(profileUrl) ? "" : profileUrl;
   const requestedUrl = window.prompt("Pega la URL XML del pliego o documento PLACE:", defaultCaptureUrl);
   if (requestedUrl === null) return;
   const url = String(requestedUrl || "").trim();
@@ -3851,7 +4258,7 @@ async function capturePlatformData() {
     const response = await fetch("/api/licitaciones/capture", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...csrfHeaders() },
-      body: JSON.stringify({ url, profile_url: profileUrl || undefined }),
+      body: JSON.stringify({ url, profile_url: profileUrlForCapture || undefined }),
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok || result.ok === false) {
@@ -3973,12 +4380,27 @@ function debounce(fn, delay) {
   };
 }
 
+mobileMenuButton?.addEventListener("click", toggleSidebar);
+mobileMenuClose?.addEventListener("click", closeSidebar);
+sidebarOverlay?.addEventListener("click", closeSidebar);
+mobileLogoutButton?.addEventListener("click", logout);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeSidebar();
+});
+window.addEventListener("resize", () => {
+  if (window.innerWidth > 980) closeSidebar();
+});
+document.querySelectorAll(".sidebar [data-nav-section]").forEach((button) => {
+  button.addEventListener("click", closeSidebar);
+});
+
 document.getElementById("days-button").addEventListener("click", showDaysView);
 document.getElementById("list-button").addEventListener("click", () => showLicitacionesView({ view: "live" }));
 document.getElementById("calendar-button").addEventListener("click", showCalendarView);
 document.getElementById("actuaciones-button").addEventListener("click", showActuacionesView);
 logoutButton?.addEventListener("click", logout);
 document.getElementById("notifications-button").addEventListener("click", showNotificationsView);
+document.getElementById("notifications-menu-button")?.addEventListener("click", showNotificationsView);
 document.getElementById("back-from-notifications").addEventListener("click", backFromNotifications);
 document.getElementById("news-admin-button").addEventListener("click", showNewsAdminView);
 document.getElementById("monitor-button").addEventListener("click", showMonitorView);
@@ -4189,7 +4611,53 @@ newsAdminBoard.addEventListener("click", (event) => {
 
 document.getElementById("close-licitacion-detail").addEventListener("click", () => licitacionDetailDialog.close());
 
+function activateDetailTab(button) {
+  const workspace = button.closest(".licitacion-detail-workspace");
+  if (!workspace) return;
+  const tab = button.dataset.detailTab || "resumen";
+  workspace.querySelectorAll("[data-detail-tab]").forEach((item) => {
+    item.classList.toggle("active", item.dataset.detailTab === tab);
+  });
+  workspace.querySelectorAll("[data-detail-tab-panel]").forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.detailTabPanel === tab);
+  });
+}
+
+function filterDocumentCards(button) {
+  const container = button.closest("[data-detail-tab-panel], .card-expanded, .document-card-list")?.parentElement || button.closest(".licitacion-detail-workspace") || document;
+  const value = button.dataset.documentFilter || "Todos";
+  const filterRoot = button.closest(".document-filter-row");
+  filterRoot?.querySelectorAll("[data-document-filter]").forEach((item) => {
+    item.classList.toggle("active", item === button);
+  });
+  container.querySelectorAll("[data-document-category]").forEach((card) => {
+    card.hidden = value !== "Todos" && card.dataset.documentCategory !== value;
+  });
+}
+
 licitacionDetailContent.addEventListener("click", (event) => {
+  const tabButton = event.target.closest("button[data-detail-tab]");
+  if (tabButton) {
+    activateDetailTab(tabButton);
+    return;
+  }
+
+  const documentFilterButton = event.target.closest("button[data-document-filter]");
+  if (documentFilterButton) {
+    filterDocumentCards(documentFilterButton);
+    return;
+  }
+
+  const copyButton = event.target.closest("button[data-copy-text]");
+  if (copyButton) {
+    copyTextToClipboard(copyButton.dataset.copyText || "");
+    copyButton.textContent = "Ruta copiada";
+    window.setTimeout(() => {
+      copyButton.textContent = "Copiar ruta";
+    }, 1800);
+    return;
+  }
+
   const downloadButton = event.target.closest("button[data-download-id]");
   if (downloadButton) {
     downloadLicitacion(downloadButton.dataset.downloadId, downloadButton);
@@ -4227,6 +4695,18 @@ licitacionDetailContent.addEventListener("click", (event) => {
   const openFolderButton = event.target.closest("button[data-open-licitacion-folder]");
   if (openFolderButton) {
     openLicitacionFolder(openFolderButton.dataset.openLicitacionFolder, openFolderButton);
+    return;
+  }
+
+  const aiGenerateButton = event.target.closest("button[data-ai-generate]");
+  if (aiGenerateButton) {
+    generateAiSummary(aiGenerateButton.dataset.aiGenerate, aiGenerateButton, false);
+    return;
+  }
+
+  const aiRegenerateButton = event.target.closest("button[data-ai-regenerate]");
+  if (aiRegenerateButton) {
+    generateAiSummary(aiRegenerateButton.dataset.aiRegenerate, aiRegenerateButton, true);
     return;
   }
 
@@ -4274,6 +4754,22 @@ daysBoard.addEventListener("click", (event) => {
 });
 
 board.addEventListener("click", (event) => {
+  const documentFilterButton = event.target.closest("button[data-document-filter]");
+  if (documentFilterButton) {
+    filterDocumentCards(documentFilterButton);
+    return;
+  }
+
+  const copyButton = event.target.closest("button[data-copy-text]");
+  if (copyButton) {
+    copyTextToClipboard(copyButton.dataset.copyText || "");
+    copyButton.textContent = "Ruta copiada";
+    window.setTimeout(() => {
+      copyButton.textContent = "Copiar ruta";
+    }, 1800);
+    return;
+  }
+
   const openDetailButton = event.target.closest("button[data-open-licitacion-detail]");
   if (openDetailButton) {
     openLicitacionDetail(openDetailButton.dataset.openLicitacionDetail);
@@ -4612,3 +5108,4 @@ importForm.addEventListener("submit", async (event) => {
 });
 
 loadMe().then(showInitialView);
+

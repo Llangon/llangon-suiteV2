@@ -108,9 +108,19 @@ def test_windows_deployment_scripts_are_relative_and_documented() -> None:
         assert "C:\\Users\\LLangon03" not in text
         assert "Resolve-Path (Join-Path $ScriptRoot" in text or script == "uninstall_local_deployment.ps1"
 
+    start_web = (scripts_root / "start_web_production.ps1").read_text(encoding="utf-8")
+    assert "Test-WebHealth" in start_web
+    assert "webapp.infonalia_webapp.serve" in start_web
+    assert "Ejecutando proceso web en primer plano" in start_web
+    assert "Start-Process" not in start_web
+    hidden_runner = (scripts_root / "run_powershell_hidden.vbs").read_text(encoding="utf-8")
+    installer = (scripts_root / "install_local_deployment.ps1").read_text(encoding="utf-8")
+    assert "shell.Run(command, 0, True)" in hidden_runner
+    assert "wscript.exe" in installer
+    assert "run_powershell_hidden.vbs" in installer
+
     docs = PROJECT_ROOT / "docs" / "DESPLIEGUE_LOCAL_WINDOWS.md"
     assert docs.exists()
     doc_text = docs.read_text(encoding="utf-8")
     assert "LlangonSuite-Web" in doc_text
     assert "http://127.0.0.1:8787" in doc_text
-

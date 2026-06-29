@@ -99,6 +99,48 @@ const methodology = [
   ["Adjudicación, defensa o ejecución", "Preparación de documentación de adjudicación, revisión del contrato, recursos, alegaciones o asistencia posterior."],
 ];
 
+const homePainPoints = [
+  ["Pliegos extensos y difíciles de interpretar", "Un requisito mal leído puede convertir una oportunidad en una exclusión."],
+  ["Documentación dispersa", "Anexos, declaraciones, solvencia, fichas técnicas, memorias y certificados deben prepararse con orden y coherencia."],
+  ["Plazos que no perdonan", "Una subsanación, un requerimiento o una garantía fuera de plazo puede hacer perder meses de trabajo."],
+  ["Decisiones económicas sin información suficiente", "No basta con decidir un precio. Hay que entender presupuestos máximos, fórmulas, criterios y antecedentes públicos cuando existan."],
+];
+
+const homeServices = [
+  ["Búsqueda y selección de oportunidades", "Localizamos licitaciones que encajan con la actividad, zona, solvencia y capacidad operativa de la empresa."],
+  ["Análisis de pliegos", "Revisamos requisitos administrativos, técnicos, económicos, criterios de adjudicación, garantías, plazos y riesgos del expediente."],
+  ["Preparación administrativa", "Organizamos declaraciones, anexos, acreditaciones, certificados y documentación exigida para concurrir."],
+  ["Documentación técnica", "Redactamos memorias, planes, fichas y documentos técnicos a partir de la información y soporte facilitados por el cliente."],
+  ["Herramientas para la oferta económica", "Facilitamos plantillas, fórmulas, cuadros de análisis e información pública para que el cliente pueda decidir."],
+  ["Presentación y seguimiento", "Acompañamos la presentación y realizamos seguimiento de aperturas, subsanaciones, requerimientos, adjudicación y formalización."],
+];
+
+const homeBenefits = [
+  ["Más oportunidades reales", "Filtramos licitaciones para que tu equipo no pierda tiempo con expedientes que no encajan."],
+  ["Menos riesgo de exclusión", "Revisamos requisitos, plazos, formatos y documentación para reducir errores evitables."],
+  ["Más control interno", "Cada licitación se convierte en un proceso ordenado, con tareas, documentación y fechas claras."],
+  ["Menos carga administrativa", "Tu empresa puede centrarse en su actividad mientras coordinamos la preparación documental."],
+  ["Mejor lectura del expediente", "Traducimos el lenguaje del pliego a decisiones prácticas: qué exige, qué implica y qué preparar."],
+  ["Un canal de ventas más profesionalizado", "La contratación pública puede convertirse en una vía estable de crecimiento si se trabaja con método y continuidad."],
+];
+
+const homeProcess = [
+  ["Analizamos tu empresa", "Actividad, productos o servicios, solvencia, experiencia, zonas de interés y capacidad real de ejecución."],
+  ["Localizamos oportunidades", "Buscamos y filtramos licitaciones que puedan encajar con tu perfil."],
+  ["Revisamos el pliego", "Identificamos requisitos, riesgos, documentación, criterios, plazos y puntos críticos."],
+  ["Preparamos la documentación", "Coordinamos la parte administrativa y redactamos documentación técnica con la información aportada por el cliente."],
+  ["Facilitamos herramientas económicas", "Preparamos plantillas, fórmulas y referencias públicas para que el cliente valore su oferta."],
+  ["Presentamos y seguimos", "Acompañamos el envío y controlamos subsanaciones, requerimientos, adjudicación y formalización."],
+];
+
+const trustPoints = [
+  "Rigor jurídico sin lenguaje innecesariamente complejo.",
+  "Control documental desde el primer análisis.",
+  "Comunicación clara con el cliente.",
+  "Herramientas prácticas para tomar mejores decisiones.",
+  "Confidencialidad y trazabilidad en cada expediente.",
+];
+
 const procurementTopics = [
   "Análisis de pliegos",
   "Solvencia y documentación",
@@ -185,35 +227,147 @@ function homePage() {
     <section class="hero">
       <div class="hero-inner">
         <div class="hero-copy">
-          <h1>Especialistas en contratación pública y asistencia en preparación de ofertas</h1>
-          <p class="lead">Acompañamos a empresas en la búsqueda, análisis, preparación documental, presentación y seguimiento de procedimientos de contratación pública en España.</p>
+          <p class="kicker">Asesoría especializada en licitaciones públicas</p>
+          <h1>Convierte la contratación pública en un canal de crecimiento para tu empresa</h1>
+          <p class="lead">En ASESORES LLANGON ayudamos a empresas a localizar, analizar y preparar licitaciones públicas con rigor jurídico, control documental y una visión práctica del negocio.</p>
+          <p class="hero-support">Te acompañamos desde el análisis del pliego hasta la presentación y seguimiento del expediente, para que puedas competir con más seguridad, menos carga interna y una oferta mejor preparada.</p>
           <div class="hero-actions">
-            ${button("Ver servicios", "/servicios")}
-            ${button("Acceso a zona privada", privateUrl, "button-secondary")}
+            ${button("Solicitar valoración", "/contacto")}
+            ${button("Ver servicios", "/servicios", "button-secondary")}
           </div>
+          <p class="hero-microcopy">Primera revisión orientativa · Atención directa · Licitaciones públicas en España</p>
         </div>
         <div class="hero-proof" aria-label="Áreas de trabajo">
           <span>Análisis de pliegos</span>
-          <span>Preparación documental</span>
-          <span>Subsanaciones y adjudicación</span>
-          <span>Seguimiento de expedientes</span>
+          <span>Control documental</span>
+          <span>Herramientas económicas</span>
+          <span>Seguimiento del expediente</span>
         </div>
       </div>
     </section>
-    ${aboutSection()}
-    ${visualWorkSection()}
-    <section class="public-section light-band">
+    <section class="public-section">
       <div class="section-inner">
-        ${sectionTitle("Servicios", "Apoyo especializado durante todo el procedimiento", "Servicios principales para ordenar, preparar, revisar y presentar documentación conforme a los pliegos.")}
-        ${cards(coreServices)}
-        <div class="section-actions">${button("Servicios especializados", "/servicios")}</div>
+        ${sectionTitle("El problema", "Presentarse a una licitación no debería depender de tener tiempo libre", "Los contratos públicos son una oportunidad enorme, pero también exigen plazos, documentación, solvencia, plataformas electrónicas y una lectura precisa de los pliegos.")}
+        <div class="compact-card-grid">
+          ${homePainPoints.map((item) => `
+            <article class="compact-card">
+              <h3>${item[0]}</h3>
+              <p>${item[1]}</p>
+            </article>
+          `).join("")}
+        </div>
+        <div class="highlight-line">Nuestro trabajo es convertir ese proceso en una hoja de ruta clara, controlada y comprensible para la empresa.</div>
       </div>
     </section>
-    ${methodologySection(true)}
-    ${procurementSection(true)}
-    ${newsSection(true)}
-    ${privateAccessSection()}
-    ${contactSection(true)}
+    <section class="public-section law-section light-band">
+      <div class="section-inner law-grid">
+        <div>
+          <p class="kicker">Ley 9/2017</p>
+          <h2>La contratación pública permite competir en igualdad de condiciones</h2>
+        </div>
+        <div class="text-block">
+          <p>La contratación pública se basa en principios como transparencia, igualdad de trato, libre competencia y mejor relación calidad-precio. Dominar esas reglas permite presentarse con más seguridad y criterio.</p>
+          <p>La <a href="https://www.boe.es/buscar/act.php?id=BOE-A-2017-12902" target="_blank" rel="noopener noreferrer">Ley 9/2017, de Contratos del Sector Público</a>, es el marco que permite a empresas privadas acceder a contratos con administraciones, organismos públicos y entidades del sector público bajo reglas claras.</p>
+          <p>En ASESORES LLANGON trabajamos cada expediente desde esa base: analizamos pliegos, identificamos requisitos, controlamos documentación y ayudamos a que la empresa pueda competir de forma ordenada y profesional.</p>
+          <div class="notice-box">Contratación pública no significa burocracia inaccesible. Significa un mercado regulado donde la preparación marca la diferencia.</div>
+          <div class="section-actions">${button("Quiero competir con más seguridad", "/contacto")}</div>
+        </div>
+      </div>
+    </section>
+    <section class="public-section light-band">
+      <div class="section-inner">
+        ${sectionTitle("Qué hacemos", "Te ayudamos a preparar licitaciones con criterio, orden y seguridad", "No somos un simple servicio de búsqueda de concursos. Acompañamos a la empresa en las fases clave del procedimiento.")}
+        ${cards(homeServices)}
+        <div class="section-actions">${button("Ver todos los servicios", "/servicios")}</div>
+      </div>
+    </section>
+    <section class="public-section">
+      <div class="section-inner">
+        ${sectionTitle("Criterio profesional", "Asesoramiento experto, decisiones empresariales claras", "Preparamos, ordenamos y redactamos documentación para que la empresa pueda concurrir con más seguridad, manteniendo una separación clara entre asesoramiento y decisiones del licitador.")}
+        <div class="two-column-panel">
+          <article>
+            <h3>Documentación técnica</h3>
+            <p>Redactamos y elaboramos documentación técnica a partir de la información, documentación y soporte que proporciona el cliente.</p>
+            <p>Ayudamos a presentar esa información de forma clara, coherente y adaptada a los criterios del pliego.</p>
+          </article>
+          <article>
+            <h3>Oferta económica</h3>
+            <p>Proporcionamos herramientas de análisis, plantillas, fórmulas, comparativas e información pública disponible.</p>
+            <p>La decisión sobre precios, descuentos, márgenes e importe final corresponde siempre al cliente.</p>
+          </article>
+        </div>
+        <div class="highlight-line">Esta forma de trabajar protege a la empresa, refuerza la trazabilidad del expediente y permite competir con mayor seguridad.</div>
+      </div>
+    </section>
+    <section class="public-section light-band">
+      <div class="section-inner">
+        ${sectionTitle("Beneficios", "Lo que gana tu empresa al trabajar con ASESORES LLANGON", "")}
+        <div class="compact-card-grid">
+          ${homeBenefits.map((item) => `
+            <article class="compact-card">
+              <h3>${item[0]}</h3>
+              <p>${item[1]}</p>
+            </article>
+          `).join("")}
+        </div>
+      </div>
+    </section>
+    <section class="public-section">
+      <div class="section-inner">
+        ${sectionTitle("Método", "De la oportunidad al expediente presentado", "Un procedimiento complejo se entiende mejor cuando cada fase está ordenada.")}
+        <div class="method-grid">
+          ${homeProcess.map((step, index) => `
+            <article class="method-step">
+              <span class="method-number">${index + 1}</span>
+              <h3>${step[0]}</h3>
+              <p>${step[1]}</p>
+            </article>
+          `).join("")}
+        </div>
+      </div>
+    </section>
+    <section class="public-section light-band">
+      <div class="section-inner">
+        ${sectionTitle("Modalidades", "Un servicio adaptado a tu forma de licitar", "")}
+        <div class="work-mode-grid">
+          <article class="work-mode-card">
+            <h3>Gestión continuada de licitaciones</h3>
+            <p>Para empresas que quieren incorporar la contratación pública como canal estable de ventas. Incluye vigilancia de oportunidades, análisis de pliegos, preparación documental y seguimiento recurrente.</p>
+            <div class="section-actions">${button("Quiero externalizar licitaciones", "/contacto", "button-secondary")}</div>
+          </article>
+          <article class="work-mode-card">
+            <h3>Apoyo por expediente</h3>
+            <p>Para empresas que tienen una licitación concreta y necesitan ayuda en una o varias fases: análisis del pliego, documentación administrativa, documentación técnica, herramientas económicas o seguimiento posterior.</p>
+            <div class="section-actions">${button("Tengo una licitación en marcha", "/contacto", "button-secondary")}</div>
+          </article>
+        </div>
+      </div>
+    </section>
+    <section class="public-section">
+      <div class="section-inner split-grid">
+        <div>${sectionTitle("Confianza", "Especialización práctica en contratación pública", "")}</div>
+        <div class="text-block">
+          <p>ASESORES LLANGON, S.L. trabaja con empresas que necesitan competir en licitaciones públicas sin asumir internamente toda la carga administrativa, técnica y documental que exige el procedimiento.</p>
+          <p>Nuestro enfoque combina conocimiento normativo, experiencia práctica en expedientes, claridad en la comunicación y control de cada fase.</p>
+          <p>No prometemos adjudicaciones. Preparamos mejor el camino para que tu empresa pueda competir con seriedad, seguridad y criterio.</p>
+          <div class="trust-list">
+            ${trustPoints.map((point) => `<span>${point}</span>`).join("")}
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="public-section final-cta light-band">
+      <div class="section-inner">
+        <p class="kicker">Primera valoración</p>
+        <h2>¿Quieres saber si una licitación merece la pena?</h2>
+        <p>Envíanos el enlace, número de expediente o una breve descripción de la oportunidad. Revisaremos el caso y te diremos cómo podemos ayudarte.</p>
+        <div class="section-actions">
+          ${button("Solicitar valoración", "/contacto")}
+          <a class="button-link button-secondary" href="mailto:info@llangon.com">Contactar por email</a>
+        </div>
+        <p class="hero-microcopy">También puedes escribirnos directamente a <a href="mailto:info@llangon.com">info@llangon.com</a></p>
+      </div>
+    </section>
   `;
 }
 

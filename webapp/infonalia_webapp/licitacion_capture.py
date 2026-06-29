@@ -10,12 +10,13 @@ from collections.abc import Callable
 from html.parser import HTMLParser
 from urllib import request as urlrequest
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 
 MAX_CAPTURE_HTML_BYTES = 2 * 1024 * 1024
 CAPTURE_TIMEOUT_SECONDS = 12
 CAPTURE_USER_AGENT = "InfonaliaWeb platform capture/1.0"
+PLACE_PROFILE_BASE_URL = "https://contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&idEvl="
 
 
 class CaptureError(ValueError):
@@ -134,6 +135,65 @@ def detect_platform_from_url(url: str | None) -> str:
     host = (parsed.hostname or "").lower().strip(".")
     if host == "contrataciondelestado.es" or host.endswith(".contrataciondelestado.es"):
         return "PLACE"
+    return ""
+
+
+def _is_place_document_url(url: str | None) -> bool:
+    text = str(url or "")
+    parsed = urlparse(text)
+    path = parsed.path.lower()
+    query = parsed.query.lower()
+    return "getdocumentbyidservlet" in path or "documentidparam=" in query
+
+
+def _place_profile_url_from_id_evl(id_evl: str) -> str:
+    cleaned = _clean_value(id_evl).strip("&? ")
+    if not cleaned:
+        return ""
+    return PLACE_PROFILE_BASE_URL + quote(cleaned, safe="%")
+
+
+def _place_profile_url_from_text(value: object) -> str:
+    text = html.unescape(str(value or ""))
+    if not text:
+        return ""
+
+    full_url_match = re.search(
+        r"https?://contrataciondelestado\.es/wps/poc\?[^\s<>'\"]*idEvl=[^\s<>'\"]+",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if full_url_match:
+        candidate = full_url_match.group(0).rstrip(").,;")
+        if "detalle_licitacion" in candidate.lower():
+            return validate_capture_url(candidate)
+
+    relative_match = re.search(
+        r"/?wps/poc\?[^\s<>'\"]*idEvl=[^\s<>'\"]+",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if relative_match:
+        candidate = "https://contrataciondelestado.es/" + relative_match.group(0).lstrip("/").rstrip(").,;")
+        if "detalle_licitacion" in candidate.lower():
+            return validate_capture_url(candidate)
+
+    if "detalle_licitacion" not in text.lower():
+        return ""
+    id_match = re.search(r"\bidEvl\s*=\s*([^&\s<>'\"]+)", text, flags=re.IGNORECASE)
+    return validate_capture_url(_place_profile_url_from_id_evl(id_match.group(1))) if id_match else ""
+
+
+def _place_profile_url_from_xml(root: ET.Element, xml_text: str) -> str:
+    for value in [xml_text, *(element.text or "" for element in root.iter())]:
+        candidate = _place_profile_url_from_text(value)
+        if candidate:
+            return candidate
+    for element in root.iter():
+        for value in element.attrib.values():
+            candidate = _place_profile_url_from_text(value)
+            if candidate:
+                return candidate
     return ""
 
 
@@ -343,10 +403,11 @@ def parse_place_document_xml(xml_text: str, url: str, *, profile_url: str | None
         raise CaptureError("No se pudo leer el XML de PLACE.") from exc
 
     warnings: list[str] = []
-    fields: dict[str, str] = {
-        "plataforma": "PLACE",
-        "enlace_perfil": validate_capture_url(profile_url or source_url),
-    }
+    fields: dict[str, str] = {"plataforma": "PLACE"}
+    explicit_profile_url = "" if _is_place_document_url(profile_url) else profile_url
+    profile_candidate = explicit_profile_url or _place_profile_url_from_xml(root, xml_text)
+    if profile_candidate:
+        fields["enlace_perfil"] = validate_capture_url(profile_candidate)
 
     project = _first_element(root, "ProcurementProject")
     party = _first_element(root, "LocatedContractingParty", "ContractingParty")
