@@ -65,6 +65,15 @@ def _job_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
     data = row_to_dict(row)
     if not data:
         return None
+    raw_diagnostics: dict[str, object] = {}
+    raw_payload = data.get("raw_usage_json") or ""
+    if raw_payload:
+        try:
+            decoded = json.loads(str(raw_payload))
+            if isinstance(decoded, dict):
+                raw_diagnostics = decoded.get("diagnostics") if isinstance(decoded.get("diagnostics"), dict) else {}
+        except json.JSONDecodeError:
+            raw_diagnostics = {}
     return {
         "id": data["id"],
         "status": data["status"],
@@ -77,6 +86,9 @@ def _job_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
         "error_message": data.get("error_message") or "",
         "next_retry_at": data.get("next_retry_at") or "",
         "attempts": data.get("attempts") or 0,
+        "diagnostics": raw_diagnostics,
+        "raw_response_preview": raw_diagnostics.get("raw_response_preview", ""),
+        "parse_attempts": raw_diagnostics.get("parse_attempts", []),
     }
 
 
@@ -251,6 +263,7 @@ def process_ai_job(
         retry_at = ""
         if exc.code == "RESOURCE_EXHAUSTED":
             retry_at = (datetime.now().replace(microsecond=0) + timedelta(minutes=config.cooldown_on_429_minutes)).isoformat()
+        safe_diagnostics = {"diagnostics": exc.diagnostics} if exc.diagnostics else {}
         update_job(
             conn,
             job_id,
@@ -259,6 +272,7 @@ def process_ai_job(
             error_code=exc.code,
             error_message=str(exc),
             next_retry_at=retry_at,
+            raw_usage_json=json.dumps(safe_diagnostics, ensure_ascii=False) if safe_diagnostics else "",
         )
         return get_ai_summary_payload(conn, licitacion_id)
 

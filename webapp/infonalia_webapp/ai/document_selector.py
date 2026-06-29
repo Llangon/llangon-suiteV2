@@ -27,6 +27,28 @@ PRIORITY_TERMS = (
     "ANEXO",
     "ANEXOS",
 )
+CORE_PRIORITY_TERMS = (
+    "CUADRO",
+    "CARACTERISTICAS",
+    "CARACTERISTICAS",
+    "PCAP",
+    "PCA",
+    "PPT",
+    "ANEXO",
+    "ANEXOS",
+)
+ADMIN_FALLBACK_TERMS = (
+    "RESOLUCION",
+    "RESOLUCIÓN",
+    "APROBACION",
+    "APROBACIÓN",
+    "INCOACION",
+    "INCOACIÓN",
+    "PROVIDENCIA",
+    "INFORME NECESIDADES",
+    "CONCEJALIA",
+    "CONCEJALÍA",
+)
 EXCLUDED_TERMS = (
     "ANTERIOR",
     "CONCURSO ANTERIOR",
@@ -114,6 +136,16 @@ def _selection_reason(name: str) -> str:
 def _has_priority(name: str) -> bool:
     upper = _clean_text(name).upper()
     return any(term in upper for term in PRIORITY_TERMS)
+
+
+def _has_core_priority(name: str) -> bool:
+    upper = _clean_text(name).upper()
+    return any(term in upper for term in CORE_PRIORITY_TERMS)
+
+
+def _is_admin_fallback_document(name: str) -> bool:
+    upper = _clean_text(name).upper()
+    return any(term in upper for term in ADMIN_FALLBACK_TERMS)
 
 
 def _path_info(path: Path, root: Path) -> dict[str, object]:
@@ -268,9 +300,20 @@ def inspect_document_selection(
             discarded.append(info)
             continue
         candidates.append(item)
+    core_priority_candidates = [item for item in candidates if _has_core_priority(item.name)]
+    if core_priority_candidates:
+        filtered_candidates: list[Path] = []
+        for item in candidates:
+            if _is_admin_fallback_document(item.name):
+                info = _path_info(item, folder)
+                info["reason"] = "Documento administrativo omitido al existir PCAP/PPT/Cuadro/Anexo prioritario"
+                discarded.append(info)
+                continue
+            filtered_candidates.append(item)
+        candidates = filtered_candidates
+
     diagnostics["discarded_documents"] = discarded
     diagnostics["discarded_documents_count"] = len(discarded)
-
     priority_candidates = [item for item in candidates if _has_priority(item.name)]
     selected_pool = priority_candidates or candidates
     selected_pool.sort(key=lambda item: _priority(item, folder))

@@ -12,7 +12,12 @@ import pytest
 
 from webapp.infonalia_webapp.ai.config import get_ai_config
 from webapp.infonalia_webapp.ai.document_selector import inspect_document_selection, select_relevant_documents
-from webapp.infonalia_webapp.ai.gemini_provider import AIProviderError, ProviderResult
+from webapp.infonalia_webapp.ai.gemini_provider import (
+    AIProviderError,
+    ProviderResult,
+    classify_gemini_exception,
+    parse_gemini_response,
+)
 from webapp.infonalia_webapp.ai.hashing import hash_documents
 from webapp.infonalia_webapp.ai.queue import active_job, create_job, ensure_ai_schema, latest_summary
 from webapp.infonalia_webapp.ai.rate_limit import check_rate_limit
@@ -90,6 +95,13 @@ class FakeProvider:
         )
 
 
+class FakeGeminiResponse:
+    def __init__(self, text: str = "", parsed: object | None = None) -> None:
+        self.text = text
+        if parsed is not None:
+            self.parsed = parsed
+
+
 def test_ai_config_defaults_disabled_and_does_not_expose_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GEMINI_ENABLED", "false")
     monkeypatch.setenv("GEMINI_API_KEY", "secret-test-key")
@@ -99,6 +111,71 @@ def test_ai_config_defaults_disabled_and_does_not_expose_key(monkeypatch: pytest
     assert config.configured is True
     assert "api_key" not in config.public_status()
     assert "secret-test-key" not in json.dumps(config.public_status())
+
+
+def test_gemini_response_parser_uses_parsed_dict() -> None:
+    payload, diagnostics = parse_gemini_response(FakeGeminiResponse(parsed={"metadata": {"expediente": "EXP"}}))
+
+    assert payload["metadata"]["expediente"] == "EXP"
+    assert diagnostics["parse_strategy"] == "response.parsed"
+
+
+def test_gemini_response_parser_accepts_plain_json_text() -> None:
+    payload, diagnostics = parse_gemini_response(FakeGeminiResponse('{"metadata":{"expediente":"EXP"}}'))
+
+    assert payload["metadata"]["expediente"] == "EXP"
+    assert diagnostics["parse_strategy"] == "response.text"
+
+
+def test_gemini_response_parser_accepts_markdown_fenced_json() -> None:
+    payload, diagnostics = parse_gemini_response(FakeGeminiResponse('```json\n{"metadata":{"expediente":"EXP"}}\n```'))
+
+    assert payload["metadata"]["expediente"] == "EXP"
+    assert diagnostics["markdown_fences_detected"] is True
+    assert diagnostics["parse_strategy"] == "markdown_fence"
+
+
+def test_gemini_response_parser_extracts_object_surrounded_by_text() -> None:
+    payload, diagnostics = parse_gemini_response(FakeGeminiResponse('Respuesta:\n{"metadata":{"expediente":"EXP"}}\nFin.'))
+
+    assert payload["metadata"]["expediente"] == "EXP"
+    assert diagnostics["json_object_extraction_attempted"] is True
+    assert diagnostics["parse_strategy"] == "first_json_object"
+
+
+def test_gemini_response_parser_rejects_root_list() -> None:
+    with pytest.raises(AIProviderError) as excinfo:
+        parse_gemini_response(FakeGeminiResponse('[{"metadata":{"expediente":"EXP"}}]'))
+
+    assert excinfo.value.code == "INVALID_JSON"
+    assert "objeto JSON" in str(excinfo.value)
+    assert any("root_type:list" in attempt for attempt in excinfo.value.diagnostics["parse_attempts"])
+
+
+def test_gemini_response_parser_rejects_empty_text_with_preview() -> None:
+    with pytest.raises(AIProviderError) as excinfo:
+        parse_gemini_response(FakeGeminiResponse(""))
+
+    assert excinfo.value.code == "INVALID_JSON"
+    assert excinfo.value.diagnostics["text_length"] == 0
+    assert excinfo.value.diagnostics["raw_response_preview"] == ""
+
+
+def test_gemini_response_parser_limits_invalid_json_preview() -> None:
+    long_text = "no json " + ("x" * 3000)
+
+    with pytest.raises(AIProviderError) as excinfo:
+        parse_gemini_response(FakeGeminiResponse(long_text))
+
+    assert excinfo.value.code == "INVALID_JSON"
+    assert len(excinfo.value.diagnostics["raw_response_preview"]) == 1500
+
+
+def test_gemini_503_is_classified_as_unavailable() -> None:
+    error = classify_gemini_exception(RuntimeError("503 UNAVAILABLE: model overloaded"))
+
+    assert error.code == "GEMINI_UNAVAILABLE"
+    assert "Reintentar" in str(error)
 
 
 def test_document_selector_prioritizes_and_excludes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -147,12 +224,24 @@ def test_document_selector_resolves_relative_dropbox_folder_without_inventory(
     )
 
     names = [item["name"] for item in result["selected_documents"]]
-    assert names[:2] == ["DOC20260615135002PCAP.pdf", "DOC20260615132934PPT y ANEXO PPT.pdf"]
+    assert names == ["DOC20260615135002PCAP.pdf", "DOC20260615132934PPT y ANEXO PPT.pdf"]
     diagnostics = result["diagnostics"]
     assert diagnostics["resolved_path"] == str(folder)
     assert diagnostics["resolved_exists"] is True
     assert diagnostics["resolved_inside_dropbox"] is True
     assert diagnostics["pdfs_found_count"] == 3
+    assert any("RESOLUCION" in item["name"] for item in diagnostics["discarded_documents"])
+
+
+def test_document_selector_can_fallback_to_admin_pdf_without_core_priority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    _write_pdf(tmp_path / "DOC20260617115431RESOLUCION APROBACION PLIEGOS.pdf")
+
+    selected = select_relevant_documents({"ruta_carpeta": str(tmp_path)}, max_documents=4, max_file_mb=45)
+
+    assert [item["name"] for item in selected] == ["DOC20260617115431RESOLUCION APROBACION PLIEGOS.pdf"]
 
 
 def test_document_selector_excludes_ficha_in_client_subfolder(
@@ -353,6 +442,29 @@ def test_service_marks_invalid_json_as_error(tmp_path: Path, monkeypatch: pytest
 
     assert payload["job_status"] == "error"
     assert payload["job"]["error_code"] == "INVALID_JSON"
+
+
+def test_service_stores_invalid_json_provider_diagnostics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    provider = FakeProvider(
+        error=AIProviderError(
+            "La respuesta IA no tiene estructura de objeto JSON.",
+            code="INVALID_JSON",
+            diagnostics={"raw_response_preview": "[{}]", "parse_attempts": ["response.text:root_type:list"]},
+        )
+    )
+
+    payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
+
+    assert payload["job_status"] == "error"
+    assert payload["job"]["error_code"] == "INVALID_JSON"
+    assert payload["job"]["raw_response_preview"] == "[{}]"
+    assert payload["job"]["parse_attempts"] == ["response.text:root_type:list"]
 
 
 def test_parse_summary_json_fills_missing_sections() -> None:
