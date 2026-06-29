@@ -43,6 +43,14 @@ def _preview(value: object, limit: int = MAX_RESPONSE_PREVIEW) -> str:
     return str(value or "")[:limit]
 
 
+def _redact(text: str, secrets: tuple[str, ...] = ()) -> str:
+    redacted = text
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, "[redacted]")
+    return redacted
+
+
 def _extract_fenced_json(text: str) -> tuple[str, bool]:
     match = re.search(r"```(?:json)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
     if not match:
@@ -148,12 +156,13 @@ def parse_gemini_response(response: object) -> tuple[dict[str, Any], dict[str, A
     raise AIProviderError(message, code="INVALID_JSON", diagnostics=diagnostics)
 
 
-def classify_gemini_exception(exc: Exception) -> AIProviderError:
+def classify_gemini_exception(exc: Exception, *, secrets: tuple[str, ...] = ()) -> AIProviderError:
     text = str(exc)
+    safe_text = _redact(text, secrets)
     upper = text.upper()
     diagnostics = {
         "provider_exception_type": type(exc).__name__,
-        "provider_error_preview": _preview(text),
+        "provider_error_preview": _preview(safe_text),
     }
     if "429" in upper or "RESOURCE_EXHAUSTED" in upper:
         return AIProviderError("Gemini ha devuelto limite 429.", code="RESOURCE_EXHAUSTED", diagnostics=diagnostics)
@@ -182,6 +191,79 @@ def _json_generation_config(types: Any, *, with_schema: bool) -> Any:
     return types.GenerateContentConfig(**kwargs)
 
 
+def _context_payload(licitacion: dict[str, object], documents: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "licitacion": {
+            "id": licitacion.get("id"),
+            "expediente": licitacion.get("expediente"),
+            "objeto": licitacion.get("objeto"),
+            "organismo": licitacion.get("organismo"),
+            "fecha_limite": licitacion.get("fecha_limite"),
+            "hora_limite": licitacion.get("hora_limite"),
+            "plataforma": licitacion.get("plataforma"),
+            "presupuesto": licitacion.get("presupuesto"),
+            "enlace_perfil": licitacion.get("enlace_perfil"),
+        },
+        "documentos": [
+            {"name": doc.get("name"), "relative_path": doc.get("relative_path"), "reason": doc.get("reason")}
+            for doc in documents
+        ],
+    }
+
+
+def build_gemini_contents(
+    types: Any,
+    licitacion: dict[str, object],
+    documents: list[dict[str, object]],
+    *,
+    max_file_mb: int,
+) -> tuple[list[object], dict[str, Any]]:
+    pdf_parts: list[object] = []
+    sent_names: list[str] = []
+    total_bytes = 0
+    max_bytes = max_file_mb * 1024 * 1024
+
+    for doc in documents:
+        path = Path(str(doc.get("path") or ""))
+        name = str(doc.get("name") or path.name)
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise AIProviderError(
+                f"No se pudo leer el PDF seleccionado: {name}",
+                code="DOCUMENT_READ_ERROR",
+                diagnostics={"document_send_method": "inline_pdf", "document_name": name},
+            ) from exc
+        if not data:
+            raise AIProviderError(
+                f"El PDF seleccionado está vacío: {name}",
+                code="DOCUMENT_READ_ERROR",
+                diagnostics={"document_send_method": "inline_pdf", "document_name": name},
+            )
+        if len(data) > max_bytes:
+            raise AIProviderError(
+                f"El PDF seleccionado supera el límite configurado: {name}",
+                code="DOCUMENT_TOO_LARGE",
+                diagnostics={"document_send_method": "inline_pdf", "document_name": name, "size_bytes": len(data)},
+            )
+        pdf_parts.append(types.Part.from_bytes(data=data, mime_type="application/pdf"))
+        sent_names.append(name)
+        total_bytes += len(data)
+
+    diagnostics: dict[str, Any] = {
+        "document_send_method": "inline_pdf",
+        "sent_documents_count": len(pdf_parts),
+        "sent_documents_names": sent_names,
+        "total_pdf_bytes_sent": total_bytes,
+    }
+    contents: list[object] = [
+        GEMINI_ANALYSIS_PROMPT,
+        "Contexto interno de la licitacion:\n" + json.dumps(_context_payload(licitacion, documents), ensure_ascii=False),
+        *pdf_parts,
+    ]
+    return contents, diagnostics
+
+
 def _is_schema_config_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return "response_schema" in text or "schema" in text
@@ -202,29 +284,16 @@ class GeminiProvider:
         except Exception as exc:
             raise AIProviderError("Falta instalar google-genai.", code="SDK_NOT_INSTALLED") from exc
 
+        send_diagnostics: dict[str, Any] = {"model": self.config.model}
         try:
             client = genai.Client(api_key=self.config.api_key)
-            uploaded_files = [client.files.upload(file=str(Path(str(doc["path"])))) for doc in documents]
-            context = {
-                "licitacion": {
-                    "id": licitacion.get("id"),
-                    "expediente": licitacion.get("expediente"),
-                    "objeto": licitacion.get("objeto"),
-                    "organismo": licitacion.get("organismo"),
-                    "fecha_limite": licitacion.get("fecha_limite"),
-                    "hora_limite": licitacion.get("hora_limite"),
-                    "enlace_perfil": licitacion.get("enlace_perfil"),
-                },
-                "documentos": [
-                    {"name": doc.get("name"), "relative_path": doc.get("relative_path"), "reason": doc.get("reason")}
-                    for doc in documents
-                ],
-            }
-            contents = [
-                GEMINI_ANALYSIS_PROMPT,
-                "Contexto interno de la licitacion:\n" + json.dumps(context, ensure_ascii=False),
-                *uploaded_files,
-            ]
+            contents, send_diagnostics = build_gemini_contents(
+                types,
+                licitacion,
+                documents,
+                max_file_mb=self.config.max_file_mb,
+            )
+            send_diagnostics["model"] = self.config.model
             try:
                 response = client.models.generate_content(
                     model=self.config.model,
@@ -239,10 +308,16 @@ class GeminiProvider:
                     contents=contents,
                     config=_json_generation_config(types, with_schema=False),
                 )
+        except AIProviderError:
+            raise
         except Exception as exc:
-            raise classify_gemini_exception(exc) from exc
+            error = classify_gemini_exception(exc, secrets=(self.config.api_key,))
+            error.diagnostics.update(send_diagnostics)
+            raise error from exc
 
         payload, parse_diagnostics = parse_gemini_response(response)
+        parse_diagnostics.update(send_diagnostics)
         raw_usage = _usage_to_dict(getattr(response, "usage_metadata", None))
+        raw_usage.update(send_diagnostics)
         raw_usage["parse_diagnostics"] = parse_diagnostics
         return ProviderResult(summary=payload, raw_usage=raw_usage)

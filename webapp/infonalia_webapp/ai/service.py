@@ -20,7 +20,7 @@ from .queue import (
     update_job,
 )
 from .rate_limit import check_rate_limit
-from .schemas import AISchemaError, parse_summary_json, summary_text
+from .schemas import AISchemaError, parse_summary_json, summary_quality_check, summary_text
 
 
 class ProviderProtocol(Protocol):
@@ -66,14 +66,20 @@ def _job_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
     if not data:
         return None
     raw_diagnostics: dict[str, object] = {}
+    raw_usage: dict[str, object] = {}
     raw_payload = data.get("raw_usage_json") or ""
     if raw_payload:
         try:
             decoded = json.loads(str(raw_payload))
             if isinstance(decoded, dict):
-                raw_diagnostics = decoded.get("diagnostics") if isinstance(decoded.get("diagnostics"), dict) else {}
+                raw_usage = decoded
+                if isinstance(decoded.get("diagnostics"), dict):
+                    raw_diagnostics = decoded["diagnostics"]
+                elif isinstance(decoded.get("parse_diagnostics"), dict):
+                    raw_diagnostics = decoded["parse_diagnostics"]
         except json.JSONDecodeError:
             raw_diagnostics = {}
+    quality_check = raw_usage.get("quality_check") if isinstance(raw_usage.get("quality_check"), dict) else {}
     return {
         "id": data["id"],
         "status": data["status"],
@@ -89,6 +95,23 @@ def _job_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
         "diagnostics": raw_diagnostics,
         "raw_response_preview": raw_diagnostics.get("raw_response_preview", ""),
         "parse_attempts": raw_diagnostics.get("parse_attempts", []),
+        "summary_quality_status": quality_check.get("status", ""),
+        "quality_check": quality_check,
+        "sent_documents_count": raw_usage.get("sent_documents_count") or raw_diagnostics.get("sent_documents_count") or 0,
+        "sent_documents_names": raw_usage.get("sent_documents_names") or raw_diagnostics.get("sent_documents_names") or [],
+        "total_pdf_bytes_sent": raw_usage.get("total_pdf_bytes_sent") or raw_diagnostics.get("total_pdf_bytes_sent") or 0,
+        "response_text_length": raw_diagnostics.get("text_length", 0),
+        "usage_metadata": {
+            key: value
+            for key, value in raw_usage.items()
+            if key
+            not in {
+                "diagnostics",
+                "parse_diagnostics",
+                "quality_check",
+                "sent_documents_names",
+            }
+        },
     }
 
 
@@ -277,6 +300,21 @@ def process_ai_job(
         return get_ai_summary_payload(conn, licitacion_id)
 
     raw_usage = result.raw_usage or {}
+    quality_check = summary_quality_check(summary)
+    raw_usage["quality_check"] = quality_check
+    if not quality_check["is_useful"]:
+        record_usage(conn, model=config.model, status="error", error_code="EMPTY_ANALYSIS", licitacion_id=licitacion_id, job_id=job_id)
+        update_job(
+            conn,
+            job_id,
+            status="error",
+            finished_at=_now(),
+            error_code="EMPTY_ANALYSIS",
+            error_message="Gemini devolvió un JSON válido pero sin contenido útil.",
+            raw_usage_json=json.dumps(raw_usage, ensure_ascii=False),
+        )
+        return get_ai_summary_payload(conn, licitacion_id)
+
     save_summary(
         conn,
         licitacion_id=licitacion_id,

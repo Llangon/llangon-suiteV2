@@ -15,13 +15,14 @@ from webapp.infonalia_webapp.ai.document_selector import inspect_document_select
 from webapp.infonalia_webapp.ai.gemini_provider import (
     AIProviderError,
     ProviderResult,
+    build_gemini_contents,
     classify_gemini_exception,
     parse_gemini_response,
 )
 from webapp.infonalia_webapp.ai.hashing import hash_documents
 from webapp.infonalia_webapp.ai.queue import active_job, create_job, ensure_ai_schema, latest_summary
 from webapp.infonalia_webapp.ai.rate_limit import check_rate_limit
-from webapp.infonalia_webapp.ai.schemas import parse_summary_json
+from webapp.infonalia_webapp.ai.schemas import parse_summary_json, summary_quality_check
 from webapp.infonalia_webapp.ai.service import process_ai_job, request_ai_analysis
 from webapp.infonalia_webapp.tests.test_actuaciones_api import dispatch, make_handler
 from webapp.infonalia_webapp.tests.test_import_endpoints import load_app_module, temporary_app_database
@@ -75,9 +76,18 @@ def _write_pdf(path: Path, content: bytes = b"%PDF-1.4\ncontenido\n") -> Path:
 
 
 class FakeProvider:
-    def __init__(self, *, error: AIProviderError | None = None, invalid: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        error: AIProviderError | None = None,
+        invalid: bool = False,
+        summary_payload: dict[str, object] | None = None,
+        raw_usage: dict[str, object] | None = None,
+    ) -> None:
         self.error = error
         self.invalid = invalid
+        self.summary_payload = summary_payload
+        self.raw_usage = raw_usage or {}
         self.calls = 0
 
     def analyze_documents(self, licitacion: dict[str, object], documents: list[dict[str, object]]) -> ProviderResult:
@@ -86,6 +96,8 @@ class FakeProvider:
             raise self.error
         if self.invalid:
             return ProviderResult(summary=[], raw_usage={})  # type: ignore[arg-type]
+        if self.summary_payload is not None:
+            return ProviderResult(summary=self.summary_payload, raw_usage=self.raw_usage)
         return ProviderResult(
             summary={
                 "metadata": {"expediente": licitacion["expediente"], "titulo": licitacion["objeto"]},
@@ -100,6 +112,16 @@ class FakeGeminiResponse:
         self.text = text
         if parsed is not None:
             self.parsed = parsed
+
+
+class FakePart:
+    @classmethod
+    def from_bytes(cls, *, data: bytes, mime_type: str) -> dict[str, object]:
+        return {"data": data, "mime_type": mime_type}
+
+
+class FakeTypes:
+    Part = FakePart
 
 
 def test_ai_config_defaults_disabled_and_does_not_expose_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -176,6 +198,54 @@ def test_gemini_503_is_classified_as_unavailable() -> None:
 
     assert error.code == "GEMINI_UNAVAILABLE"
     assert "Reintentar" in str(error)
+
+
+def test_gemini_error_diagnostics_redact_api_key() -> None:
+    error = classify_gemini_exception(
+        RuntimeError("403 forbidden for key secret-test-key"),
+        secrets=("secret-test-key",),
+    )
+
+    assert error.code == "AUTH_ERROR"
+    assert "secret-test-key" not in json.dumps(error.diagnostics)
+    assert "[redacted]" in error.diagnostics["provider_error_preview"]
+
+
+def test_gemini_contents_include_real_pdf_bytes(tmp_path: Path) -> None:
+    pdf = _write_pdf(tmp_path / "PCAP.pdf", b"%PDF-1.4\nbytes reales\n")
+
+    contents, diagnostics = build_gemini_contents(
+        FakeTypes,
+        {"expediente": "EXP", "objeto": "Objeto", "organismo": "Organo"},
+        [{"path": str(pdf), "name": "PCAP.pdf", "relative_path": "PCAP.pdf", "reason": "Coincide con PCAP"}],
+        max_file_mb=45,
+    )
+
+    assert diagnostics["document_send_method"] == "inline_pdf"
+    assert diagnostics["sent_documents_count"] == 1
+    assert diagnostics["sent_documents_names"] == ["PCAP.pdf"]
+    assert diagnostics["total_pdf_bytes_sent"] == pdf.stat().st_size
+    assert any(isinstance(part, dict) and part["mime_type"] == "application/pdf" and part["data"].startswith(b"%PDF") for part in contents)
+    assert not any(str(pdf) in str(part) for part in contents if isinstance(part, dict))
+
+
+def test_summary_quality_rejects_empty_template() -> None:
+    parsed = parse_summary_json({})
+
+    result = summary_quality_check(parsed)
+
+    assert result["is_useful"] is False
+    assert result["status"] == "empty_analysis"
+
+
+def test_summary_quality_accepts_useful_json() -> None:
+    parsed = parse_summary_json({"resumen_ejecutivo": {"texto": "Hay contenido útil."}})
+
+    result = summary_quality_check(parsed)
+
+    assert result["is_useful"] is True
+    assert result["status"] == "ok"
+    assert "resumen_ejecutivo.texto" in result["signals"]
 
 
 def test_document_selector_prioritizes_and_excludes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -444,6 +514,56 @@ def test_service_marks_invalid_json_as_error(tmp_path: Path, monkeypatch: pytest
     assert payload["job"]["error_code"] == "INVALID_JSON"
 
 
+def test_service_rejects_empty_valid_json_without_saving_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    provider = FakeProvider(
+        summary_payload={},
+        raw_usage={
+            "sent_documents_count": 1,
+            "sent_documents_names": ["PCAP.pdf"],
+            "total_pdf_bytes_sent": 123,
+            "parse_diagnostics": {"text_length": 1916, "raw_response_preview": "{}"},
+        },
+    )
+
+    payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
+
+    assert payload["job_status"] == "error"
+    assert payload["job"]["error_code"] == "EMPTY_ANALYSIS"
+    assert payload["job"]["summary_quality_status"] == "empty_analysis"
+    assert payload["job"]["sent_documents_count"] == 1
+    assert latest_summary(conn, 1) is None
+
+
+def test_service_saves_useful_summary_after_quality_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    provider = FakeProvider(
+        summary_payload={"resumen_ejecutivo": {"texto": "Análisis útil."}},
+        raw_usage={
+            "sent_documents_count": 1,
+            "sent_documents_names": ["PCAP.pdf"],
+            "total_pdf_bytes_sent": 123,
+            "parse_diagnostics": {"text_length": 128, "raw_response_preview": '{"resumen_ejecutivo":{}}'},
+        },
+    )
+
+    payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
+
+    assert payload["job_status"] == "completed"
+    assert payload["has_summary"] is True
+    assert latest_summary(conn, 1) is not None
+
+
 def test_service_stores_invalid_json_provider_diagnostics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _conn()
     _write_pdf(tmp_path / "PCAP.pdf")
@@ -534,3 +654,10 @@ def test_ai_generate_api_with_disabled_gemini_creates_disabled_job(
         assert payload["job_status"] == "disabled"
         with app.db_session() as conn:
             assert conn.execute("SELECT COUNT(*) FROM ai_analysis_jobs").fetchone()[0] == 1
+
+
+def test_manual_test_exposes_force_regeneration_flag() -> None:
+    source = Path("webapp/infonalia_webapp/ai/manual_test.py").read_text(encoding="utf-8")
+
+    assert '"--force"' in source
+    assert "force=args.force" in source
