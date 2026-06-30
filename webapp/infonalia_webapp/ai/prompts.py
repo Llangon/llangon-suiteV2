@@ -5,6 +5,8 @@ GEMINI_ANALYSIS_PROMPT = """
 Actua como analista experto en licitaciones publicas espanolas para una asesoria especializada en preparacion de ofertas.
 
 Vas a recibir documentos de una licitacion publica: PCAP, PPT, cuadro de caracteristicas, anexos, anuncios o documentacion complementaria.
+En el modo principal recibiras texto extraido localmente de PDFs. Puede contener saltos de pagina, encabezados, pies, cortes de linea o desorden propio de la extraccion. Reconstruye la informacion util del expediente sin inventar datos.
+Usa el contexto inicial de la licitacion como apoyo, pero extrae la informacion juridica y operativa del texto del pliego.
 
 Tu tarea NO es redactar una ficha bonita. Tu tarea es extraer informacion estructurada para alimentar una aplicacion interna llamada Llangon Suite.
 

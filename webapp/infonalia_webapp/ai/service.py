@@ -61,6 +61,40 @@ def _summary_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
     }
 
 
+def _summary_row_is_useful(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
+    if str(row["quality_status"] or "") == "empty_analysis":
+        return False
+    try:
+        raw_summary = json.loads(str(row["summary_json"] or "{}"))
+        quality = summary_quality_check(parse_summary_json(raw_summary))
+    except Exception:
+        return True
+    if quality["is_useful"]:
+        return True
+    conn.execute("UPDATE ai_summaries SET quality_status = 'empty_analysis', updated_at = ? WHERE id = ?", (_now(), row["id"]))
+    return False
+
+
+def _latest_useful_summary(
+    conn: sqlite3.Connection,
+    licitacion_id: int,
+    document_hash: str | None = None,
+) -> sqlite3.Row | None:
+    values: list[object] = [licitacion_id]
+    where = "licitacion_id = ?"
+    if document_hash:
+        where += " AND document_hash = ?"
+        values.append(document_hash)
+    rows = conn.execute(
+        f"SELECT * FROM ai_summaries WHERE {where} ORDER BY updated_at DESC, id DESC LIMIT 10",
+        values,
+    ).fetchall()
+    for row in rows:
+        if _summary_row_is_useful(conn, row):
+            return row
+    return None
+
+
 def _job_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
     data = row_to_dict(row)
     if not data:
@@ -100,6 +134,19 @@ def _job_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
         "sent_documents_count": raw_usage.get("sent_documents_count") or raw_diagnostics.get("sent_documents_count") or 0,
         "sent_documents_names": raw_usage.get("sent_documents_names") or raw_diagnostics.get("sent_documents_names") or [],
         "total_pdf_bytes_sent": raw_usage.get("total_pdf_bytes_sent") or raw_diagnostics.get("total_pdf_bytes_sent") or 0,
+        "input_mode_used": raw_usage.get("input_mode_used") or raw_diagnostics.get("input_mode_used") or "",
+        "document_send_method": raw_usage.get("document_send_method") or raw_diagnostics.get("document_send_method") or "",
+        "documents_text_extracted_count": raw_usage.get("documents_text_extracted_count")
+        or raw_diagnostics.get("documents_text_extracted_count")
+        or 0,
+        "extracted_chars_total": raw_usage.get("extracted_chars_total") or raw_diagnostics.get("extracted_chars_total") or 0,
+        "extracted_chars_by_document": raw_usage.get("extracted_chars_by_document")
+        or raw_diagnostics.get("extracted_chars_by_document")
+        or {},
+        "pages_processed_by_document": raw_usage.get("pages_processed_by_document")
+        or raw_diagnostics.get("pages_processed_by_document")
+        or {},
+        "extraction_warnings": raw_usage.get("extraction_warnings") or raw_diagnostics.get("extraction_warnings") or [],
         "response_text_length": raw_diagnostics.get("text_length", 0),
         "duration_seconds": raw_usage.get("duration_seconds") or raw_diagnostics.get("duration_seconds") or 0,
         "timeout_seconds": raw_usage.get("timeout_seconds") or raw_diagnostics.get("timeout_seconds") or 0,
@@ -162,7 +209,7 @@ def get_ai_summary_payload(conn: sqlite3.Connection, licitacion_id: int) -> dict
     selected, diagnostics = _select_documents(config, row)
     document_hash = hash_documents(selected) if selected else ""
     payload = _base_payload(config, selected, document_hash, diagnostics)
-    summary = latest_summary(conn, licitacion_id, document_hash) if document_hash else latest_summary(conn, licitacion_id)
+    summary = _latest_useful_summary(conn, licitacion_id, document_hash) if document_hash else _latest_useful_summary(conn, licitacion_id)
     job = active_job(conn, licitacion_id, document_hash) if document_hash else None
     if not job:
         job = latest_job(conn, licitacion_id, document_hash or None)
@@ -194,7 +241,7 @@ def request_ai_analysis(
         return _base_payload(config, selected, diagnostics=diagnostics)
     document_hash = hash_documents(selected)
     if not force:
-        summary = latest_summary(conn, licitacion_id, document_hash)
+        summary = _latest_useful_summary(conn, licitacion_id, document_hash)
         if summary:
             payload = _base_payload(config, selected, document_hash, diagnostics)
             payload.update({"has_summary": True, "summary": _summary_payload(summary), "job_status": "completed"})

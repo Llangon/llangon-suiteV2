@@ -1,5 +1,6 @@
 beautifulsoup4
 extract-msg
 google-genai
+pypdf
 requests
 websocket-client

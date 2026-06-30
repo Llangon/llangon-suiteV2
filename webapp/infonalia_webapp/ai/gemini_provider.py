@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AIConfig
+from .pdf_text_extractor import extract_pdf_text
 from .prompts import GEMINI_ANALYSIS_PROMPT
 
 
@@ -177,6 +178,12 @@ def classify_gemini_exception(exc: Exception, *, secrets: tuple[str, ...] = ()) 
             code="GEMINI_UNAVAILABLE",
             diagnostics=diagnostics,
         )
+    if "504" in upper or "DEADLINE_EXCEEDED" in upper:
+        return AIProviderError(
+            "Gemini agotó el plazo de respuesta.",
+            code="GEMINI_DEADLINE_EXCEEDED",
+            diagnostics=diagnostics,
+        )
     if "401" in upper or "403" in upper or "UNAUTHENTICATED" in upper or "PERMISSION_DENIED" in upper:
         return AIProviderError("Gemini no ha autorizado la petición. Revisa la configuración.", code="AUTH_ERROR", diagnostics=diagnostics)
     if "404" in upper or "MODEL NOT FOUND" in upper or "NOT_FOUND" in upper:
@@ -268,6 +275,7 @@ def build_gemini_contents(
 
     diagnostics: dict[str, Any] = {
         "document_send_method": "inline_pdf",
+        "input_mode_used": "pdf_inline",
         "sent_documents_count": len(pdf_parts),
         "sent_documents_names": sent_names,
         "total_pdf_bytes_sent": total_bytes,
@@ -278,6 +286,99 @@ def build_gemini_contents(
         *pdf_parts,
     ]
     return contents, diagnostics
+
+
+def build_text_gemini_contents(
+    licitacion: dict[str, object],
+    documents: list[dict[str, object]],
+    *,
+    config: AIConfig,
+    input_mode_requested: str | None = None,
+) -> tuple[list[object], dict[str, Any]]:
+    base_diagnostics: dict[str, Any] = {
+        "document_send_method": "text_extraction",
+        "input_mode_requested": input_mode_requested or config.input_mode,
+        "input_mode_used": "text",
+        "sent_documents_count": 0,
+        "sent_documents_names": [],
+        "total_pdf_bytes_sent": 0,
+        "selected_documents_names": [
+            str(doc.get("name") or doc.get("relative_path") or Path(str(doc.get("path") or "")).name)
+            for doc in documents
+        ],
+    }
+    try:
+        extraction = extract_pdf_text(
+            documents,
+            max_total_chars=config.max_extracted_chars,
+            max_chars_per_document=config.max_chars_per_document,
+        )
+    except RuntimeError as exc:
+        raise AIProviderError(
+            str(exc),
+            code="PDF_TEXT_EXTRACTOR_NOT_AVAILABLE",
+            diagnostics={**base_diagnostics, "extraction_warnings": [str(exc)]},
+        ) from exc
+    diagnostics: dict[str, Any] = {
+        **base_diagnostics,
+        **extraction.diagnostics,
+    }
+    if extraction.extracted_chars_total < config.min_extracted_chars:
+        raise AIProviderError(
+            "No se pudo extraer texto suficiente de los PDFs seleccionados.",
+            code="NO_EXTRACTED_TEXT",
+            diagnostics=diagnostics,
+        )
+
+    contents: list[object] = [
+        GEMINI_ANALYSIS_PROMPT,
+        "Contexto interno de la licitacion:\n" + json.dumps(_context_payload(licitacion, documents), ensure_ascii=False),
+        "Texto extraido localmente de los PDFs seleccionados:\n\n" + extraction.text,
+    ]
+    return contents, diagnostics
+
+
+def build_gemini_contents_for_mode(
+    types: Any,
+    licitacion: dict[str, object],
+    documents: list[dict[str, object]],
+    *,
+    config: AIConfig,
+) -> tuple[list[object], dict[str, Any]]:
+    mode = config.input_mode
+    if mode == "text":
+        return build_text_gemini_contents(licitacion, documents, config=config)
+    if mode == "pdf_inline":
+        contents, diagnostics = build_gemini_contents(
+            types,
+            licitacion,
+            documents,
+            max_file_mb=config.max_file_mb,
+        )
+        diagnostics["input_mode_requested"] = mode
+        return contents, diagnostics
+
+    try:
+        return build_text_gemini_contents(licitacion, documents, config=config, input_mode_requested="auto")
+    except AIProviderError as exc:
+        if exc.code != "NO_EXTRACTED_TEXT" or not config.pdf_inline_fallback:
+            raise
+        text_diagnostics = dict(exc.diagnostics)
+        contents, diagnostics = build_gemini_contents(
+            types,
+            licitacion,
+            documents,
+            max_file_mb=config.max_file_mb,
+        )
+        diagnostics.update(
+            {
+                "input_mode_requested": "auto",
+                "input_mode_used": "pdf_inline",
+                "input_mode_fallback_reason": "NO_EXTRACTED_TEXT",
+                "text_extraction_diagnostics": text_diagnostics,
+            }
+        )
+        return contents, diagnostics
 
 
 def _is_schema_config_error(exc: Exception) -> bool:
@@ -308,20 +409,22 @@ class GeminiProvider:
         started = time.perf_counter()
         try:
             client = genai.Client(api_key=self.config.api_key, http_options=_http_options(types, self.config.timeout_seconds))
-            contents, send_diagnostics = build_gemini_contents(
+            contents, send_diagnostics = build_gemini_contents_for_mode(
                 types,
                 licitacion,
                 documents,
-                max_file_mb=self.config.max_file_mb,
+                config=self.config,
             )
             send_diagnostics["model"] = self.config.model
             send_diagnostics["timeout_seconds"] = self.config.timeout_seconds
             send_diagnostics["timeout_milliseconds"] = self.config.timeout_seconds * 1000
             LOGGER.info(
-                "Inicio llamada Gemini model=%s pdfs=%s bytes=%s timeout=%ss",
+                "Inicio llamada Gemini model=%s mode=%s pdfs=%s bytes=%s extracted_chars=%s timeout=%ss",
                 self.config.model,
+                send_diagnostics.get("input_mode_used", self.config.input_mode),
                 send_diagnostics.get("sent_documents_count", 0),
                 send_diagnostics.get("total_pdf_bytes_sent", 0),
+                send_diagnostics.get("extracted_chars_total", 0),
                 self.config.timeout_seconds,
             )
             try:
@@ -339,7 +442,11 @@ class GeminiProvider:
                     contents=contents,
                     config=_json_generation_config(types, with_schema=False),
                 )
-        except AIProviderError:
+        except AIProviderError as exc:
+            exc.diagnostics.setdefault("model", self.config.model)
+            exc.diagnostics.setdefault("timeout_seconds", self.config.timeout_seconds)
+            exc.diagnostics.setdefault("timeout_milliseconds", self.config.timeout_seconds * 1000)
+            exc.diagnostics.setdefault("duration_seconds", round(time.perf_counter() - started, 3))
             raise
         except Exception as exc:
             error = classify_gemini_exception(exc, secrets=(self.config.api_key,))
@@ -360,9 +467,11 @@ class GeminiProvider:
         raw_usage.update(send_diagnostics)
         raw_usage["parse_diagnostics"] = parse_diagnostics
         LOGGER.info(
-            "Fin llamada Gemini model=%s duration=%ss text_length=%s",
+            "Fin llamada Gemini model=%s mode=%s duration=%ss text_length=%s extracted_chars=%s",
             self.config.model,
+            send_diagnostics.get("input_mode_used", self.config.input_mode),
             send_diagnostics["duration_seconds"],
             parse_diagnostics.get("text_length", 0),
+            send_diagnostics.get("extracted_chars_total", 0),
         )
         return ProviderResult(summary=payload, raw_usage=raw_usage)

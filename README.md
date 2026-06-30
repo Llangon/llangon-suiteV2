@@ -159,6 +159,11 @@ GEMINI_COOLDOWN_ON_429_MINUTES=15
 GEMINI_MAX_DOCUMENTS_PER_ANALYSIS=4
 GEMINI_MAX_FILE_MB=45
 GEMINI_TIMEOUT_SECONDS=120
+GEMINI_INPUT_MODE=text
+GEMINI_MAX_EXTRACTED_CHARS=180000
+GEMINI_MAX_CHARS_PER_DOCUMENT=90000
+GEMINI_PDF_INLINE_FALLBACK=false
+GEMINI_MIN_EXTRACTED_CHARS=1000
 ```
 
 Para activarlo en local, completar `.env`:
@@ -169,6 +174,8 @@ GEMINI_API_KEY=TU_CLAVE_PRIVADA
 ```
 
 No subir nunca `GEMINI_API_KEY` a Git. La clave no se imprime en logs ni se devuelve al frontend.
+
+El modo principal recomendado es `GEMINI_INPUT_MODE=text`: la suite extrae texto localmente de los PDFs con `pypdf` y envía a Gemini solo ese texto estructurado. `pdf_inline` queda disponible como modo explícito de diagnóstico, y `auto` solo usará PDFs inline si no hay texto suficiente y `GEMINI_PDF_INLINE_FALLBACK=true`.
 
 El flujo desde la ficha ampliada es manual:
 
@@ -191,6 +198,12 @@ Para crear/procesar job si Gemini está configurado:
 
 ```powershell
 .\.venv\Scripts\python.exe -m webapp.infonalia_webapp.ai.manual_test --licitacion-id 123 --generate
+```
+
+Para probar el modo texto sin tocar `.env`:
+
+```powershell
+.\.venv\Scripts\python.exe -m webapp.infonalia_webapp.ai.manual_test --licitacion-id 123 --force --timeout 90 --input-mode text
 ```
 
 ## Orden de lectura

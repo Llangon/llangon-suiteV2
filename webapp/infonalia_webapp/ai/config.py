@@ -18,6 +18,11 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _choice_env(name: str, default: str, choices: set[str]) -> str:
+    value = os.environ.get(name, default).strip().lower()
+    return value if value in choices else default
+
+
 @dataclass(frozen=True)
 class AIConfig:
     enabled: bool
@@ -29,6 +34,11 @@ class AIConfig:
     max_documents_per_analysis: int
     max_file_mb: int
     timeout_seconds: int
+    input_mode: str = "text"
+    max_extracted_chars: int = 180000
+    max_chars_per_document: int = 90000
+    pdf_inline_fallback: bool = False
+    min_extracted_chars: int = 1000
 
     @property
     def configured(self) -> bool:
@@ -41,6 +51,11 @@ class AIConfig:
             "model": self.model,
             "max_documents_per_analysis": self.max_documents_per_analysis,
             "max_file_mb": self.max_file_mb,
+            "input_mode": self.input_mode,
+            "max_extracted_chars": self.max_extracted_chars,
+            "max_chars_per_document": self.max_chars_per_document,
+            "pdf_inline_fallback": self.pdf_inline_fallback,
+            "min_extracted_chars": self.min_extracted_chars,
         }
 
 
@@ -55,4 +70,9 @@ def get_ai_config() -> AIConfig:
         max_documents_per_analysis=max(1, _int_env("GEMINI_MAX_DOCUMENTS_PER_ANALYSIS", 4)),
         max_file_mb=max(1, _int_env("GEMINI_MAX_FILE_MB", 45)),
         timeout_seconds=max(1, _int_env("GEMINI_TIMEOUT_SECONDS", 120)),
+        input_mode=_choice_env("GEMINI_INPUT_MODE", "text", {"text", "pdf_inline", "auto"}),
+        max_extracted_chars=max(1000, _int_env("GEMINI_MAX_EXTRACTED_CHARS", 180000)),
+        max_chars_per_document=max(1000, _int_env("GEMINI_MAX_CHARS_PER_DOCUMENT", 90000)),
+        pdf_inline_fallback=_bool_env("GEMINI_PDF_INLINE_FALLBACK", False),
+        min_extracted_chars=max(1, _int_env("GEMINI_MIN_EXTRACTED_CHARS", 1000)),
     )

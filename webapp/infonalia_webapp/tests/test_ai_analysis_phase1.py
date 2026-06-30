@@ -10,17 +10,20 @@ from pathlib import Path
 
 import pytest
 
-from webapp.infonalia_webapp.ai.config import get_ai_config
+from webapp.infonalia_webapp.ai.config import AIConfig, get_ai_config
 from webapp.infonalia_webapp.ai.document_selector import inspect_document_selection, select_relevant_documents
 from webapp.infonalia_webapp.ai.gemini_provider import (
     AIProviderError,
     ProviderResult,
     build_gemini_contents,
+    build_gemini_contents_for_mode,
+    build_text_gemini_contents,
     classify_gemini_exception,
     parse_gemini_response,
 )
 from webapp.infonalia_webapp.ai.hashing import hash_documents
 from webapp.infonalia_webapp.ai.manual_test import build_preflight_report, mark_interrupted_job
+from webapp.infonalia_webapp.ai.pdf_text_extractor import ExtractedTextResult, extract_pdf_text
 from webapp.infonalia_webapp.ai.queue import active_job, create_job, ensure_ai_schema, latest_summary
 from webapp.infonalia_webapp.ai.rate_limit import check_rate_limit
 from webapp.infonalia_webapp.ai.schemas import parse_summary_json, summary_quality_check
@@ -125,6 +128,47 @@ class FakeTypes:
     Part = FakePart
 
 
+class FakePage:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def extract_text(self) -> str:
+        return self.text
+
+
+class FakePdfReader:
+    def __init__(self, pages: list[str]) -> None:
+        self.pages = [FakePage(text) for text in pages]
+
+
+def _reader_factory(mapping: dict[str, list[str]]):
+    def factory(path: Path) -> FakePdfReader:
+        return FakePdfReader(mapping.get(path.name, []))
+
+    return factory
+
+
+def _ai_config(**overrides: object) -> AIConfig:
+    values = {
+        "enabled": True,
+        "api_key": "fake-key",
+        "model": "gemini-test",
+        "max_requests_per_minute": 2,
+        "max_requests_per_day": 20,
+        "cooldown_on_429_minutes": 15,
+        "max_documents_per_analysis": 4,
+        "max_file_mb": 45,
+        "timeout_seconds": 120,
+        "input_mode": "text",
+        "max_extracted_chars": 180000,
+        "max_chars_per_document": 90000,
+        "pdf_inline_fallback": False,
+        "min_extracted_chars": 1000,
+    }
+    values.update(overrides)
+    return AIConfig(**values)
+
+
 def test_ai_config_defaults_disabled_and_does_not_expose_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GEMINI_ENABLED", "false")
     monkeypatch.setenv("GEMINI_API_KEY", "secret-test-key")
@@ -132,6 +176,7 @@ def test_ai_config_defaults_disabled_and_does_not_expose_key(monkeypatch: pytest
 
     assert config.enabled is False
     assert config.configured is True
+    assert config.input_mode == "text"
     assert "api_key" not in config.public_status()
     assert "secret-test-key" not in json.dumps(config.public_status())
 
@@ -208,6 +253,13 @@ def test_gemini_timeout_is_classified() -> None:
     assert "tiempo configurado" in str(error)
 
 
+def test_gemini_504_deadline_exceeded_is_classified() -> None:
+    error = classify_gemini_exception(RuntimeError("504 DEADLINE_EXCEEDED: response took too long"))
+
+    assert error.code == "GEMINI_DEADLINE_EXCEEDED"
+    assert "plazo" in str(error)
+
+
 def test_gemini_error_diagnostics_redact_api_key() -> None:
     error = classify_gemini_exception(
         RuntimeError("403 forbidden for key secret-test-key"),
@@ -235,6 +287,153 @@ def test_gemini_contents_include_real_pdf_bytes(tmp_path: Path) -> None:
     assert diagnostics["total_pdf_bytes_sent"] == pdf.stat().st_size
     assert any(isinstance(part, dict) and part["mime_type"] == "application/pdf" and part["data"].startswith(b"%PDF") for part in contents)
     assert not any(str(pdf) in str(part) for part in contents if isinstance(part, dict))
+
+
+def test_pdf_text_extractor_builds_structured_text(tmp_path: Path) -> None:
+    pdf = _write_pdf(tmp_path / "PCAP.pdf")
+
+    result = extract_pdf_text(
+        [{"path": str(pdf), "name": "PCAP.pdf"}],
+        max_total_chars=5000,
+        max_chars_per_document=5000,
+        reader_factory=_reader_factory({"PCAP.pdf": ["Clausula primera", "Criterios de adjudicacion"]}),
+    )
+
+    assert "=== DOCUMENTO 1: PCAP.pdf ===" in result.text
+    assert "=== PÁGINA 1 ===" in result.text
+    assert "Clausula primera" in result.text
+    assert result.diagnostics["documents_text_extracted_count"] == 1
+    assert result.diagnostics["pages_processed_by_document"]["PCAP.pdf"] == 2
+
+
+def test_pdf_text_extractor_reports_no_extractable_text(tmp_path: Path) -> None:
+    pdf = _write_pdf(tmp_path / "PCAP.pdf")
+
+    result = extract_pdf_text(
+        [{"path": str(pdf), "name": "PCAP.pdf"}],
+        max_total_chars=5000,
+        max_chars_per_document=5000,
+        reader_factory=_reader_factory({"PCAP.pdf": ["", "   "]}),
+    )
+
+    assert result.text == ""
+    assert result.extracted_chars_total == 0
+    assert result.diagnostics["documents_text_extracted_count"] == 0
+
+
+def test_pdf_text_extractor_respects_character_limits(tmp_path: Path) -> None:
+    pdf = _write_pdf(tmp_path / "PCAP.pdf")
+
+    result = extract_pdf_text(
+        [{"path": str(pdf), "name": "PCAP.pdf"}],
+        max_total_chars=120,
+        max_chars_per_document=80,
+        reader_factory=_reader_factory({"PCAP.pdf": ["x" * 1000]}),
+    )
+
+    assert len(result.text) <= 120
+    assert result.diagnostics["extraction_warnings"]
+
+
+def test_text_mode_builds_text_contents_without_inline_pdf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    pdf = _write_pdf(tmp_path / "PCAP.pdf")
+
+    def fake_extract(*args, **kwargs):
+        return ExtractedTextResult(
+            text="Texto util del pliego " * 100,
+            diagnostics={
+                "documents_text_extracted_count": 1,
+                "extracted_chars_total": 2100,
+                "extracted_chars_by_document": {"PCAP.pdf": 2100},
+                "pages_processed_by_document": {"PCAP.pdf": 3},
+                "extraction_warnings": [],
+            },
+        )
+
+    monkeypatch.setattr("webapp.infonalia_webapp.ai.gemini_provider.extract_pdf_text", fake_extract)
+    contents, diagnostics = build_text_gemini_contents(
+        {"expediente": "EXP", "objeto": "Objeto", "organismo": "Organo"},
+        [{"path": str(pdf), "name": "PCAP.pdf", "relative_path": "PCAP.pdf", "reason": "Coincide con PCAP"}],
+        config=_ai_config(input_mode="text", min_extracted_chars=1000),
+    )
+
+    assert diagnostics["document_send_method"] == "text_extraction"
+    assert diagnostics["input_mode_used"] == "text"
+    assert diagnostics["extracted_chars_total"] == 2100
+    assert not any(isinstance(part, dict) and part.get("mime_type") == "application/pdf" for part in contents)
+    assert "Texto extraido localmente" in str(contents[-1])
+
+
+def test_text_mode_rejects_pdf_without_enough_text(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    pdf = _write_pdf(tmp_path / "PCAP.pdf")
+
+    monkeypatch.setattr(
+        "webapp.infonalia_webapp.ai.gemini_provider.extract_pdf_text",
+        lambda *args, **kwargs: ExtractedTextResult(
+            text="",
+            diagnostics={
+                "documents_text_extracted_count": 0,
+                "extracted_chars_total": 0,
+                "extracted_chars_by_document": {"PCAP.pdf": 0},
+                "pages_processed_by_document": {"PCAP.pdf": 0},
+                "extraction_warnings": [],
+            },
+        ),
+    )
+
+    with pytest.raises(AIProviderError) as excinfo:
+        build_text_gemini_contents(
+            {"expediente": "EXP"},
+            [{"path": str(pdf), "name": "PCAP.pdf"}],
+            config=_ai_config(input_mode="text", min_extracted_chars=1000),
+        )
+
+    assert excinfo.value.code == "NO_EXTRACTED_TEXT"
+    assert excinfo.value.diagnostics["input_mode_used"] == "text"
+
+
+def test_auto_mode_uses_text_when_available(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    pdf = _write_pdf(tmp_path / "PCAP.pdf")
+
+    monkeypatch.setattr(
+        "webapp.infonalia_webapp.ai.gemini_provider.extract_pdf_text",
+        lambda *args, **kwargs: ExtractedTextResult(
+            text="Texto util del pliego " * 100,
+            diagnostics={
+                "documents_text_extracted_count": 1,
+                "extracted_chars_total": 2100,
+                "extracted_chars_by_document": {"PCAP.pdf": 2100},
+                "pages_processed_by_document": {"PCAP.pdf": 1},
+                "extraction_warnings": [],
+            },
+        ),
+    )
+
+    contents, diagnostics = build_gemini_contents_for_mode(
+        FakeTypes,
+        {"expediente": "EXP"},
+        [{"path": str(pdf), "name": "PCAP.pdf"}],
+        config=_ai_config(input_mode="auto", min_extracted_chars=1000),
+    )
+
+    assert diagnostics["input_mode_requested"] == "auto"
+    assert diagnostics["input_mode_used"] == "text"
+    assert not any(isinstance(part, dict) and part.get("mime_type") == "application/pdf" for part in contents)
+
+
+def test_pdf_inline_mode_keeps_previous_behavior(tmp_path: Path) -> None:
+    pdf = _write_pdf(tmp_path / "PCAP.pdf", b"%PDF-1.4\nbytes reales\n")
+
+    contents, diagnostics = build_gemini_contents_for_mode(
+        FakeTypes,
+        {"expediente": "EXP"},
+        [{"path": str(pdf), "name": "PCAP.pdf"}],
+        config=_ai_config(input_mode="pdf_inline"),
+    )
+
+    assert diagnostics["input_mode_used"] == "pdf_inline"
+    assert diagnostics["document_send_method"] == "inline_pdf"
+    assert any(isinstance(part, dict) and part["mime_type"] == "application/pdf" for part in contents)
 
 
 def test_summary_quality_rejects_empty_template() -> None:
@@ -274,6 +473,28 @@ def test_document_selector_prioritizes_and_excludes(tmp_path: Path, monkeypatch:
         "PPT tecnico.pdf",
     ]
     assert all("anterior" not in str(item["name"]).lower() for item in selected)
+
+
+def test_document_selector_excludes_historical_year_subfolders(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    current = tmp_path / "actual"
+    historical = tmp_path / "Año 2022"
+    current.mkdir()
+    historical.mkdir()
+    _write_pdf(current / "DOC20260526075132PCAP SUMINISTRO VIVERES GUARDERIA.pdf")
+    _write_pdf(current / "DOC20260522132605PLIEGO CONDICIONES TECNICAS VIVERES GUARDERIA LA VEGUILLA.pdf")
+    _write_pdf(historical / "DOC20211202122934PCAP suministro de viveres Guarderia la Veguilla.pdf")
+    _write_pdf(historical / "DOC20211202122922PPT suministro viveres Guarderia Infantil la Veguilla.pdf")
+
+    result = inspect_document_selection({"ruta_carpeta": str(tmp_path)}, max_documents=4, max_file_mb=45)
+
+    selected_paths = [str(item["relative_path"]) for item in result["selected_documents"]]
+    assert selected_paths == [
+        str(Path("actual") / "DOC20260526075132PCAP SUMINISTRO VIVERES GUARDERIA.pdf"),
+        str(Path("actual") / "DOC20260522132605PLIEGO CONDICIONES TECNICAS VIVERES GUARDERIA LA VEGUILLA.pdf"),
+    ]
+    assert not any("Año 2022" in item for item in selected_paths)
+    assert any("ANO 2022" in str(item["reason"]) for item in result["diagnostics"]["discarded_documents"])
 
 
 def test_document_selector_respects_max_file_size(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -548,6 +769,34 @@ def test_service_rejects_empty_valid_json_without_saving_summary(tmp_path: Path,
     assert latest_summary(conn, 1) is None
 
 
+def test_service_ignores_existing_empty_summary_and_regenerates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    selected = select_relevant_documents({"ruta_carpeta": str(tmp_path)}, max_documents=4, max_file_mb=45)
+    document_hash = hash_documents(selected)
+    conn.execute(
+        """
+        INSERT INTO ai_summaries (
+            licitacion_id, document_hash, provider, model, summary_json, summary_text,
+            created_at, updated_at, quality_status
+        )
+        VALUES (1, ?, 'gemini', 'gemini-test', '{}', '', '2026-01-01', '2026-01-01', 'pending_review')
+        """,
+        (document_hash,),
+    )
+    provider = FakeProvider(summary_payload={"resumen_ejecutivo": {"texto": "Resumen regenerado."}})
+
+    payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
+
+    assert provider.calls == 1
+    assert payload["job_status"] == "completed"
+    assert payload["summary"]["summary_text"] == "Resumen regenerado."
+
+
 def test_service_saves_useful_summary_after_quality_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _conn()
     _write_pdf(tmp_path / "PCAP.pdf")
@@ -710,5 +959,6 @@ def test_manual_test_exposes_force_regeneration_flag() -> None:
 
     assert '"--force"' in source
     assert '"--timeout"' in source
+    assert '"--input-mode"' in source
     assert "force=args.force" in source
     assert "mark_interrupted_job" in source
