@@ -2755,6 +2755,63 @@ dialog::backdrop {
   color: var(--muted);
 }
 
+.ai-email-options {
+  background: #f1fff2;
+  border: 1px solid #d7ead8;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+  padding: 12px;
+}
+
+.ai-email-options label:not(.checkbox-line) {
+  display: grid;
+  gap: 6px;
+}
+
+.ai-email-options textarea,
+.notice-preview textarea {
+  resize: vertical;
+}
+
+.ai-email-options small {
+  color: var(--muted);
+}
+
+.ai-notification-status {
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  margin: 10px 0;
+  padding: 10px 12px;
+}
+
+.ai-notification-status.sent {
+  background: #f1fff2;
+  border-color: #bfe4c2;
+  color: #146c2e;
+}
+
+.ai-notification-status.error,
+.ai-notification-status.partial {
+  background: #fff7ed;
+  border-color: #fed7aa;
+  color: #9a3412;
+}
+
+.ai-notification-status details {
+  margin-top: 6px;
+}
+
+.checkbox-line {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
 .ai-file-toolbar {
   align-items: center;
   display: flex;

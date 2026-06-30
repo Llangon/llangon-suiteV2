@@ -147,6 +147,8 @@ const aiFileList = document.getElementById("ai-file-list");
 const aiFileStatus = document.getElementById("ai-file-status");
 const aiFileSelectionCount = document.getElementById("ai-file-selection-count");
 const confirmAiFileSelectionButton = document.getElementById("confirm-ai-file-selection");
+const aiNotifyOnCompletion = document.getElementById("ai-notify-on-completion");
+const aiNotificationEmails = document.getElementById("ai-notification-emails");
 const aiSummaryEmailDialog = document.getElementById("ai-summary-email-dialog");
 const aiSummaryEmailTo = document.getElementById("ai-summary-email-to");
 const aiSummaryEmailSubject = document.getElementById("ai-summary-email-subject");
@@ -3943,6 +3945,25 @@ function renderAiDocumentDiagnostics(payload) {
   `;
 }
 
+function renderAiNotificationStatus(status) {
+  if (!status || !status.label) return "";
+  const items = status.items || [];
+  const detail = items.length ? `
+    <details>
+      <summary>Detalle de avisos</summary>
+      <ul>
+        ${items.map((item) => `<li>${escapeHtml(item.recipient_email || "")} — ${escapeHtml(item.status || "")}${item.error_message ? ` · ${escapeHtml(item.error_message)}` : ""}</li>`).join("")}
+      </ul>
+    </details>
+  ` : "";
+  return `
+    <div class="ai-notification-status ${escapeHtml(status.state || "none")}">
+      <span>${escapeHtml(status.label)}</span>
+      ${detail}
+    </div>
+  `;
+}
+
 function renderAiSummaryContent(licitacionId, payload) {
   const selectedDocs = payload.selected_documents || [];
   const job = payload.job || {};
@@ -3968,6 +3989,7 @@ function renderAiSummaryContent(licitacionId, payload) {
     </div>
     ${reason ? `<div class="ai-reason">${escapeHtml(reason)}</div>` : ""}
     ${activeMessage}
+    ${renderAiNotificationStatus(payload.notification_status)}
     ${renderAiDocumentDiagnostics(payload)}
     ${selectedDocs.length ? `
       <div class="ai-documents">
@@ -4033,11 +4055,14 @@ function renderAiQueueJobs(title, items) {
                 <td>${escapeHtml(formatDateTime(job.started_at || job.created_at))}</td>
                 <td>${escapeHtml(formatDuration(job.elapsed_seconds))}</td>
                 <td>${escapeHtml(job.estimated_label || "")}</td>
-                <td>${escapeHtml(job.selected_documents_count || 0)}</td>
+                <td>
+                  ${escapeHtml(job.selected_documents_count || 0)}
+                  ${job.notification_status?.state && job.notification_status.state !== "none" ? `<small>${escapeHtml(job.notification_status.label || "")}</small>` : ""}
+                </td>
                 <td>
                   <div class="ai-queue-actions">
                     ${job.can_open ? `<button type="button" data-ai-queue-open="${escapeHtml(job.licitacion_id)}">Abrir ficha</button>` : ""}
-                    ${job.can_cancel ? `<button type="button" data-ai-queue-cancel="${escapeHtml(job.id)}">Cancelar</button>` : ""}
+                    ${job.can_cancel ? `<button type="button" data-ai-queue-cancel="${escapeHtml(job.id)}" data-ai-queue-cancel-status="${escapeHtml(job.status || "")}">Cancelar</button>` : ""}
                     ${job.can_retry ? `<button type="button" data-ai-queue-open="${escapeHtml(job.licitacion_id)}">Reintentar</button>` : ""}
                     ${!["pending", "queued", "processing", "deferred"].includes(job.status || "") ? `<button type="button" data-ai-queue-dismiss="${escapeHtml(job.id)}">Ocultar</button>` : ""}
                   </div>
@@ -4071,11 +4096,41 @@ function updateAiQueueBadge(payload) {
   aiQueueBadge.classList.toggle("has-error", active <= 0 && errors > 0);
 }
 
+function handleAiQueueActionError(error, fallbackMessage) {
+  const rawMessage = String(error?.message || "").trim();
+  if (!rawMessage || rawMessage === "Failed to fetch" || rawMessage.includes("NetworkError")) {
+    return "No se pudo contactar con la web local. Comprueba que la Suite sigue arrancada.";
+  }
+  return rawMessage || fallbackMessage;
+}
+
+function parseEmailList(value, { required = false } = {}) {
+  const raw = Array.isArray(value) ? value.join(",") : String(value || "");
+  const parts = raw.split(/[,;\n\r]+/).map((part) => part.trim()).filter(Boolean);
+  const emails = [];
+  const invalid = [];
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  parts.forEach((part) => {
+    const match = part.match(/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/i);
+    const email = (match ? match[0] : part.replace(/^mailto:/i, "")).trim().toLowerCase();
+    if (!emailPattern.test(email)) {
+      invalid.push(part);
+      return;
+    }
+    if (!emails.includes(email)) emails.push(email);
+  });
+  if (invalid.length) throw new Error(`Email no válido: ${invalid.join(", ")}`);
+  if (required && !emails.length) throw new Error("Indica al menos un email de destino válido.");
+  return emails;
+}
+
 async function loadAiQueue(options = {}) {
   try {
     const response = await fetch("/api/ai/queue");
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || "No se pudo consultar la Cola IA.");
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error_message || payload.error || "No se pudo consultar la Cola IA.");
+    }
     appState.aiQueue = payload;
     updateAiQueueBadge(payload);
     if (aiQueueContent && (appState.aiQueueOpen || options.forceRender)) {
@@ -4088,7 +4143,7 @@ async function loadAiQueue(options = {}) {
   } catch (error) {
     if (aiQueueStatus && appState.aiQueueOpen) {
       aiQueueStatus.className = "import-result error";
-      aiQueueStatus.textContent = error.message || "No se pudo consultar la Cola IA.";
+      aiQueueStatus.textContent = handleAiQueueActionError(error, "No se pudo consultar la Cola IA.");
     }
   }
 }
@@ -4115,11 +4170,28 @@ function closeAiQueueDialog() {
   startAiQueuePolling(15000);
 }
 
-async function aiQueueAction(jobId, action) {
-  const response = await fetch(`/api/ai/jobs/${jobId}/${action}`, { method: "POST", headers: csrfHeaders() });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || "No se pudo actualizar el trabajo IA.");
-  await loadAiQueue({ forceRender: true });
+async function aiQueueAction(jobId, action, button = null) {
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
+  try {
+    const response = await fetch(`/api/ai/jobs/${jobId}/${action}`, { method: "POST", headers: csrfHeaders() });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error_message || payload.error || "No se pudo actualizar el trabajo IA.");
+    }
+    await loadAiQueue({ forceRender: true });
+    if (aiQueueStatus) {
+      aiQueueStatus.className = "import-result success";
+      aiQueueStatus.textContent = payload.message || "Trabajo IA actualizado.";
+    }
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+    }
+  }
 }
 
 function updateAiFileSelectionCount() {
@@ -4161,6 +4233,8 @@ async function openAiFileSelection(licitacionId, button, force = false) {
   }
   if (aiFileList) aiFileList.innerHTML = `<tr><td colspan="5" class="empty">Cargando ficheros...</td></tr>`;
   if (confirmAiFileSelectionButton) confirmAiFileSelectionButton.disabled = true;
+  if (aiNotifyOnCompletion) aiNotifyOnCompletion.checked = true;
+  if (aiNotificationEmails) aiNotificationEmails.value = appState.user?.email || "";
   aiFileDialog.showModal();
   try {
     const response = await fetch(`/api/licitaciones/${licitacionId}/ai-files`);
@@ -4190,11 +4264,25 @@ async function confirmAiFileSelection() {
     if (aiFileStatus) aiFileStatus.textContent = "Selecciona al menos un fichero.";
     return;
   }
+  let notificationEmails = [];
+  const notifyOnCompletion = Boolean(aiNotifyOnCompletion?.checked);
+  try {
+    notificationEmails = parseEmailList(aiNotificationEmails?.value || "", { required: notifyOnCompletion });
+  } catch (error) {
+    if (aiFileStatus) {
+      aiFileStatus.className = "import-result error";
+      aiFileStatus.textContent = error.message || "Revisa los destinatarios del aviso.";
+    }
+    return;
+  }
   closeAiFileSelection();
-  await runAiSummaryGeneration(state.licitacionId, state.button, state.force, selectedFiles);
+  await runAiSummaryGeneration(state.licitacionId, state.button, state.force, selectedFiles, {
+    notify_on_completion: notifyOnCompletion,
+    notification_emails: notifyOnCompletion ? notificationEmails : [],
+  });
 }
 
-async function runAiSummaryGeneration(licitacionId, button, force = false, selectedFiles = null) {
+async function runAiSummaryGeneration(licitacionId, button, force = false, selectedFiles = null, notificationOptions = {}) {
   const panel = licitacionDetailContent.querySelector(`[data-ai-summary-panel="${licitacionId}"]`);
   const originalText = button?.textContent || "";
   if (button) {
@@ -4209,7 +4297,12 @@ async function runAiSummaryGeneration(licitacionId, button, force = false, selec
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { ...csrfHeaders(), "Content-Type": "application/json" },
-      body: JSON.stringify({ selected_files: selectedFiles || [], provider: appState.config?.ai?.analysis_provider || undefined }),
+      body: JSON.stringify({
+        selected_files: selectedFiles || [],
+        provider: appState.config?.ai?.analysis_provider || undefined,
+        notify_on_completion: Boolean(notificationOptions.notify_on_completion),
+        notification_emails: notificationOptions.notification_emails || [],
+      }),
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -4266,18 +4359,29 @@ function openAiSummaryEmail(licitacionId) {
 async function sendAiSummaryEmail() {
   const state = appState.aiSummaryEmail;
   if (!state) return;
+  let recipients = [];
+  try {
+    recipients = parseEmailList(aiSummaryEmailTo.value, { required: true });
+  } catch (error) {
+    aiSummaryEmailStatus.className = "import-result error";
+    aiSummaryEmailStatus.textContent = error.message || "Revisa los destinatarios.";
+    return;
+  }
   sendAiSummaryEmailButton.disabled = true;
   sendAiSummaryEmailButton.textContent = "Enviando...";
   try {
     const response = await fetch(`/api/licitaciones/${state.licitacionId}/ai-summary/email`, {
       method: "POST",
       headers: { ...csrfHeaders(), "Content-Type": "application/json" },
-      body: JSON.stringify({ to: aiSummaryEmailTo.value, subject: aiSummaryEmailSubject.value }),
+      body: JSON.stringify({ notification_emails: recipients, subject: aiSummaryEmailSubject.value }),
     });
     const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(result.error || "No se pudo enviar el email.");
+    if (!response.ok || result.ok === false) {
+      throw new Error(result.error || result.notification_status?.label || "No se pudo enviar el email.");
+    }
     aiSummaryEmailStatus.className = "import-result ok";
-    aiSummaryEmailStatus.textContent = "Email enviado correctamente.";
+    aiSummaryEmailStatus.textContent = result.notification_status?.label || "Email enviado correctamente.";
+    loadAiSummary(state.licitacionId, { silent: true });
   } catch (error) {
     aiSummaryEmailStatus.className = "import-result error";
     aiSummaryEmailStatus.textContent = error.message || "No se pudo enviar el email.";
@@ -5072,21 +5176,26 @@ aiQueueContent.addEventListener("click", async (event) => {
   }
   const cancelButton = event.target.closest("button[data-ai-queue-cancel]");
   if (cancelButton) {
+    const status = cancelButton.dataset.aiQueueCancelStatus || "";
+    const message = status === "processing"
+      ? "¿Cancelar este análisis IA?\n\nEl análisis ya está en curso. Se solicitará la cancelación, pero puede finalizar al terminar la fase actual."
+      : "¿Cancelar este análisis IA?";
+    if (!confirm(message)) return;
     try {
-      await aiQueueAction(cancelButton.dataset.aiQueueCancel, "cancel");
+      await aiQueueAction(cancelButton.dataset.aiQueueCancel, "cancel", cancelButton);
     } catch (error) {
       aiQueueStatus.className = "import-result error";
-      aiQueueStatus.textContent = error.message || "No se pudo cancelar el análisis.";
+      aiQueueStatus.textContent = handleAiQueueActionError(error, "No se pudo cancelar el análisis.");
     }
     return;
   }
   const dismissButton = event.target.closest("button[data-ai-queue-dismiss]");
   if (dismissButton) {
     try {
-      await aiQueueAction(dismissButton.dataset.aiQueueDismiss, "dismiss");
+      await aiQueueAction(dismissButton.dataset.aiQueueDismiss, "dismiss", dismissButton);
     } catch (error) {
       aiQueueStatus.className = "import-result error";
-      aiQueueStatus.textContent = error.message || "No se pudo ocultar el análisis.";
+      aiQueueStatus.textContent = handleAiQueueActionError(error, "No se pudo ocultar el análisis.");
     }
   }
 });

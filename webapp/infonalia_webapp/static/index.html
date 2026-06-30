@@ -608,6 +608,16 @@
     </div>
 
     <p class="muted">Se analizarán copias temporales de estos ficheros; los originales no se modificarán.</p>
+    <div class="ai-email-options">
+      <label class="checkbox-line">
+        <input id="ai-notify-on-completion" type="checkbox" checked>
+        Avisar por email cuando esté listo
+      </label>
+      <label>Destinatarios
+        <textarea id="ai-notification-emails" rows="2" placeholder="info3@llangon.com, info@llangon.com"></textarea>
+      </label>
+      <small>Puedes introducir varios correos separados por coma, punto y coma o salto de línea.</small>
+    </div>
     <div class="ai-file-toolbar">
       <strong id="ai-file-selection-count">0 ficheros seleccionados</strong>
       <div>
@@ -645,7 +655,7 @@
       <button type="button" class="icon-button" id="close-ai-summary-email">×</button>
     </div>
     <div class="notice-preview">
-      <label>Para<input id="ai-summary-email-to" type="email"></label>
+      <label>Para<textarea id="ai-summary-email-to" rows="2" placeholder="info3@llangon.com, info@llangon.com"></textarea></label>
       <label>Asunto<input id="ai-summary-email-subject"></label>
       <label>Vista previa<textarea id="ai-summary-email-preview" rows="8" readonly></textarea></label>
     </div>

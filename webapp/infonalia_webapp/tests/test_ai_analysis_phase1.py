@@ -26,12 +26,18 @@ from webapp.infonalia_webapp.ai.gemini_provider import (
 )
 from webapp.infonalia_webapp.ai.hashing import hash_documents
 from webapp.infonalia_webapp.ai.manual_test import build_preflight_report, mark_interrupted_job
+from webapp.infonalia_webapp.ai.notifications import (
+    create_job_notifications,
+    normalize_email_list,
+    notification_status_payload,
+    send_pending_job_notifications,
+)
 from webapp.infonalia_webapp.ai.pdf_text_extractor import ExtractedTextResult, extract_pdf_text
 from webapp.infonalia_webapp.ai.postprocess import postprocess_summary
-from webapp.infonalia_webapp.ai.queue import active_job, create_job, ensure_ai_schema, latest_job, latest_summary, update_job
+from webapp.infonalia_webapp.ai.queue import active_job, create_job, ensure_ai_schema, latest_job, latest_summary, save_summary, update_job
 from webapp.infonalia_webapp.ai.rate_limit import check_rate_limit
 from webapp.infonalia_webapp.ai.schemas import parse_summary_json, summary_quality_check
-from webapp.infonalia_webapp.ai.service import cancel_ai_job, delete_ai_summary, get_ai_queue_payload, mark_stale_ai_jobs, process_ai_job, request_ai_analysis
+from webapp.infonalia_webapp.ai.service import cancel_ai_job, delete_ai_summary, dismiss_ai_job, get_ai_queue_payload, mark_stale_ai_jobs, process_ai_job, request_ai_analysis
 from webapp.infonalia_webapp.ai.worker import mark_stale_jobs, process_one_job
 from webapp.infonalia_webapp.ai.worker_launcher import start_ai_worker_for_job
 from webapp.infonalia_webapp.ai.workspace import prepare_ai_workspace
@@ -76,6 +82,18 @@ def _insert_licitacion(conn: sqlite3.Connection, folder: Path, licitacion_id: in
         )
         VALUES (?, 'EXP-IA', 'Suministro de prueba', 'Organo de prueba', '2026-07-01', '14:00',
                 'https://contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&idEvl=test', ?)
+        """,
+        (licitacion_id, str(folder)),
+    )
+
+
+def _insert_app_licitacion_for_ai(conn: sqlite3.Connection, folder: Path, licitacion_id: int = 1) -> None:
+    conn.execute(
+        """
+        INSERT INTO licitaciones (
+            id, expediente, objeto, organismo, ruta_carpeta, estado, created_at, updated_at
+        )
+        VALUES (?, 'EXP-COLA', 'Suministro cola IA', 'Organo de prueba', ?, 'Importada', '2026-01-01', '2026-01-01')
         """,
         (licitacion_id, str(folder)),
     )
@@ -667,6 +685,176 @@ def test_ai_cancel_pending_and_processing(tmp_path: Path) -> None:
     assert processing["cancel_requested"] == 1
 
 
+def test_ai_cancel_endpoint_handles_pending_processing_completed_and_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    app = load_app_module()
+    launched: list[int] = []
+    monkeypatch.setattr(app, "start_ai_worker_for_job", lambda conn, job_id: launched.append(job_id))
+    with temporary_app_database(app):
+        folder = tmp_path / "cola"
+        folder.mkdir()
+        with app.db_session() as conn:
+            _insert_app_licitacion_for_ai(conn, folder)
+            pending_id = create_job(
+                conn,
+                licitacion_id=1,
+                document_hash="hash-pending",
+                selected_documents=[],
+                model="codex",
+                provider="codex_local",
+                status="pending",
+            )
+            processing_id = create_job(
+                conn,
+                licitacion_id=1,
+                document_hash="hash-processing",
+                selected_documents=[],
+                model="codex",
+                provider="codex_local",
+                status="processing",
+            )
+            completed_id = create_job(
+                conn,
+                licitacion_id=1,
+                document_hash="hash-completed",
+                selected_documents=[],
+                model="codex",
+                provider="codex_local",
+                status="completed",
+            )
+
+        pending_handler = make_handler(app, "POST", f"/api/ai/jobs/{pending_id}/cancel", {})
+        processing_handler = make_handler(app, "POST", f"/api/ai/jobs/{processing_id}/cancel", {})
+        completed_handler = make_handler(app, "POST", f"/api/ai/jobs/{completed_id}/cancel", {})
+        missing_handler = make_handler(app, "POST", "/api/ai/jobs/999999/cancel", {})
+
+        dispatch(pending_handler, "POST")
+        dispatch(processing_handler, "POST")
+        dispatch(completed_handler, "POST")
+        dispatch(missing_handler, "POST")
+
+        assert pending_handler.responses[-1][0] == HTTPStatus.OK
+        assert pending_handler.responses[-1][1]["ok"] is True
+        assert pending_handler.responses[-1][1]["job"]["status"] == "cancelled"
+        assert processing_handler.responses[-1][0] == HTTPStatus.OK
+        assert processing_handler.responses[-1][1]["ok"] is True
+        assert processing_handler.responses[-1][1]["job"]["status"] == "processing"
+        assert completed_handler.responses[-1][0] == HTTPStatus.OK
+        assert completed_handler.responses[-1][1]["ok"] is True
+        assert completed_handler.responses[-1][1]["message"] == "El trabajo ya no está activo."
+        assert missing_handler.responses[-1] == (
+            HTTPStatus.NOT_FOUND,
+            {
+                "ok": False,
+                "job_id": 999999,
+                "error_code": "JOB_NOT_FOUND",
+                "error_message": "Trabajo IA no encontrado.",
+            },
+        )
+        assert launched == []
+        with app.db_session() as conn:
+            pending = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (pending_id,)).fetchone()
+            processing = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (processing_id,)).fetchone()
+            assert pending["status"] == "cancelled"
+            assert pending["progress_message"] == "Cancelado por el usuario."
+            assert processing["status"] == "processing"
+            assert processing["cancel_requested"] == 1
+
+
+def test_ai_dismiss_endpoint_marks_job_without_deleting_summary_or_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    app = load_app_module()
+    with temporary_app_database(app):
+        folder = tmp_path / "expediente"
+        folder.mkdir()
+        document = _write_pdf(folder / "PCAP.pdf")
+        with app.db_session() as conn:
+            _insert_app_licitacion_for_ai(conn, folder)
+            job_id = create_job(
+                conn,
+                licitacion_id=1,
+                document_hash="hash-dismiss",
+                selected_documents=[],
+                model="codex",
+                provider="codex_local",
+                status="completed",
+            )
+            save_summary(
+                conn,
+                licitacion_id=1,
+                document_hash="hash-dismiss",
+                model="codex",
+                summary=_useful_summary_payload(),
+                text="Resumen",
+                job_id=job_id,
+                provider="codex_local",
+            )
+
+        handler = make_handler(app, "POST", f"/api/ai/jobs/{job_id}/dismiss", {}, username="manolo")
+        missing_handler = make_handler(app, "POST", "/api/ai/jobs/999999/dismiss", {})
+
+        dispatch(handler, "POST")
+        dispatch(missing_handler, "POST")
+
+        assert handler.responses[-1][0] == HTTPStatus.OK
+        assert handler.responses[-1][1]["ok"] is True
+        assert handler.responses[-1][1]["job_id"] == job_id
+        assert missing_handler.responses[-1] == (
+            HTTPStatus.NOT_FOUND,
+            {
+                "ok": False,
+                "job_id": 999999,
+                "error_code": "JOB_NOT_FOUND",
+                "error_message": "Trabajo IA no encontrado.",
+            },
+        )
+        assert document.exists()
+        with app.db_session() as conn:
+            row = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
+            assert row["dismissed_at"]
+            assert row["dismissed_by"] == "manolo"
+            assert conn.execute("SELECT COUNT(*) FROM ai_summaries").fetchone()[0] == 1
+
+
+def test_ai_queue_endpoints_return_json_on_internal_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = load_app_module()
+
+    def boom(*args, **kwargs):
+        raise sqlite3.OperationalError("simulated schema issue")
+
+    monkeypatch.setattr(app, "cancel_ai_job", boom)
+    monkeypatch.setattr(app, "dismiss_ai_job", boom)
+    monkeypatch.setattr(app, "get_ai_queue_payload", boom)
+    monkeypatch.setattr(app, "get_ai_job_payload", boom)
+
+    cancel_handler = make_handler(app, "POST", "/api/ai/jobs/7/cancel", {})
+    dismiss_handler = make_handler(app, "POST", "/api/ai/jobs/7/dismiss", {})
+    queue_handler = make_handler(app, "GET", "/api/ai/queue", {})
+    job_handler = make_handler(app, "GET", "/api/ai/jobs/7", {})
+
+    dispatch(cancel_handler, "POST")
+    dispatch(dismiss_handler, "POST")
+    dispatch(queue_handler, "GET")
+    dispatch(job_handler, "GET")
+
+    assert cancel_handler.responses[-1][0] == HTTPStatus.INTERNAL_SERVER_ERROR
+    assert cancel_handler.responses[-1][1]["ok"] is False
+    assert cancel_handler.responses[-1][1]["error_code"] == "AI_CANCEL_ERROR"
+    assert dismiss_handler.responses[-1][0] == HTTPStatus.INTERNAL_SERVER_ERROR
+    assert dismiss_handler.responses[-1][1]["ok"] is False
+    assert dismiss_handler.responses[-1][1]["error_code"] == "AI_DISMISS_ERROR"
+    assert queue_handler.responses[-1][0] == HTTPStatus.INTERNAL_SERVER_ERROR
+    assert queue_handler.responses[-1][1]["ok"] is False
+    assert queue_handler.responses[-1][1]["error_code"] == "AI_QUEUE_ERROR"
+    assert job_handler.responses[-1][0] == HTTPStatus.INTERNAL_SERVER_ERROR
+    assert job_handler.responses[-1][1]["ok"] is False
+    assert job_handler.responses[-1][1]["error_code"] == "AI_QUEUE_ERROR"
+
+
 def test_mark_stale_jobs_handles_processing_and_old_pending(tmp_path: Path) -> None:
     conn = _conn()
     _insert_licitacion(conn, tmp_path)
@@ -1015,6 +1203,44 @@ def test_generate_creates_pending_job_without_running_provider(tmp_path: Path, m
     assert dict(row) == {"status": "pending", "provider": "gemini"}
 
 
+def test_email_list_normalization_accepts_common_separators_and_rejects_invalid() -> None:
+    assert normalize_email_list(
+        "Info3@Llangon.com, info@llangon.com; info3@llangon.com\nmailto:nuria@example.test",
+        required=True,
+    ) == ["info3@llangon.com", "info@llangon.com", "nuria@example.test"]
+    assert normalize_email_list(["[Aviso](mailto:aviso@example.test)"]) == ["aviso@example.test"]
+    assert normalize_email_list("", required=False) == []
+    with pytest.raises(ValueError, match="Email no válido"):
+        normalize_email_list("correcto@example.test; no-es-email", required=True)
+    with pytest.raises(ValueError, match="Indica al menos un email"):
+        normalize_email_list("", required=True)
+
+
+def test_generate_with_email_notice_creates_pending_notifications(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+
+    payload = request_ai_analysis(
+        conn,
+        1,
+        requested_by="tester",
+        notify_on_completion=True,
+        notification_emails="Info3@Llangon.com; info3@llangon.com\nnuria@example.test",
+    )
+
+    assert payload["notification_recipients_count"] == 2
+    assert payload["notification_status"]["pending_count"] == 2
+    rows = conn.execute("SELECT recipient_email, status FROM ai_analysis_notifications ORDER BY id").fetchall()
+    assert [dict(row) for row in rows] == [
+        {"recipient_email": "info3@llangon.com", "status": "pending"},
+        {"recipient_email": "nuria@example.test", "status": "pending"},
+    ]
+
+
 def test_worker_processes_pending_job_with_mock_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _conn()
     _write_pdf(tmp_path / "PCAP.pdf")
@@ -1031,6 +1257,101 @@ def test_worker_processes_pending_job_with_mock_provider(tmp_path: Path, monkeyp
     row = conn.execute("SELECT status, attempts FROM ai_analysis_jobs WHERE id = ?", (payload["job_id"],)).fetchone()
     assert row["status"] == "completed"
     assert row["attempts"] == 1
+
+
+def test_worker_completed_keeps_analysis_completed_when_smtp_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    payload = request_ai_analysis(
+        conn,
+        1,
+        requested_by="tester",
+        notify_on_completion=True,
+        notification_emails="aviso@example.test",
+    )
+
+    processed = process_ai_job(conn, payload["job_id"], provider=FakeProvider())
+
+    assert processed["job_status"] == "completed"
+    assert processed["notification_status"]["state"] == "error"
+    notification = conn.execute(
+        "SELECT status, attempts, error_message FROM ai_analysis_notifications WHERE job_id = ?",
+        (payload["job_id"],),
+    ).fetchone()
+    assert notification["status"] == "error"
+    assert notification["attempts"] == 1
+    assert notification["error_message"] == "SMTP no configurado"
+    assert latest_summary(conn, 1) is not None
+
+
+def test_worker_respects_cancel_requested_before_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    provider = FakeProvider()
+    payload = request_ai_analysis(
+        conn,
+        1,
+        requested_by="tester",
+        notify_on_completion=True,
+        notification_emails="aviso@example.test",
+    )
+    update_job(conn, payload["job_id"], cancel_requested=1)
+
+    processed = process_ai_job(conn, payload["job_id"], provider=provider)
+
+    assert processed["job_status"] == "cancelled"
+    assert provider.calls == 0
+    assert latest_summary(conn, 1) is None
+    notification = conn.execute("SELECT status FROM ai_analysis_notifications").fetchone()
+    assert notification["status"] == "skipped"
+
+
+def test_worker_does_not_save_summary_or_send_email_if_cancelled_after_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    payload = request_ai_analysis(
+        conn,
+        1,
+        requested_by="tester",
+        notify_on_completion=True,
+        notification_emails="aviso@example.test",
+    )
+    sent: list[int] = []
+
+    class CancellingProvider(FakeProvider):
+        def analyze_documents(self, licitacion: dict[str, object], documents: list[dict[str, object]]) -> ProviderResult:
+            result = super().analyze_documents(licitacion, documents)
+            update_job(conn, payload["job_id"], cancel_requested=1)
+            return result
+
+    processed = process_ai_job(
+        conn,
+        payload["job_id"],
+        provider=CancellingProvider(),
+        notification_sender=lambda _conn, job_id: sent.append(job_id),
+    )
+
+    assert processed["job_status"] == "cancelled"
+    assert latest_summary(conn, 1) is None
+    assert sent == []
+    notification = conn.execute("SELECT status FROM ai_analysis_notifications").fetchone()
+    assert notification["status"] == "skipped"
 
 
 def test_worker_does_not_process_same_job_twice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1419,11 +1740,19 @@ def test_ai_summary_email_with_mock_smtp_sends_html(tmp_path: Path, monkeypatch:
     app = load_app_module()
     calls: list[dict[str, object]] = []
 
-    def fake_send_notification_email_with_settings(**kwargs):
-        calls.append(kwargs)
-        return "2026-01-01T10:00:00", None
+    def fake_send_pending(conn, job_id, **kwargs):
+        calls.append({"job_id": job_id, **kwargs})
+        conn.execute(
+            """
+            UPDATE ai_analysis_notifications
+            SET status = 'sent', sent_at = '2026-01-01T10:00:00', attempts = attempts + 1
+            WHERE job_id = ? AND status = 'pending'
+            """,
+            (job_id,),
+        )
+        return {"sent": 2, "error": 0}
 
-    monkeypatch.setattr(app, "send_notification_email_with_settings", fake_send_notification_email_with_settings)
+    monkeypatch.setattr(app, "send_pending_job_notifications", fake_send_pending)
     with temporary_app_database(app):
         folder = tmp_path / "docs"
         folder.mkdir()
@@ -1439,23 +1768,32 @@ def test_ai_summary_email_with_mock_smtp_sends_html(tmp_path: Path, monkeypatch:
                 """,
                 (str(folder),),
             )
+            job_id = create_job(
+                conn,
+                licitacion_id=1,
+                document_hash="hash",
+                selected_documents=[],
+                model="gemini-test",
+                provider="gemini",
+                status="completed",
+            )
             summary_json = json.dumps(_useful_summary_payload("Resumen útil con información técnica y garantía."), ensure_ascii=False)
             conn.execute(
                 """
                 INSERT INTO ai_summaries (
                     licitacion_id, document_hash, provider, model, summary_json, summary_text,
-                    created_at, updated_at, quality_status
+                    created_at, updated_at, created_from_job_id, quality_status
                 )
                 VALUES (1, 'hash', 'gemini', 'gemini-test', ?, 'Resumen útil',
-                        '2026-01-01', '2026-01-01', 'pending_review')
+                        '2026-01-01', '2026-01-01', ?, 'pending_review')
                 """,
-                (summary_json,),
+                (summary_json, job_id),
             )
         handler = make_handler(
             app,
             "POST",
             "/api/licitaciones/1/ai-summary/email",
-            {"to": "destino@example.test", "subject": "Análisis"},
+            {"notification_emails": ["destino@example.test", "nuria@example.test"], "subject": "Análisis"},
             email="usuario@example.test",
         )
 
@@ -1463,10 +1801,106 @@ def test_ai_summary_email_with_mock_smtp_sends_html(tmp_path: Path, monkeypatch:
 
         status, payload = handler.responses[-1]
         assert status == HTTPStatus.OK
-        assert payload["recipient"] == "destino@example.test"
+        assert payload["recipients"] == ["destino@example.test", "nuria@example.test"]
+        assert payload["notification_status"]["sent_count"] == 2
         assert calls
-        assert "Resumen útil" in calls[0]["html_body"]
-        assert "Análisis automático" in calls[0]["body"]
+        assert calls[0]["subject_override"] == "Análisis"
+
+
+def test_ai_pending_notifications_send_summary_email_without_raw_json_or_paths(tmp_path: Path) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    conn.execute(
+        """
+        CREATE TABLE app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at TEXT
+        )
+        """
+    )
+    conn.executemany(
+        "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, '2026-01-01')",
+        [
+            ("smtp_host", "smtp.example.test"),
+            ("smtp_port", "2525"),
+            ("smtp_from", "ia@example.test"),
+            ("smtp_tls", "0"),
+            ("smtp_ssl", "0"),
+        ],
+    )
+    job_id = create_job(
+        conn,
+        licitacion_id=1,
+        document_hash="hash",
+        selected_documents=[{"name": "PCAP.pdf", "path": str(tmp_path / "PCAP.pdf")}],
+        model="gemini-test",
+        provider="gemini",
+        status="completed",
+    )
+    save_summary(
+        conn,
+        licitacion_id=1,
+        document_hash="hash",
+        model="gemini-test",
+        summary=_useful_summary_payload("Resumen útil con información técnica y garantías."),
+        text="Resumen útil",
+        job_id=job_id,
+        provider="gemini",
+    )
+    create_job_notifications(
+        conn,
+        job_id=job_id,
+        licitacion_id=1,
+        requested_by="tester",
+        recipients=["destino@example.test"],
+        created_at="2026-01-01T10:00:00",
+    )
+    sent_messages = []
+
+    class FakeSMTP:
+        def __init__(self, host: str, port: int, *, timeout: int) -> None:
+            self.host = host
+            self.port = port
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def starttls(self) -> None:
+            raise AssertionError("TLS desactivado")
+
+        def login(self, *_args) -> None:
+            raise AssertionError("login no configurado")
+
+        def send_message(self, message) -> None:
+            sent_messages.append(message)
+
+    result = send_pending_job_notifications(
+        conn,
+        job_id,
+        now=lambda: "2026-01-01T10:05:00",
+        smtp_factory=FakeSMTP,
+        smtp_ssl_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no ssl")),
+    )
+
+    assert result == {"sent": 1, "error": 0}
+    assert sent_messages
+    message = sent_messages[0]
+    text_body = message.get_body(preferencelist=("plain",)).get_content()
+    html_body = message.get_body(preferencelist=("html",)).get_content()
+    assert "Análisis IA disponible" in html_body
+    assert "garant" in text_body
+    assert '"resumen_ejecutivo"' not in text_body + html_body
+    assert str(tmp_path) not in text_body + html_body
+    status = notification_status_payload(
+        conn.execute("SELECT * FROM ai_analysis_notifications WHERE job_id = ?", (job_id,)).fetchall()
+    )
+    assert status["state"] == "sent"
 
 
 def test_prepare_ai_workspace_copies_only_selected_and_keeps_originals(tmp_path: Path) -> None:
@@ -1705,6 +2139,9 @@ def test_ai_summary_ui_source_renders_operational_ficha() -> None:
     assert "ai-queue-button" in html_source
     assert "ai-queue-dialog" in html_source
     assert "/api/ai/queue" in source
+    assert "handleAiQueueActionError" in source
+    assert "No se pudo contactar con la web local. Comprueba que la Suite sigue arrancada." in source
+    assert source.count("Failed to fetch") == 1
 
 
 def test_ai_summary_api_without_config_returns_controlled_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1968,6 +2405,7 @@ def test_worker_once_processes_codex_disabled_job_without_real_codex(tmp_path: P
 
 def test_ai_ui_has_provider_specific_error_messages() -> None:
     source = Path("webapp/infonalia_webapp/static/app.js").read_text(encoding="utf-8")
+    html = Path("webapp/infonalia_webapp/static/index.html").read_text(encoding="utf-8")
 
     assert 'code === "CODEX_DISABLED"' in source
     assert "Codex Local no está activado." in source
@@ -1976,6 +2414,12 @@ def test_ai_ui_has_provider_specific_error_messages() -> None:
     assert "startAiSummaryPolling" in source
     assert "Análisis IA en cola" in source
     assert "Iniciando análisis IA" in source
+    assert "parseEmailList" in source
+    assert "notify_on_completion" in source
+    assert "notification_emails" in source
+    assert "No se pudo contactar con la web local" in source
+    assert "Avisar por email cuando esté listo" in html
+    assert 'id="ai-notification-emails"' in html
 
 
 def test_manual_test_exposes_force_regeneration_flag() -> None:

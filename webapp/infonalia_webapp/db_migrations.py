@@ -36,6 +36,11 @@ try:
 except ImportError:
     from ai.queue import ensure_ai_schema as _ensure_ai_schema
 
+try:
+    from .ai.notifications import ensure_ai_notifications_schema as _ensure_ai_notifications_schema
+except ImportError:
+    from ai.notifications import ensure_ai_notifications_schema as _ensure_ai_notifications_schema
+
 
 MIGRATIONS_TABLE = "schema_migrations"
 
@@ -544,6 +549,19 @@ def _ai_jobs_dismissed_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE ai_analysis_jobs ADD COLUMN dismissed_by TEXT")
 
 
+def _ai_jobs_progress_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "ai_analysis_jobs"):
+        _ensure_ai_schema(conn)
+        return
+    _ensure_ai_schema(conn)
+
+
+def _ai_notifications_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "ai_analysis_jobs") or not _table_exists(conn, "licitaciones"):
+        return
+    _ensure_ai_notifications_schema(conn)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version="0001_baseline_schema",
@@ -614,6 +632,16 @@ MIGRATIONS: tuple[Migration, ...] = (
         version="0014_ai_jobs_dismissed",
         description="Marca de descarte UI para jobs IA historicos",
         apply=_ai_jobs_dismissed_schema,
+    ),
+    Migration(
+        version="0015_ai_jobs_progress",
+        description="Campos de progreso y control para la cola IA",
+        apply=_ai_jobs_progress_schema,
+    ),
+    Migration(
+        version="0016_ai_analysis_notifications",
+        description="Avisos por email asociados a jobs de analisis IA",
+        apply=_ai_notifications_schema,
     ),
 )
 

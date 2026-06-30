@@ -302,10 +302,10 @@ def claim_pending_job(conn: sqlite3.Connection, job_id: int, *, started_at: str 
             progress_stage = 'preparing_workspace',
             progress_message = 'Preparando carpeta temporal',
             progress_percent = 5,
-            heartbeat_at = ?,
-            cancel_requested = 0
+            heartbeat_at = ?
         WHERE id = ?
           AND status IN ('pending', 'queued', 'deferred')
+          AND COALESCE(cancel_requested, 0) = 0
           AND (dismissed_at IS NULL OR dismissed_at = '')
         """,
         (timestamp, timestamp, job_id),
@@ -320,6 +320,7 @@ def next_pending_job(conn: sqlite3.Connection) -> sqlite3.Row | None:
         """
         SELECT * FROM ai_analysis_jobs
         WHERE status IN ('pending', 'queued', 'deferred')
+          AND COALESCE(cancel_requested, 0) = 0
           AND (dismissed_at IS NULL OR dismissed_at = '')
         ORDER BY created_at ASC, id ASC
         LIMIT 1
@@ -351,7 +352,12 @@ def touch_job_progress(
 def cancel_job(conn: sqlite3.Connection, job_id: int) -> dict[str, object]:
     row = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
     if not row:
-        raise ValueError("Job IA no encontrado")
+        return {
+            "ok": False,
+            "job_id": job_id,
+            "error_code": "JOB_NOT_FOUND",
+            "error_message": "Trabajo IA no encontrado.",
+        }
     status = str(row["status"] or "")
     if status in {"pending", "queued", "deferred"}:
         update_job(
@@ -360,12 +366,18 @@ def cancel_job(conn: sqlite3.Connection, job_id: int) -> dict[str, object]:
             status="cancelled",
             finished_at=now_iso(),
             progress_stage="cancelled",
-            progress_message="Cancelado antes de iniciar.",
+            progress_message="Cancelado por el usuario.",
             cancel_requested=1,
             error_code="CANCELLED",
             error_message="Análisis IA cancelado por el usuario.",
         )
-        return {"ok": True, "message": "Análisis IA cancelado."}
+        return {
+            "ok": True,
+            "job_id": job_id,
+            "previous_status": status,
+            "status": "cancelled",
+            "message": "Análisis IA cancelado.",
+        }
     if status == "processing":
         update_job(
             conn,
@@ -374,15 +386,38 @@ def cancel_job(conn: sqlite3.Connection, job_id: int) -> dict[str, object]:
             progress_message="Cancelación solicitada. El proceso puede finalizar cuando termine la fase actual.",
             heartbeat_at=now_iso(),
         )
-        return {"ok": True, "message": "Cancelación solicitada. El proceso puede finalizar cuando termine la fase actual."}
-    return {"ok": False, "message": "El job ya no se puede cancelar."}
+        return {
+            "ok": True,
+            "job_id": job_id,
+            "previous_status": status,
+            "status": status,
+            "message": "Cancelación solicitada. El proceso puede finalizar al terminar la fase actual.",
+        }
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "previous_status": status,
+        "status": status,
+        "message": "El trabajo ya no está activo.",
+    }
 
 
-def dismiss_job(conn: sqlite3.Connection, job_id: int, dismissed_by: str = "") -> None:
-    row = conn.execute("SELECT id FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
+def dismiss_job(conn: sqlite3.Connection, job_id: int, dismissed_by: str = "") -> dict[str, object]:
+    row = conn.execute("SELECT id, status FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
     if not row:
-        raise ValueError("Job IA no encontrado")
+        return {
+            "ok": False,
+            "job_id": job_id,
+            "error_code": "JOB_NOT_FOUND",
+            "error_message": "Trabajo IA no encontrado.",
+        }
     update_job(conn, job_id, dismissed_at=now_iso(), dismissed_by=dismissed_by or "ui")
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "status": str(row["status"] or ""),
+        "message": "Trabajo IA ocultado.",
+    }
 
 
 def mark_stale_jobs_in_conn(conn: sqlite3.Connection, *, processing_timeout_seconds: int, pending_timeout_minutes: int = 30) -> int:

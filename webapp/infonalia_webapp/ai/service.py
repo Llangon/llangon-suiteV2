@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import smtplib
 import sqlite3
 from datetime import datetime, timedelta
-from typing import Protocol
+from typing import Callable, Protocol
 
 from .codex_local_provider import CodexLocalProvider
 from .config import AIConfig, get_ai_config
@@ -11,6 +12,15 @@ from .document_selector import inspect_document_selection
 from .file_selection import AIFileSelectionError, resolve_selected_ai_files
 from .gemini_provider import AIProviderError, GeminiProvider, ProviderResult
 from .hashing import hash_documents
+from .notifications import (
+    create_job_notifications,
+    latest_notification_rows_for_licitacion,
+    mark_job_notifications_skipped,
+    normalize_email_list,
+    notification_rows_for_job,
+    notification_status_payload,
+    send_pending_job_notifications,
+)
 from .queue import (
     active_job,
     cancel_job,
@@ -43,6 +53,40 @@ class ProviderProtocol(Protocol):
 
 def _now() -> str:
     return datetime.now().replace(microsecond=0).isoformat()
+
+
+def _commit_if_possible(conn: sqlite3.Connection) -> None:
+    try:
+        conn.commit()
+    except sqlite3.Error:
+        pass
+
+
+def _is_cancel_requested(conn: sqlite3.Connection, job_id: int) -> bool:
+    row = conn.execute("SELECT cancel_requested FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
+    return bool(row and int(row["cancel_requested"] or 0))
+
+
+def _mark_cancelled(
+    conn: sqlite3.Connection,
+    job_id: int,
+    *,
+    message: str = "Cancelado por el usuario.",
+    skip_notifications: bool = True,
+) -> None:
+    update_job(
+        conn,
+        job_id,
+        status="cancelled",
+        finished_at=_now(),
+        progress_stage="cancelled",
+        progress_message=message,
+        heartbeat_at=_now(),
+        error_code="CANCELLED",
+        error_message="Análisis IA cancelado por el usuario.",
+    )
+    if skip_notifications:
+        mark_job_notifications_skipped(conn, job_id, "Análisis IA cancelado por el usuario.", now=_now)
 
 
 def _usage_value(raw: dict[str, object], *names: str) -> int | None:
@@ -303,6 +347,9 @@ def get_ai_summary_payload(conn: sqlite3.Connection, licitacion_id: int) -> dict
             "summary": _summary_payload(summary),
             "job_status": job["status"] if job else "",
             "job": _job_payload(job),
+            "notification_status": notification_status_payload(
+                notification_rows_for_job(conn, int(job["id"])) if job else latest_notification_rows_for_licitacion(conn, licitacion_id)
+            ),
         }
     )
     return payload
@@ -329,6 +376,9 @@ def _payload_with_job_selection(
             "summary": _summary_payload(summary),
             "job_status": refreshed_job["status"] if refreshed_job else "",
             "job": _job_payload(refreshed_job),
+            "notification_status": notification_status_payload(
+                notification_rows_for_job(conn, int(refreshed_job["id"])) if refreshed_job else []
+            ),
         }
     )
     return payload
@@ -363,6 +413,8 @@ def request_ai_analysis(
     selected_files: list[object] | None = None,
     provider_name: str | None = None,
     provider: ProviderProtocol | None = None,
+    notify_on_completion: bool = False,
+    notification_emails: list[object] | str | None = None,
 ) -> dict[str, object]:
     config = get_ai_config()
     if provider_name:
@@ -375,6 +427,7 @@ def request_ai_analysis(
         raise AIFileSelectionError(str(diagnostics.get("final_reason") or "Selección de ficheros no válida."))
     if not selected:
         return _base_payload(config, selected, diagnostics=diagnostics)
+    normalized_notification_emails = normalize_email_list(notification_emails, required=notify_on_completion) if notify_on_completion else []
     document_hash = hash_documents(selected)
     if not force:
         summary = _latest_useful_summary(conn, licitacion_id, document_hash)
@@ -398,6 +451,16 @@ def request_ai_analysis(
         requested_by=requested_by,
         status="pending",
     )
+    notifications_count = 0
+    if notify_on_completion:
+        notifications_count = create_job_notifications(
+            conn,
+            job_id=job_id,
+            licitacion_id=licitacion_id,
+            requested_by=requested_by,
+            recipients=normalized_notification_emails,
+            created_at=_now(),
+        )
     payload = _base_payload(config, selected, document_hash, diagnostics)
     job = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
     payload.update(
@@ -408,6 +471,8 @@ def request_ai_analysis(
             "provider": config.analysis_provider,
             "message": "Análisis IA en cola.",
             "job": _job_payload(job),
+            "notification_status": notification_status_payload(notification_rows_for_job(conn, job_id)),
+            "notification_recipients_count": notifications_count,
         }
     )
     return payload
@@ -418,6 +483,7 @@ def process_ai_job(
     job_id: int,
     *,
     provider: ProviderProtocol | None = None,
+    notification_sender: Callable[[sqlite3.Connection, int], object] | None = None,
 ) -> dict[str, object]:
     config = get_ai_config()
     row = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
@@ -432,8 +498,13 @@ def process_ai_job(
         claimed = claim_pending_job(conn, job_id, started_at=_now())
         if not claimed:
             row = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
+            if row and int(row["cancel_requested"] or 0):
+                selected = json.loads(row["selected_documents_json"] or "[]")
+                _mark_cancelled(conn, job_id, message="Cancelado por el usuario antes de ejecutar el proveedor IA.")
+                return _payload_with_job_selection(conn, int(row["licitacion_id"]), row, selected)
             return _payload_with_job_selection(conn, int(row["licitacion_id"]), row, json.loads(row["selected_documents_json"] or "[]"))
         row = claimed
+        _commit_if_possible(conn)
     licitacion_id = int(row["licitacion_id"])
     job_provider = str(row["provider"] or config.analysis_provider or "gemini")
     if job_provider != config.analysis_provider:
@@ -455,21 +526,14 @@ def process_ai_job(
             error_code=error_code,
             error_message=error_message,
         )
+        if status == "error":
+            mark_job_notifications_skipped(conn, job_id, "El análisis IA no pudo ejecutarse.", now=_now)
         selected = json.loads(row["selected_documents_json"] or "[]")
         return _payload_with_job_selection(conn, licitacion_id, row, selected)
 
     selected = json.loads(row["selected_documents_json"] or "[]")
-    if int(row["cancel_requested"] or 0):
-        update_job(
-            conn,
-            job_id,
-            status="cancelled",
-            finished_at=_now(),
-            progress_stage="cancelled",
-            progress_message="Cancelado antes de iniciar proveedor IA.",
-            error_code="CANCELLED",
-            error_message="Análisis IA cancelado por el usuario.",
-        )
+    if int(row["cancel_requested"] or 0) or _is_cancel_requested(conn, job_id):
+        _mark_cancelled(conn, job_id, message="Cancelado por el usuario antes de ejecutar el proveedor IA.")
         return _payload_with_job_selection(conn, licitacion_id, row, selected)
     if config.analysis_provider == "gemini":
         limit = check_rate_limit(conn, config)
@@ -495,12 +559,20 @@ def process_ai_job(
             message="Ejecutando Codex Local" if config.analysis_provider == "codex_local" else "Consultando proveedor IA",
             percent=30,
         )
+        _commit_if_possible(conn)
+        if _is_cancel_requested(conn, job_id):
+            _mark_cancelled(conn, job_id, message="Cancelado por el usuario antes de ejecutar el proveedor IA.")
+            return _payload_with_job_selection(conn, licitacion_id, row, selected)
         result = active_provider.analyze_documents(dict(licitacion), selected)
+        if _is_cancel_requested(conn, job_id):
+            _mark_cancelled(conn, job_id, message="Cancelado por el usuario antes de guardar la ficha IA.")
+            return _payload_with_job_selection(conn, licitacion_id, row, selected)
         touch_job_progress(conn, job_id, stage="validating_result", message="Validando resultado IA", percent=85)
         summary = postprocess_summary(parse_summary_json(result.summary))
     except AISchemaError as exc:
         record_usage(conn, provider=config.analysis_provider, model=_provider_model(config), status="error", error_code="INVALID_JSON", licitacion_id=licitacion_id, job_id=job_id)
         update_job(conn, job_id, status="error", finished_at=_now(), progress_stage="error", progress_message=str(exc), heartbeat_at=_now(), error_code="INVALID_JSON", error_message=str(exc))
+        mark_job_notifications_skipped(conn, job_id, "El análisis IA finalizó con error.", now=_now)
         return _payload_with_job_selection(conn, licitacion_id, row, selected)
     except AIProviderError as exc:
         status = "deferred" if exc.code == "RESOURCE_EXHAUSTED" else "error"
@@ -522,9 +594,14 @@ def process_ai_job(
             next_retry_at=retry_at,
             raw_usage_json=json.dumps(safe_diagnostics, ensure_ascii=False) if safe_diagnostics else "",
         )
+        if status == "error":
+            mark_job_notifications_skipped(conn, job_id, "El análisis IA finalizó con error.", now=_now)
         return _payload_with_job_selection(conn, licitacion_id, row, selected)
 
     raw_usage = result.raw_usage or {}
+    if _is_cancel_requested(conn, job_id):
+        _mark_cancelled(conn, job_id, message="Cancelado por el usuario antes de guardar la ficha IA.")
+        return _payload_with_job_selection(conn, licitacion_id, row, selected)
     touch_job_progress(conn, job_id, stage="validating_result", message="Comprobando calidad de la ficha IA", percent=88)
     quality_check = summary_quality_check(summary)
     raw_usage["quality_check"] = quality_check
@@ -543,8 +620,12 @@ def process_ai_job(
             error_message=error_message,
             raw_usage_json=json.dumps(raw_usage, ensure_ascii=False),
         )
+        mark_job_notifications_skipped(conn, job_id, "El análisis IA finalizó sin resumen útil.", now=_now)
         return _payload_with_job_selection(conn, licitacion_id, row, selected)
 
+    if _is_cancel_requested(conn, job_id):
+        _mark_cancelled(conn, job_id, message="Cancelado por el usuario antes de guardar la ficha IA.")
+        return _payload_with_job_selection(conn, licitacion_id, row, selected)
     touch_job_progress(conn, job_id, stage="saving_summary", message="Guardando ficha IA", percent=95)
     save_summary(
         conn,
@@ -580,6 +661,16 @@ def process_ai_job(
         error_message="",
         raw_usage_json=json.dumps(raw_usage, ensure_ascii=False),
     )
+    if notification_sender:
+        notification_sender(conn, job_id)
+    else:
+        send_pending_job_notifications(
+            conn,
+            job_id,
+            now=_now,
+            smtp_factory=smtplib.SMTP,
+            smtp_ssl_factory=smtplib.SMTP_SSL,
+        )
     return _payload_with_job_selection(conn, licitacion_id, row, selected)
 
 
@@ -628,6 +719,8 @@ def get_ai_queue_payload(conn: sqlite3.Connection, limit: int = 30) -> dict[str,
         (limit,),
     ).fetchall()
     items = [_queue_job_item(row) for row in rows]
+    for item in items:
+        item["notification_status"] = notification_status_payload(notification_rows_for_job(conn, int(item["id"])))
     active = [item for item in items if item["status"] in {"pending", "queued", "processing", "deferred"}]
     recent = [item for item in items if item["status"] not in {"pending", "queued", "processing", "deferred"}]
     counts = {
@@ -642,14 +735,15 @@ def get_ai_queue_payload(conn: sqlite3.Connection, limit: int = 30) -> dict[str,
 
 def cancel_ai_job(conn: sqlite3.Connection, job_id: int) -> dict[str, object]:
     result = cancel_job(conn, job_id)
+    if not result.get("ok"):
+        return result
     payload = get_ai_job_payload(conn, job_id)
     payload.update(result)
     return payload
 
 
 def dismiss_ai_job(conn: sqlite3.Connection, job_id: int, dismissed_by: str = "") -> dict[str, object]:
-    dismiss_job(conn, job_id, dismissed_by=dismissed_by)
-    return {"ok": True, "job_id": job_id}
+    return dismiss_job(conn, job_id, dismissed_by=dismissed_by)
 
 
 def mark_stale_ai_jobs(conn: sqlite3.Connection, *, timeout_seconds: int) -> dict[str, object]:

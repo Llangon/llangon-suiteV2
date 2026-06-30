@@ -23,6 +23,16 @@ from webapp.infonalia_webapp.db_migrations import (
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 APP_MODULE_NAME = "webapp.infonalia_webapp.app"
 PRODUCTIVE_DB_PATH = REPOSITORY_ROOT / "webapp" / "infonalia_webapp" / "data" / "infonalia.db"
+AI_JOB_PROGRESS_COLUMNS = {
+    "progress_stage",
+    "progress_message",
+    "progress_percent",
+    "heartbeat_at",
+    "worker_pid",
+    "started_by",
+    "cancel_requested",
+    "estimated_seconds",
+}
 
 
 def load_app_module() -> ModuleType:
@@ -66,6 +76,8 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
         "0012_monitor_inventory_v05",
         "0013_ai_analysis_phase1",
         "0014_ai_jobs_dismissed",
+        "0015_ai_jobs_progress",
+        "0016_ai_analysis_notifications",
     ]
     assert table_exists(conn, MIGRATIONS_TABLE)
     rows = conn.execute(
@@ -142,6 +154,16 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
             "Marca de descarte UI para jobs IA historicos",
             "2026-06-12T10:00:00",
         ),
+        (
+            "0015_ai_jobs_progress",
+            "Campos de progreso y control para la cola IA",
+            "2026-06-12T10:00:00",
+        ),
+        (
+            "0016_ai_analysis_notifications",
+            "Avisos por email asociados a jobs de analisis IA",
+            "2026-06-12T10:00:00",
+        ),
     ]
     assert table_exists(conn, "download_jobs")
     assert table_exists(conn, "import_runs")
@@ -159,8 +181,9 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
     assert table_exists(conn, "ai_analysis_jobs")
     assert table_exists(conn, "ai_summaries")
     assert table_exists(conn, "ai_usage_log")
+    assert table_exists(conn, "ai_analysis_notifications")
     ai_job_columns = {row[1] for row in conn.execute("PRAGMA table_info(ai_analysis_jobs)").fetchall()}
-    assert {"dismissed_at", "dismissed_by"} <= ai_job_columns
+    assert {"dismissed_at", "dismissed_by"} | AI_JOB_PROGRESS_COLUMNS <= ai_job_columns
     assert not table_exists(conn, "licitacion_actuaciones")
     monitor_columns = {row[1] for row in conn.execute("PRAGMA table_info(monitor_runs)").fetchall()}
     assert {
@@ -206,6 +229,8 @@ def test_run_migrations_is_idempotent() -> None:
         "0012_monitor_inventory_v05",
         "0013_ai_analysis_phase1",
         "0014_ai_jobs_dismissed",
+        "0015_ai_jobs_progress",
+        "0016_ai_analysis_notifications",
     ]
     assert run_migrations(conn, now=lambda: "2026-06-12T10:05:00") == []
 
@@ -225,7 +250,111 @@ def test_run_migrations_is_idempotent() -> None:
         ("0012_monitor_inventory_v05", "2026-06-12T10:00:00"),
         ("0013_ai_analysis_phase1", "2026-06-12T10:00:00"),
         ("0014_ai_jobs_dismissed", "2026-06-12T10:00:00"),
+        ("0015_ai_jobs_progress", "2026-06-12T10:00:00"),
+        ("0016_ai_analysis_notifications", "2026-06-12T10:00:00"),
     ]
+
+
+def test_ai_jobs_progress_migration_updates_existing_phase1_database() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        f"""
+        CREATE TABLE {MIGRATIONS_TABLE} (
+            version TEXT PRIMARY KEY,
+            description TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    old_migrations = [migration for migration in MIGRATIONS if migration.version != "0015_ai_jobs_progress"]
+    conn.executemany(
+        f"INSERT INTO {MIGRATIONS_TABLE} (version, description, applied_at) VALUES (?, ?, ?)",
+        [(migration.version, migration.description, "2026-06-12T10:00:00") for migration in old_migrations],
+    )
+    conn.execute("CREATE TABLE licitaciones (id INTEGER PRIMARY KEY, expediente TEXT NOT NULL)")
+    conn.execute("INSERT INTO licitaciones (id, expediente) VALUES (1, 'OLD-AI')")
+    conn.execute(
+        """
+        CREATE TABLE ai_analysis_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            licitacion_id INTEGER NOT NULL,
+            document_hash TEXT NOT NULL,
+            status TEXT NOT NULL,
+            provider TEXT NOT NULL DEFAULT 'gemini',
+            model TEXT,
+            requested_by TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            error_code TEXT,
+            error_message TEXT,
+            selected_documents_json TEXT,
+            attempts INTEGER DEFAULT 0,
+            next_retry_at TEXT,
+            raw_usage_json TEXT,
+            dismissed_at TEXT,
+            dismissed_by TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO ai_analysis_jobs (
+            id, licitacion_id, document_hash, status, provider, created_at, dismissed_at, dismissed_by
+        )
+        VALUES (7, 1, 'hash-antiguo', 'pending', 'gemini', '2026-06-12T10:00:00', NULL, NULL)
+        """
+    )
+
+    columns_before = {row[1] for row in conn.execute("PRAGMA table_info(ai_analysis_jobs)").fetchall()}
+    assert "progress_stage" not in columns_before
+
+    assert run_migrations(conn, now=lambda: "2026-06-12T10:15:00") == ["0015_ai_jobs_progress"]
+
+    columns_after = {row[1] for row in conn.execute("PRAGMA table_info(ai_analysis_jobs)").fetchall()}
+    assert AI_JOB_PROGRESS_COLUMNS <= columns_after
+    row = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = 7").fetchone()
+    assert row["document_hash"] == "hash-antiguo"
+    assert row["status"] == "pending"
+    assert row["cancel_requested"] == 0
+    assert row["progress_stage"] is None
+    assert "0015_ai_jobs_progress" in applied_migration_versions(conn)
+
+
+def test_ai_notifications_migration_schema_is_idempotent() -> None:
+    conn = sqlite3.connect(":memory:")
+
+    run_migrations(conn, now=lambda: "2026-06-12T10:00:00")
+    run_migrations(conn, now=lambda: "2026-06-12T10:05:00")
+
+    columns = {
+        row[1]: row[2]
+        for row in conn.execute("PRAGMA table_info(ai_analysis_notifications)").fetchall()
+    }
+    assert columns == {
+        "id": "INTEGER",
+        "job_id": "INTEGER",
+        "licitacion_id": "INTEGER",
+        "requested_by": "TEXT",
+        "recipient_email": "TEXT",
+        "status": "TEXT",
+        "created_at": "TEXT",
+        "sent_at": "TEXT",
+        "error_message": "TEXT",
+        "attempts": "INTEGER",
+        "manual": "INTEGER",
+    }
+    indexes = {
+        row[1]
+        for row in conn.execute("PRAGMA index_list(ai_analysis_notifications)").fetchall()
+    }
+    assert {
+        "idx_ai_notifications_job_recipient",
+        "idx_ai_notifications_job",
+        "idx_ai_notifications_licitacion",
+        "idx_ai_notifications_status",
+    } <= indexes
 
 
 def test_validate_migrations_rejects_duplicate_versions() -> None:

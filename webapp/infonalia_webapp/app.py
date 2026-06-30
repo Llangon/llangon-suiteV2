@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -20,6 +21,9 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
+
+
+LOGGER = logging.getLogger(__name__)
 
 try:
     from .environment import load_env_file, required_env
@@ -324,6 +328,13 @@ except ImportError:
 try:
     from .ai.config import get_ai_config
     from .ai.file_selection import AIFileSelectionError, list_ai_files
+    from .ai.notifications import (
+        EmailListError,
+        create_job_notifications,
+        normalize_email_list,
+        notification_status_payload,
+        send_pending_job_notifications,
+    )
     from .ai.service import (
         cancel_ai_job,
         delete_ai_summary,
@@ -339,6 +350,13 @@ try:
 except ImportError:
     from ai.config import get_ai_config
     from ai.file_selection import AIFileSelectionError, list_ai_files
+    from ai.notifications import (
+        EmailListError,
+        create_job_notifications,
+        normalize_email_list,
+        notification_status_payload,
+        send_pending_job_notifications,
+    )
     from ai.service import (
         cancel_ai_job,
         delete_ai_summary,
@@ -2743,6 +2761,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "username": user["username"],
                 "role": user["role"],
                 "display_name": user["display_name"],
+                "email": user.get("email", ""),
                 "csrf_token": user.get("csrf_token", ""),
                 "maintenance_mode": maintenance_mode_enabled(),
                 "labels": ESTADO_LABELS,
@@ -4585,6 +4604,10 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if provider_name and provider_name not in {"gemini", "codex_local", "disabled"}:
             self.send_json({"error": "Proveedor IA no válido."}, HTTPStatus.BAD_REQUEST)
             return
+        notify_on_completion = bool(data.get("notify_on_completion"))
+        notification_emails = data.get("notification_emails")
+        if notification_emails is None and data.get("notification_email"):
+            notification_emails = data.get("notification_email")
         job_id = 0
         try:
             with db_session() as conn:
@@ -4595,9 +4618,14 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     force=force,
                     selected_files=selected_files,
                     provider_name=provider_name or None,
+                    notify_on_completion=notify_on_completion,
+                    notification_emails=notification_emails,
                 )
                 job_id = int(payload.get("job_id") or 0)
         except AIFileSelectionError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        except EmailListError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         except ValueError as exc:
@@ -4642,9 +4670,13 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
-        recipient = clean_text(data.get("to")) or clean_text(user.get("email"))
-        if not is_valid_email_address(recipient):
-            self.send_json({"error": "Indica un email de destino válido."}, HTTPStatus.BAD_REQUEST)
+        try:
+            recipients = normalize_email_list(
+                data.get("notification_emails") if "notification_emails" in data else data.get("to"),
+                required=True,
+            )
+        except EmailListError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
 
         with db_session() as conn:
@@ -4652,30 +4684,50 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             if not row:
                 self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
                 return
+            summary_row = conn.execute(
+                """
+                SELECT *
+                FROM ai_summaries
+                WHERE licitacion_id = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (licitacion_id,),
+            ).fetchone()
             payload = get_ai_summary_payload(conn, licitacion_id)
         if not payload.get("has_summary") or not payload.get("summary"):
             self.send_json({"error": "No hay un análisis IA útil para enviar."}, HTTPStatus.BAD_REQUEST)
             return
-
-        summary = payload["summary"]["summary"] if isinstance(payload.get("summary"), dict) else {}
-        subject = shorten_text(data.get("subject"), 160) or f"Análisis IA - {row['expediente']} - {shorten_text(row['objeto'], 60)}"
-        body = ai_summary_email_text(row, summary)
-        html_body = ai_summary_email_html(row, summary)
-        sent_at, error = send_notification_email_with_settings(
-            settings=get_settings(),
-            recipients=[recipient],
-            subject=subject,
-            body=body,
-            html_body=html_body,
-            logo_path=STATIC_ROOT / "logo-llangon.png",
-            now=now_iso,
-            smtp_factory=smtplib.SMTP,
-            smtp_ssl_factory=smtplib.SMTP_SSL,
-        )
-        if error:
-            self.send_json({"ok": False, "error": error}, HTTPStatus.BAD_REQUEST)
+        if not summary_row or not int(summary_row["created_from_job_id"] or 0):
+            self.send_json({"error": "El análisis IA no tiene job asociado para registrar el envío."}, HTTPStatus.BAD_REQUEST)
             return
-        self.send_json({"ok": True, "sent_at": sent_at, "recipient": recipient})
+        job_id = int(summary_row["created_from_job_id"])
+        with db_session() as conn:
+            create_job_notifications(
+                conn,
+                job_id=job_id,
+                licitacion_id=licitacion_id,
+                requested_by=clean_text(user.get("username")) or "ui",
+                recipients=recipients,
+                created_at=now_iso(),
+                manual=True,
+            )
+            result = send_pending_job_notifications(
+                conn,
+                job_id,
+                now=now_iso,
+                subject_override=shorten_text(data.get("subject"), 160),
+                smtp_factory=smtplib.SMTP,
+                smtp_ssl_factory=smtplib.SMTP_SSL,
+            )
+            status_payload = notification_status_payload(
+                conn.execute(
+                    "SELECT * FROM ai_analysis_notifications WHERE job_id = ? ORDER BY id ASC",
+                    (job_id,),
+                ).fetchall()
+            )
+        ok = int(result.get("sent") or 0) > 0 and int(result.get("error") or 0) == 0
+        self.send_json({"ok": ok, "result": result, "notification_status": status_payload, "recipients": recipients})
 
     def api_get_ai_job(self, job_id: int) -> None:
         if not self.require_admin():
@@ -4684,36 +4736,120 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             with db_session() as conn:
                 payload = get_ai_job_payload(conn, job_id)
         except ValueError as exc:
-            self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            self.send_json(
+                {"ok": False, "error_code": "JOB_NOT_FOUND", "error_message": str(exc), "error": str(exc)},
+                HTTPStatus.NOT_FOUND,
+            )
+            return
+        except Exception:
+            LOGGER.exception("Error consultando job IA job_id=%s", job_id)
+            self.send_json(
+                {
+                    "ok": False,
+                    "error_code": "AI_QUEUE_ERROR",
+                    "error_message": "No se pudo consultar el trabajo IA.",
+                    "error": "No se pudo consultar el trabajo IA.",
+                },
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
             return
         self.send_json(payload)
 
     def api_ai_queue(self) -> None:
-        with db_session() as conn:
-            payload = get_ai_queue_payload(conn)
+        try:
+            with db_session() as conn:
+                payload = get_ai_queue_payload(conn)
+        except Exception:
+            LOGGER.exception("Error consultando Cola IA")
+            self.send_json(
+                {
+                    "ok": False,
+                    "error_code": "AI_QUEUE_ERROR",
+                    "error_message": "No se pudo consultar la Cola IA.",
+                    "error": "No se pudo consultar la Cola IA.",
+                },
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+            return
         self.send_json(payload)
 
     def api_cancel_ai_job(self, job_id: int) -> None:
         if not self.require_admin():
             return
+        user = self.current_user() or {}
+        username = clean_text(user.get("username")) or "ui"
+        LOGGER.info("Cancelacion IA solicitada job_id=%s usuario=%s", job_id, username)
         try:
             with db_session() as conn:
                 payload = cancel_ai_job(conn, job_id)
-        except ValueError as exc:
-            self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+        except Exception:
+            LOGGER.exception("Error cancelando job IA job_id=%s usuario=%s", job_id, username)
+            self.send_json(
+                {
+                    "ok": False,
+                    "job_id": job_id,
+                    "error_code": "AI_CANCEL_ERROR",
+                    "error_message": "No se pudo cancelar el trabajo IA.",
+                    "error": "No se pudo cancelar el trabajo IA.",
+                },
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
             return
+        if not payload.get("ok"):
+            LOGGER.warning(
+                "Cancelacion IA rechazada job_id=%s usuario=%s error_code=%s",
+                job_id,
+                username,
+                payload.get("error_code"),
+            )
+            self.send_json(payload, HTTPStatus.NOT_FOUND if payload.get("error_code") == "JOB_NOT_FOUND" else HTTPStatus.BAD_REQUEST)
+            return
+        LOGGER.info(
+            "Cancelacion IA resuelta job_id=%s usuario=%s estado_anterior=%s estado_nuevo=%s",
+            job_id,
+            username,
+            payload.get("previous_status", ""),
+            payload.get("status") or payload.get("job_status", ""),
+        )
         self.send_json(payload)
 
     def api_dismiss_ai_job(self, job_id: int) -> None:
         if not self.require_admin():
             return
         user = self.current_user() or {}
+        username = clean_text(user.get("username")) or "ui"
+        LOGGER.info("Ocultacion IA solicitada job_id=%s usuario=%s", job_id, username)
         try:
             with db_session() as conn:
-                payload = dismiss_ai_job(conn, job_id, dismissed_by=clean_text(user.get("username")) or "ui")
-        except ValueError as exc:
-            self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+                payload = dismiss_ai_job(conn, job_id, dismissed_by=username)
+        except Exception:
+            LOGGER.exception("Error ocultando job IA job_id=%s usuario=%s", job_id, username)
+            self.send_json(
+                {
+                    "ok": False,
+                    "job_id": job_id,
+                    "error_code": "AI_DISMISS_ERROR",
+                    "error_message": "No se pudo ocultar el trabajo IA.",
+                    "error": "No se pudo ocultar el trabajo IA.",
+                },
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
             return
+        if not payload.get("ok"):
+            LOGGER.warning(
+                "Ocultacion IA rechazada job_id=%s usuario=%s error_code=%s",
+                job_id,
+                username,
+                payload.get("error_code"),
+            )
+            self.send_json(payload, HTTPStatus.NOT_FOUND if payload.get("error_code") == "JOB_NOT_FOUND" else HTTPStatus.BAD_REQUEST)
+            return
+        LOGGER.info(
+            "Ocultacion IA resuelta job_id=%s usuario=%s estado=%s",
+            job_id,
+            username,
+            payload.get("status", ""),
+        )
         self.send_json(payload)
 
     def api_mark_stale_ai_jobs(self) -> None:
