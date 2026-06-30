@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import AIConfig
+from .encoding_utils import safe_json_dump, safe_write_text_utf8
 from .gemini_provider import AIProviderError, ProviderResult
 from .workspace import prepare_ai_workspace
 
@@ -47,6 +48,8 @@ class CodexLocalProvider:
                 shell=False,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.config.codex_timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
@@ -54,8 +57,8 @@ class CodexLocalProvider:
 
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
-        (job_root / "logs" / "stdout.log").write_text(stdout, encoding="utf-8")
-        (job_root / "logs" / "stderr.log").write_text(stderr, encoding="utf-8")
+        safe_write_text_utf8(job_root / "logs" / "stdout.log", stdout)
+        safe_write_text_utf8(job_root / "logs" / "stderr.log", stderr)
         if completed.returncode != 0:
             raise AIProviderError(
                 "Codex Local terminó con error.",
@@ -77,7 +80,7 @@ class CodexLocalProvider:
                 code="INVALID_JSON",
                 diagnostics={"stdout_preview": stdout[:1500], **workspace},
             )
-        (job_root / "result.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        safe_json_dump(job_root / "result.json", payload)
         usage: dict[str, Any] = {
             "provider": "codex_local",
             "workspace": workspace,

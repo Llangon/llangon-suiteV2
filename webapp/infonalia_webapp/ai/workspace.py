@@ -8,8 +8,8 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+from .encoding_utils import safe_json_dump, safe_write_text_utf8
 from .pdf_text_extractor import extract_pdf_text
-from .prompts import GEMINI_ANALYSIS_PROMPT
 from .schemas import SUMMARY_TEMPLATE
 
 
@@ -54,31 +54,75 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _write_pdf_text(copied_path: Path, text_dir: Path) -> str:
+def _write_pdf_text(copied_path: Path, text_dir: Path) -> tuple[str, int, int]:
     if copied_path.suffix.lower() != ".pdf":
-        return ""
+        return "", 0, 0
     result = extract_pdf_text(
         [{"path": str(copied_path), "name": copied_path.name}],
         max_total_chars=2_000_000,
         max_chars_per_document=2_000_000,
     )
     if not result.text:
-        return ""
+        return "", 0, 0
     txt_path = _unique_destination(text_dir, f"{copied_path.stem}.txt")
-    txt_path.write_text(result.text, encoding="utf-8")
-    return str(txt_path.relative_to(text_dir.parent))
+    safe_write_text_utf8(txt_path, result.text)
+    diagnostics = result.diagnostics or {}
+    pages_by_document = diagnostics.get("pages_processed_by_document") if isinstance(diagnostics.get("pages_processed_by_document"), dict) else {}
+    chars_by_document = diagnostics.get("extracted_chars_by_document") if isinstance(diagnostics.get("extracted_chars_by_document"), dict) else {}
+    pages = int((pages_by_document or {}).get(copied_path.name) or 0)
+    chars = int((chars_by_document or {}).get(copied_path.name) or len(result.text))
+    return str(txt_path.relative_to(text_dir.parent)), chars, pages
 
 
-def build_codex_prompt() -> str:
-    return (
-        "Actua como analista experto en licitaciones publicas espanolas.\n\n"
-        "Trabaja unicamente con los ficheros copiados dentro de este workspace temporal. "
-        "Lee inputs/ y, si existen, los TXT de extracted_text/. No accedas a Dropbox ni al repositorio.\n\n"
-        "Ignora licitaciones anteriores salvo que el usuario lo pida expresamente. "
-        "Prioriza PCAP, PPT, cuadro de caracteristicas y anexos. No inventes datos; usa null, cadena vacia o arrays vacios si no encuentras informacion.\n\n"
-        "Devuelve un unico objeto JSON puro compatible con el schema indicado. No uses markdown.\n\n"
-        f"{GEMINI_ANALYSIS_PROMPT}"
+def _document_role(name: str) -> str:
+    upper = name.upper()
+    if "PCAP" in upper or "PCA" in upper or "CLAUSULAS" in upper:
+        return "PCAP/PCA"
+    if "PPT" in upper or "TECNIC" in upper or "PRESCRIP" in upper:
+        return "PPT"
+    if "CUADRO" in upper:
+        return "cuadro de características"
+    if "ANEX" in upper:
+        return "anexo"
+    return "documento"
+
+
+def build_codex_prompt(files: list[dict[str, object]] | None = None) -> str:
+    file_lines = "\n".join(
+        f"- {item.get('copied_path')} ({_document_role(str(item.get('original_name') or ''))}); texto extraído: {item.get('extracted_text_path') or 'no'}"
+        for item in (files or [])
     )
+    return f"""Actúa como analista senior de licitaciones públicas españolas para una asesoría que prepara ofertas para clientes.
+
+No quiero un resumen literario. Quiero una ficha operativa estructurada para decidir si preparar oferta y qué documentación/actuaciones hay que controlar.
+
+Trabaja únicamente con este workspace temporal. No accedas a Dropbox ni al repositorio.
+
+Debes revisar los documentos disponibles en inputs/ y, si existen, los textos extraídos en extracted_text/. Usa preferentemente los TXT extraídos, porque contienen el texto de los PDFs por páginas. Solo consulta los PDFs originales si necesitas verificar algo.
+
+Archivos disponibles:
+{file_lines or '- No se ha podido listar ningún archivo.'}
+
+Prioriza PCAP, PPT, cuadro de características y anexos. Ignora fichas generadas para cliente, históricos y licitaciones anteriores salvo que se indique expresamente.
+
+No analices licitaciones anteriores. Si aparecen referencias históricas, indícalas únicamente en referencias_historicas_no_analizadas con el motivo: "La licitación anterior queda fuera del alcance de la Fase 1.".
+
+Devuelve únicamente JSON válido conforme a schema.json. La raíz debe ser un objeto, no una lista. No uses markdown. No inventes datos: si un dato no consta, usa null, cadena vacía o array vacío. Si dudas, añádelo a control_calidad.campos_con_baja_confianza.
+
+Tu salida debe parecerse en estructura a una ficha de licitación Llangón, no a una respuesta de chat. Si solo devuelves un párrafo genérico, la respuesta será inválida.
+
+Presta especial atención a expediente, título/objeto, organismo, plataforma, fecha y hora límite, presupuesto base, valor estimado, duración, prórrogas, lotes, garantías, número de sobres, documentación administrativa/técnica/económica, anexos, muestras, fichas técnicas, memoria técnica, adscripción de medios, solvencia, criterios de adjudicación, fórmulas, subcontratación, condiciones especiales, penalidades, logística de entrega, alertas prácticas, acciones recomendadas y preguntas a revisar manualmente.
+
+Debes generar alertas y acciones recomendadas siempre que existan cuestiones prácticas que controlar. No dejes alertas y acciones vacías si hay garantías, documentación, precios máximos, lotes, muestras, fichas, memoria, plazo de entrega, plataforma no habitual o riesgos de exclusión.
+
+Aunque una obligación sea habitual, si afecta a la preparación de la oferta debe aparecer como acción recomendada.
+
+Comprueba la coherencia interna antes de responder: si dices en el resumen que hay un criterio de adjudicación, debe aparecer en criterios_adjudicacion.
+
+Para lotes, intenta extraer número y denominación. Si no encuentras presupuesto por lote, deja presupuesto null y añade observación.
+
+Usa lenguaje claro y operativo, orientado a una asesoría de licitaciones. No uses lenguaje promocional.
+"""
 
 
 def prepare_ai_workspace(
@@ -105,8 +149,10 @@ def prepare_ai_workspace(
         destination = _unique_destination(inputs_dir, str(doc.get("name") or source.name))
         shutil.copy2(source, destination)
         extracted_text_path = ""
+        extracted_chars = 0
+        extracted_pages = 0
         try:
-            extracted_text_path = _write_pdf_text(destination, text_dir)
+            extracted_text_path, extracted_chars, extracted_pages = _write_pdf_text(destination, text_dir)
         except Exception as exc:
             extracted_text_path = f"ERROR: {type(exc).__name__}"
         files.append(
@@ -117,6 +163,9 @@ def prepare_ai_workspace(
                 "size_bytes": destination.stat().st_size,
                 "sha256": _sha256(destination),
                 "extracted_text_path": extracted_text_path,
+                "extracted_chars": extracted_chars,
+                "pages": extracted_pages,
+                "role": _document_role(str(doc.get("name") or source.name)),
             }
         )
 
@@ -131,10 +180,13 @@ def prepare_ai_workspace(
         "plataforma": licitacion.get("plataforma"),
         "created_at": _now(),
         "files": files,
+        "extracted_text_files": [str(item["extracted_text_path"]) for item in files if str(item.get("extracted_text_path") or "").endswith(".txt")],
+        "extracted_chars_by_file": {str(item["original_name"]): item["extracted_chars"] for item in files},
+        "pages_by_file": {str(item["original_name"]): item["pages"] for item in files},
     }
-    (job_root / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    (job_root / "prompt.md").write_text(build_codex_prompt(), encoding="utf-8")
-    (job_root / "schema.json").write_text(json.dumps(SUMMARY_TEMPLATE, ensure_ascii=False, indent=2), encoding="utf-8")
+    safe_json_dump(job_root / "manifest.json", manifest)
+    safe_write_text_utf8(job_root / "prompt.md", build_codex_prompt(files))
+    safe_json_dump(job_root / "schema.json", SUMMARY_TEMPLATE)
     return {
         "job_root": str(job_root),
         "inputs_dir": str(inputs_dir),

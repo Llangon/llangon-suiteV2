@@ -49,6 +49,9 @@ const appState = {
   aiFileSelection: null,
   aiSummaryEmail: null,
   aiPolling: new Map(),
+  aiQueue: null,
+  aiQueueTimer: null,
+  aiQueueOpen: false,
 };
 
 const daysSection = document.getElementById("days-section");
@@ -150,6 +153,12 @@ const aiSummaryEmailSubject = document.getElementById("ai-summary-email-subject"
 const aiSummaryEmailPreview = document.getElementById("ai-summary-email-preview");
 const aiSummaryEmailStatus = document.getElementById("ai-summary-email-status");
 const sendAiSummaryEmailButton = document.getElementById("send-ai-summary-email");
+const aiQueueButton = document.getElementById("ai-queue-button");
+const aiQueueBadge = document.getElementById("ai-queue-badge");
+const aiQueueDialog = document.getElementById("ai-queue-dialog");
+const aiQueueContent = document.getElementById("ai-queue-content");
+const aiQueueStatus = document.getElementById("ai-queue-status");
+const refreshAiQueueButton = document.getElementById("refresh-ai-queue");
 const importer = document.getElementById("importer");
 const importForm = document.getElementById("import-form");
 const importResult = document.getElementById("import-result");
@@ -3585,6 +3594,46 @@ function startAiSummaryPolling(licitacionId) {
   appState.aiPolling.set(key, { timer, startedAt });
 }
 
+function formatDuration(seconds) {
+  const total = Math.max(0, Number(seconds || 0));
+  const minutes = Math.floor(total / 60);
+  const secs = total % 60;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hours) return `${hours}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function renderAiJobStateCard(licitacionId, job, selectedDocs) {
+  if (!job || !["pending", "queued", "processing", "deferred"].includes(job.status || "")) return "";
+  const processing = job.status === "processing";
+  const longMessage = job.is_taking_longer_than_expected
+    ? `<p class="ai-long-running">El análisis está tardando más de lo habitual. Si hay actividad reciente, el worker sigue trabajando.</p>`
+    : "";
+  return `
+    <div class="ai-active-job">
+      <div>
+        <p class="eyebrow">Análisis IA en curso</p>
+        <h4>${escapeHtml(processing ? "Procesando análisis IA" : "Análisis IA en cola")}</h4>
+        <p>${escapeHtml(job.progress_message || (processing ? "Puedes cerrar esta ficha y volver más tarde." : "Se iniciará en breve."))}</p>
+        ${longMessage}
+      </div>
+      <dl>
+        <dt>Estado</dt><dd>${escapeHtml(job.progress_label || aiStatusLabel({ job_status: job.status }))}</dd>
+        <dt>Fase</dt><dd>${escapeHtml(job.progress_stage || "")}</dd>
+        <dt>Tiempo</dt><dd>${escapeHtml(formatDuration(job.elapsed_seconds))}</dd>
+        <dt>Estimación</dt><dd>${escapeHtml(job.estimated_label || "aprox.")}</dd>
+        <dt>Documentos</dt><dd>${escapeHtml(job.selected_documents_count || selectedDocs.length || 0)}</dd>
+        <dt>Proveedor</dt><dd>${escapeHtml(job.provider || "")}</dd>
+      </dl>
+      <div class="ai-active-actions">
+        <button type="button" data-ai-refresh="${escapeHtml(licitacionId)}">Actualizar estado</button>
+        <button type="button" data-open-ai-queue>Ver Cola IA</button>
+      </div>
+    </div>
+  `;
+}
+
 function aiStatusClass(payload) {
   if (payload.has_summary) return "ok";
   if (!payload.provider_enabled || !payload.provider_configured || !payload.enabled || !payload.configured) return "muted";
@@ -3600,18 +3649,106 @@ function renderAiArray(items) {
   return `<ul class="ai-list">${list.map((item) => `<li>${escapeHtml(typeof item === "object" ? JSON.stringify(item) : item)}</li>`).join("")}</ul>`;
 }
 
-function renderAiCards(items, fields) {
-  const list = Array.isArray(items) ? items : [];
-  if (!list.length) return `<div class="empty compact">Sin datos.</div>`;
+function aiAsArray(value) {
+  if (Array.isArray(value)) return value.filter((item) => item !== null && item !== undefined && item !== "");
+  if (value === null || value === undefined || value === "") return [];
+  return [value];
+}
+
+function aiReadableValue(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "boolean") return value ? "Sí" : "No";
+  if (Array.isArray(value)) return value.map(aiReadableValue).filter(Boolean).join("; ");
+  if (typeof value === "object") {
+    const parts = Object.values(value).map(aiReadableValue).filter(Boolean);
+    return parts.join("; ");
+  }
+  return String(value);
+}
+
+function aiTableValue(item, key) {
+  const value = item?.[key];
+  if ((value === null || value === undefined || value === "") && ["numero_lote", "presupuesto", "valor_estimado", "importe_minimo"].includes(key)) {
+    return "No consta";
+  }
+  if (typeof value === "number" && ["presupuesto", "valor_estimado", "importe_minimo", "presupuesto_base"].includes(key)) {
+    return formatMoney(value);
+  }
+  return aiReadableValue(value);
+}
+
+function aiRiskClass(value) {
+  const text = String(value || "").toLowerCase();
+  if (text.includes("alta") || text.includes("alto")) return "ai-critical";
+  if (text.includes("media") || text.includes("medio")) return "ai-warning-soft";
+  return "ai-muted";
+}
+
+function renderAiList(items, emptyText = "Sin datos localizados.") {
+  const list = aiAsArray(items).map(aiReadableValue).filter(Boolean);
+  if (!list.length) return `<p class="ai-muted">${escapeHtml(emptyText)}</p>`;
+  return `<ul class="ai-list">${list.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+}
+
+function renderAiObjectTable(items, columns, emptyText = "Sin datos localizados.") {
+  const list = aiAsArray(items).filter((item) => item && typeof item === "object");
+  if (!list.length) return `<p class="ai-muted">${escapeHtml(emptyText)}</p>`;
   return `
-    <div class="ai-card-list">
+    <div class="ai-table-scroll">
+      <table class="ai-key-table">
+        <thead><tr>${columns.map(([label]) => `<th>${escapeHtml(label)}</th>`).join("")}</tr></thead>
+        <tbody>
+          ${list.map((item) => `
+            <tr>
+              ${columns.map(([, key]) => `<td>${escapeHtml(aiTableValue(item, key))}</td>`).join("")}
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderAiKeyTable(rows) {
+  const visibleRows = rows.filter((row) => aiReadableValue(row.value) || aiReadableValue(row.note));
+  if (!visibleRows.length) return `<p class="ai-muted">No hay datos clave localizados.</p>`;
+  return `
+    <div class="ai-table-scroll">
+      <table class="ai-key-table">
+        <thead><tr><th>Campo</th><th>Valor</th><th>Observación</th></tr></thead>
+        <tbody>
+          ${visibleRows.map((row) => `
+            <tr class="${row.critical ? "ai-row-critical" : ""}">
+              <td>${escapeHtml(row.label)}</td>
+              <td>${escapeHtml(aiReadableValue(row.value))}</td>
+              <td>${escapeHtml(aiReadableValue(row.note))}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderAiAlertList(alerts) {
+  const list = aiAsArray(alerts).filter((item) => item && typeof item === "object");
+  if (!list.length) return `<p class="ai-muted">Sin alertas destacadas.</p>`;
+  return `
+    <div class="ai-alert-list">
       ${list.map((item) => `
-        <article class="ai-mini-card">
-          ${fields.map(([label, key]) => item?.[key] ? `<p><span>${escapeHtml(label)}</span>${escapeHtml(item[key])}</p>` : "").join("")}
+        <article class="${aiRiskClass(item.nivel)}">
+          <strong>${escapeHtml(item.titulo || item.nivel || "Alerta")}</strong>
+          <p>${escapeHtml(item.descripcion || item.observaciones || "")}</p>
+          ${item.accion_recomendada ? `<span>${escapeHtml(item.accion_recomendada)}</span>` : ""}
         </article>
       `).join("")}
     </div>
   `;
+}
+
+function aiCriteriaAsObject(value) {
+  if (Array.isArray(value)) return { juicio_valor: [], formulas: value, total_puntos: "", observaciones: "" };
+  return value && typeof value === "object" ? value : { juicio_valor: [], formulas: [], total_puntos: "", observaciones: "" };
 }
 
 function renderAiSummaryBlocks(payload) {
@@ -3620,83 +3757,167 @@ function renderAiSummaryBlocks(payload) {
   if (!data || !Object.keys(data).length) return `<div class="empty">Todavía no hay análisis guardado.</div>`;
   const metadata = data.metadata || {};
   const ejecutivo = data.resumen_ejecutivo || {};
+  const caracteristicas = data.caracteristicas || {};
   const economicos = data.datos_economicos || {};
+  const plazos = data.plazos || {};
   const garantias = data.garantias || {};
-  const presentacion = data.presentacion || {};
+  const presentacion = data.presentacion_documentacion || data.presentacion || {};
   const muestras = data.muestras_fichas_memoria || {};
   const solvencia = data.solvencia || {};
   const subcontratacion = data.subcontratacion || {};
-  const logistica = data.logistica_entrega || {};
+  const criterios = aiCriteriaAsObject(data.criterios_adjudicacion);
+  const operaciones = data.observaciones_operativas || data.logistica_entrega || {};
   const calidad = data.control_calidad || {};
+  const technical = {
+    provider: record.provider || payload.provider || "",
+    job_id: payload.job?.id || "",
+    document_hash: record.document_hash || payload.document_hash || "",
+    model: record.model || payload.model || "",
+    generated_at: record.updated_at || record.created_at || "",
+    selected_documents: payload.selected_documents || [],
+    quality_check: payload.job?.quality_check || {},
+    diagnostics: payload.job?.diagnostics || {},
+  };
   return `
-    <div class="ai-warning">Análisis automático. Revisar siempre contra los pliegos antes de enviar información al cliente.</div>
-    <div class="ai-section-grid">
+    <div class="ai-ficha">
+      <div class="ai-warning">Análisis automático. Revisar siempre contra los pliegos antes de enviar información al cliente.</div>
       <section class="ai-section full">
-        <h4>Resumen</h4>
+        <h4 class="ai-section-title">Resumen ejecutivo</h4>
         <p>${escapeHtml(ejecutivo.texto || record.summary_text || "Sin resumen ejecutivo.")}</p>
-        ${renderAiArray(ejecutivo.aspectos_clave)}
+        ${renderAiList(ejecutivo.aspectos_clave, "Sin aspectos clave.")}
+        ${ejecutivo.decision_preliminar ? `<p class="ai-decision">${escapeHtml(ejecutivo.decision_preliminar)}</p>` : ""}
+      </section>
+      <section class="ai-section full">
+        <h4 class="ai-section-title">Alertas y acciones</h4>
+        ${renderAiAlertList(data.alertas)}
+        <h5>Acciones recomendadas</h5>
+        ${renderAiObjectTable(data.acciones_recomendadas, [["Prioridad", "prioridad"], ["Acción", "accion"], ["Motivo", "motivo"]], "Sin acciones recomendadas.")}
       </section>
       <section class="ai-section">
-        <h4>Datos clave</h4>
-        <dl>
-          <dt>Expediente</dt><dd>${escapeHtml(metadata.expediente || "")}</dd>
-          <dt>Organismo</dt><dd>${escapeHtml(metadata.organismo || "")}</dd>
-          <dt>Tipo</dt><dd>${escapeHtml(metadata.tipo_contrato || "")}</dd>
-          <dt>Fecha límite</dt><dd>${escapeHtml([metadata.fecha_limite_presentacion, metadata.hora_limite_presentacion].filter(Boolean).join(" "))}</dd>
-          <dt>Presupuesto</dt><dd>${escapeHtml(economicos.presupuesto_base ?? "")}</dd>
-          <dt>Valor estimado</dt><dd>${escapeHtml(economicos.valor_estimado ?? "")}</dd>
-        </dl>
-      </section>
-      <section class="ai-section">
-        <h4>Alertas</h4>
-        ${renderAiCards(data.alertas, [["Nivel", "nivel"], ["Título", "titulo"], ["Acción", "accion_recomendada"]])}
-      </section>
-      <section class="ai-section">
-        <h4>Lotes</h4>
-        ${renderAiCards(data.lotes, [["Lote", "numero_lote"], ["Denominación", "denominacion"], ["Presupuesto", "presupuesto"]])}
-      </section>
-      <section class="ai-section">
-        <h4>Criterios</h4>
-        ${renderAiCards(data.criterios_adjudicacion, [["Nombre", "nombre"], ["Tipo", "tipo"], ["Puntos", "puntuacion_maxima"]])}
-      </section>
-      <section class="ai-section">
-        <h4>Documentación</h4>
-        ${renderAiArray([...(presentacion.documentacion_administrativa || []), ...(presentacion.documentacion_tecnica || []), ...(presentacion.documentacion_economica || []), ...(presentacion.anexos_relevantes || [])])}
-      </section>
-      <section class="ai-section">
-        <h4>Solvencia</h4>
-        ${renderAiCards([...(solvencia.economica || []), ...(solvencia.tecnica || [])], [["Objeto", "objeto"], ["Importe mínimo", "importe_minimo"], ["Detalle", "detalle"]])}
-      </section>
-      <section class="ai-section">
-        <h4>Subcontratación</h4>
-        <p>${escapeHtml(subcontratacion.comentario_practico || subcontratacion.restricciones || "Sin datos.")}</p>
-      </section>
-      <section class="ai-section">
-        <h4>Logística / observaciones</h4>
-        ${renderAiArray([
-          ...(logistica.lugares_entrega || []),
-          ...(logistica.horarios_entrega || []),
-          ...(logistica.plazos_entrega_desde_pedido || []),
-          logistica.periodicidad,
-          logistica.transporte,
-          logistica.descarga,
+        <h4 class="ai-section-title">Datos clave</h4>
+        ${renderAiKeyTable([
+          { label: "Expediente", value: metadata.expediente },
+          { label: "Título", value: metadata.titulo },
+          { label: "Organismo", value: metadata.organismo },
+          { label: "Provincia", value: metadata.provincia },
+          { label: "Plataforma", value: metadata.plataforma },
+          { label: "Fecha límite", value: [metadata.fecha_limite_presentacion, metadata.hora_limite_presentacion].filter(Boolean).join(" ") },
+          { label: "Tipo de contrato", value: metadata.tipo_contrato },
+          { label: "Regulación armonizada", value: metadata.regulacion_armonizada },
+          { label: "Presupuesto base", value: typeof (caracteristicas.presupuesto_base ?? economicos.presupuesto_base) === "number" ? formatMoney(caracteristicas.presupuesto_base ?? economicos.presupuesto_base) : (caracteristicas.presupuesto_base ?? economicos.presupuesto_base), note: caracteristicas.moneda || economicos.moneda },
+          { label: "Valor estimado", value: typeof (caracteristicas.valor_estimado ?? economicos.valor_estimado) === "number" ? formatMoney(caracteristicas.valor_estimado ?? economicos.valor_estimado) : (caracteristicas.valor_estimado ?? economicos.valor_estimado), note: caracteristicas.moneda || economicos.moneda },
+          { label: "Plazo ejecución inicial", value: caracteristicas.plazo_ejecucion_inicial || plazos.plazo_ejecucion_inicial },
+          { label: "Prórrogas", value: caracteristicas.prorrogas?.existen ?? plazos.prorrogas?.existen, note: caracteristicas.prorrogas?.detalle || plazos.prorrogas?.detalle },
+          { label: "Adjudicación", value: caracteristicas.adjudicacion },
+          { label: "Nº sobres", value: caracteristicas.numero_sobres ?? presentacion.numero_sobres },
+          { label: "Garantía provisional", value: garantias.garantia_provisional?.exigida, note: [garantias.garantia_provisional?.importe, garantias.garantia_provisional?.alerta, garantias.garantia_provisional?.observaciones].filter(Boolean).join(" · "), critical: garantias.garantia_provisional?.exigida === true },
+          { label: "Garantía definitiva", value: garantias.garantia_definitiva?.exigida, note: [garantias.garantia_definitiva?.importe, garantias.garantia_definitiva?.observaciones].filter(Boolean).join(" · ") },
+          { label: "Garantía complementaria", value: garantias.garantia_complementaria?.exigida, note: garantias.garantia_complementaria?.observaciones, critical: garantias.garantia_complementaria?.exigida === true },
+          { label: "Fichas técnicas", value: muestras.fichas_tecnicas?.exigidas, note: muestras.fichas_tecnicas?.detalle, critical: muestras.fichas_tecnicas?.exigidas === true },
+          { label: "Memoria técnica", value: muestras.memoria_tecnica?.exigida, note: muestras.memoria_tecnica?.detalle, critical: muestras.memoria_tecnica?.exigida === true },
+          { label: "Adscripción de medios", value: muestras.adscripcion_medios?.exigida, note: muestras.adscripcion_medios?.detalle, critical: muestras.adscripcion_medios?.exigida === true },
         ])}
       </section>
       <section class="ai-section">
-        <h4>Muestras / fichas / memoria</h4>
-        <dl>
-          <dt>Muestras</dt><dd>${escapeHtml(muestras.muestras?.detalle || "")}</dd>
-          <dt>Fichas técnicas</dt><dd>${escapeHtml(muestras.fichas_tecnicas?.detalle || "")}</dd>
-          <dt>Memoria técnica</dt><dd>${escapeHtml(muestras.memoria_tecnica?.detalle || "")}</dd>
-          <dt>Adscripción medios</dt><dd>${escapeHtml(muestras.adscripcion_medios?.detalle || "")}</dd>
-        </dl>
+        <h4 class="ai-section-title">Lotes</h4>
+        ${renderAiObjectTable(data.lotes, [["Lote", "numero_lote"], ["Denominación", "denominacion"], ["Presupuesto", "presupuesto"], ["Observaciones", "observaciones"]], "Expediente completo o sin división en lotes localizada.")}
       </section>
       <section class="ai-section">
-        <h4>Control de calidad</h4>
-        ${renderAiArray([...(calidad.campos_no_encontrados || []), ...(calidad.campos_con_baja_confianza || []), ...(calidad.advertencias || [])])}
+        <h4 class="ai-section-title">Presentación y documentación</h4>
+        ${renderAiKeyTable([
+          { label: "Forma de presentación", value: presentacion.forma_presentacion },
+          { label: "Nº sobres", value: presentacion.numero_sobres },
+          { label: "Observaciones", value: presentacion.observaciones },
+        ])}
+        <h5>Documentación administrativa</h5>
+        ${renderAiList(presentacion.documentacion_administrativa)}
+        <h5>Documentación técnica</h5>
+        ${renderAiList(presentacion.documentacion_tecnica)}
+        <h5>Documentación económica</h5>
+        ${renderAiList(presentacion.documentacion_economica)}
+        <h5>Anexos relevantes</h5>
+        ${renderAiList(presentacion.anexos_relevantes)}
       </section>
+      <section class="ai-section">
+        <h4 class="ai-section-title">Muestras / fichas / memoria</h4>
+        ${renderAiKeyTable([
+          { label: "Muestras", value: muestras.muestras?.exigidas, note: [muestras.muestras?.momento, muestras.muestras?.detalle, muestras.muestras?.consecuencia_no_presentar].filter(Boolean).join(" · "), critical: muestras.muestras?.exigidas === true },
+          { label: "Fichas técnicas", value: muestras.fichas_tecnicas?.exigidas, note: [muestras.fichas_tecnicas?.sobre, muestras.fichas_tecnicas?.detalle].filter(Boolean).join(" · "), critical: muestras.fichas_tecnicas?.exigidas === true },
+          { label: "Memoria técnica", value: muestras.memoria_tecnica?.exigida, note: muestras.memoria_tecnica?.detalle, critical: muestras.memoria_tecnica?.exigida === true },
+          { label: "Adscripción medios", value: muestras.adscripcion_medios?.exigida, note: muestras.adscripcion_medios?.detalle, critical: muestras.adscripcion_medios?.exigida === true },
+        ])}
+      </section>
+      <section class="ai-section">
+        <h4 class="ai-section-title">Criterios de adjudicación</h4>
+        <h5>Criterios sujetos a juicio de valor</h5>
+        ${renderAiObjectTable(criterios.juicio_valor, [["Criterio", "nombre"], ["Puntos", "puntuacion_maxima"], ["Documentación", "documentacion_a_aportar"], ["Observaciones", "observaciones"]], "No se han localizado criterios de juicio de valor.")}
+        <h5>Criterios mediante fórmulas</h5>
+        ${renderAiObjectTable(criterios.formulas, [["Criterio", "nombre"], ["Puntos", "puntuacion_maxima"], ["Fórmula / valoración", "formula"], ["Documentación", "documentacion_a_aportar"], ["Observaciones", "observaciones"]], "No se han localizado criterios mediante fórmulas.")}
+        ${criterios.total_puntos ? `<p class="ai-muted">Total puntos: ${escapeHtml(criterios.total_puntos)}</p>` : ""}
+        ${criterios.observaciones ? `<p>${escapeHtml(criterios.observaciones)}</p>` : ""}
+      </section>
+      <section class="ai-section">
+        <h4 class="ai-section-title">Subcontratación</h4>
+        ${renderAiKeyTable([
+          { label: "Permitida", value: subcontratacion.permitida },
+          { label: "Debe declararse", value: subcontratacion.debe_declararse_en_oferta },
+          { label: "Pago directo subcontratistas", value: subcontratacion.pago_directo_subcontratistas },
+          { label: "Restricciones", value: subcontratacion.restricciones },
+          { label: "Penalidades", value: subcontratacion.penalidades },
+          { label: "Comentario práctico", value: subcontratacion.comentario_practico },
+          { label: "Alerta", value: subcontratacion.alerta, critical: Boolean(subcontratacion.alerta) },
+        ])}
+      </section>
+      <section class="ai-section">
+        <h4 class="ai-section-title">Solvencia</h4>
+        <h5>Económica</h5>
+        ${renderAiObjectTable(solvencia.economica, [["Lote", "lote"], ["Objeto", "objeto"], ["Importe mínimo", "importe_minimo"], ["Detalle", "detalle"]], "No localizada en los documentos seleccionados.")}
+        <h5>Técnica</h5>
+        ${renderAiObjectTable(solvencia.tecnica, [["Lote", "lote"], ["Objeto", "objeto"], ["Importe mínimo", "importe_minimo"], ["Certificados/suministros", "certificados_o_suministros"], ["Detalle", "detalle"]], "No localizada en los documentos seleccionados.")}
+        ${solvencia.observaciones ? `<p>${escapeHtml(solvencia.observaciones)}</p>` : ""}
+      </section>
+      <section class="ai-section">
+        <h4 class="ai-section-title">Condiciones especiales de ejecución</h4>
+        ${renderAiObjectTable(data.condiciones_especiales_ejecucion, [["Categoría", "categoria"], ["Obligación", "obligacion"], ["Riesgo", "riesgo"], ["Observaciones", "observaciones"]], "No localizadas en los documentos seleccionados.")}
+      </section>
+      <section class="ai-section">
+        <h4 class="ai-section-title">Observaciones operativas</h4>
+        ${renderAiKeyTable([
+          { label: "Habilitación profesional", value: operaciones.habilitacion_profesional },
+          { label: "Seguro obligatorio", value: operaciones.seguro_obligatorio },
+          { label: "Lugar de entrega", value: operaciones.lugar_entrega || operaciones.lugares_entrega },
+          { label: "Horario", value: operaciones.horario_entrega || operaciones.horarios_entrega },
+          { label: "Plazo de entrega", value: operaciones.plazo_entrega || operaciones.plazos_entrega_desde_pedido },
+          { label: "Periodicidad", value: operaciones.periodicidad },
+          { label: "Transporte", value: operaciones.transporte },
+          { label: "Descarga", value: operaciones.descarga },
+          { label: "Albaranes", value: operaciones.albaranes },
+          { label: "Envases/etiquetado", value: operaciones.envases_etiquetado },
+          { label: "Caducidad/consumo preferente", value: operaciones.caducidad_consumo_preferente },
+          { label: "Observaciones producto", value: operaciones.observaciones_producto },
+        ])}
+      </section>
+      <details class="ai-section ai-technical-details">
+        <summary>Campos no encontrados / baja confianza</summary>
+        <h5>Campos no encontrados</h5>
+        ${renderAiList(calidad.campos_no_encontrados)}
+        <h5>Campos con baja confianza</h5>
+        ${renderAiList(calidad.campos_con_baja_confianza)}
+        <h5>Advertencias</h5>
+        ${renderAiList(calidad.advertencias)}
+      </details>
+      ${aiAsArray(data.referencias_historicas_no_analizadas).length ? `
+        <details class="ai-section ai-technical-details">
+          <summary>Licitación anterior</summary>
+          <p>Referencia histórica detectada. No analizada en esta fase.</p>
+          ${renderAiObjectTable(data.referencias_historicas_no_analizadas, [["Descripción", "descripcion"], ["Motivo", "motivo_no_analisis"]])}
+        </details>
+      ` : ""}
+      <details class="ai-section ai-technical-details">
+        <summary>Ver detalles técnicos</summary>
+        <pre>${escapeHtml(JSON.stringify(technical, null, 2))}</pre>
+      </details>
     </div>
-    ${isAdmin() ? `<details class="ai-technical-json"><summary>Ver JSON técnico</summary><pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre></details>` : ""}
   `;
 }
 
@@ -3729,9 +3950,9 @@ function renderAiSummaryContent(licitacionId, payload) {
   const canRetry = payload.job_status === "error" || payload.job_status === "deferred";
   const hasAnyAnalysis = Boolean(payload.has_summary || payload.job_status || payload.job);
   const reason = aiProviderErrorMessage(payload) || payload.motivo_si_no_puede_generar || job.error_message || "";
-  const activeMessage = isAiJobActive(payload)
-    ? `<div class="ai-warning"><strong>${payload.job_status === "processing" ? "Procesando análisis IA..." : "Análisis IA en cola..."}</strong><p>El análisis sigue en curso. Puedes cerrar esta ficha y volver más tarde.</p></div>`
-    : "";
+  const summaryQuality = payload.summary?.quality_status || payload.job?.summary_quality_status || "";
+  const canEmailSummary = Boolean(payload.has_summary && !["empty_analysis", "low_quality_analysis", "encoding_error"].includes(summaryQuality));
+  const activeMessage = renderAiJobStateCard(licitacionId, job, selectedDocs);
   return `
     <div class="ai-summary-toolbar">
       <span class="ai-status ${aiStatusClass(payload)}">${escapeHtml(aiStatusLabel(payload))}</span>
@@ -3741,7 +3962,7 @@ function renderAiSummaryContent(licitacionId, payload) {
         <button type="button" data-ai-generate="${escapeHtml(licitacionId)}" ${canGenerate && !payload.has_summary ? "" : "disabled"}>Generar análisis IA</button>
         ${isAdmin() ? `<button type="button" data-ai-regenerate="${escapeHtml(licitacionId)}" ${canGenerate ? "" : "disabled"}>Regenerar análisis IA</button>` : ""}
         <button type="button" data-ai-generate="${escapeHtml(licitacionId)}" ${canRetry && canGenerate ? "" : "disabled"}>Reintentar</button>
-        <button type="button" data-ai-email="${escapeHtml(licitacionId)}" ${payload.has_summary ? "" : "disabled"}>Enviar por correo</button>
+        <button type="button" data-ai-email="${escapeHtml(licitacionId)}" ${canEmailSummary ? "" : "disabled"}>Enviar por correo</button>
         ${hasAnyAnalysis ? `<button type="button" class="danger-soft" data-ai-delete="${escapeHtml(licitacionId)}">Borrar</button>` : ""}
       </div>
     </div>
@@ -3777,6 +3998,128 @@ async function loadAiSummary(licitacionId, options = {}) {
   } catch (error) {
     panel.innerHTML = `<div class="empty">${escapeHtml(error.message || "No se pudo consultar el análisis IA.")}</div>`;
   }
+}
+
+function renderAiQueueJobs(title, items) {
+  if (!items.length) return "";
+  return `
+    <section class="ai-queue-section">
+      <h3>${escapeHtml(title)}</h3>
+      <div class="ai-queue-table-wrap">
+        <table class="ai-queue-table">
+          <thead>
+            <tr>
+              <th>Estado</th>
+              <th>Expediente</th>
+              <th>Título</th>
+              <th>Proveedor</th>
+              <th>Inicio / creado</th>
+              <th>Tiempo</th>
+              <th>Estimación</th>
+              <th>Docs.</th>
+              <th>Acción</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map((job) => `
+              <tr class="${job.is_taking_longer_than_expected ? "is-late" : ""}">
+                <td>
+                  <span class="ai-status ${job.status === "error" ? "danger" : job.status === "completed" ? "ok" : "warning"}">${escapeHtml(job.progress_label || job.status || "")}</span>
+                  ${job.progress_message ? `<small>${escapeHtml(job.progress_message)}</small>` : ""}
+                </td>
+                <td><strong>${escapeHtml(job.expediente || "")}</strong></td>
+                <td>${escapeHtml(job.titulo_corto || "")}</td>
+                <td>${escapeHtml(job.provider || "")}</td>
+                <td>${escapeHtml(formatDateTime(job.started_at || job.created_at))}</td>
+                <td>${escapeHtml(formatDuration(job.elapsed_seconds))}</td>
+                <td>${escapeHtml(job.estimated_label || "")}</td>
+                <td>${escapeHtml(job.selected_documents_count || 0)}</td>
+                <td>
+                  <div class="ai-queue-actions">
+                    ${job.can_open ? `<button type="button" data-ai-queue-open="${escapeHtml(job.licitacion_id)}">Abrir ficha</button>` : ""}
+                    ${job.can_cancel ? `<button type="button" data-ai-queue-cancel="${escapeHtml(job.id)}">Cancelar</button>` : ""}
+                    ${job.can_retry ? `<button type="button" data-ai-queue-open="${escapeHtml(job.licitacion_id)}">Reintentar</button>` : ""}
+                    ${!["pending", "queued", "processing", "deferred"].includes(job.status || "") ? `<button type="button" data-ai-queue-dismiss="${escapeHtml(job.id)}">Ocultar</button>` : ""}
+                  </div>
+                </td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderAiQueue(payload) {
+  const active = payload.active_jobs || [];
+  const recent = payload.recent_jobs || [];
+  if (!active.length && !recent.length) return `<div class="empty">No hay trabajos IA en cola ni recientes.</div>`;
+  return `
+    ${renderAiQueueJobs("Activos", active)}
+    ${renderAiQueueJobs("Recientes", recent)}
+  `;
+}
+
+function updateAiQueueBadge(payload) {
+  const counts = payload?.counts || {};
+  const active = Number(counts.active || 0);
+  const errors = Number(counts.error_recent || 0);
+  if (!aiQueueBadge) return;
+  aiQueueBadge.hidden = active <= 0 && errors <= 0;
+  aiQueueBadge.textContent = active > 0 ? String(active) : errors ? "!" : "0";
+  aiQueueBadge.classList.toggle("has-error", active <= 0 && errors > 0);
+}
+
+async function loadAiQueue(options = {}) {
+  try {
+    const response = await fetch("/api/ai/queue");
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "No se pudo consultar la Cola IA.");
+    appState.aiQueue = payload;
+    updateAiQueueBadge(payload);
+    if (aiQueueContent && (appState.aiQueueOpen || options.forceRender)) {
+      aiQueueContent.innerHTML = renderAiQueue(payload);
+    }
+    if (aiQueueStatus) {
+      aiQueueStatus.className = "import-result";
+      aiQueueStatus.textContent = "";
+    }
+  } catch (error) {
+    if (aiQueueStatus && appState.aiQueueOpen) {
+      aiQueueStatus.className = "import-result error";
+      aiQueueStatus.textContent = error.message || "No se pudo consultar la Cola IA.";
+    }
+  }
+}
+
+function startAiQueuePolling(interval = 15000) {
+  if (appState.aiQueueTimer) clearInterval(appState.aiQueueTimer);
+  appState.aiQueueTimer = setInterval(() => {
+    if (document.hidden && !appState.aiQueueOpen) return;
+    loadAiQueue();
+  }, interval);
+}
+
+function openAiQueueDialog() {
+  appState.aiQueueOpen = true;
+  if (aiQueueContent) aiQueueContent.innerHTML = `<div class="empty">Cargando Cola IA...</div>`;
+  aiQueueDialog.showModal();
+  loadAiQueue({ forceRender: true });
+  startAiQueuePolling(5000);
+}
+
+function closeAiQueueDialog() {
+  appState.aiQueueOpen = false;
+  aiQueueDialog.close();
+  startAiQueuePolling(15000);
+}
+
+async function aiQueueAction(jobId, action) {
+  const response = await fetch(`/api/ai/jobs/${jobId}/${action}`, { method: "POST", headers: csrfHeaders() });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || "No se pudo actualizar el trabajo IA.");
+  await loadAiQueue({ forceRender: true });
 }
 
 function updateAiFileSelectionCount() {
@@ -3875,6 +4218,7 @@ async function runAiSummaryGeneration(licitacionId, button, force = false, selec
     }
     if (panel) panel.innerHTML = renderAiSummaryContent(licitacionId, result);
     if (isAiJobActive(result)) startAiSummaryPolling(licitacionId);
+    loadAiQueue();
   } finally {
     if (button) {
       button.disabled = false;
@@ -4634,6 +4978,7 @@ document.getElementById("list-button").addEventListener("click", () => showLicit
 document.getElementById("calendar-button").addEventListener("click", showCalendarView);
 document.getElementById("actuaciones-button").addEventListener("click", showActuacionesView);
 logoutButton?.addEventListener("click", logout);
+aiQueueButton?.addEventListener("click", openAiQueueDialog);
 document.getElementById("notifications-button").addEventListener("click", showNotificationsView);
 document.getElementById("notifications-menu-button")?.addEventListener("click", showNotificationsView);
 document.getElementById("back-from-notifications").addEventListener("click", backFromNotifications);
@@ -4716,6 +5061,35 @@ document.getElementById("ai-clear-selection").addEventListener("click", () => {
 document.getElementById("close-ai-summary-email").addEventListener("click", () => aiSummaryEmailDialog.close());
 document.getElementById("cancel-ai-summary-email").addEventListener("click", () => aiSummaryEmailDialog.close());
 sendAiSummaryEmailButton.addEventListener("click", sendAiSummaryEmail);
+document.getElementById("close-ai-queue").addEventListener("click", closeAiQueueDialog);
+refreshAiQueueButton.addEventListener("click", () => loadAiQueue({ forceRender: true }));
+aiQueueContent.addEventListener("click", async (event) => {
+  const openButton = event.target.closest("button[data-ai-queue-open]");
+  if (openButton) {
+    closeAiQueueDialog();
+    await openLicitacionDetail(openButton.dataset.aiQueueOpen);
+    return;
+  }
+  const cancelButton = event.target.closest("button[data-ai-queue-cancel]");
+  if (cancelButton) {
+    try {
+      await aiQueueAction(cancelButton.dataset.aiQueueCancel, "cancel");
+    } catch (error) {
+      aiQueueStatus.className = "import-result error";
+      aiQueueStatus.textContent = error.message || "No se pudo cancelar el análisis.";
+    }
+    return;
+  }
+  const dismissButton = event.target.closest("button[data-ai-queue-dismiss]");
+  if (dismissButton) {
+    try {
+      await aiQueueAction(dismissButton.dataset.aiQueueDismiss, "dismiss");
+    } catch (error) {
+      aiQueueStatus.className = "import-result error";
+      aiQueueStatus.textContent = error.message || "No se pudo ocultar el análisis.";
+    }
+  }
+});
 stateFilter.addEventListener("change", loadItems);
 dateOrder.addEventListener("change", loadItems);
 licitacionesActuacionesFilter.addEventListener("change", loadItems);
@@ -4949,6 +5323,19 @@ licitacionDetailContent.addEventListener("click", (event) => {
   const openFolderButton = event.target.closest("button[data-open-licitacion-folder]");
   if (openFolderButton) {
     openLicitacionFolder(openFolderButton.dataset.openLicitacionFolder, openFolderButton);
+    return;
+  }
+
+  const aiRefreshButton = event.target.closest("button[data-ai-refresh]");
+  if (aiRefreshButton) {
+    loadAiSummary(aiRefreshButton.dataset.aiRefresh);
+    loadAiQueue();
+    return;
+  }
+
+  const openAiQueueButton = event.target.closest("button[data-open-ai-queue]");
+  if (openAiQueueButton) {
+    openAiQueueDialog();
     return;
   }
 
@@ -5373,5 +5760,9 @@ importForm.addEventListener("submit", async (event) => {
   }
 });
 
-loadMe().then(showInitialView);
+loadMe().then(() => {
+  showInitialView();
+  loadAiQueue();
+  startAiQueuePolling(15000);
+});
 

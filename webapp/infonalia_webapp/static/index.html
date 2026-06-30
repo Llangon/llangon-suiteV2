@@ -57,6 +57,9 @@
           <h1 id="page-title">Días Infonalia</h1>
         </div>
         <div class="topbar-actions">
+          <button id="ai-queue-button" class="secondary ai-queue-top-button" type="button">
+            Cola IA <span id="ai-queue-badge" class="topbar-badge" hidden>0</span>
+          </button>
           <button id="notifications-button" class="secondary" data-nav-section="notifications">Buzón</button>
           <button id="import-button" class="primary" data-admin-only hidden>Importar</button>
           <button id="new-button" class="secondary" data-admin-only hidden>Nueva licitación</button>
@@ -651,6 +654,22 @@
       <button type="button" class="ghost" id="cancel-ai-summary-email">Cancelar</button>
       <button type="button" class="primary" id="send-ai-summary-email">Enviar</button>
     </div>
+  </dialog>
+
+  <dialog id="ai-queue-dialog" class="notice-dialog wide-dialog">
+    <div class="dialog-head">
+      <div>
+        <p class="eyebrow">Análisis documental</p>
+        <h2>Cola IA</h2>
+      </div>
+      <button type="button" class="icon-button" id="close-ai-queue">×</button>
+    </div>
+    <div class="ai-queue-head">
+      <p class="muted">Puedes cerrar este panel. Los análisis siguen en segundo plano.</p>
+      <button type="button" class="secondary" id="refresh-ai-queue">Actualizar</button>
+    </div>
+    <div id="ai-queue-status" class="import-result"></div>
+    <section id="ai-queue-content" class="ai-queue-content"></section>
   </dialog>
 
   <dialog id="importer">

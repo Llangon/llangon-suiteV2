@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,7 +13,7 @@ except ImportError:  # pragma: no cover
     from webapp.infonalia_webapp.app import db_session
 
 from .config import get_ai_config
-from .queue import next_pending_job, update_job
+from .queue import mark_stale_jobs_in_conn, next_pending_job, update_job
 from .service import process_ai_job
 
 
@@ -50,29 +51,10 @@ def processing_stale_before() -> str:
 
 
 def mark_stale_jobs() -> int:
-    threshold = processing_stale_before()
+    config = get_ai_config()
+    timeout = max(config.timeout_seconds, config.codex_timeout_seconds) + 120
     with db_session() as conn:
-        rows = conn.execute(
-            """
-            SELECT id FROM ai_analysis_jobs
-            WHERE status = 'processing'
-              AND started_at IS NOT NULL
-              AND started_at <> ''
-              AND started_at < ?
-              AND (dismissed_at IS NULL OR dismissed_at = '')
-            """,
-            (threshold,),
-        ).fetchall()
-        for row in rows:
-            update_job(
-                conn,
-                int(row["id"]),
-                status="error",
-                finished_at=_now(),
-                error_code="STALE_JOB",
-                error_message="Job marcado como atascado tras superar el tiempo máximo.",
-            )
-    return len(rows)
+        return mark_stale_jobs_in_conn(conn, processing_timeout_seconds=timeout)
 
 
 def process_one_job(job_id: int | None = None) -> dict[str, object] | None:
@@ -83,6 +65,13 @@ def process_one_job(job_id: int | None = None) -> dict[str, object] | None:
             return None
         job_id = int(row["id"])
         LOGGER.info("Inicio worker IA job_id=%s provider=%s status=%s", job_id, row["provider"], row["status"])
+        update_job(
+            conn,
+            job_id,
+            worker_pid=os.getpid(),
+            heartbeat_at=_now(),
+            progress_message="Worker iniciado.",
+        )
         started = datetime.now()
         try:
             payload = process_ai_job(conn, job_id)
@@ -93,6 +82,9 @@ def process_one_job(job_id: int | None = None) -> dict[str, object] | None:
                 job_id,
                 status="error",
                 finished_at=_now(),
+                progress_stage="error",
+                progress_message=f"Error no controlado en worker IA: {type(exc).__name__}",
+                heartbeat_at=_now(),
                 error_code="WORKER_ERROR",
                 error_message=f"Error no controlado en worker IA: {type(exc).__name__}",
             )

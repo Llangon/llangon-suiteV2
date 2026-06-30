@@ -325,10 +325,14 @@ try:
     from .ai.config import get_ai_config
     from .ai.file_selection import AIFileSelectionError, list_ai_files
     from .ai.service import (
+        cancel_ai_job,
         delete_ai_summary,
+        dismiss_ai_job,
         get_ai_job_payload,
+        get_ai_queue_payload,
         get_ai_summary_payload,
         list_ai_jobs,
+        mark_stale_ai_jobs,
         request_ai_analysis,
     )
     from .ai.worker_launcher import start_ai_worker_for_job
@@ -336,10 +340,14 @@ except ImportError:
     from ai.config import get_ai_config
     from ai.file_selection import AIFileSelectionError, list_ai_files
     from ai.service import (
+        cancel_ai_job,
         delete_ai_summary,
+        dismiss_ai_job,
         get_ai_job_payload,
+        get_ai_queue_payload,
         get_ai_summary_payload,
         list_ai_jobs,
+        mark_stale_ai_jobs,
         request_ai_analysis,
     )
     from ai.worker_launcher import start_ai_worker_for_job
@@ -1826,7 +1834,16 @@ def _ai_summary_list(items: object, limit: int = 6) -> list[str]:
     result: list[str] = []
     for item in items[:limit]:
         if isinstance(item, dict):
-            text = clean_text(item.get("titulo") or item.get("nombre") or item.get("detalle") or item.get("accion_recomendada") or json.dumps(item, ensure_ascii=False))
+            text = clean_text(
+                item.get("titulo")
+                or item.get("nombre")
+                or item.get("accion")
+                or item.get("detalle")
+                or item.get("descripcion")
+                or item.get("accion_recomendada")
+                or item.get("obligacion")
+                or json.dumps(item, ensure_ascii=False)
+            )
         else:
             text = clean_text(item)
         if text:
@@ -1844,12 +1861,64 @@ def _ai_summary_sequence(value: object) -> list[object]:
     return []
 
 
+def _ai_summary_criteria_items(criteria: object, limit: int = 8) -> list[str]:
+    result: list[str] = []
+    if isinstance(criteria, dict):
+        for label, key in (("Juicio de valor", "juicio_valor"), ("Fórmulas", "formulas")):
+            for item in _ai_summary_sequence(criteria.get(key)):
+                if isinstance(item, dict):
+                    name = clean_text(item.get("nombre") or item.get("descripcion"))
+                    points = clean_text(item.get("puntuacion_maxima"))
+                    formula = clean_text(item.get("formula"))
+                    text = f"{label}: {name}"
+                    if points:
+                        text += f" ({points} puntos)"
+                    if formula:
+                        text += f" - {formula}"
+                    result.append(text)
+                else:
+                    result.append(f"{label}: {clean_text(item)}")
+    else:
+        result.extend(_ai_summary_list(criteria))
+    return [item for item in result if item][:limit]
+
+
+def _ai_summary_operational_items(summary: dict[str, object], limit: int = 8) -> list[str]:
+    operations = summary.get("observaciones_operativas") if isinstance(summary, dict) else {}
+    if not isinstance(operations, dict):
+        return []
+    labels = (
+        ("Lugar de entrega", "lugar_entrega"),
+        ("Horario", "horario_entrega"),
+        ("Plazo de entrega", "plazo_entrega"),
+        ("Periodicidad", "periodicidad"),
+        ("Transporte", "transporte"),
+        ("Descarga", "descarga"),
+        ("Albaranes", "albaranes"),
+        ("Envases/etiquetado", "envases_etiquetado"),
+        ("Caducidad/consumo preferente", "caducidad_consumo_preferente"),
+    )
+    result: list[str] = []
+    for label, key in labels:
+        value = operations.get(key)
+        values = _ai_summary_sequence(value)
+        text = "; ".join(clean_text(item) for item in values if clean_text(item))
+        if text:
+            result.append(f"{label}: {text}")
+    return result[:limit]
+
+
 def ai_summary_email_text(row: sqlite3.Row, summary: dict[str, object]) -> str:
     ejecutivo = summary.get("resumen_ejecutivo") if isinstance(summary, dict) else {}
     metadata = summary.get("metadata") if isinstance(summary, dict) else {}
-    presentation = summary.get("presentacion") if isinstance(summary, dict) else {}
+    caracteristicas = summary.get("caracteristicas") if isinstance(summary, dict) else {}
+    presentation = summary.get("presentacion_documentacion") if isinstance(summary, dict) else {}
+    if not isinstance(presentation, dict):
+        presentation = summary.get("presentacion") if isinstance(summary, dict) else {}
     alertas = _ai_summary_list(summary.get("alertas") if isinstance(summary, dict) else [])
-    criterios = _ai_summary_list(summary.get("criterios_adjudicacion") if isinstance(summary, dict) else [])
+    acciones = _ai_summary_list(summary.get("acciones_recomendadas") if isinstance(summary, dict) else [])
+    criterios = _ai_summary_criteria_items(summary.get("criterios_adjudicacion") if isinstance(summary, dict) else [])
+    observaciones = _ai_summary_operational_items(summary if isinstance(summary, dict) else {})
     documentos = []
     if isinstance(presentation, dict):
         documentos = _ai_summary_list(
@@ -1868,14 +1937,26 @@ def ai_summary_email_text(row: sqlite3.Row, summary: dict[str, object]) -> str:
             "",
             clean_text((ejecutivo or {}).get("texto")) or "Sin resumen ejecutivo.",
             "",
+            "Datos clave:",
+            f"- Tipo: {clean_text((metadata or {}).get('tipo_contrato')) or 'No consta'}",
+            f"- Plataforma: {clean_text((metadata or {}).get('plataforma')) or 'No consta'}",
+            f"- Presupuesto base: {clean_text((caracteristicas or {}).get('presupuesto_base')) or 'No consta'}",
+            f"- Valor estimado: {clean_text((caracteristicas or {}).get('valor_estimado')) or 'No consta'}",
+            "",
             "Alertas:",
             *[f"- {item}" for item in alertas],
+            "",
+            "Acciones recomendadas:",
+            *[f"- {item}" for item in acciones],
             "",
             "Criterios:",
             *[f"- {item}" for item in criterios],
             "",
             "Documentación:",
             *[f"- {item}" for item in documentos],
+            "",
+            "Observaciones operativas:",
+            *[f"- {item}" for item in observaciones],
             "",
             "Análisis automático. Revisar contra pliegos.",
         ]
@@ -1884,14 +1965,38 @@ def ai_summary_email_text(row: sqlite3.Row, summary: dict[str, object]) -> str:
 
 def ai_summary_email_html(row: sqlite3.Row, summary: dict[str, object]) -> str:
     ejecutivo = summary.get("resumen_ejecutivo") if isinstance(summary, dict) else {}
+    metadata = summary.get("metadata") if isinstance(summary, dict) else {}
+    caracteristicas = summary.get("caracteristicas") if isinstance(summary, dict) else {}
     alertas = _ai_summary_list(summary.get("alertas") if isinstance(summary, dict) else [])
-    criterios = _ai_summary_list(summary.get("criterios_adjudicacion") if isinstance(summary, dict) else [])
+    acciones = _ai_summary_list(summary.get("acciones_recomendadas") if isinstance(summary, dict) else [])
+    criterios = _ai_summary_criteria_items(summary.get("criterios_adjudicacion") if isinstance(summary, dict) else [])
+    presentation = summary.get("presentacion_documentacion") if isinstance(summary, dict) else {}
+    if not isinstance(presentation, dict):
+        presentation = summary.get("presentacion") if isinstance(summary, dict) else {}
+    documentos = []
+    if isinstance(presentation, dict):
+        documentos = _ai_summary_list(
+            [
+                *_ai_summary_sequence(presentation.get("documentacion_administrativa")),
+                *_ai_summary_sequence(presentation.get("documentacion_tecnica")),
+                *_ai_summary_sequence(presentation.get("documentacion_economica")),
+                *_ai_summary_sequence(presentation.get("anexos_relevantes")),
+            ]
+        )
+    observaciones = _ai_summary_operational_items(summary if isinstance(summary, dict) else {})
     fecha_limite = " ".join([format_date_es(row["fecha_limite"]) if row["fecha_limite"] else "", clean_text(row["hora_limite"])]).strip()
 
     def items_html(values: list[str]) -> str:
         if not values:
             return "<p style='margin:0;color:#667085;'>Sin datos destacados.</p>"
         return "<ul style='margin:8px 0 0 18px;padding:0;'>" + "".join(f"<li>{html.escape(item)}</li>" for item in values) + "</ul>"
+
+    datos_clave = [
+        f"Tipo: {clean_text((metadata or {}).get('tipo_contrato')) or 'No consta'}",
+        f"Plataforma: {clean_text((metadata or {}).get('plataforma')) or 'No consta'}",
+        f"Presupuesto base: {clean_text((caracteristicas or {}).get('presupuesto_base')) or 'No consta'}",
+        f"Valor estimado: {clean_text((caracteristicas or {}).get('valor_estimado')) or 'No consta'}",
+    ]
 
     return f"""
     <div style="font-family:Calibri,Arial,sans-serif;color:#172033;background:#f6f8fb;padding:24px;">
@@ -1905,10 +2010,18 @@ def ai_summary_email_html(row: sqlite3.Row, summary: dict[str, object]) -> str:
           <p><strong>Fecha límite:</strong> {html.escape(fecha_limite or 'No consta')}</p>
           <h2 style="font-size:16px;">Resumen ejecutivo</h2>
           <p style="line-height:1.55;">{html.escape(clean_text((ejecutivo or {}).get('texto')) or 'Sin resumen ejecutivo.')}</p>
+          <h2 style="font-size:16px;">Datos clave</h2>
+          {items_html(datos_clave)}
           <h2 style="font-size:16px;">Alertas</h2>
           {items_html(alertas)}
+          <h2 style="font-size:16px;">Acciones recomendadas</h2>
+          {items_html(acciones)}
           <h2 style="font-size:16px;">Criterios</h2>
           {items_html(criterios)}
+          <h2 style="font-size:16px;">Documentación</h2>
+          {items_html(documentos)}
+          <h2 style="font-size:16px;">Observaciones operativas</h2>
+          {items_html(observaciones)}
           <p style="margin-top:22px;padding:12px;background:#fff8dd;border:1px solid #f0d278;border-radius:8px;color:#6f5200;font-weight:bold;">
             Análisis automático. Revisar siempre contra los pliegos antes de usarlo con clientes.
           </p>
@@ -2146,6 +2259,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_monitor_run_detail(int(run_id))
+        elif path == "/api/ai/queue":
+            self.api_ai_queue()
         elif path == "/api/ai/jobs":
             self.api_list_ai_jobs()
         elif path.startswith("/api/ai/jobs/"):
@@ -2269,6 +2384,20 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_send_ai_summary_email(int(licitacion_id))
+        elif path == "/api/ai/jobs/mark-stale":
+            self.api_mark_stale_ai_jobs()
+        elif path.startswith("/api/ai/jobs/") and path.endswith("/cancel"):
+            job_id = path.removeprefix("/api/ai/jobs/").removesuffix("/cancel").strip("/")
+            if not job_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_cancel_ai_job(int(job_id))
+        elif path.startswith("/api/ai/jobs/") and path.endswith("/dismiss"):
+            job_id = path.removeprefix("/api/ai/jobs/").removesuffix("/dismiss").strip("/")
+            if not job_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_dismiss_ai_job(int(job_id))
         elif path.startswith("/api/ai/jobs/") and path.endswith("/start"):
             job_id = path.removeprefix("/api/ai/jobs/").removesuffix("/start").strip("/")
             if not job_id.isdigit():
@@ -2504,7 +2633,14 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 or path.endswith("/actuaciones")
             ):
                 return True
-            if path.startswith("/api/ai/jobs/") and (path.endswith("/run") or path.endswith("/start")):
+            if path == "/api/ai/jobs/mark-stale":
+                return True
+            if path.startswith("/api/ai/jobs/") and (
+                path.endswith("/run")
+                or path.endswith("/start")
+                or path.endswith("/cancel")
+                or path.endswith("/dismiss")
+            ):
                 return True
             if path.startswith("/api/actuaciones/") and (
                 path.endswith("/cerrar")
@@ -4550,6 +4686,43 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
             return
+        self.send_json(payload)
+
+    def api_ai_queue(self) -> None:
+        with db_session() as conn:
+            payload = get_ai_queue_payload(conn)
+        self.send_json(payload)
+
+    def api_cancel_ai_job(self, job_id: int) -> None:
+        if not self.require_admin():
+            return
+        try:
+            with db_session() as conn:
+                payload = cancel_ai_job(conn, job_id)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            return
+        self.send_json(payload)
+
+    def api_dismiss_ai_job(self, job_id: int) -> None:
+        if not self.require_admin():
+            return
+        user = self.current_user() or {}
+        try:
+            with db_session() as conn:
+                payload = dismiss_ai_job(conn, job_id, dismissed_by=clean_text(user.get("username")) or "ui")
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            return
+        self.send_json(payload)
+
+    def api_mark_stale_ai_jobs(self) -> None:
+        if not self.require_admin():
+            return
+        config = get_ai_config()
+        timeout = max(config.timeout_seconds, config.codex_timeout_seconds)
+        with db_session() as conn:
+            payload = mark_stale_ai_jobs(conn, timeout_seconds=timeout)
         self.send_json(payload)
 
     def api_start_ai_job(self, job_id: int) -> None:

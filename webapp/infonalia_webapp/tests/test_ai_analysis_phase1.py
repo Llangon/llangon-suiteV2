@@ -27,10 +27,11 @@ from webapp.infonalia_webapp.ai.gemini_provider import (
 from webapp.infonalia_webapp.ai.hashing import hash_documents
 from webapp.infonalia_webapp.ai.manual_test import build_preflight_report, mark_interrupted_job
 from webapp.infonalia_webapp.ai.pdf_text_extractor import ExtractedTextResult, extract_pdf_text
-from webapp.infonalia_webapp.ai.queue import active_job, create_job, ensure_ai_schema, latest_job, latest_summary
+from webapp.infonalia_webapp.ai.postprocess import postprocess_summary
+from webapp.infonalia_webapp.ai.queue import active_job, create_job, ensure_ai_schema, latest_job, latest_summary, update_job
 from webapp.infonalia_webapp.ai.rate_limit import check_rate_limit
 from webapp.infonalia_webapp.ai.schemas import parse_summary_json, summary_quality_check
-from webapp.infonalia_webapp.ai.service import delete_ai_summary, process_ai_job, request_ai_analysis
+from webapp.infonalia_webapp.ai.service import cancel_ai_job, delete_ai_summary, get_ai_queue_payload, mark_stale_ai_jobs, process_ai_job, request_ai_analysis
 from webapp.infonalia_webapp.ai.worker import mark_stale_jobs, process_one_job
 from webapp.infonalia_webapp.ai.worker_launcher import start_ai_worker_for_job
 from webapp.infonalia_webapp.ai.workspace import prepare_ai_workspace
@@ -85,6 +86,69 @@ def _write_pdf(path: Path, content: bytes = b"%PDF-1.4\ncontenido\n") -> Path:
     return path
 
 
+def _useful_summary_payload(text: str | None = None) -> dict[str, object]:
+    summary_text = text or "Resumen generado por mock."
+    return {
+        "metadata": {
+            "expediente": "EXP-IA",
+            "titulo": "Suministro de prueba",
+            "organismo": "Organo de prueba",
+            "provincia": "Madrid",
+            "plataforma": "PLACE",
+            "fecha_limite_presentacion": "01/07/2026",
+            "hora_limite_presentacion": "14:00",
+            "tipo_contrato": "Suministro",
+        },
+        "resumen_ejecutivo": {
+            "texto": summary_text,
+            "aspectos_clave": ["Revisar anexos", "Comprobar solvencia"],
+            "decision_preliminar": "Revisar documentación antes de decidir.",
+        },
+        "caracteristicas": {
+            "presupuesto_base": 12000,
+            "valor_estimado": 14000,
+            "moneda": "EUR",
+            "plazo_ejecucion_inicial": "12 meses",
+            "prorrogas": {"existen": True, "detalle": "Una prórroga posible."},
+            "adjudicacion": "Expediente completo",
+            "numero_sobres": 2,
+        },
+        "presentacion_documentacion": {
+            "forma_presentacion": "Electrónica",
+            "documentacion_administrativa": ["DEUC"],
+            "documentacion_tecnica": ["Memoria técnica"],
+            "documentacion_economica": ["Oferta económica"],
+            "anexos_relevantes": ["Anexo I"],
+        },
+        "muestras_fichas_memoria": {
+            "muestras": {"exigidas": False, "momento": "", "detalle": "", "consecuencia_no_presentar": ""},
+            "fichas_tecnicas": {"exigidas": True, "sobre": "Sobre técnico", "detalle": "Aportar fichas técnicas de producto."},
+            "memoria_tecnica": {"exigida": True, "detalle": "Memoria con metodología de suministro."},
+            "adscripcion_medios": {"exigida": False, "detalle": ""},
+        },
+        "criterios_adjudicacion": {
+            "juicio_valor": [{"nombre": "Memoria técnica", "puntuacion_maxima": 20, "descripcion": "Calidad de la propuesta."}],
+            "formulas": [{"nombre": "Precio", "puntuacion_maxima": 80, "formula": "Mejor precio obtiene máxima puntuación."}],
+            "total_puntos": 100,
+            "observaciones": "Separar documentación técnica y económica.",
+        },
+        "solvencia": {
+            "economica": [{"objeto": "Volumen anual", "importe_minimo": 10000, "detalle": "Acreditar solvencia económica."}],
+            "tecnica": [{"objeto": "Suministros similares", "detalle": "Relación de suministros realizados."}],
+        },
+        "condiciones_especiales_ejecucion": [{"categoria": "Social", "obligacion": "Cumplimiento laboral", "riesgo": "medio"}],
+        "observaciones_operativas": {
+            "lugar_entrega": ["Centro indicado en pedido"],
+            "horario_entrega": ["Horario de mañana"],
+            "plazo_entrega": ["48 horas desde pedido"],
+            "transporte": "A cargo del adjudicatario",
+        },
+        "alertas": [{"nivel": "alta", "titulo": "Memoria técnica", "descripcion": "Puede condicionar la puntuación.", "accion_recomendada": "Preparar borrador."}],
+        "acciones_recomendadas": [{"prioridad": "alta", "accion": "Revisar anexos", "motivo": "Evitar omisiones."}],
+        "control_calidad": {"campos_no_encontrados": [], "campos_con_baja_confianza": [], "advertencias": []},
+    }
+
+
 class FakeProvider:
     def __init__(
         self,
@@ -109,10 +173,7 @@ class FakeProvider:
         if self.summary_payload is not None:
             return ProviderResult(summary=self.summary_payload, raw_usage=self.raw_usage)
         return ProviderResult(
-            summary={
-                "metadata": {"expediente": licitacion["expediente"], "titulo": licitacion["objeto"]},
-                "resumen_ejecutivo": {"texto": "Resumen generado por mock.", "aspectos_clave": ["Clave"]},
-            },
+            summary=_useful_summary_payload(),
             raw_usage={"prompt_token_count": 10, "candidates_token_count": 5, "total_token_count": 15},
         )
 
@@ -462,13 +523,182 @@ def test_summary_quality_rejects_empty_template() -> None:
 
 
 def test_summary_quality_accepts_useful_json() -> None:
-    parsed = parse_summary_json({"resumen_ejecutivo": {"texto": "Hay contenido útil."}})
+    parsed = parse_summary_json(_useful_summary_payload())
 
     result = summary_quality_check(parsed)
 
     assert result["is_useful"] is True
     assert result["status"] == "ok"
     assert "resumen_ejecutivo.texto" in result["signals"]
+    assert result["has_criterios"] is True
+    assert result["has_alertas"] is True
+
+
+def test_summary_quality_rejects_low_quality_json() -> None:
+    parsed = parse_summary_json({"resumen_ejecutivo": {"texto": "Hay contenido útil, pero insuficiente."}})
+
+    result = summary_quality_check(parsed)
+
+    assert result["is_useful"] is False
+    assert result["status"] == "low_quality_analysis"
+
+
+def test_summary_quality_rejects_mojibake() -> None:
+    payload = _useful_summary_payload("LicitaciÃ³n pÃºblica con garantÃ­a y adjudicaciÃ³n mal codificadas.")
+    parsed = parse_summary_json(payload)
+
+    result = summary_quality_check(parsed)
+
+    assert result["is_useful"] is False
+    assert result["status"] == "encoding_error"
+    assert result["contains_mojibake"] is True
+
+
+def test_postprocess_adds_operational_alerts_and_actions() -> None:
+    summary = parse_summary_json(
+        {
+            "metadata": {"plataforma": "Junta de Andalucía", "hora_limite_presentacion": "14:00"},
+            "resumen_ejecutivo": {"texto": "La licitación se adjudica con criterio precio y exige revisión documental."},
+            "garantias": {"garantia_definitiva": {"exigida": True}},
+            "muestras_fichas_memoria": {
+                "fichas_tecnicas": {"exigidas": True, "detalle": "Fichas por producto."},
+                "muestras": {"exigidas": True, "detalle": "Muestras etiquetadas."},
+            },
+            "criterios_adjudicacion": {"juicio_valor": [], "formulas": [], "total_puntos": 100},
+        }
+    )
+
+    processed = postprocess_summary(summary)
+
+    alert_titles = {item["titulo"] for item in processed["alertas"]}
+    action_text = " ".join(item["accion"] for item in processed["acciones_recomendadas"])
+    warnings = processed["control_calidad"]["advertencias"]
+    assert "Muestras obligatorias" in alert_titles
+    assert "Fichas técnicas" in alert_titles
+    assert "Plataforma no habitual" in alert_titles
+    assert "Hora límite no estándar" in alert_titles
+    assert "garantía definitiva" in action_text.lower()
+    assert any("criterios" in item.lower() for item in warnings)
+
+
+def test_ai_queue_payload_counts_active_and_estimates(tmp_path: Path) -> None:
+    conn = _conn()
+    _insert_licitacion(conn, tmp_path)
+    pdf = _write_pdf(tmp_path / "PCAP.pdf")
+    job_id = create_job(
+        conn,
+        licitacion_id=1,
+        document_hash="hash",
+        selected_documents=[{"name": "PCAP.pdf", "path": str(pdf), "relative_path": "PCAP.pdf"}],
+        model="codex",
+        provider="codex_local",
+        status="pending",
+    )
+
+    payload = get_ai_queue_payload(conn)
+
+    assert payload["counts"]["active"] == 1
+    assert payload["counts"]["pending"] == 1
+    assert payload["active_jobs"][0]["id"] == job_id
+    assert payload["active_jobs"][0]["estimated_label"] == "4-7 min aprox."
+    assert payload["active_jobs"][0]["progress_label"] == "En cola"
+
+
+def test_ai_queue_endpoint_returns_active_jobs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    app = load_app_module()
+    with temporary_app_database(app):
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                INSERT INTO licitaciones (id, expediente, objeto, estado, created_at, updated_at)
+                VALUES (1, 'EXP-COLA', 'Objeto cola', 'Importada', '2026-01-01', '2026-01-01')
+                """
+            )
+            create_job(
+                conn,
+                licitacion_id=1,
+                document_hash="hash",
+                selected_documents=[],
+                model="codex",
+                provider="codex_local",
+                status="pending",
+            )
+        handler = make_handler(app, "GET", "/api/ai/queue", email="admin@example.test")
+
+        dispatch(handler, "GET")
+
+        status, payload = handler.responses[-1]
+        assert status == HTTPStatus.OK
+        assert payload["counts"]["active"] == 1
+        assert payload["active_jobs"][0]["expediente"] == "EXP-COLA"
+
+
+def test_ai_cancel_pending_and_processing(tmp_path: Path) -> None:
+    conn = _conn()
+    _insert_licitacion(conn, tmp_path)
+    pending_id = create_job(
+        conn,
+        licitacion_id=1,
+        document_hash="hash-pending",
+        selected_documents=[],
+        model="codex",
+        provider="codex_local",
+        status="pending",
+    )
+    processing_id = create_job(
+        conn,
+        licitacion_id=1,
+        document_hash="hash-processing",
+        selected_documents=[],
+        model="codex",
+        provider="codex_local",
+        status="processing",
+    )
+
+    cancelled = cancel_ai_job(conn, pending_id)
+    requested = cancel_ai_job(conn, processing_id)
+
+    pending = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (pending_id,)).fetchone()
+    processing = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (processing_id,)).fetchone()
+    assert cancelled["job"]["status"] == "cancelled"
+    assert pending["progress_stage"] == "cancelled"
+    assert requested["ok"] is True
+    assert processing["cancel_requested"] == 1
+
+
+def test_mark_stale_jobs_handles_processing_and_old_pending(tmp_path: Path) -> None:
+    conn = _conn()
+    _insert_licitacion(conn, tmp_path)
+    processing_id = create_job(
+        conn,
+        licitacion_id=1,
+        document_hash="hash-processing",
+        selected_documents=[],
+        model="codex",
+        provider="codex_local",
+        status="processing",
+        created_at="2026-01-01T10:00:00",
+    )
+    pending_id = create_job(
+        conn,
+        licitacion_id=1,
+        document_hash="hash-pending",
+        selected_documents=[],
+        model="codex",
+        provider="codex_local",
+        status="pending",
+        created_at="2026-01-01T10:00:00",
+    )
+    update_job(conn, processing_id, started_at="2026-01-01T10:00:00", heartbeat_at="2026-01-01T10:00:00")
+
+    result = mark_stale_ai_jobs(conn, timeout_seconds=60)
+
+    assert result["marked"] == 2
+    processing = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (processing_id,)).fetchone()
+    pending = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (pending_id,)).fetchone()
+    assert processing["error_code"] == "STALE_JOB"
+    assert pending["error_code"] == "STALE_PENDING_JOB"
 
 
 def test_document_selector_prioritizes_and_excludes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -759,6 +989,9 @@ def test_service_processes_job_with_mock_provider(tmp_path: Path, monkeypatch: p
     processed = process_ai_job(conn, payload["job_id"], provider=provider)
     assert processed["has_summary"] is True
     assert processed["summary"]["summary_text"] == "Resumen generado por mock."
+    assert processed["job"]["progress_stage"] == "completed"
+    assert processed["job"]["progress_percent"] == 100
+    assert processed["job"]["elapsed_seconds"] >= 0
     assert conn.execute("SELECT COUNT(*) FROM ai_usage_log").fetchone()[0] == 1
 
 
@@ -881,6 +1114,42 @@ def test_service_rejects_empty_valid_json_without_saving_summary(tmp_path: Path,
     assert latest_summary(conn, 1) is None
 
 
+def test_service_rejects_low_quality_analysis_without_saving_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    provider = FakeProvider(summary_payload={"resumen_ejecutivo": {"texto": "Resumen demasiado pobre."}})
+
+    payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
+    processed = process_ai_job(conn, payload["job_id"], provider=provider)
+
+    assert processed["job_status"] == "error"
+    assert processed["job"]["error_code"] == "LOW_QUALITY_ANALYSIS"
+    assert processed["job"]["summary_quality_status"] == "low_quality_analysis"
+    assert latest_summary(conn, 1) is None
+
+
+def test_service_rejects_encoding_error_without_saving_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    provider = FakeProvider(summary_payload=_useful_summary_payload("LicitaciÃ³n pÃºblica con garantÃ­a mal codificada."))
+
+    payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
+    processed = process_ai_job(conn, payload["job_id"], provider=provider)
+
+    assert processed["job_status"] == "error"
+    assert processed["job"]["error_code"] == "ENCODING_ERROR"
+    assert processed["job"]["summary_quality_status"] == "encoding_error"
+    assert latest_summary(conn, 1) is None
+
+
 def test_service_ignores_existing_empty_summary_and_regenerates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _conn()
     _write_pdf(tmp_path / "PCAP.pdf")
@@ -900,7 +1169,7 @@ def test_service_ignores_existing_empty_summary_and_regenerates(tmp_path: Path, 
         """,
         (document_hash,),
     )
-    provider = FakeProvider(summary_payload={"resumen_ejecutivo": {"texto": "Resumen regenerado."}})
+    provider = FakeProvider(summary_payload=_useful_summary_payload("Resumen regenerado."))
 
     payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
     processed = process_ai_job(conn, payload["job_id"], provider=provider)
@@ -918,7 +1187,7 @@ def test_service_saves_useful_summary_after_quality_check(tmp_path: Path, monkey
     monkeypatch.setenv("GEMINI_ENABLED", "true")
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
     provider = FakeProvider(
-        summary_payload={"resumen_ejecutivo": {"texto": "Análisis útil."}},
+        summary_payload=_useful_summary_payload("Análisis útil."),
         raw_usage={
             "sent_documents_count": 1,
             "sent_documents_names": ["PCAP.pdf"],
@@ -1170,16 +1439,17 @@ def test_ai_summary_email_with_mock_smtp_sends_html(tmp_path: Path, monkeypatch:
                 """,
                 (str(folder),),
             )
+            summary_json = json.dumps(_useful_summary_payload("Resumen útil con información técnica y garantía."), ensure_ascii=False)
             conn.execute(
                 """
                 INSERT INTO ai_summaries (
                     licitacion_id, document_hash, provider, model, summary_json, summary_text,
                     created_at, updated_at, quality_status
                 )
-                VALUES (1, 'hash', 'gemini', 'gemini-test',
-                        '{"resumen_ejecutivo":{"texto":"Resumen útil"},"alertas":["Alerta"]}',
-                        'Resumen útil', '2026-01-01', '2026-01-01', 'pending_review')
-                """
+                VALUES (1, 'hash', 'gemini', 'gemini-test', ?, 'Resumen útil',
+                        '2026-01-01', '2026-01-01', 'pending_review')
+                """,
+                (summary_json,),
             )
         handler = make_handler(
             app,
@@ -1219,6 +1489,48 @@ def test_prepare_ai_workspace_copies_only_selected_and_keeps_originals(tmp_path:
     manifest = json.loads((job_root / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["job_id"] == 42
     assert manifest["files"][0]["original_relative_path"] == "PCAP.pdf"
+    assert "extracted_text_files" in manifest
+    assert "extracted_chars_by_file" in manifest
+    assert "pages_by_file" in manifest
+    prompt = (job_root / "prompt.md").read_text(encoding="utf-8")
+    schema = json.loads((job_root / "schema.json").read_text(encoding="utf-8"))
+    assert "ficha operativa" in prompt
+    assert "extracted_text" in prompt
+    assert "caracteristicas" in schema
+    assert "observaciones_operativas" in schema
+    assert isinstance(schema["criterios_adjudicacion"], dict)
+
+
+def test_prepare_ai_workspace_writes_extracted_text_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = _write_pdf(tmp_path / "PCAP.pdf", b"%PDF-1.4\n")
+
+    def fake_extract_pdf_text(*_args, **_kwargs):
+        return ExtractedTextResult(
+            text="Licitación pública con garantía, adjudicación e información técnica.",
+            diagnostics={
+                "documents_text_extracted_count": 1,
+                "extracted_chars_total": 64,
+                "extracted_chars_by_document": {"PCAP.pdf": 64},
+                "pages_processed_by_document": {"PCAP.pdf": 3},
+                "extraction_warnings": [],
+            },
+        )
+
+    monkeypatch.setattr("webapp.infonalia_webapp.ai.workspace.extract_pdf_text", fake_extract_pdf_text)
+    result = prepare_ai_workspace(
+        job_id=44,
+        licitacion={"id": 1, "expediente": "EXP"},
+        selected_documents=[{"path": str(source), "name": "PCAP.pdf", "relative_path": "PCAP.pdf"}],
+        work_root=tmp_path / "work",
+    )
+
+    job_root = Path(result["job_root"])
+    manifest = json.loads((job_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["extracted_text_files"] == ["extracted_text/PCAP.txt"] or manifest["extracted_text_files"] == ["extracted_text\\PCAP.txt"]
+    assert manifest["extracted_chars_by_file"]["PCAP.pdf"] == 64
+    assert manifest["pages_by_file"]["PCAP.pdf"] == 3
+    extracted_path = job_root / manifest["extracted_text_files"][0]
+    assert "Licitación pública" in extracted_path.read_text(encoding="utf-8")
 
 
 def test_prepare_ai_workspace_resolves_name_collisions(tmp_path: Path) -> None:
@@ -1375,6 +1687,24 @@ def test_parse_summary_json_fills_missing_sections() -> None:
     assert parsed["metadata"]["expediente"] == "EXP"
     assert "alertas" in parsed
     assert "solvencia" in parsed
+
+
+def test_ai_summary_ui_source_renders_operational_ficha() -> None:
+    source = Path("webapp/infonalia_webapp/static/app.js").read_text(encoding="utf-8")
+    html_source = Path("webapp/infonalia_webapp/static/index.html").read_text(encoding="utf-8")
+
+    assert "ai-ficha" in source
+    assert "Resumen ejecutivo" in source
+    assert "Datos clave" in source
+    assert "Criterios sujetos a juicio de valor" in source
+    assert "Observaciones operativas" in source
+    assert "Ver detalles técnicos" in source
+    assert "Ver JSON técnico" not in source
+    assert "low_quality_analysis" in source
+    assert "encoding_error" in source
+    assert "ai-queue-button" in html_source
+    assert "ai-queue-dialog" in html_source
+    assert "/api/ai/queue" in source
 
 
 def test_ai_summary_api_without_config_returns_controlled_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

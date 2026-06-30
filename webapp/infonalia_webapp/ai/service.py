@@ -13,16 +13,26 @@ from .gemini_provider import AIProviderError, GeminiProvider, ProviderResult
 from .hashing import hash_documents
 from .queue import (
     active_job,
+    cancel_job,
     claim_pending_job,
     create_job,
+    dismiss_job,
+    elapsed_seconds_for_row,
+    estimate_label_for_job,
+    estimate_seconds_for_job,
+    human_stage,
     latest_job,
     latest_summary,
+    mark_stale_jobs_in_conn,
+    now_iso as queue_now_iso,
     record_usage,
     row_to_dict,
     save_summary,
+    touch_job_progress,
     update_job,
 )
 from .rate_limit import check_rate_limit
+from .postprocess import postprocess_summary
 from .schemas import AISchemaError, parse_summary_json, summary_quality_check, summary_text
 
 
@@ -90,17 +100,29 @@ def _summary_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
 
 
 def _summary_row_is_useful(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
-    if str(row["quality_status"] or "") == "empty_analysis":
+    if str(row["quality_status"] or "") in {"empty_analysis", "low_quality_analysis", "encoding_error"}:
         return False
     try:
         raw_summary = json.loads(str(row["summary_json"] or "{}"))
-        quality = summary_quality_check(parse_summary_json(raw_summary))
+        quality = summary_quality_check(postprocess_summary(parse_summary_json(raw_summary)))
     except Exception:
         return True
     if quality["is_useful"]:
         return True
-    conn.execute("UPDATE ai_summaries SET quality_status = 'empty_analysis', updated_at = ? WHERE id = ?", (_now(), row["id"]))
+    conn.execute(
+        "UPDATE ai_summaries SET quality_status = ?, updated_at = ? WHERE id = ?",
+        (quality["status"], _now(), row["id"]),
+    )
     return False
+
+
+def _quality_error(quality_check: dict[str, object]) -> tuple[str, str]:
+    status = str(quality_check.get("status") or "empty_analysis")
+    if status == "encoding_error":
+        return "ENCODING_ERROR", "El análisis IA contiene caracteres mal codificados."
+    if status == "low_quality_analysis":
+        return "LOW_QUALITY_ANALYSIS", "El análisis IA no tiene estructura operativa suficiente."
+    return "EMPTY_ANALYSIS", "La IA devolvió un JSON válido pero sin contenido útil."
 
 
 def _latest_useful_summary(
@@ -142,21 +164,41 @@ def _job_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
         except json.JSONDecodeError:
             raw_diagnostics = {}
     quality_check = raw_usage.get("quality_check") if isinstance(raw_usage.get("quality_check"), dict) else {}
+    selected_documents = data.get("selected_documents") if isinstance(data.get("selected_documents"), list) else []
+    selected_documents_count = len(selected_documents)
+    provider = str(data.get("provider") or "")
+    estimated_seconds = int(data.get("estimated_seconds") or estimate_seconds_for_job(provider, selected_documents_count))
+    elapsed_seconds = elapsed_seconds_for_row(data)
+    status = str(data.get("status") or "")
+    progress_stage = str(data.get("progress_stage") or status)
+    is_taking_longer = bool(status == "processing" and estimated_seconds and elapsed_seconds > estimated_seconds + 120)
     return {
         "id": data["id"],
-        "status": data["status"],
-        "provider": data.get("provider") or "",
+        "status": status,
+        "provider": provider,
         "document_hash": data["document_hash"],
         "model": data.get("model") or "",
         "created_at": data.get("created_at") or "",
         "started_at": data.get("started_at") or "",
         "finished_at": data.get("finished_at") or "",
+        "progress_stage": progress_stage,
+        "progress_label": human_stage(progress_stage, status),
+        "progress_message": data.get("progress_message") or "",
+        "progress_percent": data.get("progress_percent"),
+        "heartbeat_at": data.get("heartbeat_at") or "",
+        "worker_pid": data.get("worker_pid"),
+        "cancel_requested": bool(data.get("cancel_requested") or 0),
+        "elapsed_seconds": elapsed_seconds,
+        "estimated_seconds": estimated_seconds,
+        "estimated_label": estimate_label_for_job(provider, selected_documents_count),
+        "is_taking_longer_than_expected": is_taking_longer,
         "error_code": data.get("error_code") or "",
         "error_message": data.get("error_message") or "",
         "next_retry_at": data.get("next_retry_at") or "",
         "dismissed_at": data.get("dismissed_at") or "",
         "dismissed_by": data.get("dismissed_by") or "",
         "attempts": data.get("attempts") or 0,
+        "selected_documents_count": selected_documents_count,
         "diagnostics": raw_diagnostics,
         "raw_response_preview": raw_diagnostics.get("raw_response_preview", ""),
         "parse_attempts": raw_diagnostics.get("parse_attempts", []),
@@ -407,6 +449,9 @@ def process_ai_job(
             job_id,
             status=status,
             finished_at=_now(),
+            progress_stage="error",
+            progress_message=error_message,
+            heartbeat_at=_now(),
             error_code=error_code,
             error_message=error_message,
         )
@@ -414,6 +459,18 @@ def process_ai_job(
         return _payload_with_job_selection(conn, licitacion_id, row, selected)
 
     selected = json.loads(row["selected_documents_json"] or "[]")
+    if int(row["cancel_requested"] or 0):
+        update_job(
+            conn,
+            job_id,
+            status="cancelled",
+            finished_at=_now(),
+            progress_stage="cancelled",
+            progress_message="Cancelado antes de iniciar proveedor IA.",
+            error_code="CANCELLED",
+            error_message="Análisis IA cancelado por el usuario.",
+        )
+        return _payload_with_job_selection(conn, licitacion_id, row, selected)
     if config.analysis_provider == "gemini":
         limit = check_rate_limit(conn, config)
         if not limit.allowed:
@@ -421,6 +478,8 @@ def process_ai_job(
                 conn,
                 job_id,
                 status="deferred",
+                progress_stage="queued",
+                progress_message=limit.reason,
                 error_code="RATE_LIMIT",
                 error_message=limit.reason,
                 next_retry_at=limit.retry_at,
@@ -429,11 +488,19 @@ def process_ai_job(
 
     active_provider = provider or (CodexLocalProvider(config, job_id=job_id) if config.analysis_provider == "codex_local" else GeminiProvider(config))
     try:
+        touch_job_progress(
+            conn,
+            job_id,
+            stage="running_codex" if config.analysis_provider == "codex_local" else "launching_provider",
+            message="Ejecutando Codex Local" if config.analysis_provider == "codex_local" else "Consultando proveedor IA",
+            percent=30,
+        )
         result = active_provider.analyze_documents(dict(licitacion), selected)
-        summary = parse_summary_json(result.summary)
+        touch_job_progress(conn, job_id, stage="validating_result", message="Validando resultado IA", percent=85)
+        summary = postprocess_summary(parse_summary_json(result.summary))
     except AISchemaError as exc:
         record_usage(conn, provider=config.analysis_provider, model=_provider_model(config), status="error", error_code="INVALID_JSON", licitacion_id=licitacion_id, job_id=job_id)
-        update_job(conn, job_id, status="error", finished_at=_now(), error_code="INVALID_JSON", error_message=str(exc))
+        update_job(conn, job_id, status="error", finished_at=_now(), progress_stage="error", progress_message=str(exc), heartbeat_at=_now(), error_code="INVALID_JSON", error_message=str(exc))
         return _payload_with_job_selection(conn, licitacion_id, row, selected)
     except AIProviderError as exc:
         status = "deferred" if exc.code == "RESOURCE_EXHAUSTED" else "error"
@@ -447,6 +514,9 @@ def process_ai_job(
             job_id,
             status=status,
             finished_at=_now(),
+            progress_stage="error" if status == "error" else "queued",
+            progress_message=str(exc),
+            heartbeat_at=_now(),
             error_code=exc.code,
             error_message=str(exc),
             next_retry_at=retry_at,
@@ -455,21 +525,27 @@ def process_ai_job(
         return _payload_with_job_selection(conn, licitacion_id, row, selected)
 
     raw_usage = result.raw_usage or {}
+    touch_job_progress(conn, job_id, stage="validating_result", message="Comprobando calidad de la ficha IA", percent=88)
     quality_check = summary_quality_check(summary)
     raw_usage["quality_check"] = quality_check
     if not quality_check["is_useful"]:
-        record_usage(conn, provider=config.analysis_provider, model=_provider_model(config), status="error", error_code="EMPTY_ANALYSIS", licitacion_id=licitacion_id, job_id=job_id)
+        error_code, error_message = _quality_error(quality_check)
+        record_usage(conn, provider=config.analysis_provider, model=_provider_model(config), status="error", error_code=error_code, licitacion_id=licitacion_id, job_id=job_id)
         update_job(
             conn,
             job_id,
             status="error",
             finished_at=_now(),
-            error_code="EMPTY_ANALYSIS",
-            error_message="La IA devolvió un JSON válido pero sin contenido útil.",
+            progress_stage="error",
+            progress_message=error_message,
+            heartbeat_at=_now(),
+            error_code=error_code,
+            error_message=error_message,
             raw_usage_json=json.dumps(raw_usage, ensure_ascii=False),
         )
         return _payload_with_job_selection(conn, licitacion_id, row, selected)
 
+    touch_job_progress(conn, job_id, stage="saving_summary", message="Guardando ficha IA", percent=95)
     save_summary(
         conn,
         licitacion_id=licitacion_id,
@@ -496,6 +572,10 @@ def process_ai_job(
         job_id,
         status="completed",
         finished_at=_now(),
+        progress_stage="completed",
+        progress_message="Ficha IA guardada.",
+        progress_percent=100,
+        heartbeat_at=_now(),
         error_code="",
         error_message="",
         raw_usage_json=json.dumps(raw_usage, ensure_ascii=False),
@@ -514,7 +594,67 @@ def list_ai_jobs(conn: sqlite3.Connection, limit: int = 30) -> list[dict[str, ob
         """,
         (limit,),
     ).fetchall()
-    return [dict(row) for row in rows]
+    return [_queue_job_item(row) for row in rows]
+
+
+def _queue_job_item(row: sqlite3.Row) -> dict[str, object]:
+    payload = _job_payload(row) or {}
+    payload.update(
+        {
+            "licitacion_id": row["licitacion_id"],
+            "expediente": row["expediente"] or "",
+            "titulo_corto": str(row["objeto"] or "")[:120],
+            "can_cancel": str(row["status"] or "") in {"pending", "queued", "deferred", "processing"},
+            "can_retry": str(row["status"] or "") in {"error", "deferred", "cancelled"},
+            "can_open": row["licitacion_id"] is not None,
+        }
+    )
+    return payload
+
+
+def get_ai_queue_payload(conn: sqlite3.Connection, limit: int = 30) -> dict[str, object]:
+    rows = conn.execute(
+        """
+        SELECT j.*, l.expediente, l.objeto
+        FROM ai_analysis_jobs j
+        LEFT JOIN licitaciones l ON l.id = j.licitacion_id
+        WHERE (j.dismissed_at IS NULL OR j.dismissed_at = '')
+        ORDER BY
+          CASE WHEN j.status IN ('pending', 'queued', 'processing', 'deferred') THEN 0 ELSE 1 END,
+          COALESCE(j.started_at, j.created_at) DESC,
+          j.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    items = [_queue_job_item(row) for row in rows]
+    active = [item for item in items if item["status"] in {"pending", "queued", "processing", "deferred"}]
+    recent = [item for item in items if item["status"] not in {"pending", "queued", "processing", "deferred"}]
+    counts = {
+        "pending": sum(1 for item in items if item["status"] in {"pending", "queued", "deferred"}),
+        "processing": sum(1 for item in items if item["status"] == "processing"),
+        "completed_recent": sum(1 for item in items if item["status"] == "completed"),
+        "error_recent": sum(1 for item in items if item["status"] == "error"),
+        "active": len(active),
+    }
+    return {"active_jobs": active, "recent_jobs": recent, "counts": counts, "now": queue_now_iso()}
+
+
+def cancel_ai_job(conn: sqlite3.Connection, job_id: int) -> dict[str, object]:
+    result = cancel_job(conn, job_id)
+    payload = get_ai_job_payload(conn, job_id)
+    payload.update(result)
+    return payload
+
+
+def dismiss_ai_job(conn: sqlite3.Connection, job_id: int, dismissed_by: str = "") -> dict[str, object]:
+    dismiss_job(conn, job_id, dismissed_by=dismissed_by)
+    return {"ok": True, "job_id": job_id}
+
+
+def mark_stale_ai_jobs(conn: sqlite3.Connection, *, timeout_seconds: int) -> dict[str, object]:
+    count = mark_stale_jobs_in_conn(conn, processing_timeout_seconds=timeout_seconds + 120)
+    return {"ok": True, "marked": count}
 
 
 def get_ai_job_payload(conn: sqlite3.Connection, job_id: int) -> dict[str, object]:

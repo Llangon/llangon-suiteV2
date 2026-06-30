@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 ACTIVE_JOB_STATUSES = ("pending", "processing", "deferred")
@@ -46,6 +46,14 @@ def ensure_ai_schema(conn: sqlite3.Connection) -> None:
     )
     _ensure_column(conn, "ai_analysis_jobs", "dismissed_at", "TEXT")
     _ensure_column(conn, "ai_analysis_jobs", "dismissed_by", "TEXT")
+    _ensure_column(conn, "ai_analysis_jobs", "progress_stage", "TEXT")
+    _ensure_column(conn, "ai_analysis_jobs", "progress_message", "TEXT")
+    _ensure_column(conn, "ai_analysis_jobs", "progress_percent", "INTEGER")
+    _ensure_column(conn, "ai_analysis_jobs", "heartbeat_at", "TEXT")
+    _ensure_column(conn, "ai_analysis_jobs", "worker_pid", "INTEGER")
+    _ensure_column(conn, "ai_analysis_jobs", "started_by", "TEXT")
+    _ensure_column(conn, "ai_analysis_jobs", "cancel_requested", "INTEGER DEFAULT 0")
+    _ensure_column(conn, "ai_analysis_jobs", "estimated_seconds", "INTEGER")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_jobs_licitacion ON ai_analysis_jobs(licitacion_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_jobs_document_hash ON ai_analysis_jobs(document_hash)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_jobs_status ON ai_analysis_jobs(status)")
@@ -105,6 +113,74 @@ def ensure_ai_schema(conn: sqlite3.Connection) -> None:
 
 def now_iso() -> str:
     return datetime.now().replace(microsecond=0).isoformat()
+
+
+def parse_iso(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def estimate_seconds_for_job(provider: str, selected_documents_count: int) -> int:
+    if provider != "codex_local":
+        return 120
+    if selected_documents_count <= 1:
+        return 7 * 60
+    if selected_documents_count == 2:
+        return 10 * 60
+    if selected_documents_count <= 4:
+        return 15 * 60
+    return 18 * 60
+
+
+def estimate_label_for_job(provider: str, selected_documents_count: int) -> str:
+    if provider != "codex_local":
+        return "1-3 min aprox."
+    if selected_documents_count <= 1:
+        return "4-7 min aprox."
+    if selected_documents_count == 2:
+        return "6-10 min aprox."
+    if selected_documents_count <= 4:
+        return "8-15 min aprox."
+    return "puede tardar más de 15 min"
+
+
+def elapsed_seconds_for_row(row: sqlite3.Row | dict[str, object], now: datetime | None = None) -> int:
+    current = now or datetime.now().replace(microsecond=0)
+    started = parse_iso(row["started_at"] if isinstance(row, sqlite3.Row) else row.get("started_at"))
+    created = parse_iso(row["created_at"] if isinstance(row, sqlite3.Row) else row.get("created_at"))
+    finished = parse_iso(row["finished_at"] if isinstance(row, sqlite3.Row) else row.get("finished_at"))
+    begin = started or created
+    if not begin:
+        return 0
+    end = finished or current
+    return max(0, int((end - begin).total_seconds()))
+
+
+def human_stage(value: object, status: object = "") -> str:
+    stage = str(value or "").strip()
+    if not stage:
+        stage = str(status or "").strip()
+    labels = {
+        "pending": "En cola",
+        "queued": "En cola",
+        "deferred": "En espera",
+        "preparing_workspace": "Preparando documentos",
+        "extracting_text": "Extrayendo texto",
+        "launching_provider": "Preparando proveedor",
+        "running_codex": "Ejecutando Codex",
+        "validating_result": "Validando resultado",
+        "saving_summary": "Guardando ficha IA",
+        "completed": "Completado",
+        "error": "Error",
+        "cancelled": "Cancelado",
+        "stale": "Atascado",
+        "processing": "Procesando",
+    }
+    return labels.get(stage, stage.replace("_", " ").strip().capitalize() or "Sin estado")
 
 
 def latest_summary(conn: sqlite3.Connection, licitacion_id: int, document_hash: str | None = None) -> sqlite3.Row | None:
@@ -178,13 +254,16 @@ def create_job(
     created_at: str | None = None,
 ) -> int:
     timestamp = created_at or now_iso()
+    selected_count = len(selected_documents)
+    estimate = estimate_seconds_for_job(provider, selected_count)
     cur = conn.execute(
         """
         INSERT INTO ai_analysis_jobs (
             licitacion_id, document_hash, status, provider, model, requested_by,
-            created_at, error_code, error_message, selected_documents_json, attempts
+            created_at, error_code, error_message, selected_documents_json, attempts,
+            progress_stage, progress_message, estimated_seconds, cancel_requested
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0)
         """,
         (
             licitacion_id,
@@ -197,6 +276,9 @@ def create_job(
             error_code,
             error_message,
             json.dumps(selected_documents, ensure_ascii=False),
+            status if status in {"pending", "queued", "deferred"} else "",
+            "Análisis IA en cola." if status in {"pending", "queued", "deferred"} else "",
+            estimate,
         ),
     )
     return int(cur.lastrowid)
@@ -214,12 +296,19 @@ def claim_pending_job(conn: sqlite3.Connection, job_id: int, *, started_at: str 
     cur = conn.execute(
         """
         UPDATE ai_analysis_jobs
-        SET status = 'processing', started_at = ?, attempts = COALESCE(attempts, 0) + 1
+        SET status = 'processing',
+            started_at = ?,
+            attempts = COALESCE(attempts, 0) + 1,
+            progress_stage = 'preparing_workspace',
+            progress_message = 'Preparando carpeta temporal',
+            progress_percent = 5,
+            heartbeat_at = ?,
+            cancel_requested = 0
         WHERE id = ?
           AND status IN ('pending', 'queued', 'deferred')
           AND (dismissed_at IS NULL OR dismissed_at = '')
         """,
-        (timestamp, job_id),
+        (timestamp, timestamp, job_id),
     )
     if cur.rowcount <= 0:
         return None
@@ -236,6 +325,111 @@ def next_pending_job(conn: sqlite3.Connection) -> sqlite3.Row | None:
         LIMIT 1
         """
     ).fetchone()
+
+
+def touch_job_progress(
+    conn: sqlite3.Connection,
+    job_id: int,
+    *,
+    stage: str,
+    message: str,
+    percent: int | None = None,
+    worker_pid: int | None = None,
+) -> None:
+    fields: dict[str, object] = {
+        "progress_stage": stage,
+        "progress_message": message,
+        "heartbeat_at": now_iso(),
+    }
+    if percent is not None:
+        fields["progress_percent"] = max(0, min(100, int(percent)))
+    if worker_pid is not None:
+        fields["worker_pid"] = worker_pid
+    update_job(conn, job_id, **fields)
+
+
+def cancel_job(conn: sqlite3.Connection, job_id: int) -> dict[str, object]:
+    row = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
+    if not row:
+        raise ValueError("Job IA no encontrado")
+    status = str(row["status"] or "")
+    if status in {"pending", "queued", "deferred"}:
+        update_job(
+            conn,
+            job_id,
+            status="cancelled",
+            finished_at=now_iso(),
+            progress_stage="cancelled",
+            progress_message="Cancelado antes de iniciar.",
+            cancel_requested=1,
+            error_code="CANCELLED",
+            error_message="Análisis IA cancelado por el usuario.",
+        )
+        return {"ok": True, "message": "Análisis IA cancelado."}
+    if status == "processing":
+        update_job(
+            conn,
+            job_id,
+            cancel_requested=1,
+            progress_message="Cancelación solicitada. El proceso puede finalizar cuando termine la fase actual.",
+            heartbeat_at=now_iso(),
+        )
+        return {"ok": True, "message": "Cancelación solicitada. El proceso puede finalizar cuando termine la fase actual."}
+    return {"ok": False, "message": "El job ya no se puede cancelar."}
+
+
+def dismiss_job(conn: sqlite3.Connection, job_id: int, dismissed_by: str = "") -> None:
+    row = conn.execute("SELECT id FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
+    if not row:
+        raise ValueError("Job IA no encontrado")
+    update_job(conn, job_id, dismissed_at=now_iso(), dismissed_by=dismissed_by or "ui")
+
+
+def mark_stale_jobs_in_conn(conn: sqlite3.Connection, *, processing_timeout_seconds: int, pending_timeout_minutes: int = 30) -> int:
+    now = datetime.now().replace(microsecond=0)
+    heartbeat_threshold = (now - timedelta(seconds=max(60, processing_timeout_seconds))).isoformat()
+    pending_threshold = (now - timedelta(minutes=max(5, pending_timeout_minutes))).isoformat()
+    processing = conn.execute(
+        """
+        SELECT id FROM ai_analysis_jobs
+        WHERE status = 'processing'
+          AND COALESCE(NULLIF(heartbeat_at, ''), started_at, created_at) < ?
+          AND (dismissed_at IS NULL OR dismissed_at = '')
+        """,
+        (heartbeat_threshold,),
+    ).fetchall()
+    pending = conn.execute(
+        """
+        SELECT id FROM ai_analysis_jobs
+        WHERE status IN ('pending', 'queued', 'deferred')
+          AND created_at < ?
+          AND (dismissed_at IS NULL OR dismissed_at = '')
+        """,
+        (pending_threshold,),
+    ).fetchall()
+    for row in processing:
+        update_job(
+            conn,
+            int(row["id"]),
+            status="error",
+            finished_at=now.isoformat(),
+            error_code="STALE_JOB",
+            error_message="Job marcado como atascado por falta de actividad reciente.",
+            progress_stage="stale",
+            progress_message="Atascado por falta de heartbeat reciente.",
+        )
+    for row in pending:
+        update_job(
+            conn,
+            int(row["id"]),
+            status="error",
+            finished_at=now.isoformat(),
+            error_code="STALE_PENDING_JOB",
+            error_message="Job pendiente marcado como atascado porque no llegó a arrancar.",
+            progress_stage="stale",
+            progress_message="Pendiente atascado sin worker.",
+        )
+    return len(processing) + len(pending)
 
 
 def save_summary(
