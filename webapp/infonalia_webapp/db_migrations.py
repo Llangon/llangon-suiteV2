@@ -534,6 +534,16 @@ def _ai_analysis_phase1_schema(conn: sqlite3.Connection) -> None:
     _ensure_ai_schema(conn)
 
 
+def _ai_jobs_dismissed_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "ai_analysis_jobs"):
+        _ensure_ai_schema(conn)
+        return
+    if not _column_exists(conn, "ai_analysis_jobs", "dismissed_at"):
+        conn.execute("ALTER TABLE ai_analysis_jobs ADD COLUMN dismissed_at TEXT")
+    if not _column_exists(conn, "ai_analysis_jobs", "dismissed_by"):
+        conn.execute("ALTER TABLE ai_analysis_jobs ADD COLUMN dismissed_by TEXT")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version="0001_baseline_schema",
@@ -599,6 +609,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version="0013_ai_analysis_phase1",
         description="Analisis IA Gemini Fase 1 con jobs, summaries y usage log",
         apply=_ai_analysis_phase1_schema,
+    ),
+    Migration(
+        version="0014_ai_jobs_dismissed",
+        description="Marca de descarte UI para jobs IA historicos",
+        apply=_ai_jobs_dismissed_schema,
     ),
 )
 

@@ -8,6 +8,15 @@ from datetime import datetime
 ACTIVE_JOB_STATUSES = ("pending", "processing", "deferred")
 
 
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(row[1] == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    if not _column_exists(conn, table, column):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def ensure_ai_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -28,10 +37,14 @@ def ensure_ai_schema(conn: sqlite3.Connection) -> None:
             attempts INTEGER DEFAULT 0,
             next_retry_at TEXT,
             raw_usage_json TEXT,
+            dismissed_at TEXT,
+            dismissed_by TEXT,
             FOREIGN KEY (licitacion_id) REFERENCES licitaciones(id)
         )
         """
     )
+    _ensure_column(conn, "ai_analysis_jobs", "dismissed_at", "TEXT")
+    _ensure_column(conn, "ai_analysis_jobs", "dismissed_by", "TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_jobs_licitacion ON ai_analysis_jobs(licitacion_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_jobs_document_hash ON ai_analysis_jobs(document_hash)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ai_jobs_status ON ai_analysis_jobs(status)")
@@ -105,25 +118,39 @@ def latest_summary(conn: sqlite3.Connection, licitacion_id: int, document_hash: 
     ).fetchone()
 
 
-def active_job(conn: sqlite3.Connection, licitacion_id: int, document_hash: str) -> sqlite3.Row | None:
+def active_job(conn: sqlite3.Connection, licitacion_id: int, document_hash: str, provider: str | None = None) -> sqlite3.Row | None:
     placeholders = ",".join("?" for _ in ACTIVE_JOB_STATUSES)
+    provider_clause = " AND provider = ?" if provider else ""
+    values: list[object] = [licitacion_id, document_hash, *ACTIVE_JOB_STATUSES]
+    if provider:
+        values.append(provider)
     return conn.execute(
         f"""
         SELECT * FROM ai_analysis_jobs
         WHERE licitacion_id = ? AND document_hash = ? AND status IN ({placeholders})
+          AND (dismissed_at IS NULL OR dismissed_at = '')
+          {provider_clause}
         ORDER BY created_at DESC, id DESC
         LIMIT 1
         """,
-        [licitacion_id, document_hash, *ACTIVE_JOB_STATUSES],
+        values,
     ).fetchone()
 
 
-def latest_job(conn: sqlite3.Connection, licitacion_id: int, document_hash: str | None = None) -> sqlite3.Row | None:
+def latest_job(
+    conn: sqlite3.Connection,
+    licitacion_id: int,
+    document_hash: str | None = None,
+    provider: str | None = None,
+) -> sqlite3.Row | None:
     values: list[object] = [licitacion_id]
-    where = "licitacion_id = ?"
+    where = "licitacion_id = ? AND (dismissed_at IS NULL OR dismissed_at = '')"
     if document_hash:
         where += " AND document_hash = ?"
         values.append(document_hash)
+    if provider:
+        where += " AND provider = ?"
+        values.append(provider)
     return conn.execute(
         f"""
         SELECT * FROM ai_analysis_jobs

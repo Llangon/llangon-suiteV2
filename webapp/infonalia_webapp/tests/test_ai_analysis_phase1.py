@@ -27,7 +27,7 @@ from webapp.infonalia_webapp.ai.gemini_provider import (
 from webapp.infonalia_webapp.ai.hashing import hash_documents
 from webapp.infonalia_webapp.ai.manual_test import build_preflight_report, mark_interrupted_job
 from webapp.infonalia_webapp.ai.pdf_text_extractor import ExtractedTextResult, extract_pdf_text
-from webapp.infonalia_webapp.ai.queue import active_job, create_job, ensure_ai_schema, latest_summary
+from webapp.infonalia_webapp.ai.queue import active_job, create_job, ensure_ai_schema, latest_job, latest_summary
 from webapp.infonalia_webapp.ai.rate_limit import check_rate_limit
 from webapp.infonalia_webapp.ai.schemas import parse_summary_json, summary_quality_check
 from webapp.infonalia_webapp.ai.service import delete_ai_summary, process_ai_job, request_ai_analysis
@@ -183,6 +183,16 @@ def test_ai_config_defaults_disabled_and_does_not_expose_key(monkeypatch: pytest
     assert config.input_mode == "text"
     assert "api_key" not in config.public_status()
     assert "secret-test-key" not in json.dumps(config.public_status())
+
+
+def test_ai_provider_blank_env_means_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_ANALYSIS_PROVIDER", "")
+
+    config = get_ai_config()
+
+    assert config.active_provider == "disabled"
+    assert config.provider_enabled is False
+    assert config.provider_status_label == "IA desactivada"
 
 
 def test_gemini_response_parser_uses_parsed_dict() -> None:
@@ -695,7 +705,32 @@ def test_service_disabled_does_not_call_provider(tmp_path: Path, monkeypatch: py
     payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
 
     assert payload["enabled"] is False
-    assert payload["job_status"] == "disabled"
+    assert payload["active_provider"] == "gemini"
+    assert payload["job_status"] == "error"
+    assert payload["job"]["error_code"] == "GEMINI_DISABLED"
+    assert provider.calls == 0
+
+
+def test_codex_local_disabled_does_not_call_gemini_or_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    provider = FakeProvider()
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("AI_ANALYSIS_PROVIDER", "codex_local")
+    monkeypatch.setenv("CODEX_LOCAL_ENABLED", "false")
+    monkeypatch.setenv("GEMINI_ENABLED", "false")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
+
+    assert payload["active_provider"] == "codex_local"
+    assert payload["provider_enabled"] is False
+    assert payload["provider_status_label"] == "Codex Local desactivado"
+    assert payload["job_status"] == "error"
+    assert payload["job"]["provider"] == "codex_local"
+    assert payload["job"]["error_code"] == "CODEX_DISABLED"
+    assert payload["job"]["error_message"] == "Codex Local no está activado."
     assert provider.calls == 0
 
 
@@ -973,6 +1008,17 @@ def test_delete_ai_summary_does_not_delete_documents(tmp_path: Path) -> None:
     conn = _conn()
     pdf = _write_pdf(tmp_path / "PCAP.pdf")
     _insert_licitacion(conn, tmp_path)
+    job_id = create_job(
+        conn,
+        licitacion_id=1,
+        document_hash="hash",
+        selected_documents=[{"name": "PCAP.pdf", "path": str(pdf), "relative_path": "PCAP.pdf"}],
+        model="gemini-test",
+        provider="gemini",
+        status="error",
+        error_code="PROVIDER_ERROR",
+        error_message="Error consultando Gemini.",
+    )
     conn.execute(
         """
         INSERT INTO ai_summaries (
@@ -987,7 +1033,14 @@ def test_delete_ai_summary_does_not_delete_documents(tmp_path: Path) -> None:
     payload = delete_ai_summary(conn, 1)
 
     assert payload["has_summary"] is False
+    assert payload["job_status"] == ""
+    assert payload["job"] is None
+    assert payload["dismissed_jobs"] == 1
     assert latest_summary(conn, 1) is None
+    assert latest_job(conn, 1) is None
+    row = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
+    assert row["dismissed_at"]
+    assert row["dismissed_by"] == "delete_ai_summary"
     assert pdf.exists()
 
 
@@ -1250,6 +1303,7 @@ def test_parse_summary_json_fills_missing_sections() -> None:
 
 def test_ai_summary_api_without_config_returns_controlled_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("AI_ANALYSIS_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_ENABLED", "false")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     app = load_app_module()
@@ -1281,6 +1335,7 @@ def test_ai_generate_api_with_disabled_gemini_creates_disabled_job(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("AI_ANALYSIS_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_ENABLED", "false")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     app = load_app_module()
@@ -1304,9 +1359,80 @@ def test_ai_generate_api_with_disabled_gemini_creates_disabled_job(
 
         status, payload = handler.responses[-1]
         assert status == HTTPStatus.OK
-        assert payload["job_status"] == "disabled"
+        assert payload["active_provider"] == "gemini"
+        assert payload["job_status"] == "error"
+        assert payload["job"]["provider"] == "gemini"
+        assert payload["job"]["error_code"] == "GEMINI_DISABLED"
         with app.db_session() as conn:
             assert conn.execute("SELECT COUNT(*) FROM ai_analysis_jobs").fetchone()[0] == 1
+
+
+def test_ai_generate_api_codex_disabled_uses_payload_provider_without_gemini_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("AI_ANALYSIS_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_ENABLED", "false")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("CODEX_LOCAL_ENABLED", "false")
+    app = load_app_module()
+    with temporary_app_database(app):
+        folder = tmp_path / "docs"
+        folder.mkdir()
+        _write_pdf(folder / "PCAP.pdf")
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                INSERT INTO licitaciones (
+                    id, expediente, objeto, organismo, ruta_carpeta, estado, created_at, updated_at
+                )
+                VALUES (1, 'EXP-API', 'Objeto', 'Organo', ?, 'Importada', '2026-01-01', '2026-01-01')
+                """,
+                (str(folder),),
+            )
+        handler = make_handler(
+            app,
+            "POST",
+            "/api/licitaciones/1/ai-summary/generate",
+            {"selected_files": ["PCAP.pdf"], "provider": "codex_local"},
+        )
+
+        dispatch(handler, "POST")
+
+        status, payload = handler.responses[-1]
+        serialized = json.dumps(payload, ensure_ascii=False)
+        assert status == HTTPStatus.OK
+        assert payload["active_provider"] == "codex_local"
+        assert payload["provider_enabled"] is False
+        assert payload["job_status"] == "error"
+        assert payload["job"]["provider"] == "codex_local"
+        assert payload["job"]["error_code"] == "CODEX_DISABLED"
+        assert "Gemini" not in serialized
+        with app.db_session() as conn:
+            row = conn.execute("SELECT provider, status, error_code FROM ai_analysis_jobs").fetchone()
+            assert dict(row) == {"provider": "codex_local", "status": "error", "error_code": "CODEX_DISABLED"}
+
+
+def test_ai_generate_api_rejects_unknown_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    app = load_app_module()
+    with temporary_app_database(app):
+        handler = make_handler(app, "POST", "/api/licitaciones/1/ai-summary/generate", {"provider": "otro"})
+
+        dispatch(handler, "POST")
+
+        status, payload = handler.responses[-1]
+        assert status == HTTPStatus.BAD_REQUEST
+        assert "Proveedor IA no válido" in payload["error"]
+
+
+def test_ai_ui_has_provider_specific_error_messages() -> None:
+    source = Path("webapp/infonalia_webapp/static/app.js").read_text(encoding="utf-8")
+
+    assert 'code === "CODEX_DISABLED"' in source
+    assert "Codex Local no está activado." in source
+    assert "Error consultando Codex Local." in source
+    assert 'provider === "gemini"' in source
 
 
 def test_manual_test_exposes_force_regeneration_flag() -> None:

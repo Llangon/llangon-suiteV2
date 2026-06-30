@@ -65,6 +65,7 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
         "0011_monitor_licitaciones_v0",
         "0012_monitor_inventory_v05",
         "0013_ai_analysis_phase1",
+        "0014_ai_jobs_dismissed",
     ]
     assert table_exists(conn, MIGRATIONS_TABLE)
     rows = conn.execute(
@@ -136,6 +137,11 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
             "Analisis IA Gemini Fase 1 con jobs, summaries y usage log",
             "2026-06-12T10:00:00",
         ),
+        (
+            "0014_ai_jobs_dismissed",
+            "Marca de descarte UI para jobs IA historicos",
+            "2026-06-12T10:00:00",
+        ),
     ]
     assert table_exists(conn, "download_jobs")
     assert table_exists(conn, "import_runs")
@@ -153,6 +159,8 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
     assert table_exists(conn, "ai_analysis_jobs")
     assert table_exists(conn, "ai_summaries")
     assert table_exists(conn, "ai_usage_log")
+    ai_job_columns = {row[1] for row in conn.execute("PRAGMA table_info(ai_analysis_jobs)").fetchall()}
+    assert {"dismissed_at", "dismissed_by"} <= ai_job_columns
     assert not table_exists(conn, "licitacion_actuaciones")
     monitor_columns = {row[1] for row in conn.execute("PRAGMA table_info(monitor_runs)").fetchall()}
     assert {
@@ -197,6 +205,7 @@ def test_run_migrations_is_idempotent() -> None:
         "0011_monitor_licitaciones_v0",
         "0012_monitor_inventory_v05",
         "0013_ai_analysis_phase1",
+        "0014_ai_jobs_dismissed",
     ]
     assert run_migrations(conn, now=lambda: "2026-06-12T10:05:00") == []
 
@@ -215,6 +224,7 @@ def test_run_migrations_is_idempotent() -> None:
         ("0011_monitor_licitaciones_v0", "2026-06-12T10:00:00"),
         ("0012_monitor_inventory_v05", "2026-06-12T10:00:00"),
         ("0013_ai_analysis_phase1", "2026-06-12T10:00:00"),
+        ("0014_ai_jobs_dismissed", "2026-06-12T10:00:00"),
     ]
 
 

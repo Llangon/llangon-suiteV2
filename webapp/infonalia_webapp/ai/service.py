@@ -47,25 +47,28 @@ def _usage_value(raw: dict[str, object], *names: str) -> int | None:
 
 
 def _provider_enabled(config: AIConfig) -> bool:
-    if config.analysis_provider == "disabled":
-        return False
-    if config.analysis_provider == "gemini":
-        return config.enabled
-    if config.analysis_provider == "codex_local":
-        return True
-    return False
+    return config.provider_enabled
 
 
 def _provider_configured(config: AIConfig) -> bool:
-    if config.analysis_provider == "gemini":
-        return config.configured
-    if config.analysis_provider == "codex_local":
-        return True
-    return False
+    return config.configured
 
 
 def _provider_model(config: AIConfig) -> str:
     return config.model if config.analysis_provider == "gemini" else config.analysis_provider
+
+
+def _provider_unavailable(config: AIConfig) -> tuple[str, str, str]:
+    if config.analysis_provider == "codex_local":
+        if not config.codex_local_enabled:
+            return "error", "CODEX_DISABLED", "Codex Local no está activado."
+        return "error", "CODEX_NOT_CONFIGURED", "Codex Local no está configurado."
+    if config.analysis_provider == "gemini":
+        if not config.enabled:
+            return "error", "GEMINI_DISABLED", "Gemini desactivado."
+        if not config.configured:
+            return "error", "GEMINI_NOT_CONFIGURED", "Gemini no configurado."
+    return "disabled", "AI_DISABLED", "IA desactivada."
 
 
 def _summary_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
@@ -141,6 +144,7 @@ def _job_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
     return {
         "id": data["id"],
         "status": data["status"],
+        "provider": data.get("provider") or "",
         "document_hash": data["document_hash"],
         "model": data.get("model") or "",
         "created_at": data.get("created_at") or "",
@@ -149,6 +153,8 @@ def _job_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
         "error_code": data.get("error_code") or "",
         "error_message": data.get("error_message") or "",
         "next_retry_at": data.get("next_retry_at") or "",
+        "dismissed_at": data.get("dismissed_at") or "",
+        "dismissed_by": data.get("dismissed_by") or "",
         "attempts": data.get("attempts") or 0,
         "diagnostics": raw_diagnostics,
         "raw_response_preview": raw_diagnostics.get("raw_response_preview", ""),
@@ -217,9 +223,9 @@ def _base_payload(
     enabled = _provider_enabled(config)
     reason = ""
     if not enabled:
-        reason = "IA desactivada"
+        reason = config.provider_status_label
     elif not configured:
-        reason = "IA no configurada"
+        reason = config.provider_status_label
     elif not selected_documents:
         reason = str((diagnostics or {}).get("final_reason") or "No hay documentos aptos para análisis IA")
     return {
@@ -245,9 +251,9 @@ def get_ai_summary_payload(conn: sqlite3.Connection, licitacion_id: int) -> dict
     document_hash = hash_documents(selected) if selected else ""
     payload = _base_payload(config, selected, document_hash, diagnostics)
     summary = _latest_useful_summary(conn, licitacion_id, document_hash) if document_hash else _latest_useful_summary(conn, licitacion_id)
-    job = active_job(conn, licitacion_id, document_hash) if document_hash else None
+    job = active_job(conn, licitacion_id, document_hash, provider=config.analysis_provider) if document_hash else None
     if not job:
-        job = latest_job(conn, licitacion_id, document_hash or None)
+        job = latest_job(conn, licitacion_id, document_hash or None, provider=config.analysis_provider)
     payload.update(
         {
             "has_summary": summary is not None,
@@ -290,8 +296,18 @@ def delete_ai_summary(conn: sqlite3.Connection, licitacion_id: int) -> dict[str,
     if not exists:
         raise ValueError("Licitacion no encontrada")
     cur = conn.execute("DELETE FROM ai_summaries WHERE licitacion_id = ?", (licitacion_id,))
+    dismissed_at = _now()
+    jobs = conn.execute(
+        """
+        UPDATE ai_analysis_jobs
+        SET dismissed_at = ?, dismissed_by = 'delete_ai_summary'
+        WHERE licitacion_id = ? AND (dismissed_at IS NULL OR dismissed_at = '')
+        """,
+        (dismissed_at, licitacion_id),
+    )
     payload = get_ai_summary_payload(conn, licitacion_id)
     payload["deleted_summaries"] = int(cur.rowcount or 0)
+    payload["dismissed_jobs"] = int(jobs.rowcount or 0)
     return payload
 
 
@@ -323,13 +339,14 @@ def request_ai_analysis(
             payload = _base_payload(config, selected, document_hash, diagnostics)
             payload.update({"has_summary": True, "summary": _summary_payload(summary), "job_status": "completed"})
             return payload
-        existing_job = active_job(conn, licitacion_id, document_hash)
+        existing_job = active_job(conn, licitacion_id, document_hash, provider=config.analysis_provider)
         if existing_job:
             payload = _base_payload(config, selected, document_hash, diagnostics)
             payload.update({"job_status": existing_job["status"], "job": _job_payload(existing_job)})
             return payload
 
     if not _provider_enabled(config) or not _provider_configured(config):
+        status, error_code, error_message = _provider_unavailable(config)
         job_id = create_job(
             conn,
             licitacion_id=licitacion_id,
@@ -338,13 +355,13 @@ def request_ai_analysis(
             model=_provider_model(config),
             provider=config.analysis_provider,
             requested_by=requested_by,
-            status="disabled",
-            error_code="DISABLED" if not _provider_enabled(config) else "NOT_CONFIGURED",
-            error_message="IA desactivada" if not _provider_enabled(config) else "IA no configurada.",
+            status=status,
+            error_code=error_code,
+            error_message=error_message,
         )
         payload = _base_payload(config, selected, document_hash, diagnostics)
         job = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
-        payload.update({"job_status": "disabled", "job": _job_payload(job)})
+        payload.update({"job_status": status, "job": _job_payload(job)})
         return payload
 
     job_id = create_job(
@@ -378,29 +395,31 @@ def process_ai_job(
         raise ValueError("Licitacion no encontrada")
 
     if not _provider_enabled(config) or not _provider_configured(config):
+        status, error_code, error_message = _provider_unavailable(config)
         update_job(
             conn,
             job_id,
-            status="disabled",
+            status=status,
             finished_at=_now(),
-            error_code="DISABLED" if not _provider_enabled(config) else "NOT_CONFIGURED",
-            error_message="IA desactivada" if not _provider_enabled(config) else "IA no configurada.",
+            error_code=error_code,
+            error_message=error_message,
         )
         selected = json.loads(row["selected_documents_json"] or "[]")
         return _payload_with_job_selection(conn, licitacion_id, row, selected)
 
     selected = json.loads(row["selected_documents_json"] or "[]")
-    limit = check_rate_limit(conn, config)
-    if not limit.allowed:
-        update_job(
-            conn,
-            job_id,
-            status="deferred",
-            error_code="RATE_LIMIT",
-            error_message=limit.reason,
-            next_retry_at=limit.retry_at,
-        )
-        return _payload_with_job_selection(conn, licitacion_id, row, selected)
+    if config.analysis_provider == "gemini":
+        limit = check_rate_limit(conn, config)
+        if not limit.allowed:
+            update_job(
+                conn,
+                job_id,
+                status="deferred",
+                error_code="RATE_LIMIT",
+                error_message=limit.reason,
+                next_retry_at=limit.retry_at,
+            )
+            return _payload_with_job_selection(conn, licitacion_id, row, selected)
 
     started_at = _now()
     update_job(conn, job_id, status="processing", started_at=started_at, attempts=int(row["attempts"] or 0) + 1)
@@ -442,7 +461,7 @@ def process_ai_job(
             status="error",
             finished_at=_now(),
             error_code="EMPTY_ANALYSIS",
-            error_message="Gemini devolvió un JSON válido pero sin contenido útil.",
+            error_message="La IA devolvió un JSON válido pero sin contenido útil.",
             raw_usage_json=json.dumps(raw_usage, ensure_ascii=False),
         )
         return _payload_with_job_selection(conn, licitacion_id, row, selected)

@@ -19,7 +19,10 @@ def _int_env(name: str, default: int) -> int:
 
 
 def _choice_env(name: str, default: str, choices: set[str]) -> str:
-    value = os.environ.get(name, default).strip().lower()
+    raw = os.environ.get(name)
+    if raw is not None and not raw.strip():
+        return "disabled" if "disabled" in choices else default
+    value = (raw if raw is not None else default).strip().lower()
     return value if value in choices else default
 
 
@@ -49,15 +52,45 @@ class AIConfig:
     codex_max_file_mb: int = 45
 
     @property
+    def active_provider(self) -> str:
+        return self.analysis_provider if self.analysis_provider in {"gemini", "codex_local", "disabled"} else "disabled"
+
+    @property
+    def provider_enabled(self) -> bool:
+        if self.active_provider == "gemini":
+            return self.enabled
+        if self.active_provider == "codex_local":
+            return self.codex_local_enabled
+        return False
+
+    @property
     def configured(self) -> bool:
-        if self.analysis_provider == "codex_local":
+        if self.active_provider == "codex_local":
             return True
-        return bool(self.api_key)
+        if self.active_provider == "gemini":
+            return bool(self.api_key)
+        return False
+
+    @property
+    def provider_status_label(self) -> str:
+        if self.active_provider == "disabled":
+            return "IA desactivada"
+        if self.active_provider == "codex_local":
+            return "Codex Local activo" if self.codex_local_enabled else "Codex Local desactivado"
+        if not self.enabled:
+            return "Gemini desactivado"
+        if not self.configured:
+            return "Gemini no configurado"
+        return "Gemini activo"
 
     def public_status(self) -> dict[str, object]:
         return {
-            "enabled": self.enabled,
+            "enabled": self.provider_enabled,
             "configured": self.configured,
+            "active_provider": self.active_provider,
+            "provider_enabled": self.provider_enabled,
+            "provider_configured": self.configured,
+            "provider_status_label": self.provider_status_label,
             "analysis_provider": self.analysis_provider,
             "model": self.model,
             "max_documents_per_analysis": self.max_documents_per_analysis,

@@ -3525,8 +3525,11 @@ function renderLicitacionDocuments(item) {
 }
 
 function aiStatusLabel(payload) {
-  if (!payload.enabled) return "IA desactivada";
-  if (!payload.configured) return "IA no configurada";
+  if (payload.provider_status_label && (!payload.provider_enabled || !payload.provider_configured)) {
+    return payload.provider_status_label;
+  }
+  if (!payload.enabled) return payload.provider_status_label || "IA desactivada";
+  if (!payload.configured) return payload.provider_status_label || "IA no configurada";
   if (payload.job_status === "pending") return "Pendiente";
   if (payload.job_status === "processing") return "Procesando";
   if (payload.job_status === "deferred") return "Límite alcanzado, reintento posterior";
@@ -3535,9 +3538,34 @@ function aiStatusLabel(payload) {
   return "Sin análisis";
 }
 
+function aiProviderFromPayload(payload) {
+  return payload?.job?.provider || payload?.active_provider || payload?.analysis_provider || "gemini";
+}
+
+function aiProviderErrorMessage(payload) {
+  const job = payload?.job || {};
+  const provider = aiProviderFromPayload(payload);
+  const code = job.error_code || "";
+  if (provider === "codex_local") {
+    if (code === "CODEX_DISABLED") return "Codex Local no está activado.";
+    if (code === "CODEX_NOT_FOUND") return "No se encuentra el ejecutable de Codex.";
+    if (code === "CODEX_TIMEOUT") return "Codex no respondió dentro del tiempo configurado.";
+    if (code === "INVALID_JSON") return "Codex devolvió una respuesta que no es JSON válido.";
+    if (code) return job.error_message || "Error consultando Codex Local.";
+  }
+  if (provider === "gemini") {
+    if (code === "GEMINI_DISABLED") return "Gemini desactivado.";
+    if (code === "GEMINI_NOT_CONFIGURED" || code === "NOT_CONFIGURED") return "Gemini no configurado.";
+    if (code === "GEMINI_TIMEOUT") return "Gemini no respondió dentro del tiempo configurado.";
+    if (code) return job.error_message || "Error consultando Gemini.";
+  }
+  if (provider === "disabled") return "IA desactivada.";
+  return job.error_message || "";
+}
+
 function aiStatusClass(payload) {
   if (payload.has_summary) return "ok";
-  if (!payload.enabled || !payload.configured) return "muted";
+  if (!payload.provider_enabled || !payload.provider_configured || !payload.enabled || !payload.configured) return "muted";
   if (payload.job_status === "error") return "danger";
   if (payload.job_status === "deferred") return "warning";
   if (payload.job_status === "pending" || payload.job_status === "processing") return "warning";
@@ -3678,7 +3706,7 @@ function renderAiSummaryContent(licitacionId, payload) {
   const canGenerate = Boolean(payload.puede_generar);
   const canRetry = payload.job_status === "error" || payload.job_status === "deferred";
   const hasAnyAnalysis = Boolean(payload.has_summary || payload.job_status || payload.job);
-  const reason = payload.motivo_si_no_puede_generar || job.error_message || "";
+  const reason = aiProviderErrorMessage(payload) || payload.motivo_si_no_puede_generar || job.error_message || "";
   return `
     <div class="ai-summary-toolbar">
       <span class="ai-status ${aiStatusClass(payload)}">${escapeHtml(aiStatusLabel(payload))}</span>
