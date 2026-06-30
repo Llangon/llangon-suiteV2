@@ -322,14 +322,20 @@ except ImportError:
     )
 
 try:
+    from .ai.config import get_ai_config
+    from .ai.file_selection import AIFileSelectionError, list_ai_files
     from .ai.service import (
+        delete_ai_summary,
         get_ai_summary_payload,
         list_ai_jobs,
         process_ai_job,
         request_ai_analysis,
     )
 except ImportError:
+    from ai.config import get_ai_config
+    from ai.file_selection import AIFileSelectionError, list_ai_files
     from ai.service import (
+        delete_ai_summary,
         get_ai_summary_payload,
         list_ai_jobs,
         process_ai_job,
@@ -1812,6 +1818,104 @@ def shorten_text(value: object, max_length: int) -> str:
     return text[: max_length - 1].rstrip() + "…"
 
 
+def _ai_summary_list(items: object, limit: int = 6) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    result: list[str] = []
+    for item in items[:limit]:
+        if isinstance(item, dict):
+            text = clean_text(item.get("titulo") or item.get("nombre") or item.get("detalle") or item.get("accion_recomendada") or json.dumps(item, ensure_ascii=False))
+        else:
+            text = clean_text(item)
+        if text:
+            result.append(text)
+    return result
+
+
+def _ai_summary_sequence(value: object) -> list[object]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if value:
+        return [value]
+    return []
+
+
+def ai_summary_email_text(row: sqlite3.Row, summary: dict[str, object]) -> str:
+    ejecutivo = summary.get("resumen_ejecutivo") if isinstance(summary, dict) else {}
+    metadata = summary.get("metadata") if isinstance(summary, dict) else {}
+    presentation = summary.get("presentacion") if isinstance(summary, dict) else {}
+    alertas = _ai_summary_list(summary.get("alertas") if isinstance(summary, dict) else [])
+    criterios = _ai_summary_list(summary.get("criterios_adjudicacion") if isinstance(summary, dict) else [])
+    documentos = []
+    if isinstance(presentation, dict):
+        documentos = _ai_summary_list(
+            [
+                *_ai_summary_sequence(presentation.get("documentacion_administrativa")),
+                *_ai_summary_sequence(presentation.get("documentacion_tecnica")),
+                *_ai_summary_sequence(presentation.get("documentacion_economica")),
+                *_ai_summary_sequence(presentation.get("anexos_relevantes")),
+            ]
+        )
+    return "\n".join(
+        [
+            f"Expediente: {clean_text(row['expediente']) or clean_text((metadata or {}).get('expediente'))}",
+            f"Objeto: {clean_text(row['objeto'])}",
+            f"Fecha límite: {' '.join([format_date_es(row['fecha_limite']) if row['fecha_limite'] else '', clean_text(row['hora_limite'])]).strip()}",
+            "",
+            clean_text((ejecutivo or {}).get("texto")) or "Sin resumen ejecutivo.",
+            "",
+            "Alertas:",
+            *[f"- {item}" for item in alertas],
+            "",
+            "Criterios:",
+            *[f"- {item}" for item in criterios],
+            "",
+            "Documentación:",
+            *[f"- {item}" for item in documentos],
+            "",
+            "Análisis automático. Revisar contra pliegos.",
+        ]
+    )
+
+
+def ai_summary_email_html(row: sqlite3.Row, summary: dict[str, object]) -> str:
+    ejecutivo = summary.get("resumen_ejecutivo") if isinstance(summary, dict) else {}
+    alertas = _ai_summary_list(summary.get("alertas") if isinstance(summary, dict) else [])
+    criterios = _ai_summary_list(summary.get("criterios_adjudicacion") if isinstance(summary, dict) else [])
+    fecha_limite = " ".join([format_date_es(row["fecha_limite"]) if row["fecha_limite"] else "", clean_text(row["hora_limite"])]).strip()
+
+    def items_html(values: list[str]) -> str:
+        if not values:
+            return "<p style='margin:0;color:#667085;'>Sin datos destacados.</p>"
+        return "<ul style='margin:8px 0 0 18px;padding:0;'>" + "".join(f"<li>{html.escape(item)}</li>" for item in values) + "</ul>"
+
+    return f"""
+    <div style="font-family:Calibri,Arial,sans-serif;color:#172033;background:#f6f8fb;padding:24px;">
+      <div style="max-width:760px;margin:0 auto;background:#ffffff;border:1px solid #dbe5dc;border-radius:10px;overflow:hidden;">
+        <div style="padding:22px 26px;border-left:6px solid #24a324;">
+          <p style="margin:0 0 6px;color:#667085;font-size:12px;font-weight:bold;text-transform:uppercase;">Análisis IA documental</p>
+          <h1 style="margin:0;font-size:22px;">{html.escape(clean_text(row['expediente']) or 'Licitación')}</h1>
+          <p style="margin:10px 0 0;font-size:15px;line-height:1.45;">{html.escape(clean_text(row['objeto']))}</p>
+        </div>
+        <div style="padding:18px 26px;border-top:1px solid #e6ece8;">
+          <p><strong>Fecha límite:</strong> {html.escape(fecha_limite or 'No consta')}</p>
+          <h2 style="font-size:16px;">Resumen ejecutivo</h2>
+          <p style="line-height:1.55;">{html.escape(clean_text((ejecutivo or {}).get('texto')) or 'Sin resumen ejecutivo.')}</p>
+          <h2 style="font-size:16px;">Alertas</h2>
+          {items_html(alertas)}
+          <h2 style="font-size:16px;">Criterios</h2>
+          {items_html(criterios)}
+          <p style="margin-top:22px;padding:12px;background:#fff8dd;border:1px solid #f0d278;border-radius:8px;color:#6f5200;font-weight:bold;">
+            Análisis automático. Revisar siempre contra los pliegos antes de usarlo con clientes.
+          </p>
+        </div>
+      </div>
+    </div>
+    """
+
+
 def prepared_notice_recipient(settings: dict[str, str] | None = None) -> str:
     settings = settings or get_settings()
     return clean_text(settings.get("prepared_notice_email_to")) or PREPARED_NOTICE_EMAIL_TO
@@ -1990,6 +2094,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_search_licitaciones(parsed.query)
         elif path == "/api/licitaciones":
             self.api_list_licitaciones(parsed.query)
+        elif path.startswith("/api/licitaciones/") and path.endswith("/ai-files"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ai-files").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_list_ai_files(int(licitacion_id))
         elif path.startswith("/api/licitaciones/") and path.endswith("/ai-summary"):
             licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ai-summary").strip("/")
             if not licitacion_id.isdigit():
@@ -2145,6 +2255,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_generate_ai_summary(int(licitacion_id), force=True)
+        elif path.startswith("/api/licitaciones/") and path.endswith("/ai-summary/email"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ai-summary/email").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_send_ai_summary_email(int(licitacion_id))
         elif path.startswith("/api/ai/jobs/") and path.endswith("/run"):
             job_id = path.removeprefix("/api/ai/jobs/").removesuffix("/run").strip("/")
             if not job_id.isdigit():
@@ -2266,7 +2382,13 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if self.csrf_required_for_path("DELETE", path) and not self.require_csrf_token():
             return
 
-        if path.startswith("/api/licitaciones/"):
+        if path.startswith("/api/licitaciones/") and path.endswith("/ai-summary"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ai-summary").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_delete_ai_summary(int(licitacion_id))
+        elif path.startswith("/api/licitaciones/"):
             licitacion_id = path.removeprefix("/api/licitaciones/").strip("/")
             if not licitacion_id.isdigit():
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
@@ -2361,6 +2483,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 or path.endswith("/open-folder")
                 or path.endswith("/ai-summary/generate")
                 or path.endswith("/ai-summary/regenerate")
+                or path.endswith("/ai-summary/email")
                 or path.endswith("/ia-preview")
                 or path.endswith("/ia-preview/email")
                 or path.endswith("/prepared-notice/email")
@@ -2483,6 +2606,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         reviewer = get_user_record(REVIEWER_USER) or {}
         default_review_email = clean_text(reviewer.get("email")) or REVIEWER_EMAIL or PREPARED_NOTICE_EMAIL_TO
         payload["settings"]["nuria_review_email_to"] = default_review_email
+        payload["ai"] = get_ai_config().public_status()
         return payload
 
     def api_get_config(self) -> None:
@@ -4265,6 +4389,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         try:
             with db_session() as conn:
                 payload = get_ai_summary_payload(conn, licitacion_id)
+        except AIFileSelectionError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
             return
@@ -4273,10 +4400,41 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             return
         self.send_json(payload)
 
+    def api_list_ai_files(self, licitacion_id: int) -> None:
+        config = get_ai_config()
+        try:
+            with db_session() as conn:
+                row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+                if not row:
+                    self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                    return
+                payload = list_ai_files(
+                    row,
+                    max_documents=config.max_documents_per_analysis,
+                    max_file_mb=config.max_file_mb,
+                )
+        except AIFileSelectionError as exc:
+            self.send_json({"error": str(exc), "items": []}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(payload)
+
     def api_generate_ai_summary(self, licitacion_id: int, *, force: bool = False) -> None:
         if force and not self.require_admin():
             return
         user = self.current_user() or {}
+        try:
+            data = self.read_json()
+        except json.JSONDecodeError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        selected_files = data.get("selected_files")
+        if selected_files is not None and not isinstance(selected_files, list):
+            self.send_json({"error": "selected_files debe ser una lista."}, HTTPStatus.BAD_REQUEST)
+            return
+        provider_name = clean_text(data.get("provider"))
+        if provider_name and provider_name not in {"gemini", "codex_local", "disabled"}:
+            self.send_json({"error": "Proveedor IA no válido."}, HTTPStatus.BAD_REQUEST)
+            return
         try:
             with db_session() as conn:
                 payload = request_ai_analysis(
@@ -4284,7 +4442,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     licitacion_id,
                     requested_by=clean_text(user.get("username")),
                     force=force,
+                    selected_files=selected_files,
+                    provider_name=provider_name or None,
                 )
+        except AIFileSelectionError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
             return
@@ -4292,6 +4455,67 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "No se pudo generar el analisis IA."}, HTTPStatus.BAD_REQUEST)
             return
         self.send_json(payload)
+
+    def api_delete_ai_summary(self, licitacion_id: int) -> None:
+        user = self.current_user() or {}
+        try:
+            with db_session() as conn:
+                payload = delete_ai_summary(conn, licitacion_id)
+                record_licitacion_history(
+                    conn,
+                    licitacion_id,
+                    event_type="ai_summary_deleted",
+                    old_value="summary",
+                    new_value="",
+                    user_id=clean_text(user.get("username")) or "Sistema",
+                    timestamp=now_iso(),
+                )
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            return
+        self.send_json(payload)
+
+    def api_send_ai_summary_email(self, licitacion_id: int) -> None:
+        user = self.current_user() or {}
+        try:
+            data = self.read_json()
+        except json.JSONDecodeError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        recipient = clean_text(data.get("to")) or clean_text(user.get("email"))
+        if not is_valid_email_address(recipient):
+            self.send_json({"error": "Indica un email de destino válido."}, HTTPStatus.BAD_REQUEST)
+            return
+
+        with db_session() as conn:
+            row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+            if not row:
+                self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                return
+            payload = get_ai_summary_payload(conn, licitacion_id)
+        if not payload.get("has_summary") or not payload.get("summary"):
+            self.send_json({"error": "No hay un análisis IA útil para enviar."}, HTTPStatus.BAD_REQUEST)
+            return
+
+        summary = payload["summary"]["summary"] if isinstance(payload.get("summary"), dict) else {}
+        subject = shorten_text(data.get("subject"), 160) or f"Análisis IA - {row['expediente']} - {shorten_text(row['objeto'], 60)}"
+        body = ai_summary_email_text(row, summary)
+        html_body = ai_summary_email_html(row, summary)
+        sent_at, error = send_notification_email_with_settings(
+            settings=get_settings(),
+            recipients=[recipient],
+            subject=subject,
+            body=body,
+            html_body=html_body,
+            logo_path=STATIC_ROOT / "logo-llangon.png",
+            now=now_iso,
+            smtp_factory=smtplib.SMTP,
+            smtp_ssl_factory=smtplib.SMTP_SSL,
+        )
+        if error:
+            self.send_json({"ok": False, "error": error}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json({"ok": True, "sent_at": sent_at, "recipient": recipient})
 
     def api_run_ai_job(self, job_id: int) -> None:
         if not self.require_admin():

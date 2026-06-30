@@ -142,6 +142,7 @@ def create_job(
     document_hash: str,
     selected_documents: list[dict[str, object]],
     model: str,
+    provider: str = "gemini",
     requested_by: str = "",
     status: str = "pending",
     error_code: str = "",
@@ -155,12 +156,13 @@ def create_job(
             licitacion_id, document_hash, status, provider, model, requested_by,
             created_at, error_code, error_message, selected_documents_json, attempts
         )
-        VALUES (?, ?, ?, 'gemini', ?, ?, ?, ?, ?, ?, 0)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         """,
         (
             licitacion_id,
             document_hash,
             status,
+            provider,
             model,
             requested_by,
             timestamp,
@@ -188,6 +190,7 @@ def save_summary(
     summary: dict[str, object],
     text: str,
     job_id: int,
+    provider: str = "gemini",
     timestamp: str | None = None,
 ) -> int:
     now = timestamp or now_iso()
@@ -197,11 +200,11 @@ def save_summary(
         conn.execute(
             """
             UPDATE ai_summaries
-            SET model = ?, summary_json = ?, summary_text = ?, updated_at = ?,
+            SET provider = ?, model = ?, summary_json = ?, summary_text = ?, updated_at = ?,
                 created_from_job_id = ?, quality_status = 'pending_review'
             WHERE id = ?
             """,
-            (model, payload, text, now, job_id, existing["id"]),
+            (provider, model, payload, text, now, job_id, existing["id"]),
         )
         return int(existing["id"])
     cur = conn.execute(
@@ -210,9 +213,9 @@ def save_summary(
             licitacion_id, document_hash, provider, model, summary_json, summary_text,
             created_at, updated_at, created_from_job_id, quality_status
         )
-        VALUES (?, ?, 'gemini', ?, ?, ?, ?, ?, ?, 'pending_review')
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_review')
         """,
-        (licitacion_id, document_hash, model, payload, text, now, now, job_id),
+        (licitacion_id, document_hash, provider, model, payload, text, now, now, job_id),
     )
     return int(cur.lastrowid)
 
@@ -222,6 +225,7 @@ def record_usage(
     *,
     model: str,
     status: str,
+    provider: str = "gemini",
     request_type: str = "analysis",
     tokens_input: int | None = None,
     tokens_output: int | None = None,
@@ -237,9 +241,10 @@ def record_usage(
             provider, model, created_at, request_type, status,
             tokens_input, tokens_output, tokens_total, error_code, licitacion_id, job_id
         )
-        VALUES ('gemini', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            provider,
             model,
             created_at or now_iso(),
             request_type,

@@ -1386,6 +1386,12 @@ textarea {
   margin-left: auto;
 }
 
+.danger-soft {
+  background: #fff5f5;
+  border-color: #f3b7b7;
+  color: #b42318;
+}
+
 .ai-reason,
 .ai-warning {
   background: #fff8dd;
@@ -2471,6 +2477,11 @@ dialog::backdrop {
   max-width: 760px;
 }
 
+.wide-dialog {
+  max-width: 1040px;
+  width: min(96vw, 1040px);
+}
+
 .notice-preview {
   display: grid;
   gap: 14px;
@@ -2484,6 +2495,80 @@ dialog::backdrop {
 .notice-preview input[readonly] {
   background: #f8fafc;
   color: var(--muted);
+}
+
+.ai-file-toolbar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+  margin: 14px 0 10px;
+}
+
+.ai-file-toolbar > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ai-file-table-wrap {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  max-height: min(52vh, 520px);
+  overflow: auto;
+}
+
+.ai-file-table {
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 760px;
+  width: 100%;
+}
+
+.ai-file-table th,
+.ai-file-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 9px 10px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.ai-file-table th {
+  background: #f8fafc;
+  color: var(--muted);
+  font-size: 11px;
+  position: sticky;
+  text-transform: uppercase;
+  top: 0;
+  z-index: 1;
+}
+
+.ai-file-table td:first-child,
+.ai-file-table th:first-child {
+  text-align: center;
+  width: 36px;
+}
+
+.ai-file-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.ai-file-name {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ai-file-name strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-file-name small {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .file-field {

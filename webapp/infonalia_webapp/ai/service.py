@@ -5,8 +5,10 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Protocol
 
+from .codex_local_provider import CodexLocalProvider
 from .config import AIConfig, get_ai_config
 from .document_selector import inspect_document_selection
+from .file_selection import AIFileSelectionError, resolve_selected_ai_files
 from .gemini_provider import AIProviderError, GeminiProvider, ProviderResult
 from .hashing import hash_documents
 from .queue import (
@@ -42,6 +44,28 @@ def _usage_value(raw: dict[str, object], *names: str) -> int | None:
         except (TypeError, ValueError):
             return None
     return None
+
+
+def _provider_enabled(config: AIConfig) -> bool:
+    if config.analysis_provider == "disabled":
+        return False
+    if config.analysis_provider == "gemini":
+        return config.enabled
+    if config.analysis_provider == "codex_local":
+        return True
+    return False
+
+
+def _provider_configured(config: AIConfig) -> bool:
+    if config.analysis_provider == "gemini":
+        return config.configured
+    if config.analysis_provider == "codex_local":
+        return True
+    return False
+
+
+def _provider_model(config: AIConfig) -> str:
+    return config.model if config.analysis_provider == "gemini" else config.analysis_provider
 
 
 def _summary_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
@@ -164,7 +188,17 @@ def _job_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
     }
 
 
-def _select_documents(config: AIConfig, row: sqlite3.Row) -> tuple[list[dict[str, object]], dict[str, object]]:
+def _select_documents(
+    config: AIConfig,
+    row: sqlite3.Row,
+    selected_files: list[object] | None = None,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    if selected_files is not None:
+        try:
+            selected = resolve_selected_ai_files(row, selected_files, max_file_mb=config.max_file_mb)
+        except AIFileSelectionError as exc:
+            return [], {"final_reason": str(exc), "manual_selection_error": True}
+        return selected, {"manual_selection": True, "selected_files_count": len(selected)}
     selection = inspect_document_selection(
         row,
         max_documents=config.max_documents_per_analysis,
@@ -179,9 +213,10 @@ def _base_payload(
     document_hash: str = "",
     diagnostics: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    configured = config.configured
+    configured = _provider_configured(config)
+    enabled = _provider_enabled(config)
     reason = ""
-    if not config.enabled:
+    if not enabled:
         reason = "IA desactivada"
     elif not configured:
         reason = "IA no configurada"
@@ -196,7 +231,7 @@ def _base_payload(
         "selected_documents": selected_documents,
         "document_diagnostics": diagnostics or {},
         "document_hash": document_hash,
-        "puede_generar": bool(config.enabled and configured and selected_documents),
+        "puede_generar": bool(enabled and configured and selected_documents),
         "motivo_si_no_puede_generar": reason,
     }
 
@@ -224,19 +259,61 @@ def get_ai_summary_payload(conn: sqlite3.Connection, licitacion_id: int) -> dict
     return payload
 
 
+def _payload_with_job_selection(
+    conn: sqlite3.Connection,
+    licitacion_id: int,
+    job_row: sqlite3.Row,
+    selected_documents: list[dict[str, object]],
+) -> dict[str, object]:
+    payload = get_ai_summary_payload(conn, licitacion_id)
+    document_hash = str(job_row["document_hash"] or "")
+    summary = _latest_useful_summary(conn, licitacion_id, document_hash) if document_hash else None
+    refreshed_job = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_row["id"],)).fetchone() or job_row
+    payload["selected_documents"] = selected_documents
+    payload["document_hash"] = document_hash or str(payload.get("document_hash") or "")
+    diagnostics = dict(payload.get("document_diagnostics") or {})
+    diagnostics.update({"job_selection": True, "selected_files_count": len(selected_documents)})
+    payload["document_diagnostics"] = diagnostics
+    payload.update(
+        {
+            "has_summary": summary is not None,
+            "summary": _summary_payload(summary),
+            "job_status": refreshed_job["status"] if refreshed_job else "",
+            "job": _job_payload(refreshed_job),
+        }
+    )
+    return payload
+
+
+def delete_ai_summary(conn: sqlite3.Connection, licitacion_id: int) -> dict[str, object]:
+    exists = conn.execute("SELECT id FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+    if not exists:
+        raise ValueError("Licitacion no encontrada")
+    cur = conn.execute("DELETE FROM ai_summaries WHERE licitacion_id = ?", (licitacion_id,))
+    payload = get_ai_summary_payload(conn, licitacion_id)
+    payload["deleted_summaries"] = int(cur.rowcount or 0)
+    return payload
+
+
 def request_ai_analysis(
     conn: sqlite3.Connection,
     licitacion_id: int,
     *,
     requested_by: str = "",
     force: bool = False,
+    selected_files: list[object] | None = None,
+    provider_name: str | None = None,
     provider: ProviderProtocol | None = None,
 ) -> dict[str, object]:
     config = get_ai_config()
+    if provider_name:
+        config = type(config)(**{**config.__dict__, "analysis_provider": provider_name})
     row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
     if not row:
         raise ValueError("Licitacion no encontrada")
-    selected, diagnostics = _select_documents(config, row)
+    selected, diagnostics = _select_documents(config, row, selected_files)
+    if diagnostics.get("manual_selection_error"):
+        raise AIFileSelectionError(str(diagnostics.get("final_reason") or "Selección de ficheros no válida."))
     if not selected:
         return _base_payload(config, selected, diagnostics=diagnostics)
     document_hash = hash_documents(selected)
@@ -252,17 +329,18 @@ def request_ai_analysis(
             payload.update({"job_status": existing_job["status"], "job": _job_payload(existing_job)})
             return payload
 
-    if not config.enabled or not config.configured:
+    if not _provider_enabled(config) or not _provider_configured(config):
         job_id = create_job(
             conn,
             licitacion_id=licitacion_id,
             document_hash=document_hash,
             selected_documents=selected,
-            model=config.model,
+            model=_provider_model(config),
+            provider=config.analysis_provider,
             requested_by=requested_by,
             status="disabled",
-            error_code="DISABLED" if not config.enabled else "NOT_CONFIGURED",
-            error_message="IA desactivada" if not config.enabled else "Gemini no esta configurado.",
+            error_code="DISABLED" if not _provider_enabled(config) else "NOT_CONFIGURED",
+            error_message="IA desactivada" if not _provider_enabled(config) else "IA no configurada.",
         )
         payload = _base_payload(config, selected, document_hash, diagnostics)
         job = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
@@ -274,7 +352,8 @@ def request_ai_analysis(
         licitacion_id=licitacion_id,
         document_hash=document_hash,
         selected_documents=selected,
-        model=config.model,
+        model=_provider_model(config),
+        provider=config.analysis_provider,
         requested_by=requested_by,
     )
     return process_ai_job(conn, job_id, provider=provider)
@@ -291,20 +370,24 @@ def process_ai_job(
     if not row:
         raise ValueError("Job IA no encontrado")
     licitacion_id = int(row["licitacion_id"])
+    job_provider = str(row["provider"] or config.analysis_provider or "gemini")
+    if job_provider != config.analysis_provider:
+        config = type(config)(**{**config.__dict__, "analysis_provider": job_provider})
     licitacion = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
     if not licitacion:
         raise ValueError("Licitacion no encontrada")
 
-    if not config.enabled or not config.configured:
+    if not _provider_enabled(config) or not _provider_configured(config):
         update_job(
             conn,
             job_id,
             status="disabled",
             finished_at=_now(),
-            error_code="DISABLED" if not config.enabled else "NOT_CONFIGURED",
-            error_message="IA desactivada" if not config.enabled else "Gemini no esta configurado.",
+            error_code="DISABLED" if not _provider_enabled(config) else "NOT_CONFIGURED",
+            error_message="IA desactivada" if not _provider_enabled(config) else "IA no configurada.",
         )
-        return get_ai_summary_payload(conn, licitacion_id)
+        selected = json.loads(row["selected_documents_json"] or "[]")
+        return _payload_with_job_selection(conn, licitacion_id, row, selected)
 
     selected = json.loads(row["selected_documents_json"] or "[]")
     limit = check_rate_limit(conn, config)
@@ -317,21 +400,21 @@ def process_ai_job(
             error_message=limit.reason,
             next_retry_at=limit.retry_at,
         )
-        return get_ai_summary_payload(conn, licitacion_id)
+        return _payload_with_job_selection(conn, licitacion_id, row, selected)
 
     started_at = _now()
     update_job(conn, job_id, status="processing", started_at=started_at, attempts=int(row["attempts"] or 0) + 1)
-    active_provider = provider or GeminiProvider(config)
+    active_provider = provider or (CodexLocalProvider(config, job_id=job_id) if config.analysis_provider == "codex_local" else GeminiProvider(config))
     try:
         result = active_provider.analyze_documents(dict(licitacion), selected)
         summary = parse_summary_json(result.summary)
     except AISchemaError as exc:
-        record_usage(conn, model=config.model, status="error", error_code="INVALID_JSON", licitacion_id=licitacion_id, job_id=job_id)
+        record_usage(conn, provider=config.analysis_provider, model=_provider_model(config), status="error", error_code="INVALID_JSON", licitacion_id=licitacion_id, job_id=job_id)
         update_job(conn, job_id, status="error", finished_at=_now(), error_code="INVALID_JSON", error_message=str(exc))
-        return get_ai_summary_payload(conn, licitacion_id)
+        return _payload_with_job_selection(conn, licitacion_id, row, selected)
     except AIProviderError as exc:
         status = "deferred" if exc.code == "RESOURCE_EXHAUSTED" else "error"
-        record_usage(conn, model=config.model, status="error", error_code=exc.code, licitacion_id=licitacion_id, job_id=job_id)
+        record_usage(conn, provider=config.analysis_provider, model=_provider_model(config), status="error", error_code=exc.code, licitacion_id=licitacion_id, job_id=job_id)
         retry_at = ""
         if exc.code == "RESOURCE_EXHAUSTED":
             retry_at = (datetime.now().replace(microsecond=0) + timedelta(minutes=config.cooldown_on_429_minutes)).isoformat()
@@ -346,13 +429,13 @@ def process_ai_job(
             next_retry_at=retry_at,
             raw_usage_json=json.dumps(safe_diagnostics, ensure_ascii=False) if safe_diagnostics else "",
         )
-        return get_ai_summary_payload(conn, licitacion_id)
+        return _payload_with_job_selection(conn, licitacion_id, row, selected)
 
     raw_usage = result.raw_usage or {}
     quality_check = summary_quality_check(summary)
     raw_usage["quality_check"] = quality_check
     if not quality_check["is_useful"]:
-        record_usage(conn, model=config.model, status="error", error_code="EMPTY_ANALYSIS", licitacion_id=licitacion_id, job_id=job_id)
+        record_usage(conn, provider=config.analysis_provider, model=_provider_model(config), status="error", error_code="EMPTY_ANALYSIS", licitacion_id=licitacion_id, job_id=job_id)
         update_job(
             conn,
             job_id,
@@ -362,20 +445,22 @@ def process_ai_job(
             error_message="Gemini devolvió un JSON válido pero sin contenido útil.",
             raw_usage_json=json.dumps(raw_usage, ensure_ascii=False),
         )
-        return get_ai_summary_payload(conn, licitacion_id)
+        return _payload_with_job_selection(conn, licitacion_id, row, selected)
 
     save_summary(
         conn,
         licitacion_id=licitacion_id,
         document_hash=row["document_hash"],
-        model=config.model,
+        model=_provider_model(config),
         summary=summary,
         text=summary_text(summary),
         job_id=job_id,
+        provider=config.analysis_provider,
     )
     record_usage(
         conn,
-        model=config.model,
+        provider=config.analysis_provider,
+        model=_provider_model(config),
         status="completed",
         tokens_input=_usage_value(raw_usage, "prompt_token_count", "input_token_count"),
         tokens_output=_usage_value(raw_usage, "candidates_token_count", "output_token_count"),
@@ -392,7 +477,7 @@ def process_ai_job(
         error_message="",
         raw_usage_json=json.dumps(raw_usage, ensure_ascii=False),
     )
-    return get_ai_summary_payload(conn, licitacion_id)
+    return _payload_with_job_selection(conn, licitacion_id, row, selected)
 
 
 def list_ai_jobs(conn: sqlite3.Connection, limit: int = 30) -> list[dict[str, object]]:

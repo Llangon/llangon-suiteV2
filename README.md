@@ -143,11 +143,43 @@ El flujo de documentos recomendado sigue siendo Dropbox local/Desktop con `INFON
 
 La pantalla Licitaciones es el centro de trabajo diario. Cada expediente puede marcarse como revisado, tener estado interno, notas internas, actuaciones vinculadas y seguimiento activo. El seguimiento automático real queda preparado, pero no implementado: el futuro monitor será un script externo de Windows y enviará un email por cada licitación con novedades a los destinatarios globales de `INFONALIA_SEGUIMIENTO_EMAILS`.
 
-## Análisis IA documental con Gemini
+## Análisis IA documental
 
-La Fase 1 de IA permite analizar manualmente los PDFs principales de un expediente y guardar un JSON estructurado en SQLite. Está pensada como apoyo interno: no genera todavía una ficha PDF final para cliente y no analiza licitaciones anteriores.
+La Fase 1 de IA permite preparar un análisis documental interno de una licitación y guardar un JSON estructurado en SQLite. La línea de Gemini queda conservada, pero aparcada; el flujo nuevo prioriza que el usuario elija manualmente qué documentos entran en el análisis antes de generar o regenerar.
 
-Por seguridad, Gemini está apagado por defecto y la app arranca sin clave:
+El flujo desde la ficha ampliada es manual:
+
+- abrir una licitación;
+- entrar en la pestaña `Análisis IA`;
+- pulsar `Generar análisis IA`, `Regenerar análisis IA` o `Reintentar`;
+- revisar la modal `Seleccionar ficheros para análisis`;
+- confirmar únicamente los ficheros que deben analizarse.
+
+La lista de ficheros se lee de la carpeta física del expediente resuelta con la configuración de Dropbox/local. No depende del monitor ni de la pestaña `Documentos`. El frontend envía rutas relativas seguras y el backend vuelve a validarlas para bloquear rutas absolutas, `..` y cualquier salida de la carpeta del expediente.
+
+Los documentos originales no se modifican. Para cada job se crea una carpeta aislada en:
+
+```text
+runtime/ai_work/jobs/<job_id>/
+```
+
+Esa carpeta contiene copias de los ficheros seleccionados, `manifest.json`, `prompt.md`, `schema.json`, `logs/` y, cuando procede, texto extraído de PDFs en `extracted_text/`.
+
+Endpoints principales:
+
+```text
+GET    /api/licitaciones/<id>/ai-files
+POST   /api/licitaciones/<id>/ai-summary/generate
+POST   /api/licitaciones/<id>/ai-summary/regenerate
+DELETE /api/licitaciones/<id>/ai-summary
+POST   /api/licitaciones/<id>/ai-summary/email
+```
+
+El botón `Borrar` elimina solo el resumen IA guardado para la licitación. No borra jobs históricos, documentos originales, carpetas del expediente ni carpetas temporales de trabajo.
+
+El botón `Enviar por correo` aparece cuando existe un análisis útil. Abre una confirmación con destinatario y asunto editables y envía un email HTML mediante la configuración SMTP existente. En esta fase no adjunta documentos.
+
+Por seguridad, Gemini sigue apagado por defecto y la app arranca sin clave:
 
 ```text
 GEMINI_ENABLED=false
@@ -166,26 +198,30 @@ GEMINI_PDF_INLINE_FALLBACK=false
 GEMINI_MIN_EXTRACTED_CHARS=1000
 ```
 
-Para activarlo en local, completar `.env`:
+Proveedor experimental `codex_local`:
 
 ```text
+AI_ANALYSIS_PROVIDER=codex_local
+CODEX_LOCAL_ENABLED=false
+CODEX_EXECUTABLE=codex
+CODEX_TIMEOUT_SECONDS=600
+CODEX_WORK_ROOT=runtime/ai_work/jobs
+CODEX_SANDBOX=read-only
+CODEX_MAX_FILES=8
+CODEX_MAX_FILE_MB=45
+```
+
+`Codex Local` está desactivado por defecto. Si se activa en una futura prueba, se ejecutará únicamente sobre la carpeta temporal del job, no sobre Dropbox ni sobre el repositorio. La ejecución usa `subprocess.run` sin `shell=True`, con timeout, `cwd` del job y validación de JSON de salida. Si no está activado devuelve `CODEX_DISABLED`; si no se encuentra el ejecutable devuelve `CODEX_NOT_FOUND`.
+
+Para activar Gemini en local, completar `.env`:
+
+```text
+AI_ANALYSIS_PROVIDER=gemini
 GEMINI_ENABLED=true
 GEMINI_API_KEY=TU_CLAVE_PRIVADA
 ```
 
-No subir nunca `GEMINI_API_KEY` a Git. La clave no se imprime en logs ni se devuelve al frontend.
-
-El modo principal recomendado es `GEMINI_INPUT_MODE=text`: la suite extrae texto localmente de los PDFs con `pypdf` y envía a Gemini solo ese texto estructurado. `pdf_inline` queda disponible como modo explícito de diagnóstico, y `auto` solo usará PDFs inline si no hay texto suficiente y `GEMINI_PDF_INLINE_FALLBACK=true`.
-
-El flujo desde la ficha ampliada es manual:
-
-- abrir una licitación;
-- entrar en la pestaña `Análisis IA`;
-- pulsar `Generar análisis IA`;
-- reutilizar el resumen existente si los documentos no han cambiado;
-- usar `Regenerar análisis IA` solo como administrador.
-
-La selección de documentos es conservadora: solo PDFs, priorizando `Cuadro`, `PCAP/PCA`, `PPT`, `Pliego` y `Anexos`, con límite de tamaño y número de documentos. Los documentos de licitaciones anteriores, actas, aperturas y valoraciones se excluyen en esta fase.
+No subir nunca `GEMINI_API_KEY` ni claves reales a Git. Las claves no se imprimen en logs ni se devuelven al frontend.
 
 Prueba manual controlada:
 

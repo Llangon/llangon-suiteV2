@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timedelta
 from http import HTTPStatus
@@ -11,7 +12,9 @@ from pathlib import Path
 import pytest
 
 from webapp.infonalia_webapp.ai.config import AIConfig, get_ai_config
+from webapp.infonalia_webapp.ai.codex_local_provider import CodexLocalProvider
 from webapp.infonalia_webapp.ai.document_selector import inspect_document_selection, select_relevant_documents
+from webapp.infonalia_webapp.ai.file_selection import AIFileSelectionError, list_ai_files, resolve_selected_ai_files
 from webapp.infonalia_webapp.ai.gemini_provider import (
     AIProviderError,
     ProviderResult,
@@ -27,14 +30,15 @@ from webapp.infonalia_webapp.ai.pdf_text_extractor import ExtractedTextResult, e
 from webapp.infonalia_webapp.ai.queue import active_job, create_job, ensure_ai_schema, latest_summary
 from webapp.infonalia_webapp.ai.rate_limit import check_rate_limit
 from webapp.infonalia_webapp.ai.schemas import parse_summary_json, summary_quality_check
-from webapp.infonalia_webapp.ai.service import process_ai_job, request_ai_analysis
+from webapp.infonalia_webapp.ai.service import delete_ai_summary, process_ai_job, request_ai_analysis
+from webapp.infonalia_webapp.ai.workspace import prepare_ai_workspace
 from webapp.infonalia_webapp.tests.test_actuaciones_api import dispatch, make_handler
 from webapp.infonalia_webapp.tests.test_import_endpoints import load_app_module, temporary_app_database
 
 
 def teardown_function() -> None:
     for key in list(os.environ):
-        if key.startswith("GEMINI_"):
+        if key.startswith("GEMINI_") or key.startswith("CODEX_") or key == "AI_ANALYSIS_PROVIDER":
             os.environ.pop(key, None)
     sys.modules.pop("app", None)
     sys.modules.pop("webapp.infonalia_webapp.app", None)
@@ -842,6 +846,357 @@ def test_service_stores_invalid_json_provider_diagnostics(tmp_path: Path, monkey
     assert payload["job"]["error_code"] == "INVALID_JSON"
     assert payload["job"]["raw_response_preview"] == "[{}]"
     assert payload["job"]["parse_attempts"] == ["response.text:root_type:list"]
+
+
+def test_ai_files_endpoint_lists_physical_folder_without_inventory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    app = load_app_module()
+    with temporary_app_database(app):
+        folder = tmp_path / "2026" / "06 JUNIO" / "expediente"
+        historical = folder / "Año 2025"
+        historical.mkdir(parents=True)
+        _write_pdf(folder / "PCAP contrato.pdf")
+        _write_pdf(folder / "Ficha.pdf")
+        _write_pdf(historical / "PPT antiguo.pdf")
+        (folder / "HTTP.url").write_text("[InternetShortcut]", encoding="utf-8")
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                INSERT INTO licitaciones (
+                    id, expediente, objeto, organismo, ruta_carpeta, estado, created_at, updated_at
+                )
+                VALUES (1, 'EXP-API', 'Objeto', 'Organo', ?, 'Importada', '2026-01-01', '2026-01-01')
+                """,
+                (str(folder),),
+            )
+        handler = make_handler(app, "GET", "/api/licitaciones/1/ai-files")
+
+        dispatch(handler, "GET")
+
+        status, payload = handler.responses[-1]
+        assert status == HTTPStatus.OK
+        names = {item["name"]: item for item in payload["items"]}
+        assert "PCAP contrato.pdf" in names
+        assert "Ficha.pdf" in names
+        assert "PPT antiguo.pdf" in names
+        assert "HTTP.url" not in names
+        assert names["PCAP contrato.pdf"]["selected_by_default"] is True
+        assert names["Ficha.pdf"]["selected_by_default"] is False
+        assert names["PPT antiguo.pdf"]["selected_by_default"] is False
+        assert names["PPT antiguo.pdf"]["warning"]
+        assert {"name", "extension", "modified_at", "size_bytes", "size_human", "relative_path"} <= set(names["PCAP contrato.pdf"])
+
+
+def test_resolve_selected_ai_files_rejects_path_traversal_and_absolute_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    folder = tmp_path / "expediente"
+    folder.mkdir()
+    _write_pdf(folder / "PCAP.pdf")
+    licitacion = {"ruta_carpeta": str(folder)}
+
+    with pytest.raises(AIFileSelectionError):
+        resolve_selected_ai_files(licitacion, ["..\\fuera.pdf"], max_file_mb=45)
+    with pytest.raises(AIFileSelectionError):
+        resolve_selected_ai_files(licitacion, [str(tmp_path / "expediente" / "PCAP.pdf")], max_file_mb=45)
+    with pytest.raises(AIFileSelectionError):
+        resolve_selected_ai_files(licitacion, ["C:PCAP.pdf"], max_file_mb=45)
+
+    selected = resolve_selected_ai_files(licitacion, ["PCAP.pdf"], max_file_mb=45)
+    assert selected[0]["name"] == "PCAP.pdf"
+
+
+def test_generate_with_manual_selection_changes_document_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf", b"uno")
+    _write_pdf(tmp_path / "PPT.pdf", b"dos")
+    _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+
+    first = request_ai_analysis(
+        conn,
+        1,
+        requested_by="tester",
+        selected_files=["PCAP.pdf"],
+        provider=FakeProvider(summary_payload={"resumen_ejecutivo": {"texto": "Resumen uno."}}),
+    )
+    second = request_ai_analysis(
+        conn,
+        1,
+        requested_by="tester",
+        selected_files=["PPT.pdf"],
+        provider=FakeProvider(summary_payload={"resumen_ejecutivo": {"texto": "Resumen dos."}}),
+    )
+
+    assert first["document_hash"] != second["document_hash"]
+    rows = conn.execute("SELECT selected_documents_json FROM ai_analysis_jobs ORDER BY id").fetchall()
+    assert json.loads(rows[0]["selected_documents_json"])[0]["relative_path"] == "PCAP.pdf"
+    assert json.loads(rows[1]["selected_documents_json"])[0]["relative_path"] == "PPT.pdf"
+
+
+def test_generate_endpoint_rejects_invalid_selected_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    app = load_app_module()
+    with temporary_app_database(app):
+        folder = tmp_path / "docs"
+        folder.mkdir()
+        _write_pdf(folder / "PCAP.pdf")
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                INSERT INTO licitaciones (
+                    id, expediente, objeto, organismo, ruta_carpeta, estado, created_at, updated_at
+                )
+                VALUES (1, 'EXP-API', 'Objeto', 'Organo', ?, 'Importada', '2026-01-01', '2026-01-01')
+                """,
+                (str(folder),),
+            )
+        handler = make_handler(app, "POST", "/api/licitaciones/1/ai-summary/generate", {"selected_files": ["..\\PCAP.pdf"]})
+
+        dispatch(handler, "POST")
+
+        status, payload = handler.responses[-1]
+        assert status == HTTPStatus.BAD_REQUEST
+        assert "ruta no permitida" in payload["error"]
+        with app.db_session() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM ai_analysis_jobs").fetchone()[0] == 0
+
+
+def test_delete_ai_summary_does_not_delete_documents(tmp_path: Path) -> None:
+    conn = _conn()
+    pdf = _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    conn.execute(
+        """
+        INSERT INTO ai_summaries (
+            licitacion_id, document_hash, provider, model, summary_json, summary_text,
+            created_at, updated_at, quality_status
+        )
+        VALUES (1, 'hash', 'gemini', 'gemini-test', '{"resumen_ejecutivo":{"texto":"Ok"}}',
+                'Ok', '2026-01-01', '2026-01-01', 'pending_review')
+        """
+    )
+
+    payload = delete_ai_summary(conn, 1)
+
+    assert payload["has_summary"] is False
+    assert latest_summary(conn, 1) is None
+    assert pdf.exists()
+
+
+def test_ai_summary_email_without_summary_fails_cleanly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    app = load_app_module()
+    with temporary_app_database(app):
+        folder = tmp_path / "docs"
+        folder.mkdir()
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                INSERT INTO licitaciones (
+                    id, expediente, objeto, organismo, ruta_carpeta, estado, created_at, updated_at
+                )
+                VALUES (1, 'EXP-API', 'Objeto', 'Organo', ?, 'Importada', '2026-01-01', '2026-01-01')
+                """,
+                (str(folder),),
+            )
+        handler = make_handler(app, "POST", "/api/licitaciones/1/ai-summary/email", {"to": "admin@example.test"})
+
+        dispatch(handler, "POST")
+
+        status, payload = handler.responses[-1]
+        assert status == HTTPStatus.BAD_REQUEST
+        assert "No hay un análisis IA" in payload["error"]
+
+
+def test_ai_summary_email_with_mock_smtp_sends_html(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    app = load_app_module()
+    calls: list[dict[str, object]] = []
+
+    def fake_send_notification_email_with_settings(**kwargs):
+        calls.append(kwargs)
+        return "2026-01-01T10:00:00", None
+
+    monkeypatch.setattr(app, "send_notification_email_with_settings", fake_send_notification_email_with_settings)
+    with temporary_app_database(app):
+        folder = tmp_path / "docs"
+        folder.mkdir()
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                INSERT INTO licitaciones (
+                    id, expediente, objeto, organismo, fecha_limite, hora_limite, ruta_carpeta, estado,
+                    created_at, updated_at
+                )
+                VALUES (1, 'EXP-API', 'Objeto', 'Organo', '2026-07-01', '14:00', ?, 'Importada',
+                        '2026-01-01', '2026-01-01')
+                """,
+                (str(folder),),
+            )
+            conn.execute(
+                """
+                INSERT INTO ai_summaries (
+                    licitacion_id, document_hash, provider, model, summary_json, summary_text,
+                    created_at, updated_at, quality_status
+                )
+                VALUES (1, 'hash', 'gemini', 'gemini-test',
+                        '{"resumen_ejecutivo":{"texto":"Resumen útil"},"alertas":["Alerta"]}',
+                        'Resumen útil', '2026-01-01', '2026-01-01', 'pending_review')
+                """
+            )
+        handler = make_handler(
+            app,
+            "POST",
+            "/api/licitaciones/1/ai-summary/email",
+            {"to": "destino@example.test", "subject": "Análisis"},
+            email="usuario@example.test",
+        )
+
+        dispatch(handler, "POST")
+
+        status, payload = handler.responses[-1]
+        assert status == HTTPStatus.OK
+        assert payload["recipient"] == "destino@example.test"
+        assert calls
+        assert "Resumen útil" in calls[0]["html_body"]
+        assert "Análisis automático" in calls[0]["body"]
+
+
+def test_prepare_ai_workspace_copies_only_selected_and_keeps_originals(tmp_path: Path) -> None:
+    source_a = _write_pdf(tmp_path / "PCAP.pdf", b"a")
+    source_b = _write_pdf(tmp_path / "PPT.pdf", b"b")
+    workspace_root = tmp_path / "work"
+
+    result = prepare_ai_workspace(
+        job_id=42,
+        licitacion={"id": 1, "expediente": "EXP", "objeto": "Objeto"},
+        selected_documents=[{"path": str(source_a), "name": "PCAP.pdf", "relative_path": "PCAP.pdf"}],
+        work_root=workspace_root,
+    )
+
+    job_root = Path(result["job_root"])
+    assert (job_root / "inputs" / "PCAP.pdf").exists()
+    assert not (job_root / "inputs" / "PPT.pdf").exists()
+    assert source_a.exists()
+    assert source_b.exists()
+    manifest = json.loads((job_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["job_id"] == 42
+    assert manifest["files"][0]["original_relative_path"] == "PCAP.pdf"
+
+
+def test_prepare_ai_workspace_resolves_name_collisions(tmp_path: Path) -> None:
+    folder_a = tmp_path / "a"
+    folder_b = tmp_path / "b"
+    folder_a.mkdir()
+    folder_b.mkdir()
+    source_a = _write_pdf(folder_a / "PCAP.pdf", b"a")
+    source_b = _write_pdf(folder_b / "PCAP.pdf", b"b")
+
+    result = prepare_ai_workspace(
+        job_id=43,
+        licitacion={"id": 1, "expediente": "EXP"},
+        selected_documents=[
+            {"path": str(source_a), "name": "PCAP.pdf", "relative_path": "a\\PCAP.pdf"},
+            {"path": str(source_b), "name": "PCAP.pdf", "relative_path": "b\\PCAP.pdf"},
+        ],
+        work_root=tmp_path / "work",
+    )
+
+    files = json.loads((Path(result["job_root"]) / "manifest.json").read_text(encoding="utf-8"))["files"]
+    copied = {item["copied_path"] for item in files}
+    assert "inputs/PCAP.pdf" in copied or "inputs\\PCAP.pdf" in copied
+    assert any("PCAP (2).pdf" in item for item in copied)
+
+
+def test_codex_local_disabled_returns_controlled_error(tmp_path: Path) -> None:
+    provider = CodexLocalProvider(_ai_config(analysis_provider="codex_local", codex_local_enabled=False), job_id=1)
+
+    with pytest.raises(AIProviderError) as excinfo:
+        provider.analyze_documents({"id": 1}, [])
+
+    assert excinfo.value.code == "CODEX_DISABLED"
+
+
+def test_codex_local_not_found_returns_controlled_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("webapp.infonalia_webapp.ai.codex_local_provider.shutil.which", lambda _value: None)
+    provider = CodexLocalProvider(_ai_config(analysis_provider="codex_local", codex_local_enabled=True), job_id=1)
+
+    with pytest.raises(AIProviderError) as excinfo:
+        provider.analyze_documents({"id": 1}, [])
+
+    assert excinfo.value.code == "CODEX_NOT_FOUND"
+
+
+def test_codex_local_subprocess_is_sandboxed_and_saves_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CODEX_WORK_ROOT", str(tmp_path / "work"))
+    monkeypatch.setattr("webapp.infonalia_webapp.ai.codex_local_provider.shutil.which", lambda _value: "codex")
+    source = _write_pdf(tmp_path / "PCAP.pdf", b"%PDF-1.4\n")
+    calls: list[dict[str, object]] = []
+
+    def fake_runner(command, **kwargs):
+        calls.append({"command": command, **kwargs})
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"resumen_ejecutivo": {"texto": "Resumen Codex"}}),
+            stderr="",
+        )
+
+    provider = CodexLocalProvider(
+        _ai_config(
+            analysis_provider="codex_local",
+            codex_local_enabled=True,
+            codex_executable="codex",
+            codex_timeout_seconds=33,
+            codex_sandbox="read-only",
+        ),
+        job_id=99,
+        runner=fake_runner,
+    )
+
+    result = provider.analyze_documents(
+        {"id": 1, "expediente": "EXP"},
+        [{"path": str(source), "name": "PCAP.pdf", "relative_path": "PCAP.pdf"}],
+    )
+
+    assert result.summary["resumen_ejecutivo"]["texto"] == "Resumen Codex"
+    assert calls[0]["shell"] is False
+    assert calls[0]["timeout"] == 33
+    assert str(tmp_path / "work" / "99") == calls[0]["cwd"]
+    assert (tmp_path / "work" / "99" / "result.json").exists()
+
+
+def test_codex_local_invalid_stdout_is_classified(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODEX_WORK_ROOT", str(tmp_path / "work"))
+    monkeypatch.setattr("webapp.infonalia_webapp.ai.codex_local_provider.shutil.which", lambda _value: "codex")
+    source = _write_pdf(tmp_path / "PCAP.pdf", b"%PDF-1.4\n")
+
+    def fake_runner(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout="no-json", stderr="")
+
+    provider = CodexLocalProvider(
+        _ai_config(analysis_provider="codex_local", codex_local_enabled=True),
+        job_id=100,
+        runner=fake_runner,
+    )
+
+    with pytest.raises(AIProviderError) as excinfo:
+        provider.analyze_documents(
+            {"id": 1, "expediente": "EXP"},
+            [{"path": str(source), "name": "PCAP.pdf", "relative_path": "PCAP.pdf"}],
+        )
+
+    assert excinfo.value.code == "INVALID_JSON"
 
 
 def test_mark_interrupted_job_sets_status_and_error(tmp_path: Path) -> None:

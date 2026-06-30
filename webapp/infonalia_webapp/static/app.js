@@ -46,6 +46,8 @@ const appState = {
   preparedNoticeSending: false,
   downloadFolder: null,
   downloadFolderSubmitting: false,
+  aiFileSelection: null,
+  aiSummaryEmail: null,
 };
 
 const daysSection = document.getElementById("days-section");
@@ -136,6 +138,17 @@ const downloadFolderDialog = document.getElementById("download-folder-dialog");
 const downloadFolderName = document.getElementById("download-folder-name");
 const downloadFolderStatus = document.getElementById("download-folder-status");
 const confirmDownloadFolderButton = document.getElementById("confirm-download-folder");
+const aiFileDialog = document.getElementById("ai-file-dialog");
+const aiFileList = document.getElementById("ai-file-list");
+const aiFileStatus = document.getElementById("ai-file-status");
+const aiFileSelectionCount = document.getElementById("ai-file-selection-count");
+const confirmAiFileSelectionButton = document.getElementById("confirm-ai-file-selection");
+const aiSummaryEmailDialog = document.getElementById("ai-summary-email-dialog");
+const aiSummaryEmailTo = document.getElementById("ai-summary-email-to");
+const aiSummaryEmailSubject = document.getElementById("ai-summary-email-subject");
+const aiSummaryEmailPreview = document.getElementById("ai-summary-email-preview");
+const aiSummaryEmailStatus = document.getElementById("ai-summary-email-status");
+const sendAiSummaryEmailButton = document.getElementById("send-ai-summary-email");
 const importer = document.getElementById("importer");
 const importForm = document.getElementById("import-form");
 const importResult = document.getElementById("import-result");
@@ -3664,6 +3677,7 @@ function renderAiSummaryContent(licitacionId, payload) {
   const job = payload.job || {};
   const canGenerate = Boolean(payload.puede_generar);
   const canRetry = payload.job_status === "error" || payload.job_status === "deferred";
+  const hasAnyAnalysis = Boolean(payload.has_summary || payload.job_status || payload.job);
   const reason = payload.motivo_si_no_puede_generar || job.error_message || "";
   return `
     <div class="ai-summary-toolbar">
@@ -3674,6 +3688,8 @@ function renderAiSummaryContent(licitacionId, payload) {
         <button type="button" data-ai-generate="${escapeHtml(licitacionId)}" ${canGenerate && !payload.has_summary ? "" : "disabled"}>Generar análisis IA</button>
         ${isAdmin() ? `<button type="button" data-ai-regenerate="${escapeHtml(licitacionId)}" ${canGenerate ? "" : "disabled"}>Regenerar análisis IA</button>` : ""}
         <button type="button" data-ai-generate="${escapeHtml(licitacionId)}" ${canRetry && canGenerate ? "" : "disabled"}>Reintentar</button>
+        <button type="button" data-ai-email="${escapeHtml(licitacionId)}" ${payload.has_summary ? "" : "disabled"}>Enviar por correo</button>
+        ${hasAnyAnalysis ? `<button type="button" class="danger-soft" data-ai-delete="${escapeHtml(licitacionId)}">Borrar</button>` : ""}
       </div>
     </div>
     ${reason ? `<div class="ai-reason">${escapeHtml(reason)}</div>` : ""}
@@ -3704,7 +3720,79 @@ async function loadAiSummary(licitacionId) {
   }
 }
 
-async function generateAiSummary(licitacionId, button, force = false) {
+function updateAiFileSelectionCount() {
+  const checked = aiFileList ? [...aiFileList.querySelectorAll("input[type='checkbox']:checked")].length : 0;
+  if (aiFileSelectionCount) aiFileSelectionCount.textContent = `${checked} fichero(s) seleccionado(s)`;
+  if (confirmAiFileSelectionButton) confirmAiFileSelectionButton.disabled = checked === 0;
+}
+
+function renderAiFileRows(items) {
+  if (!aiFileList) return;
+  if (!items.length) {
+    aiFileList.innerHTML = `<tr><td colspan="5" class="empty">No se han encontrado ficheros aptos en la carpeta del expediente.</td></tr>`;
+    updateAiFileSelectionCount();
+    return;
+  }
+  aiFileList.innerHTML = items.map((item) => `
+    <tr class="${item.warning ? "not-recommended" : ""}">
+      <td><input type="checkbox" value="${escapeHtml(item.relative_path)}" ${item.selected_by_default ? "checked" : ""} ${item.selectable ? "" : "disabled"}></td>
+      <td title="${escapeHtml(item.relative_path || item.name)}">
+        <strong>${escapeHtml(item.name)}</strong>
+        ${item.warning ? `<small>${escapeHtml(item.warning)}</small>` : ""}
+      </td>
+      <td>${escapeHtml(item.extension || "")}</td>
+      <td>${escapeHtml(formatDateTime(item.modified_at) || item.modified_at || "")}</td>
+      <td>${escapeHtml(item.size_human || formatBytes(item.size_bytes))}</td>
+    </tr>
+  `).join("");
+  aiFileList.querySelectorAll("input[type='checkbox']").forEach((checkbox) => {
+    checkbox.addEventListener("change", updateAiFileSelectionCount);
+  });
+  updateAiFileSelectionCount();
+}
+
+async function openAiFileSelection(licitacionId, button, force = false) {
+  appState.aiFileSelection = { licitacionId, force, button, files: [] };
+  if (aiFileStatus) {
+    aiFileStatus.className = "import-result";
+    aiFileStatus.textContent = "";
+  }
+  if (aiFileList) aiFileList.innerHTML = `<tr><td colspan="5" class="empty">Cargando ficheros...</td></tr>`;
+  if (confirmAiFileSelectionButton) confirmAiFileSelectionButton.disabled = true;
+  aiFileDialog.showModal();
+  try {
+    const response = await fetch(`/api/licitaciones/${licitacionId}/ai-files`);
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "No se pudieron listar los ficheros.");
+    appState.aiFileSelection.files = result.items || [];
+    renderAiFileRows(appState.aiFileSelection.files);
+  } catch (error) {
+    if (aiFileStatus) {
+      aiFileStatus.className = "import-result error";
+      aiFileStatus.textContent = error.message || "No se pudieron listar los ficheros.";
+    }
+    renderAiFileRows([]);
+  }
+}
+
+function closeAiFileSelection() {
+  appState.aiFileSelection = null;
+  aiFileDialog.close();
+}
+
+async function confirmAiFileSelection() {
+  const state = appState.aiFileSelection;
+  if (!state) return;
+  const selectedFiles = [...aiFileList.querySelectorAll("input[type='checkbox']:checked")].map((input) => input.value);
+  if (!selectedFiles.length) {
+    if (aiFileStatus) aiFileStatus.textContent = "Selecciona al menos un fichero.";
+    return;
+  }
+  closeAiFileSelection();
+  await runAiSummaryGeneration(state.licitacionId, state.button, state.force, selectedFiles);
+}
+
+async function runAiSummaryGeneration(licitacionId, button, force = false, selectedFiles = null) {
   const panel = licitacionDetailContent.querySelector(`[data-ai-summary-panel="${licitacionId}"]`);
   const originalText = button?.textContent || "";
   if (button) {
@@ -3716,7 +3804,11 @@ async function generateAiSummary(licitacionId, button, force = false) {
       ? `/api/licitaciones/${licitacionId}/ai-summary/regenerate`
       : `/api/licitaciones/${licitacionId}/ai-summary/generate`;
     if (panel) panel.innerHTML = `<div class="empty">Procesando análisis IA...</div>`;
-    const response = await fetch(endpoint, { method: "POST", headers: csrfHeaders() });
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { ...csrfHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ selected_files: selectedFiles || [], provider: appState.config?.ai?.analysis_provider || undefined }),
+    });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
       if (panel) panel.innerHTML = `<div class="empty">${escapeHtml(result.error || "No se pudo generar el análisis IA.")}</div>`;
@@ -3728,6 +3820,65 @@ async function generateAiSummary(licitacionId, button, force = false) {
       button.disabled = false;
       button.textContent = originalText;
     }
+  }
+}
+
+async function generateAiSummary(licitacionId, button, force = false) {
+  await openAiFileSelection(licitacionId, button, force);
+}
+
+async function deleteAiSummary(licitacionId) {
+  const ok = confirm("Esto borrará únicamente el análisis IA guardado para esta licitación. No se borrará ningún documento de la carpeta del expediente.");
+  if (!ok) return;
+  const panel = licitacionDetailContent.querySelector(`[data-ai-summary-panel="${licitacionId}"]`);
+  if (panel) panel.innerHTML = `<div class="empty">Borrando análisis IA...</div>`;
+  const response = await fetch(`/api/licitaciones/${licitacionId}/ai-summary`, { method: "DELETE", headers: csrfHeaders() });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (panel) panel.innerHTML = `<div class="empty">${escapeHtml(result.error || "No se pudo borrar el análisis.")}</div>`;
+    return;
+  }
+  if (panel) panel.innerHTML = renderAiSummaryContent(licitacionId, result);
+}
+
+function openAiSummaryEmail(licitacionId) {
+  const detail = appState.cardDetails[licitacionId]?.item || {};
+  const subject = `Análisis IA - ${detail.expediente || "licitación"} - ${String(detail.objeto || "").slice(0, 60)}`;
+  appState.aiSummaryEmail = { licitacionId };
+  aiSummaryEmailTo.value = appState.user?.email || "";
+  aiSummaryEmailSubject.value = subject;
+  aiSummaryEmailPreview.value = [
+    `Expediente: ${detail.expediente || ""}`,
+    `Objeto: ${detail.objeto || ""}`,
+    `Fecha límite: ${[formatDate(detail.fecha_limite), detail.hora_limite].filter(Boolean).join(" ")}`,
+    "",
+    "Se enviará el análisis IA guardado. No se adjuntarán documentos.",
+  ].join("\n");
+  aiSummaryEmailStatus.textContent = "";
+  aiSummaryEmailDialog.showModal();
+}
+
+async function sendAiSummaryEmail() {
+  const state = appState.aiSummaryEmail;
+  if (!state) return;
+  sendAiSummaryEmailButton.disabled = true;
+  sendAiSummaryEmailButton.textContent = "Enviando...";
+  try {
+    const response = await fetch(`/api/licitaciones/${state.licitacionId}/ai-summary/email`, {
+      method: "POST",
+      headers: { ...csrfHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ to: aiSummaryEmailTo.value, subject: aiSummaryEmailSubject.value }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "No se pudo enviar el email.");
+    aiSummaryEmailStatus.className = "import-result ok";
+    aiSummaryEmailStatus.textContent = "Email enviado correctamente.";
+  } catch (error) {
+    aiSummaryEmailStatus.className = "import-result error";
+    aiSummaryEmailStatus.textContent = error.message || "No se pudo enviar el email.";
+  } finally {
+    sendAiSummaryEmailButton.disabled = false;
+    sendAiSummaryEmailButton.textContent = "Enviar";
   }
 }
 
@@ -4485,6 +4636,25 @@ downloadFolderName.addEventListener("keydown", (event) => {
     confirmDownloadFolder();
   }
 });
+document.getElementById("close-ai-file-dialog").addEventListener("click", closeAiFileSelection);
+document.getElementById("cancel-ai-file-dialog").addEventListener("click", closeAiFileSelection);
+confirmAiFileSelectionButton.addEventListener("click", confirmAiFileSelection);
+document.getElementById("ai-select-recommended").addEventListener("click", () => {
+  aiFileList.querySelectorAll("input[type='checkbox']").forEach((checkbox) => {
+    const file = appState.aiFileSelection?.files?.find((item) => item.id === checkbox.value);
+    checkbox.checked = Boolean(file?.selected_by_default && file?.selectable !== false);
+  });
+  updateAiFileSelectionCount();
+});
+document.getElementById("ai-clear-selection").addEventListener("click", () => {
+  aiFileList.querySelectorAll("input[type='checkbox']").forEach((checkbox) => {
+    checkbox.checked = false;
+  });
+  updateAiFileSelectionCount();
+});
+document.getElementById("close-ai-summary-email").addEventListener("click", () => aiSummaryEmailDialog.close());
+document.getElementById("cancel-ai-summary-email").addEventListener("click", () => aiSummaryEmailDialog.close());
+sendAiSummaryEmailButton.addEventListener("click", sendAiSummaryEmail);
 stateFilter.addEventListener("change", loadItems);
 dateOrder.addEventListener("change", loadItems);
 licitacionesActuacionesFilter.addEventListener("change", loadItems);
@@ -4718,6 +4888,18 @@ licitacionDetailContent.addEventListener("click", (event) => {
   const openFolderButton = event.target.closest("button[data-open-licitacion-folder]");
   if (openFolderButton) {
     openLicitacionFolder(openFolderButton.dataset.openLicitacionFolder, openFolderButton);
+    return;
+  }
+
+  const aiEmailButton = event.target.closest("button[data-ai-email]");
+  if (aiEmailButton) {
+    openAiSummaryEmail(aiEmailButton.dataset.aiEmail);
+    return;
+  }
+
+  const aiDeleteButton = event.target.closest("button[data-ai-delete]");
+  if (aiDeleteButton) {
+    deleteAiSummary(aiDeleteButton.dataset.aiDelete);
     return;
   }
 

@@ -34,20 +34,31 @@ class AIConfig:
     max_documents_per_analysis: int
     max_file_mb: int
     timeout_seconds: int
+    analysis_provider: str = "gemini"
     input_mode: str = "text"
     max_extracted_chars: int = 180000
     max_chars_per_document: int = 90000
     pdf_inline_fallback: bool = False
     min_extracted_chars: int = 1000
+    codex_local_enabled: bool = False
+    codex_executable: str = "codex"
+    codex_timeout_seconds: int = 600
+    codex_work_root: str = "runtime/ai_work/jobs"
+    codex_sandbox: str = "read-only"
+    codex_max_files: int = 8
+    codex_max_file_mb: int = 45
 
     @property
     def configured(self) -> bool:
+        if self.analysis_provider == "codex_local":
+            return True
         return bool(self.api_key)
 
     def public_status(self) -> dict[str, object]:
         return {
             "enabled": self.enabled,
             "configured": self.configured,
+            "analysis_provider": self.analysis_provider,
             "model": self.model,
             "max_documents_per_analysis": self.max_documents_per_analysis,
             "max_file_mb": self.max_file_mb,
@@ -56,11 +67,14 @@ class AIConfig:
             "max_chars_per_document": self.max_chars_per_document,
             "pdf_inline_fallback": self.pdf_inline_fallback,
             "min_extracted_chars": self.min_extracted_chars,
+            "codex_local_enabled": self.codex_local_enabled,
+            "codex_sandbox": self.codex_sandbox,
         }
 
 
 def get_ai_config() -> AIConfig:
     return AIConfig(
+        analysis_provider=_choice_env("AI_ANALYSIS_PROVIDER", "gemini", {"gemini", "codex_local", "disabled"}),
         enabled=_bool_env("GEMINI_ENABLED", False),
         api_key=os.environ.get("GEMINI_API_KEY", "").strip(),
         model=os.environ.get("GEMINI_MODEL", "gemini-3.5-flash").strip() or "gemini-3.5-flash",
@@ -75,4 +89,11 @@ def get_ai_config() -> AIConfig:
         max_chars_per_document=max(1000, _int_env("GEMINI_MAX_CHARS_PER_DOCUMENT", 90000)),
         pdf_inline_fallback=_bool_env("GEMINI_PDF_INLINE_FALLBACK", False),
         min_extracted_chars=max(1, _int_env("GEMINI_MIN_EXTRACTED_CHARS", 1000)),
+        codex_local_enabled=_bool_env("CODEX_LOCAL_ENABLED", False),
+        codex_executable=os.environ.get("CODEX_EXECUTABLE", "codex").strip() or "codex",
+        codex_timeout_seconds=max(1, _int_env("CODEX_TIMEOUT_SECONDS", 600)),
+        codex_work_root=os.environ.get("CODEX_WORK_ROOT", "runtime/ai_work/jobs").strip() or "runtime/ai_work/jobs",
+        codex_sandbox=os.environ.get("CODEX_SANDBOX", "read-only").strip() or "read-only",
+        codex_max_files=max(1, _int_env("CODEX_MAX_FILES", 8)),
+        codex_max_file_mb=max(1, _int_env("CODEX_MAX_FILE_MB", 45)),
     )
