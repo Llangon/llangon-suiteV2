@@ -31,6 +31,8 @@ from webapp.infonalia_webapp.ai.queue import active_job, create_job, ensure_ai_s
 from webapp.infonalia_webapp.ai.rate_limit import check_rate_limit
 from webapp.infonalia_webapp.ai.schemas import parse_summary_json, summary_quality_check
 from webapp.infonalia_webapp.ai.service import delete_ai_summary, process_ai_job, request_ai_analysis
+from webapp.infonalia_webapp.ai.worker import mark_stale_jobs, process_one_job
+from webapp.infonalia_webapp.ai.worker_launcher import start_ai_worker_for_job
 from webapp.infonalia_webapp.ai.workspace import prepare_ai_workspace
 from webapp.infonalia_webapp.tests.test_actuaciones_api import dispatch, make_handler
 from webapp.infonalia_webapp.tests.test_import_endpoints import load_app_module, temporary_app_database
@@ -706,8 +708,11 @@ def test_service_disabled_does_not_call_provider(tmp_path: Path, monkeypatch: py
 
     assert payload["enabled"] is False
     assert payload["active_provider"] == "gemini"
-    assert payload["job_status"] == "error"
-    assert payload["job"]["error_code"] == "GEMINI_DISABLED"
+    assert payload["job_status"] == "pending"
+    assert provider.calls == 0
+    processed = process_ai_job(conn, payload["job_id"], provider=provider)
+    assert processed["job_status"] == "error"
+    assert processed["job"]["error_code"] == "GEMINI_DISABLED"
     assert provider.calls == 0
 
 
@@ -727,10 +732,14 @@ def test_codex_local_disabled_does_not_call_gemini_or_provider(tmp_path: Path, m
     assert payload["active_provider"] == "codex_local"
     assert payload["provider_enabled"] is False
     assert payload["provider_status_label"] == "Codex Local desactivado"
-    assert payload["job_status"] == "error"
+    assert payload["job_status"] == "pending"
     assert payload["job"]["provider"] == "codex_local"
-    assert payload["job"]["error_code"] == "CODEX_DISABLED"
-    assert payload["job"]["error_message"] == "Codex Local no está activado."
+    assert provider.calls == 0
+    processed = process_ai_job(conn, payload["job_id"], provider=provider)
+    assert processed["job_status"] == "error"
+    assert processed["job"]["provider"] == "codex_local"
+    assert processed["job"]["error_code"] == "CODEX_DISABLED"
+    assert processed["job"]["error_message"] == "Codex Local no está activado."
     assert provider.calls == 0
 
 
@@ -742,11 +751,70 @@ def test_service_processes_job_with_mock_provider(tmp_path: Path, monkeypatch: p
     monkeypatch.setenv("GEMINI_ENABLED", "true")
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
 
-    payload = request_ai_analysis(conn, 1, requested_by="tester", provider=FakeProvider())
+    provider = FakeProvider()
+    payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
 
-    assert payload["has_summary"] is True
-    assert payload["summary"]["summary_text"] == "Resumen generado por mock."
+    assert payload["job_status"] == "pending"
+    assert provider.calls == 0
+    processed = process_ai_job(conn, payload["job_id"], provider=provider)
+    assert processed["has_summary"] is True
+    assert processed["summary"]["summary_text"] == "Resumen generado por mock."
     assert conn.execute("SELECT COUNT(*) FROM ai_usage_log").fetchone()[0] == 1
+
+
+def test_generate_creates_pending_job_without_running_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    provider = FakeProvider()
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+
+    payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
+
+    assert payload["ok"] is True
+    assert payload["job_id"]
+    assert payload["job_status"] == "pending"
+    assert payload["message"] == "Análisis IA en cola."
+    assert provider.calls == 0
+    row = conn.execute("SELECT status, provider FROM ai_analysis_jobs WHERE id = ?", (payload["job_id"],)).fetchone()
+    assert dict(row) == {"status": "pending", "provider": "gemini"}
+
+
+def test_worker_processes_pending_job_with_mock_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    payload = request_ai_analysis(conn, 1, requested_by="tester")
+
+    processed = process_ai_job(conn, payload["job_id"], provider=FakeProvider())
+
+    assert processed["job_status"] == "completed"
+    assert processed["has_summary"] is True
+    row = conn.execute("SELECT status, attempts FROM ai_analysis_jobs WHERE id = ?", (payload["job_id"],)).fetchone()
+    assert row["status"] == "completed"
+    assert row["attempts"] == 1
+
+
+def test_worker_does_not_process_same_job_twice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    payload = request_ai_analysis(conn, 1, requested_by="tester")
+    conn.execute("UPDATE ai_analysis_jobs SET status = 'processing', started_at = '2026-01-01T10:00:00' WHERE id = ?", (payload["job_id"],))
+    provider = FakeProvider()
+
+    result = process_ai_job(conn, payload["job_id"], provider=provider)
+
+    assert result["job_status"] == "processing"
+    assert provider.calls == 0
 
 
 def test_service_marks_429_as_deferred(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -757,15 +825,17 @@ def test_service_marks_429_as_deferred(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setenv("GEMINI_ENABLED", "true")
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
 
+    provider = FakeProvider(error=AIProviderError("429", code="RESOURCE_EXHAUSTED"))
     payload = request_ai_analysis(
         conn,
         1,
         requested_by="tester",
-        provider=FakeProvider(error=AIProviderError("429", code="RESOURCE_EXHAUSTED")),
+        provider=provider,
     )
+    processed = process_ai_job(conn, payload["job_id"], provider=provider)
 
-    assert payload["job_status"] == "deferred"
-    assert payload["job"]["error_code"] == "RESOURCE_EXHAUSTED"
+    assert processed["job_status"] == "deferred"
+    assert processed["job"]["error_code"] == "RESOURCE_EXHAUSTED"
 
 
 def test_service_marks_invalid_json_as_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -776,10 +846,12 @@ def test_service_marks_invalid_json_as_error(tmp_path: Path, monkeypatch: pytest
     monkeypatch.setenv("GEMINI_ENABLED", "true")
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
 
-    payload = request_ai_analysis(conn, 1, requested_by="tester", provider=FakeProvider(invalid=True))
+    provider = FakeProvider(invalid=True)
+    payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
+    processed = process_ai_job(conn, payload["job_id"], provider=provider)
 
-    assert payload["job_status"] == "error"
-    assert payload["job"]["error_code"] == "INVALID_JSON"
+    assert processed["job_status"] == "error"
+    assert processed["job"]["error_code"] == "INVALID_JSON"
 
 
 def test_service_rejects_empty_valid_json_without_saving_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -800,11 +872,12 @@ def test_service_rejects_empty_valid_json_without_saving_summary(tmp_path: Path,
     )
 
     payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
+    processed = process_ai_job(conn, payload["job_id"], provider=provider)
 
-    assert payload["job_status"] == "error"
-    assert payload["job"]["error_code"] == "EMPTY_ANALYSIS"
-    assert payload["job"]["summary_quality_status"] == "empty_analysis"
-    assert payload["job"]["sent_documents_count"] == 1
+    assert processed["job_status"] == "error"
+    assert processed["job"]["error_code"] == "EMPTY_ANALYSIS"
+    assert processed["job"]["summary_quality_status"] == "empty_analysis"
+    assert processed["job"]["sent_documents_count"] == 1
     assert latest_summary(conn, 1) is None
 
 
@@ -830,10 +903,11 @@ def test_service_ignores_existing_empty_summary_and_regenerates(tmp_path: Path, 
     provider = FakeProvider(summary_payload={"resumen_ejecutivo": {"texto": "Resumen regenerado."}})
 
     payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
+    processed = process_ai_job(conn, payload["job_id"], provider=provider)
 
     assert provider.calls == 1
-    assert payload["job_status"] == "completed"
-    assert payload["summary"]["summary_text"] == "Resumen regenerado."
+    assert processed["job_status"] == "completed"
+    assert processed["summary"]["summary_text"] == "Resumen regenerado."
 
 
 def test_service_saves_useful_summary_after_quality_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -854,9 +928,10 @@ def test_service_saves_useful_summary_after_quality_check(tmp_path: Path, monkey
     )
 
     payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
+    processed = process_ai_job(conn, payload["job_id"], provider=provider)
 
-    assert payload["job_status"] == "completed"
-    assert payload["has_summary"] is True
+    assert processed["job_status"] == "completed"
+    assert processed["has_summary"] is True
     assert latest_summary(conn, 1) is not None
 
 
@@ -876,11 +951,12 @@ def test_service_stores_invalid_json_provider_diagnostics(tmp_path: Path, monkey
     )
 
     payload = request_ai_analysis(conn, 1, requested_by="tester", provider=provider)
+    processed = process_ai_job(conn, payload["job_id"], provider=provider)
 
-    assert payload["job_status"] == "error"
-    assert payload["job"]["error_code"] == "INVALID_JSON"
-    assert payload["job"]["raw_response_preview"] == "[{}]"
-    assert payload["job"]["parse_attempts"] == ["response.text:root_type:list"]
+    assert processed["job_status"] == "error"
+    assert processed["job"]["error_code"] == "INVALID_JSON"
+    assert processed["job"]["raw_response_preview"] == "[{}]"
+    assert processed["job"]["parse_attempts"] == ["response.text:root_type:list"]
 
 
 def test_ai_files_endpoint_lists_physical_folder_without_inventory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1307,6 +1383,12 @@ def test_ai_summary_api_without_config_returns_controlled_state(tmp_path: Path, 
     monkeypatch.setenv("GEMINI_ENABLED", "false")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     app = load_app_module()
+    launched: list[int] = []
+    monkeypatch.setattr(
+        app,
+        "start_ai_worker_for_job",
+        lambda conn, job_id: launched.append(job_id) or {"ok": True, "pid": 123, "log_path": "worker.log"},
+    )
     with temporary_app_database(app):
         folder = tmp_path / "docs"
         folder.mkdir()
@@ -1339,6 +1421,12 @@ def test_ai_generate_api_with_disabled_gemini_creates_disabled_job(
     monkeypatch.setenv("GEMINI_ENABLED", "false")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     app = load_app_module()
+    launched: list[int] = []
+    monkeypatch.setattr(
+        app,
+        "start_ai_worker_for_job",
+        lambda conn, job_id: launched.append(job_id) or {"ok": True, "pid": 123, "log_path": "worker.log"},
+    )
     with temporary_app_database(app):
         folder = tmp_path / "docs"
         folder.mkdir()
@@ -1360,9 +1448,10 @@ def test_ai_generate_api_with_disabled_gemini_creates_disabled_job(
         status, payload = handler.responses[-1]
         assert status == HTTPStatus.OK
         assert payload["active_provider"] == "gemini"
-        assert payload["job_status"] == "error"
+        assert payload["job_status"] == "pending"
         assert payload["job"]["provider"] == "gemini"
-        assert payload["job"]["error_code"] == "GEMINI_DISABLED"
+        assert payload["worker"]["ok"] is True
+        assert launched == [payload["job_id"]]
         with app.db_session() as conn:
             assert conn.execute("SELECT COUNT(*) FROM ai_analysis_jobs").fetchone()[0] == 1
 
@@ -1376,6 +1465,12 @@ def test_ai_generate_api_codex_disabled_uses_payload_provider_without_gemini_tex
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("CODEX_LOCAL_ENABLED", "false")
     app = load_app_module()
+    launched: list[int] = []
+    monkeypatch.setattr(
+        app,
+        "start_ai_worker_for_job",
+        lambda conn, job_id: launched.append(job_id) or {"ok": True, "pid": 123, "log_path": "worker.log"},
+    )
     with temporary_app_database(app):
         folder = tmp_path / "docs"
         folder.mkdir()
@@ -1404,13 +1499,13 @@ def test_ai_generate_api_codex_disabled_uses_payload_provider_without_gemini_tex
         assert status == HTTPStatus.OK
         assert payload["active_provider"] == "codex_local"
         assert payload["provider_enabled"] is False
-        assert payload["job_status"] == "error"
+        assert payload["job_status"] == "pending"
         assert payload["job"]["provider"] == "codex_local"
-        assert payload["job"]["error_code"] == "CODEX_DISABLED"
         assert "Gemini" not in serialized
+        assert launched == [payload["job_id"]]
         with app.db_session() as conn:
             row = conn.execute("SELECT provider, status, error_code FROM ai_analysis_jobs").fetchone()
-            assert dict(row) == {"provider": "codex_local", "status": "error", "error_code": "CODEX_DISABLED"}
+            assert dict(row) == {"provider": "codex_local", "status": "pending", "error_code": ""}
 
 
 def test_ai_generate_api_rejects_unknown_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1426,6 +1521,121 @@ def test_ai_generate_api_rejects_unknown_provider(tmp_path: Path, monkeypatch: p
         assert "Proveedor IA no válido" in payload["error"]
 
 
+def test_ai_generate_api_marks_worker_start_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("AI_ANALYSIS_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    app = load_app_module()
+    def fail_worker(conn, job_id):
+        conn.execute(
+            "UPDATE ai_analysis_jobs SET status = 'error', error_code = 'WORKER_START_ERROR', error_message = 'fallo' WHERE id = ?",
+            (job_id,),
+        )
+        return {"ok": False, "error_code": "WORKER_START_ERROR", "error_message": "fallo", "log_path": "worker.log"}
+
+    monkeypatch.setattr(app, "start_ai_worker_for_job", fail_worker)
+    with temporary_app_database(app):
+        folder = tmp_path / "docs"
+        folder.mkdir()
+        _write_pdf(folder / "PCAP.pdf")
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                INSERT INTO licitaciones (
+                    id, expediente, objeto, organismo, ruta_carpeta, estado, created_at, updated_at
+                )
+                VALUES (1, 'EXP-API', 'Objeto', 'Organo', ?, 'Importada', '2026-01-01', '2026-01-01')
+                """,
+                (str(folder),),
+            )
+        handler = make_handler(app, "POST", "/api/licitaciones/1/ai-summary/generate", {"selected_files": ["PCAP.pdf"]})
+
+        dispatch(handler, "POST")
+
+        status, payload = handler.responses[-1]
+        assert status == HTTPStatus.OK
+        assert payload["job_status"] == "error"
+        assert payload["job"]["error_code"] == "WORKER_START_ERROR"
+        assert payload["worker"]["ok"] is False
+
+
+def test_worker_launcher_uses_popen_without_shell(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _conn()
+    _insert_licitacion(conn, tmp_path)
+    job_id = create_job(conn, licitacion_id=1, document_hash="hash", selected_documents=[], model="gemini-test")
+    calls: list[dict[str, object]] = []
+
+    class FakeProcess:
+        pid = 777
+
+    def fake_popen(command, **kwargs):
+        calls.append({"command": command, **kwargs})
+        return FakeProcess()
+
+    monkeypatch.setattr("webapp.infonalia_webapp.ai.worker_launcher.LOG_ROOT", tmp_path / "logs")
+    monkeypatch.setattr("webapp.infonalia_webapp.ai.worker_launcher.subprocess.Popen", fake_popen)
+
+    result = start_ai_worker_for_job(conn, job_id)
+
+    assert result["ok"] is True
+    assert result["pid"] == 777
+    assert calls
+    assert calls[0]["shell"] is False
+    assert "--job-id" in calls[0]["command"]
+
+
+def test_worker_mark_stale_jobs_updates_old_processing_job(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _conn()
+    _insert_licitacion(conn, tmp_path)
+    job_id = create_job(
+        conn,
+        licitacion_id=1,
+        document_hash="hash",
+        selected_documents=[],
+        model="gemini-test",
+        status="processing",
+    )
+    conn.execute("UPDATE ai_analysis_jobs SET started_at = '2020-01-01T00:00:00' WHERE id = ?", (job_id,))
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def fake_db_session():
+        yield conn
+
+    monkeypatch.setattr("webapp.infonalia_webapp.ai.worker.db_session", fake_db_session)
+
+    assert mark_stale_jobs() == 1
+    row = conn.execute("SELECT status, error_code FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
+    assert dict(row) == {"status": "error", "error_code": "STALE_JOB"}
+
+
+def test_worker_once_processes_codex_disabled_job_without_real_codex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _conn()
+    _write_pdf(tmp_path / "PCAP.pdf")
+    _insert_licitacion(conn, tmp_path)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("AI_ANALYSIS_PROVIDER", "codex_local")
+    monkeypatch.setenv("CODEX_LOCAL_ENABLED", "false")
+    payload = request_ai_analysis(conn, 1, requested_by="tester", provider_name="codex_local")
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def fake_db_session():
+        yield conn
+
+    monkeypatch.setattr("webapp.infonalia_webapp.ai.worker.db_session", fake_db_session)
+
+    result = process_one_job()
+
+    assert result["job_status"] == "error"
+    assert result["job"]["error_code"] == "CODEX_DISABLED"
+    row = conn.execute("SELECT status, error_code FROM ai_analysis_jobs WHERE id = ?", (payload["job_id"],)).fetchone()
+    assert dict(row) == {"status": "error", "error_code": "CODEX_DISABLED"}
+
+
 def test_ai_ui_has_provider_specific_error_messages() -> None:
     source = Path("webapp/infonalia_webapp/static/app.js").read_text(encoding="utf-8")
 
@@ -1433,6 +1643,9 @@ def test_ai_ui_has_provider_specific_error_messages() -> None:
     assert "Codex Local no está activado." in source
     assert "Error consultando Codex Local." in source
     assert 'provider === "gemini"' in source
+    assert "startAiSummaryPolling" in source
+    assert "Análisis IA en cola" in source
+    assert "Iniciando análisis IA" in source
 
 
 def test_manual_test_exposes_force_regeneration_flag() -> None:

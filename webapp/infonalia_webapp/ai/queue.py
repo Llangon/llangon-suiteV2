@@ -6,6 +6,7 @@ from datetime import datetime
 
 
 ACTIVE_JOB_STATUSES = ("pending", "processing", "deferred")
+PROCESSING_STALE_STATUSES = ("processing",)
 
 
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -206,6 +207,35 @@ def update_job(conn: sqlite3.Connection, job_id: int, **fields: object) -> None:
         return
     set_clause = ", ".join(f"{key} = ?" for key in fields)
     conn.execute(f"UPDATE ai_analysis_jobs SET {set_clause} WHERE id = ?", [*fields.values(), job_id])
+
+
+def claim_pending_job(conn: sqlite3.Connection, job_id: int, *, started_at: str | None = None) -> sqlite3.Row | None:
+    timestamp = started_at or now_iso()
+    cur = conn.execute(
+        """
+        UPDATE ai_analysis_jobs
+        SET status = 'processing', started_at = ?, attempts = COALESCE(attempts, 0) + 1
+        WHERE id = ?
+          AND status IN ('pending', 'queued', 'deferred')
+          AND (dismissed_at IS NULL OR dismissed_at = '')
+        """,
+        (timestamp, job_id),
+    )
+    if cur.rowcount <= 0:
+        return None
+    return conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
+
+
+def next_pending_job(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT * FROM ai_analysis_jobs
+        WHERE status IN ('pending', 'queued', 'deferred')
+          AND (dismissed_at IS NULL OR dismissed_at = '')
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+        """
+    ).fetchone()
 
 
 def save_summary(

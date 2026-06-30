@@ -48,6 +48,7 @@ const appState = {
   downloadFolderSubmitting: false,
   aiFileSelection: null,
   aiSummaryEmail: null,
+  aiPolling: new Map(),
 };
 
 const daysSection = document.getElementById("days-section");
@@ -3530,7 +3531,7 @@ function aiStatusLabel(payload) {
   }
   if (!payload.enabled) return payload.provider_status_label || "IA desactivada";
   if (!payload.configured) return payload.provider_status_label || "IA no configurada";
-  if (payload.job_status === "pending") return "Pendiente";
+  if (payload.job_status === "pending" || payload.job_status === "queued") return "En cola";
   if (payload.job_status === "processing") return "Procesando";
   if (payload.job_status === "deferred") return "Límite alcanzado, reintento posterior";
   if (payload.job_status === "error") return "Error";
@@ -3563,12 +3564,33 @@ function aiProviderErrorMessage(payload) {
   return job.error_message || "";
 }
 
+function isAiJobActive(payload) {
+  return ["pending", "queued", "processing"].includes(payload?.job_status || "");
+}
+
+function stopAiSummaryPolling(licitacionId) {
+  const key = String(licitacionId);
+  const current = appState.aiPolling.get(key);
+  if (current?.timer) clearInterval(current.timer);
+  appState.aiPolling.delete(key);
+}
+
+function startAiSummaryPolling(licitacionId) {
+  const key = String(licitacionId);
+  if (appState.aiPolling.has(key)) return;
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    loadAiSummary(licitacionId, { silent: true, pollingStartedAt: startedAt });
+  }, 4000);
+  appState.aiPolling.set(key, { timer, startedAt });
+}
+
 function aiStatusClass(payload) {
   if (payload.has_summary) return "ok";
   if (!payload.provider_enabled || !payload.provider_configured || !payload.enabled || !payload.configured) return "muted";
   if (payload.job_status === "error") return "danger";
   if (payload.job_status === "deferred") return "warning";
-  if (payload.job_status === "pending" || payload.job_status === "processing") return "warning";
+  if (payload.job_status === "pending" || payload.job_status === "queued" || payload.job_status === "processing") return "warning";
   return "muted";
 }
 
@@ -3707,6 +3729,9 @@ function renderAiSummaryContent(licitacionId, payload) {
   const canRetry = payload.job_status === "error" || payload.job_status === "deferred";
   const hasAnyAnalysis = Boolean(payload.has_summary || payload.job_status || payload.job);
   const reason = aiProviderErrorMessage(payload) || payload.motivo_si_no_puede_generar || job.error_message || "";
+  const activeMessage = isAiJobActive(payload)
+    ? `<div class="ai-warning"><strong>${payload.job_status === "processing" ? "Procesando análisis IA..." : "Análisis IA en cola..."}</strong><p>El análisis sigue en curso. Puedes cerrar esta ficha y volver más tarde.</p></div>`
+    : "";
   return `
     <div class="ai-summary-toolbar">
       <span class="ai-status ${aiStatusClass(payload)}">${escapeHtml(aiStatusLabel(payload))}</span>
@@ -3721,6 +3746,7 @@ function renderAiSummaryContent(licitacionId, payload) {
       </div>
     </div>
     ${reason ? `<div class="ai-reason">${escapeHtml(reason)}</div>` : ""}
+    ${activeMessage}
     ${renderAiDocumentDiagnostics(payload)}
     ${selectedDocs.length ? `
       <div class="ai-documents">
@@ -3731,10 +3757,10 @@ function renderAiSummaryContent(licitacionId, payload) {
   `;
 }
 
-async function loadAiSummary(licitacionId) {
+async function loadAiSummary(licitacionId, options = {}) {
   const panel = licitacionDetailContent.querySelector(`[data-ai-summary-panel="${licitacionId}"]`);
   if (!panel) return;
-  panel.innerHTML = `<div class="empty">Cargando estado IA...</div>`;
+  if (!options.silent) panel.innerHTML = `<div class="empty">Cargando estado IA...</div>`;
   try {
     const response = await fetch(`/api/licitaciones/${licitacionId}/ai-summary`);
     const result = await response.json().catch(() => ({}));
@@ -3743,6 +3769,11 @@ async function loadAiSummary(licitacionId) {
       return;
     }
     panel.innerHTML = renderAiSummaryContent(licitacionId, result);
+    if (isAiJobActive(result)) {
+      startAiSummaryPolling(licitacionId);
+    } else {
+      stopAiSummaryPolling(licitacionId);
+    }
   } catch (error) {
     panel.innerHTML = `<div class="empty">${escapeHtml(error.message || "No se pudo consultar el análisis IA.")}</div>`;
   }
@@ -3831,7 +3862,7 @@ async function runAiSummaryGeneration(licitacionId, button, force = false, selec
     const endpoint = force
       ? `/api/licitaciones/${licitacionId}/ai-summary/regenerate`
       : `/api/licitaciones/${licitacionId}/ai-summary/generate`;
-    if (panel) panel.innerHTML = `<div class="empty">Procesando análisis IA...</div>`;
+    if (panel) panel.innerHTML = `<div class="empty">Iniciando análisis IA...</div>`;
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { ...csrfHeaders(), "Content-Type": "application/json" },
@@ -3843,6 +3874,7 @@ async function runAiSummaryGeneration(licitacionId, button, force = false, selec
       return;
     }
     if (panel) panel.innerHTML = renderAiSummaryContent(licitacionId, result);
+    if (isAiJobActive(result)) startAiSummaryPolling(licitacionId);
   } finally {
     if (button) {
       button.disabled = false;
@@ -3858,6 +3890,7 @@ async function generateAiSummary(licitacionId, button, force = false) {
 async function deleteAiSummary(licitacionId) {
   const ok = confirm("Esto borrará únicamente el análisis IA guardado para esta licitación. No se borrará ningún documento de la carpeta del expediente.");
   if (!ok) return;
+  stopAiSummaryPolling(licitacionId);
   const panel = licitacionDetailContent.querySelector(`[data-ai-summary-panel="${licitacionId}"]`);
   if (panel) panel.innerHTML = `<div class="empty">Borrando análisis IA...</div>`;
   const response = await fetch(`/api/licitaciones/${licitacionId}/ai-summary`, { method: "DELETE", headers: csrfHeaders() });

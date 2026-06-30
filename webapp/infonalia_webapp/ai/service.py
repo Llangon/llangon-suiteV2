@@ -13,6 +13,7 @@ from .gemini_provider import AIProviderError, GeminiProvider, ProviderResult
 from .hashing import hash_documents
 from .queue import (
     active_job,
+    claim_pending_job,
     create_job,
     latest_job,
     latest_summary,
@@ -237,7 +238,7 @@ def _base_payload(
         "selected_documents": selected_documents,
         "document_diagnostics": diagnostics or {},
         "document_hash": document_hash,
-        "puede_generar": bool(enabled and configured and selected_documents),
+        "puede_generar": bool(config.analysis_provider != "disabled" and selected_documents),
         "motivo_si_no_puede_generar": reason,
     }
 
@@ -345,25 +346,6 @@ def request_ai_analysis(
             payload.update({"job_status": existing_job["status"], "job": _job_payload(existing_job)})
             return payload
 
-    if not _provider_enabled(config) or not _provider_configured(config):
-        status, error_code, error_message = _provider_unavailable(config)
-        job_id = create_job(
-            conn,
-            licitacion_id=licitacion_id,
-            document_hash=document_hash,
-            selected_documents=selected,
-            model=_provider_model(config),
-            provider=config.analysis_provider,
-            requested_by=requested_by,
-            status=status,
-            error_code=error_code,
-            error_message=error_message,
-        )
-        payload = _base_payload(config, selected, document_hash, diagnostics)
-        job = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
-        payload.update({"job_status": status, "job": _job_payload(job)})
-        return payload
-
     job_id = create_job(
         conn,
         licitacion_id=licitacion_id,
@@ -372,8 +354,21 @@ def request_ai_analysis(
         model=_provider_model(config),
         provider=config.analysis_provider,
         requested_by=requested_by,
+        status="pending",
     )
-    return process_ai_job(conn, job_id, provider=provider)
+    payload = _base_payload(config, selected, document_hash, diagnostics)
+    job = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
+    payload.update(
+        {
+            "ok": True,
+            "job_id": job_id,
+            "job_status": "pending",
+            "provider": config.analysis_provider,
+            "message": "Análisis IA en cola.",
+            "job": _job_payload(job),
+        }
+    )
+    return payload
 
 
 def process_ai_job(
@@ -386,6 +381,17 @@ def process_ai_job(
     row = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
     if not row:
         raise ValueError("Job IA no encontrado")
+    initial_status = str(row["status"] or "")
+    if initial_status not in {"pending", "queued", "deferred", "processing"}:
+        return _payload_with_job_selection(conn, int(row["licitacion_id"]), row, json.loads(row["selected_documents_json"] or "[]"))
+    if initial_status == "processing":
+        return _payload_with_job_selection(conn, int(row["licitacion_id"]), row, json.loads(row["selected_documents_json"] or "[]"))
+    if initial_status in {"pending", "queued", "deferred"}:
+        claimed = claim_pending_job(conn, job_id, started_at=_now())
+        if not claimed:
+            row = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
+            return _payload_with_job_selection(conn, int(row["licitacion_id"]), row, json.loads(row["selected_documents_json"] or "[]"))
+        row = claimed
     licitacion_id = int(row["licitacion_id"])
     job_provider = str(row["provider"] or config.analysis_provider or "gemini")
     if job_provider != config.analysis_provider:
@@ -421,8 +427,6 @@ def process_ai_job(
             )
             return _payload_with_job_selection(conn, licitacion_id, row, selected)
 
-    started_at = _now()
-    update_job(conn, job_id, status="processing", started_at=started_at, attempts=int(row["attempts"] or 0) + 1)
     active_provider = provider or (CodexLocalProvider(config, job_id=job_id) if config.analysis_provider == "codex_local" else GeminiProvider(config))
     try:
         result = active_provider.analyze_documents(dict(licitacion), selected)
@@ -511,3 +515,10 @@ def list_ai_jobs(conn: sqlite3.Connection, limit: int = 30) -> list[dict[str, ob
         (limit,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def get_ai_job_payload(conn: sqlite3.Connection, job_id: int) -> dict[str, object]:
+    row = conn.execute("SELECT * FROM ai_analysis_jobs WHERE id = ?", (job_id,)).fetchone()
+    if not row:
+        raise ValueError("Job IA no encontrado")
+    return {"job": _job_payload(row), "job_status": row["status"], "job_id": job_id}

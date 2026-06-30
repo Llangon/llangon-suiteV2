@@ -326,21 +326,23 @@ try:
     from .ai.file_selection import AIFileSelectionError, list_ai_files
     from .ai.service import (
         delete_ai_summary,
+        get_ai_job_payload,
         get_ai_summary_payload,
         list_ai_jobs,
-        process_ai_job,
         request_ai_analysis,
     )
+    from .ai.worker_launcher import start_ai_worker_for_job
 except ImportError:
     from ai.config import get_ai_config
     from ai.file_selection import AIFileSelectionError, list_ai_files
     from ai.service import (
         delete_ai_summary,
+        get_ai_job_payload,
         get_ai_summary_payload,
         list_ai_jobs,
-        process_ai_job,
         request_ai_analysis,
     )
+    from ai.worker_launcher import start_ai_worker_for_job
 
 try:
     from .notification_rendering import (
@@ -2146,6 +2148,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_monitor_run_detail(int(run_id))
         elif path == "/api/ai/jobs":
             self.api_list_ai_jobs()
+        elif path.startswith("/api/ai/jobs/"):
+            job_id = path.removeprefix("/api/ai/jobs/").strip("/")
+            if not job_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_get_ai_job(int(job_id))
         elif path == "/api/news":
             self.api_list_news()
         else:
@@ -2261,12 +2269,18 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_send_ai_summary_email(int(licitacion_id))
+        elif path.startswith("/api/ai/jobs/") and path.endswith("/start"):
+            job_id = path.removeprefix("/api/ai/jobs/").removesuffix("/start").strip("/")
+            if not job_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_start_ai_job(int(job_id))
         elif path.startswith("/api/ai/jobs/") and path.endswith("/run"):
             job_id = path.removeprefix("/api/ai/jobs/").removesuffix("/run").strip("/")
             if not job_id.isdigit():
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
-            self.api_run_ai_job(int(job_id))
+            self.api_start_ai_job(int(job_id))
         elif path.startswith("/api/licitaciones/") and path.endswith("/ia-preview/email"):
             licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ia-preview/email").strip("/")
             if not licitacion_id.isdigit():
@@ -2490,7 +2504,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 or path.endswith("/actuaciones")
             ):
                 return True
-            if path.startswith("/api/ai/jobs/") and path.endswith("/run"):
+            if path.startswith("/api/ai/jobs/") and (path.endswith("/run") or path.endswith("/start")):
                 return True
             if path.startswith("/api/actuaciones/") and (
                 path.endswith("/cerrar")
@@ -4435,6 +4449,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if provider_name and provider_name not in {"gemini", "codex_local", "disabled"}:
             self.send_json({"error": "Proveedor IA no válido."}, HTTPStatus.BAD_REQUEST)
             return
+        job_id = 0
         try:
             with db_session() as conn:
                 payload = request_ai_analysis(
@@ -4445,6 +4460,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     selected_files=selected_files,
                     provider_name=provider_name or None,
                 )
+                job_id = int(payload.get("job_id") or 0)
         except AIFileSelectionError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -4454,6 +4470,14 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         except Exception:
             self.send_json({"error": "No se pudo generar el analisis IA."}, HTTPStatus.BAD_REQUEST)
             return
+        if job_id and payload.get("job_status") in {"pending", "queued", "deferred"}:
+            with db_session() as conn:
+                worker = start_ai_worker_for_job(conn, job_id)
+            payload["worker"] = worker
+            if not worker.get("ok"):
+                with db_session() as conn:
+                    payload = get_ai_summary_payload(conn, licitacion_id)
+                    payload["worker"] = worker
         self.send_json(payload)
 
     def api_delete_ai_summary(self, licitacion_id: int) -> None:
@@ -4517,17 +4541,37 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             return
         self.send_json({"ok": True, "sent_at": sent_at, "recipient": recipient})
 
-    def api_run_ai_job(self, job_id: int) -> None:
+    def api_get_ai_job(self, job_id: int) -> None:
         if not self.require_admin():
             return
         try:
             with db_session() as conn:
-                payload = process_ai_job(conn, job_id)
+                payload = get_ai_job_payload(conn, job_id)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            return
+        self.send_json(payload)
+
+    def api_start_ai_job(self, job_id: int) -> None:
+        if not self.require_admin():
+            return
+        try:
+            with db_session() as conn:
+                existing = get_ai_job_payload(conn, job_id)
+                status = str(existing.get("job_status") or "")
+                if status not in {"pending", "queued", "deferred"}:
+                    self.send_json(existing)
+                    return
+            with db_session() as conn:
+                worker = start_ai_worker_for_job(conn, job_id)
+            with db_session() as conn:
+                payload = get_ai_job_payload(conn, job_id)
+                payload["worker"] = worker
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
             return
         except Exception:
-            self.send_json({"error": "No se pudo ejecutar el job IA."}, HTTPStatus.BAD_REQUEST)
+            self.send_json({"error": "No se pudo iniciar el worker IA."}, HTTPStatus.BAD_REQUEST)
             return
         self.send_json(payload)
 
