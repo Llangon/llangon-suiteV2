@@ -9,7 +9,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
-from .repository import connect_db, ensure_monitor_schema
+from .repository import (
+    TASK_TYPE_EMAIL_ACTIONS_PROCESSOR,
+    TASK_TYPE_INFONALIA_MAIL_IMPORT,
+    connect_db,
+    ensure_monitor_schema,
+)
 from .service import (
     DEFAULT_DB_PATH,
     DEFAULT_SCHEDULER_TIMEZONE,
@@ -115,6 +120,173 @@ def scheduler_interval_from_env() -> int:
         return 300
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on", "si", "sí"}
+
+
+def env_minutes(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name, str(default)) or default))
+    except ValueError:
+        return default
+
+
+def _last_task_started(conn, task_type: str) -> datetime | None:
+    row = conn.execute(
+        """
+        SELECT started_at
+        FROM monitor_runs
+        WHERE task_type = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (task_type,),
+    ).fetchone()
+    if not row or not row["started_at"]:
+        return None
+    try:
+        return parse_now(row["started_at"])
+    except Exception:
+        return None
+
+
+def _interval_task_due(conn, *, task_type: str, current: datetime, interval_minutes: int) -> bool:
+    last_started = _last_task_started(conn, task_type)
+    if not last_started:
+        return True
+    return localize_scheduler_datetime(current) - localize_scheduler_datetime(last_started) >= timedelta(minutes=interval_minutes)
+
+
+def _record_interval_run(
+    conn,
+    *,
+    task_type: str,
+    started_at: str,
+    finished_at: str,
+    status: str,
+    dry_run: bool,
+    processed_items_count: int = 0,
+    emails_sent_count: int = 0,
+    error_message: str = "",
+    details: dict[str, object] | None = None,
+    schedule_key: str | None = None,
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO monitor_runs (
+            task_type, mode, root_path, started_at, finished_at, status, dry_run,
+            schedule_key, processed_items_count, emails_sent_count, error_message, details_json
+        )
+        VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            task_type,
+            "dry-run" if dry_run else "automatic",
+            started_at,
+            finished_at,
+            status,
+            1 if dry_run else 0,
+            schedule_key or localize_scheduler_datetime().date().isoformat(),
+            processed_items_count,
+            emails_sent_count,
+            error_message,
+            json.dumps(details or {}, ensure_ascii=False, sort_keys=True, default=str),
+        ),
+    )
+    return int(cur.lastrowid)
+
+
+def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: bool) -> list[dict[str, object]]:
+    reports: list[dict[str, object]] = []
+    db_file = Path(db_path)
+    conn = connect_db(db_file)
+    ensure_monitor_schema(conn)
+    try:
+        jobs = [
+            (
+                TASK_TYPE_INFONALIA_MAIL_IMPORT,
+                "LLANGON_INFONALIA_IMPORT_ENABLED",
+                env_minutes("LLANGON_INFONALIA_IMPORT_POLL_MINUTES", 30),
+            ),
+            (
+                TASK_TYPE_EMAIL_ACTIONS_PROCESSOR,
+                "LLANGON_EMAIL_ACTIONS_ENABLED",
+                env_minutes("LLANGON_EMAIL_ACTIONS_POLL_MINUTES", 10),
+            ),
+        ]
+        due_jobs = [
+            (task_type, enabled_var, interval)
+            for task_type, enabled_var, interval in jobs
+            if env_bool(enabled_var, False) and _interval_task_due(conn, task_type=task_type, current=current, interval_minutes=interval)
+        ]
+    finally:
+        conn.close()
+
+    if not due_jobs:
+        return reports
+
+    try:
+        from .. import app
+        from ..email_actions_processor import process_mailbox_once as process_action_mailbox_once
+        from ..infonalia_mail_importer import process_mailbox_once as process_infonalia_mailbox_once
+    except ImportError:
+        import app  # type: ignore
+        from email_actions_processor import process_mailbox_once as process_action_mailbox_once
+        from infonalia_mail_importer import process_mailbox_once as process_infonalia_mailbox_once
+
+    for task_type, _enabled_var, _interval in due_jobs:
+        started_at = scheduler_now_iso(current)
+        error_message = ""
+        try:
+            if task_type == TASK_TYPE_INFONALIA_MAIL_IMPORT:
+                result = process_infonalia_mailbox_once(
+                    dry_run=dry_run,
+                    notification_sender=lambda to, subject, body, html: app.send_monitor_email(to, subject, body, html),
+                )
+                processed = int(result.get("imported", 0) or 0) + int(result.get("duplicates", 0) or 0)
+                emails_sent = int(result.get("notified", 0) or 0)
+            else:
+                result = process_action_mailbox_once(
+                    db_session_factory=app.db_session,
+                    notification_sender=lambda to, subject, body, html: app.send_monitor_email(to, subject, body, html),
+                    dry_run=dry_run,
+                )
+                processed = int(result.get("processed", 0) or 0)
+                emails_sent = 0
+            status = "failed" if result.get("errors") else "completed"
+        except Exception as exc:  # pragma: no cover
+            result = {"enabled": True, "task_type": task_type, "errors": 1, "error_message": str(exc)}
+            processed = 0
+            emails_sent = 0
+            status = "failed"
+            error_message = str(exc)
+        finished_at = scheduler_now_iso()
+        conn = connect_db(db_file)
+        ensure_monitor_schema(conn)
+        try:
+            run_id = _record_interval_run(
+                conn,
+                task_type=task_type,
+                started_at=started_at,
+                finished_at=finished_at,
+                status=status,
+                dry_run=dry_run,
+                processed_items_count=processed,
+                emails_sent_count=emails_sent,
+                error_message=error_message or str(result.get("message") or result.get("error_message") or ""),
+                details=result,
+                schedule_key=localize_scheduler_datetime(current).date().isoformat(),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        reports.append({"task_type": task_type, "monitor_run_id": run_id, **result})
+    return reports
+
+
 def build_task_runner(*, db_path: str | Path, recipient_factory: Callable[[], str], email_sender: EmailSender) -> TaskRunner:
     def runner(current: datetime) -> list[dict[str, object]]:
         return run_due_automation_tasks(
@@ -198,6 +370,16 @@ def monitor_scheduler_status(db_path: str | Path | None = None) -> dict[str, obj
         "agenda_pending_recipients": configured_agenda_pending_recipients(db_path),
         "monitor_licitaciones_schedule_enabled": "monitor_licitaciones" in schedules,
         "monitor_licitaciones_real_enabled": env_bool("MONITOR_LICITACIONES_REAL_ENABLED", False),
+        "infonalia_mail_importer": {
+            "enabled": env_bool("LLANGON_INFONALIA_IMPORT_ENABLED", False),
+            "interval_minutes": env_minutes("LLANGON_INFONALIA_IMPORT_POLL_MINUTES", 30),
+            "last_run": None,
+        },
+        "email_actions_processor": {
+            "enabled": env_bool("LLANGON_EMAIL_ACTIONS_ENABLED", False),
+            "interval_minutes": env_minutes("LLANGON_EMAIL_ACTIONS_POLL_MINUTES", 10),
+            "last_run": None,
+        },
         "last_automatic_run": None,
     }
     db_file = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
@@ -241,6 +423,33 @@ def monitor_scheduler_status(db_path: str | Path | None = None) -> dict[str, obj
                 "emails_sent_count": last_run["emails_sent_count"],
                 "error_message": last_run["error_message"] or "",
             }
+        for key, task_type in (
+            ("infonalia_mail_importer", TASK_TYPE_INFONALIA_MAIL_IMPORT),
+            ("email_actions_processor", TASK_TYPE_EMAIL_ACTIONS_PROCESSOR),
+        ):
+            row = conn.execute(
+                """
+                SELECT id, task_type, mode, started_at, finished_at, status,
+                       processed_items_count, emails_sent_count, error_message
+                FROM monitor_runs
+                WHERE task_type = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (task_type,),
+            ).fetchone()
+            if row:
+                status[key]["last_run"] = {
+                    "id": row["id"],
+                    "task_type": row["task_type"],
+                    "mode": row["mode"],
+                    "started_at": row["started_at"] or "",
+                    "finished_at": row["finished_at"] or "",
+                    "status": row["status"] or "",
+                    "processed_items_count": row["processed_items_count"],
+                    "emails_sent_count": row["emails_sent_count"],
+                    "error_message": row["error_message"] or "",
+                }
         conn.close()
     except Exception as exc:  # pragma: no cover
         status["last_error"] = str(exc)
@@ -332,13 +541,15 @@ def run_once(
     )
     conn.commit()
     conn.close()
-    return run_due_automation_tasks(
+    reports = _run_mail_interval_jobs(db_path=db_path, current=now, dry_run=dry_run)
+    reports.extend(run_due_automation_tasks(
         dry_run=dry_run,
         db_path=db_path,
         recipient=effective_recipient,
         email_sender=effective_email_sender,
         current=now,
-    )
+    ))
+    return reports
 
 
 def reset_test_state(
@@ -359,6 +570,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Runner independiente del scheduler de LlangonSuiteV2.")
     parser.add_argument("--once", action="store_true", help="Comprueba tareas pendientes y termina.")
     parser.add_argument("--dry-run", action="store_true", help="Muestra qué ejecutaría sin enviar correos.")
+    parser.add_argument("--status", action="store_true", help="Muestra estado del scheduler y trabajos de correo.")
     parser.add_argument("--list-schedule", action="store_true", help="Lista tareas activas y próxima ejecución.")
     parser.add_argument("--reset-test-state", action="store_true", help="Limpia estado temporal del scheduler sin borrar histórico.")
     parser.add_argument("--schedule-key", action="append", default=[], help="Schedule key que se puede liberar para repetir una prueba.")
@@ -376,6 +588,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.list_schedule:
         print(json.dumps(list_schedule(now), ensure_ascii=False, indent=2))
+        return 0
+    if args.status:
+        print(json.dumps(monitor_scheduler_status(args.db_path), ensure_ascii=False, indent=2, default=str))
         return 0
     if args.once or args.dry_run:
         reports = run_once(

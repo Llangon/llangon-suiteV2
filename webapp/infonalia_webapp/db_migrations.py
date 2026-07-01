@@ -41,6 +41,21 @@ try:
 except ImportError:
     from ai.notifications import ensure_ai_notifications_schema as _ensure_ai_notifications_schema
 
+try:
+    from .comments import ensure_comments_schema as _ensure_comments_schema
+except ImportError:
+    from comments import ensure_comments_schema as _ensure_comments_schema
+
+try:
+    from .email_actions import ensure_email_action_schema as _ensure_email_action_schema
+except ImportError:
+    from email_actions import ensure_email_action_schema as _ensure_email_action_schema
+
+try:
+    from .infonalia_mail_importer import ensure_infonalia_email_import_schema as _ensure_infonalia_email_import_schema
+except ImportError:
+    from infonalia_mail_importer import ensure_infonalia_email_import_schema as _ensure_infonalia_email_import_schema
+
 
 MIGRATIONS_TABLE = "schema_migrations"
 
@@ -562,6 +577,72 @@ def _ai_notifications_schema(conn: sqlite3.Connection) -> None:
     _ensure_ai_notifications_schema(conn)
 
 
+def _comments_schema(conn: sqlite3.Connection) -> None:
+    _ensure_comments_schema(conn)
+    if not _table_exists(conn, "licitaciones"):
+        return
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(licitaciones)").fetchall()}
+    migrated_at = datetime.now().replace(microsecond=0).isoformat()
+    for column, label in (
+        ("notas_internas", "Nota interna migrada"),
+        ("seguimiento_notas", "Nota de seguimiento migrada"),
+        ("comentario", "Comentario migrado"),
+    ):
+        if column not in columns:
+            continue
+        rows = conn.execute(
+            f"""
+            SELECT id, {column} AS note
+            FROM licitaciones
+            WHERE COALESCE({column}, '') <> ''
+            """
+        ).fetchall()
+        for row in rows:
+            body = f"{label}: {row['note']}"
+            exists = conn.execute(
+                """
+                SELECT 1
+                FROM comments
+                WHERE entity_type = 'licitacion'
+                  AND entity_id = ?
+                  AND author_user_id = 'system'
+                  AND body = ?
+                LIMIT 1
+                """,
+                (row["id"], body),
+            ).fetchone()
+            if exists:
+                continue
+            conn.execute(
+                """
+                INSERT INTO comments (
+                    entity_type, entity_id, author_user_id, author_name, body,
+                    created_at, updated_at, visibility, metadata_json
+                )
+                VALUES ('licitacion', ?, 'system', 'Sistema', ?, ?, ?, 'internal', ?)
+                """,
+                (
+                    row["id"],
+                    body,
+                    migrated_at,
+                    migrated_at,
+                    f'{{"source_column":"{column}"}}',
+                ),
+            )
+
+
+def _email_action_codes_schema(conn: sqlite3.Connection) -> None:
+    _ensure_email_action_schema(conn)
+
+
+def _email_action_events_schema(conn: sqlite3.Connection) -> None:
+    _ensure_email_action_schema(conn)
+
+
+def _infonalia_email_imports_schema(conn: sqlite3.Connection) -> None:
+    _ensure_infonalia_email_import_schema(conn)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version="0001_baseline_schema",
@@ -642,6 +723,26 @@ MIGRATIONS: tuple[Migration, ...] = (
         version="0016_ai_analysis_notifications",
         description="Avisos por email asociados a jobs de analisis IA",
         apply=_ai_notifications_schema,
+    ),
+    Migration(
+        version="0017_comments_unified",
+        description="Comentarios unificados por entidad",
+        apply=_comments_schema,
+    ),
+    Migration(
+        version="0018_email_action_codes",
+        description="Codigos de accion por correo para revision Infonalia",
+        apply=_email_action_codes_schema,
+    ),
+    Migration(
+        version="0019_email_action_events",
+        description="Auditoria de acciones por correo de revision Infonalia",
+        apply=_email_action_events_schema,
+    ),
+    Migration(
+        version="0020_infonalia_email_imports",
+        description="Control idempotente de importaciones de correos Infonalia",
+        apply=_infonalia_email_imports_schema,
     ),
 )
 

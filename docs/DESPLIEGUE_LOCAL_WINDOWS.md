@@ -164,6 +164,23 @@ python -m webapp.infonalia_webapp.monitor.scheduler --once
 
 Cada ejecucion termina. El propio script `run_scheduler_once.ps1` usa un bloqueo local para evitar solapes si una ejecucion anterior sigue activa.
 
+En esa misma pasada se ejecutan tambien las tareas de correo si estan activadas en `.env`:
+
+```text
+LLANGON_INFONALIA_IMPORT_ENABLED=1
+LLANGON_INFONALIA_IMPORT_POLL_MINUTES=30
+LLANGON_EMAIL_ACTIONS_ENABLED=1
+LLANGON_EMAIL_ACTIONS_POLL_MINUTES=10
+```
+
+Ambas usan la configuracion IMAP `LLANGON_ACTIONS_IMAP_*`. El importador de Infonalia filtra por remitente/asunto exactos y las ordenes tecnicas solo aceptan asuntos que empiezan por `LLANGON_CMD`.
+
+El diagnostico local muestra tambien el estado de esos dos trabajos:
+
+```powershell
+python -m webapp.infonalia_webapp.monitor.scheduler --status
+```
+
 ## Desinstalacion
 
 ```powershell

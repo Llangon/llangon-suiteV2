@@ -153,6 +153,23 @@ foreach ($LogName in @("web.log", "web.stdout.log", "web.stderr.log", "scheduler
 }
 
 Write-Host ""
+$Python = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $Python)) {
+    $Python = "python"
+}
+try {
+    Push-Location -LiteralPath $ProjectRoot
+    Write-Host "Estado trabajos scheduler:"
+    & $Python -m webapp.infonalia_webapp.monitor.scheduler --status
+}
+catch {
+    Write-Host "Estado trabajos scheduler: no disponible ($($_.Exception.Message))"
+}
+finally {
+    Pop-Location
+}
+
+Write-Host ""
 $Cloudflared = Get-Service -Name "cloudflared" -ErrorAction SilentlyContinue
 if ($null -eq $Cloudflared) {
     Write-Host "Cloudflare Tunnel: no instalado como servicio en este equipo."

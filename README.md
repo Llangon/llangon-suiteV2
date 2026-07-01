@@ -139,6 +139,105 @@ INFONALIA_AGENDA_EMAIL_TO=usuario@ejemplo.es
 
 El flujo de documentos recomendado sigue siendo Dropbox local/Desktop con `INFONALIA_STORAGE_BACKEND=local`; Dropbox API queda experimental y desactivado.
 
+## Importación automática del correo Infonalia
+
+La Suite puede vigilar el buzón técnico `info3llangon@gmail.com` para importar automáticamente el correo diario de Infonalia. El importador solo acepta mensajes con remitente `envios@infonalia.net` y asunto exacto `LICITACIONES - Envío de Novedades - 149022`; el resto queda intacto.
+
+Variables principales:
+
+```text
+LLANGON_INFONALIA_IMPORT_ENABLED=0
+LLANGON_INFONALIA_IMPORT_FROM=envios@infonalia.net
+LLANGON_INFONALIA_IMPORT_SUBJECT=LICITACIONES - Envío de Novedades - 149022
+LLANGON_INFONALIA_IMPORT_NOTIFY_EMAIL=info3@llangon.com
+LLANGON_INFONALIA_IMPORT_FOLDER=INBOX
+LLANGON_INFONALIA_IMPORT_LOOKBACK_HOURS=48
+LLANGON_INFONALIA_IMPORT_MARK_READ_ON_SUCCESS=1
+LLANGON_INFONALIA_IMPORT_POLL_MINUTES=30
+LLANGON_INFONALIA_IMPORT_TEST_FORWARDERS=
+```
+
+Reutiliza la configuración IMAP `LLANGON_ACTIONS_IMAP_*`. La lectura usa `BODY.PEEK`: no marca correos como leídos por inspeccionarlos, no borra mensajes y solo marca como leído un candidato cuando termina importado o reconocido como duplicado. La tabla `infonalia_email_imports` guarda `message_id` y huella del cuerpo para no importar ni notificar dos veces el mismo correo.
+
+Pruebas sin tocar IMAP:
+
+```powershell
+python -m webapp.infonalia_webapp.infonalia_mail_importer --from-eml C:\ruta\correo.eml --parse-only --verbose
+python -m webapp.infonalia_webapp.infonalia_mail_importer --from-eml C:\ruta\correo.eml --dry-run --verbose
+```
+
+Prueba segura del buzón:
+
+```powershell
+python -m webapp.infonalia_webapp.infonalia_mail_importer --once --dry-run --verbose
+```
+
+Procesamiento real filtrado:
+
+```powershell
+python -m webapp.infonalia_webapp.infonalia_mail_importer --once --verbose
+```
+
+## Revisión Infonalia por correo
+
+El correo que recibe Nuria para revisar un día de Infonalia se genera con tarjetas visuales y botones `mailto:`. Los botones no abren la Suite: preparan un correo técnico con un código de acción que la Suite puede leer después desde un buzón IMAP.
+
+Variables principales:
+
+```text
+LLANGON_ACTION_MAILBOX_TO=info3llangon@gmail.com
+LLANGON_ACTION_MAILBOX_CC=info3@llangon.com
+LLANGON_ACTION_NOTIFY_EMAIL=info3@llangon.com
+LLANGON_ACTION_ALLOWED_SENDERS=
+LLANGON_ACTIONS_IMAP_HOST=imap.gmail.com
+LLANGON_ACTIONS_IMAP_PORT=993
+LLANGON_ACTIONS_IMAP_USER=
+LLANGON_ACTIONS_IMAP_PASSWORD=
+LLANGON_ACTIONS_IMAP_FOLDER=INBOX
+```
+
+`LLANGON_ACTIONS_IMAP_PASSWORD` no debe subirse a Git. Si falta la configuración IMAP, el procesador queda desactivado de forma controlada y la app sigue funcionando. `LLANGON_ACTION_ALLOWED_SENDERS` debe contener el correo real desde el que Nuria enviará las órdenes; si está vacío, no se procesa ninguna orden.
+
+El procesador solo atiende correos cuyo asunto empieza exactamente por `LLANGON_CMD`. Los correos normales del buzón no se leen en cuerpo, no se borran y no se marcan como leídos. La lectura de candidatos usa `BODY.PEEK` para evitar añadir la marca `Leído` por inspección.
+
+Los códigos ya no se validan contra una lista de códigos pendientes. Se interpretan directamente como `9 dígitos de entidad + 2 dígitos de acción`: por ejemplo `00000014101` significa licitación interna `141` y acción `01` (`Descartar`), y `00000005899` significa revisión Infonalia `58` y acción `99` (`Revisado`). La tabla `email_action_codes` se conserva como compatibilidad histórica y para generar los enlaces del correo, pero no bloquea ni consume acciones.
+
+Mientras el día Infonalia esté abierto, Nuria puede pulsar varias veces sobre una misma licitación y prevalece siempre la última acción válida recibida. Al recibir `99 Revisado`, la revisión queda cerrada mediante `reviewed_at`; desde ese momento cualquier orden individual de ese mismo día se ignora y queda auditada. Al cerrar, las licitaciones que sigan sin decisión en `Importada` o `Enviada a Nuria` pasan automáticamente a `Descartada`.
+
+Las acciones por correo solo pueden modificar estados de primera criba (`Importada`, `Enviada a Nuria`, `Descartada`, `Descargar para ver`, `Preparar ficha`/`Preparar`) y no pueden cambiar estados avanzados como `Preparada`, `Oferta enviada`, `Adjudicada`, `No adjudicada` o `En seguimiento`.
+
+Prueba manual del procesador en una sola pasada:
+
+```powershell
+python -m webapp.infonalia_webapp.email_actions_processor --once --dry-run --verbose
+```
+
+Procesamiento real filtrado:
+
+```powershell
+python -m webapp.infonalia_webapp.email_actions_processor --once --verbose
+```
+
+Incluir órdenes ya leídas:
+
+```powershell
+python -m webapp.infonalia_webapp.email_actions_processor --once --include-seen --verbose
+```
+
+Revisar un código sin tocar IMAP:
+
+```powershell
+python -m webapp.infonalia_webapp.email_actions_processor --check-code 00000014101
+```
+
+Simular un código sin tocar IMAP ni cambiar estados:
+
+```powershell
+python -m webapp.infonalia_webapp.email_actions_processor --simulate-code 00000014101 --from-email correoautorizado@ejemplo.com --dry-run
+```
+
+El scheduler local de Windows no crea un sistema paralelo: cuando `MONITOR_SCHEDULER_ENABLED=1`, la tarea `LlangonSuite-Scheduler` ejecuta `python -m webapp.infonalia_webapp.monitor.scheduler --once`. En esa pasada se procesan, si están activados, tanto la importación automática de Infonalia como las órdenes `LLANGON_CMD`, respetando `LLANGON_INFONALIA_IMPORT_POLL_MINUTES` y `LLANGON_EMAIL_ACTIONS_POLL_MINUTES`.
+
 ## Licitaciones y seguimiento
 
 La pantalla Licitaciones es el centro de trabajo diario. Cada expediente puede marcarse como revisado, tener estado interno, notas internas, actuaciones vinculadas y seguimiento activo. El seguimiento automático real queda preparado, pero no implementado: el futuro monitor será un script externo de Windows y enviará un email por cada licitación con novedades a los destinatarios globales de `INFONALIA_SEGUIMIENTO_EMAILS`.

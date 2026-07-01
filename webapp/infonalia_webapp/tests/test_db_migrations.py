@@ -78,6 +78,10 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
         "0014_ai_jobs_dismissed",
         "0015_ai_jobs_progress",
         "0016_ai_analysis_notifications",
+        "0017_comments_unified",
+        "0018_email_action_codes",
+        "0019_email_action_events",
+        "0020_infonalia_email_imports",
     ]
     assert table_exists(conn, MIGRATIONS_TABLE)
     rows = conn.execute(
@@ -164,6 +168,26 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
             "Avisos por email asociados a jobs de analisis IA",
             "2026-06-12T10:00:00",
         ),
+        (
+            "0017_comments_unified",
+            "Comentarios unificados por entidad",
+            "2026-06-12T10:00:00",
+        ),
+        (
+            "0018_email_action_codes",
+            "Codigos de accion por correo para revision Infonalia",
+            "2026-06-12T10:00:00",
+        ),
+        (
+            "0019_email_action_events",
+            "Auditoria de acciones por correo de revision Infonalia",
+            "2026-06-12T10:00:00",
+        ),
+        (
+            "0020_infonalia_email_imports",
+            "Control idempotente de importaciones de correos Infonalia",
+            "2026-06-12T10:00:00",
+        ),
     ]
     assert table_exists(conn, "download_jobs")
     assert table_exists(conn, "import_runs")
@@ -182,6 +206,10 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
     assert table_exists(conn, "ai_summaries")
     assert table_exists(conn, "ai_usage_log")
     assert table_exists(conn, "ai_analysis_notifications")
+    assert table_exists(conn, "comments")
+    assert table_exists(conn, "email_action_codes")
+    assert table_exists(conn, "email_action_events")
+    assert table_exists(conn, "infonalia_email_imports")
     ai_job_columns = {row[1] for row in conn.execute("PRAGMA table_info(ai_analysis_jobs)").fetchall()}
     assert {"dismissed_at", "dismissed_by"} | AI_JOB_PROGRESS_COLUMNS <= ai_job_columns
     assert not table_exists(conn, "licitacion_actuaciones")
@@ -231,6 +259,10 @@ def test_run_migrations_is_idempotent() -> None:
         "0014_ai_jobs_dismissed",
         "0015_ai_jobs_progress",
         "0016_ai_analysis_notifications",
+        "0017_comments_unified",
+        "0018_email_action_codes",
+        "0019_email_action_events",
+        "0020_infonalia_email_imports",
     ]
     assert run_migrations(conn, now=lambda: "2026-06-12T10:05:00") == []
 
@@ -252,6 +284,10 @@ def test_run_migrations_is_idempotent() -> None:
         ("0014_ai_jobs_dismissed", "2026-06-12T10:00:00"),
         ("0015_ai_jobs_progress", "2026-06-12T10:00:00"),
         ("0016_ai_analysis_notifications", "2026-06-12T10:00:00"),
+        ("0017_comments_unified", "2026-06-12T10:00:00"),
+        ("0018_email_action_codes", "2026-06-12T10:00:00"),
+        ("0019_email_action_events", "2026-06-12T10:00:00"),
+        ("0020_infonalia_email_imports", "2026-06-12T10:00:00"),
     ]
 
 

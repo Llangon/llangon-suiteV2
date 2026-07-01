@@ -97,9 +97,80 @@ INFONALIA_SMTP_PASSWORD=
 INFONALIA_SMTP_FROM=
 INFONALIA_SMTP_TLS=1
 INFONALIA_SMTP_SSL=0
+LLANGON_ACTION_MAILBOX_TO=info3llangon@gmail.com
+LLANGON_ACTION_MAILBOX_CC=info3@llangon.com
+LLANGON_ACTION_NOTIFY_EMAIL=info3@llangon.com
+LLANGON_ACTION_ALLOWED_SENDERS=
+LLANGON_ACTIONS_IMAP_HOST=imap.gmail.com
+LLANGON_ACTIONS_IMAP_PORT=993
+LLANGON_ACTIONS_IMAP_USER=
+LLANGON_ACTIONS_IMAP_PASSWORD=
+LLANGON_ACTIONS_IMAP_FOLDER=INBOX
+LLANGON_EMAIL_ACTIONS_ENABLED=0
+LLANGON_EMAIL_ACTIONS_POLL_MINUTES=10
+LLANGON_INFONALIA_IMPORT_ENABLED=0
+LLANGON_INFONALIA_IMPORT_FROM=envios@infonalia.net
+LLANGON_INFONALIA_IMPORT_SUBJECT=LICITACIONES - Envío de Novedades - 149022
+LLANGON_INFONALIA_IMPORT_NOTIFY_EMAIL=info3@llangon.com
+LLANGON_INFONALIA_IMPORT_FOLDER=INBOX
+LLANGON_INFONALIA_IMPORT_LOOKBACK_HOURS=48
+LLANGON_INFONALIA_IMPORT_MARK_READ_ON_SUCCESS=1
+LLANGON_INFONALIA_IMPORT_POLL_MINUTES=30
+LLANGON_INFONALIA_IMPORT_TEST_FORWARDERS=
 ```
 
 La URL de acceso incluida en notificaciones solo se muestra cuando `INFONALIA_PLATFORM_URL` tiene un valor local válido.
+
+El procesador de órdenes por correo queda inactivo si falta usuario o contraseña IMAP. Además, solo procesa asuntos que empiezan exactamente por `LLANGON_CMD`; los correos normales no se leen en cuerpo ni se marcan como leídos. `LLANGON_ACTION_ALLOWED_SENDERS` es obligatorio para ejecutar órdenes reales.
+
+El código de acción se interpreta directamente y no depende de que exista previamente en `email_action_codes`. Formato: `00000014101` = licitación `141` + acción `01`; `00000005899` = revisión Infonalia `58` + acción `99`. Mientras la revisión está abierta, la última acción válida gana. Cuando se recibe `99 Revisado`, el día queda cerrado, las licitaciones que sigan en `Importada` o `Enviada a Nuria` pasan automáticamente a `Descartada`, y las órdenes individuales posteriores de ese día se ignoran y se registran en `email_action_events`.
+
+Las acciones por correo son solo de primera criba: permiten `Importada`, `Enviada a Nuria`, `Descartada`, `Descargar para ver` y `Preparar ficha`/`Preparar`. Estados avanzados como `Preparada`, `Oferta enviada`, `Adjudicada`, `No adjudicada` o `En seguimiento` no se modifican desde correo.
+
+Prueba segura:
+
+```powershell
+python -m webapp.infonalia_webapp.email_actions_processor --once --dry-run --verbose
+```
+
+Procesamiento real filtrado:
+
+```powershell
+python -m webapp.infonalia_webapp.email_actions_processor --once --verbose
+```
+
+Revisar un código sin tocar IMAP:
+
+```powershell
+python -m webapp.infonalia_webapp.email_actions_processor --check-code 00000014101
+```
+
+## Importación automática del correo Infonalia
+
+El importador `infonalia_mail_importer` lee el mismo buzón IMAP técnico y solo acepta el correo diario de `envios@infonalia.net` con asunto exacto `LICITACIONES - Envío de Novedades - 149022`. Extrae las licitaciones, crea/actualiza el día Infonalia correspondiente a la fecha del mensaje y envía un aviso a `LLANGON_INFONALIA_IMPORT_NOTIFY_EMAIL` cuando la importación real termina.
+
+La importación es idempotente: `infonalia_email_imports` registra `message_id`, huella del cuerpo, UID IMAP, estado, recuentos y fecha de aviso. Si el mismo mensaje vuelve a aparecer, no duplica licitaciones ni vuelve a notificar.
+
+Pruebas locales sin IMAP:
+
+```powershell
+python -m webapp.infonalia_webapp.infonalia_mail_importer --from-eml C:\ruta\correo.eml --parse-only --verbose
+python -m webapp.infonalia_webapp.infonalia_mail_importer --from-eml C:\ruta\correo.eml --dry-run --verbose
+```
+
+Prueba del buzón sin escribir:
+
+```powershell
+python -m webapp.infonalia_webapp.infonalia_mail_importer --once --dry-run --verbose
+```
+
+Procesamiento real:
+
+```powershell
+python -m webapp.infonalia_webapp.infonalia_mail_importer --once --verbose
+```
+
+El scheduler local ejecuta este importador y el procesador `LLANGON_CMD` en la misma pasada de `python -m webapp.infonalia_webapp.monitor.scheduler --once`, siempre que sus variables `*_ENABLED` estén activadas. Los correos se leen con `BODY.PEEK`; no se borran y no se marcan como leídos salvo candidato importado correctamente o duplicado ya controlado.
 
 ## Funciones actuales
 
