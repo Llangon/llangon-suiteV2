@@ -745,6 +745,18 @@ textarea {
   color: var(--green);
 }
 
+.ai-summary-badge {
+  background: #f1fff2;
+  border: 1px solid #a9d9bd;
+  border-radius: 6px;
+  color: var(--green);
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 5px 8px;
+  white-space: nowrap;
+}
+
 .day-metrics {
   border-top: 1px solid var(--line);
   display: grid;
@@ -809,6 +821,119 @@ textarea {
 
 .state-actions {
   border-top: 0;
+}
+
+.comments-widget {
+  background: #fbfdfb;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-top: 12px;
+  padding: 10px;
+}
+
+.comments-widget-full {
+  background: #ffffff;
+  padding: 14px;
+}
+
+.comments-compact {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+}
+
+.comments-toggle,
+.comments-reply {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+
+.comments-latest {
+  color: var(--muted);
+  flex: 1 1 auto;
+  font-size: 12px;
+  line-height: 1.25;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comments-latest.empty {
+  color: #98a2b3;
+  font-style: italic;
+}
+
+.comments-thread {
+  border-top: 1px solid var(--line);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+.comments-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.comment-item {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.comment-item.pinned {
+  background: #f1fff2;
+  border-color: #a9d9bd;
+}
+
+.comment-meta {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.comment-meta span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.comment-body {
+  font-size: 13px;
+  line-height: 1.4;
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+}
+
+.comment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.comment-actions button,
+.comments-form button {
+  font-size: 12px;
+  padding: 6px 8px;
+}
+
+.comments-form {
+  display: grid;
+  gap: 8px;
+}
+
+.comments-form textarea {
+  min-height: 70px;
+}
+
+.danger-text {
+  color: var(--red);
 }
 
 .card-side-actions {
@@ -3247,6 +3372,22 @@ dialog::backdrop {
     flex-wrap: wrap;
     justify-items: start;
     max-width: none;
+  }
+
+  .comments-compact {
+    align-items: stretch;
+    display: grid;
+    gap: 8px;
+  }
+
+  .comments-latest {
+    white-space: normal;
+  }
+
+  .comment-meta {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
   }
 
   .calendar-month-wrap {

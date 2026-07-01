@@ -583,6 +583,253 @@ function csrfHeaders() {
   return appState.csrfToken ? { "X-CSRF-Token": appState.csrfToken } : {};
 }
 
+function renderAiSummaryBadge(item) {
+  if (!item?.has_ai_summary) return "";
+  return `<span class="ai-summary-badge" title="Resumen IA disponible">✨ Resumen IA</span>`;
+}
+
+function commentEntityTypeForAgenda(item) {
+  if (item?.source_type === "licitacion") return "licitacion";
+  if (item?.source_type === "actuacion") return "actuacion";
+  return "agenda_evento";
+}
+
+function commentCountText(count) {
+  const total = Number(count || 0);
+  if (total === 1) return "💬 1 comentario";
+  return `💬 ${total} comentarios`;
+}
+
+function renderCommentLatest(summary) {
+  const latest = summary?.latest;
+  if (!latest?.body) return `<span class="comments-latest empty">Sin comentarios todavía.</span>`;
+  const author = latest.author_name || latest.author_user_id || "Usuario";
+  return `
+    <span class="comments-latest">
+      <strong>${escapeHtml(author)}:</strong>
+      ${escapeHtml(latest.body)}
+    </span>
+  `;
+}
+
+function renderCommentsWidget(entityType, entityId, summary = {}, options = {}) {
+  if (!entityType || !entityId) return "";
+  const full = Boolean(options.full);
+  const threadHidden = full ? "" : "hidden";
+  const toggleText = full ? "Actualizar comentarios" : "Ver comentarios";
+  return `
+    <section class="comments-widget ${full ? "comments-widget-full" : ""}"
+      data-comments-entity-type="${escapeHtml(entityType)}"
+      data-comments-entity-id="${escapeHtml(entityId)}"
+      data-comments-loaded="0">
+      <div class="comments-compact">
+        <button type="button" class="comments-toggle" data-comments-toggle>
+          ${escapeHtml(commentCountText(summary?.count || 0))}
+        </button>
+        ${renderCommentLatest(summary)}
+        <button type="button" class="ghost comments-reply" data-comments-toggle>${escapeHtml(toggleText)}</button>
+      </div>
+      <div class="comments-thread" data-comments-thread ${threadHidden}>
+        <div class="comments-list" data-comments-list>
+          <div class="empty compact">Cargando comentarios...</div>
+        </div>
+        <form class="comments-form" data-comments-form>
+          <textarea name="body" rows="2" maxlength="5000" placeholder="Escribe un comentario interno..."></textarea>
+          <button type="submit">Enviar comentario</button>
+        </form>
+      </div>
+    </section>
+  `;
+}
+
+function renderCommentItem(comment) {
+  const edited = comment.is_edited ? " · editado" : "";
+  const pinned = comment.is_pinned ? "📌 " : "";
+  const actions = [];
+  if (comment.can_edit) actions.push(`<button type="button" class="ghost" data-comment-edit="${escapeHtml(comment.id)}">Editar</button>`);
+  if (comment.can_delete) actions.push(`<button type="button" class="ghost danger-text" data-comment-delete="${escapeHtml(comment.id)}">Eliminar</button>`);
+  if (comment.can_pin) {
+    actions.push(`<button type="button" class="ghost" data-comment-pin="${escapeHtml(comment.id)}" data-comment-pinned="${comment.is_pinned ? "1" : "0"}">${comment.is_pinned ? "Desfijar" : "Fijar"}</button>`);
+  }
+  return `
+    <article class="comment-item ${comment.is_pinned ? "pinned" : ""}" data-comment-id="${escapeHtml(comment.id)}">
+      <div class="comment-meta">
+        <strong>${pinned}${escapeHtml(comment.author_name || comment.author_user_id || "Usuario")}</strong>
+        <span>${escapeHtml(formatDateTime(comment.created_at) || comment.created_at || "")}${escapeHtml(edited)}</span>
+      </div>
+      <p class="comment-body">${escapeHtml(comment.body || "")}</p>
+      ${actions.length ? `<div class="comment-actions">${actions.join("")}</div>` : ""}
+    </article>
+  `;
+}
+
+function renderCommentsList(items = []) {
+  if (!items.length) return `<div class="empty compact">Sin comentarios todavía.</div>`;
+  return items.map(renderCommentItem).join("");
+}
+
+async function loadCommentsWidget(widget) {
+  if (!widget) return;
+  const entityType = widget.dataset.commentsEntityType;
+  const entityId = widget.dataset.commentsEntityId;
+  const list = widget.querySelector("[data-comments-list]");
+  if (!entityType || !entityId || !list) return;
+  list.innerHTML = `<div class="empty compact">Cargando comentarios...</div>`;
+  const params = new URLSearchParams({ entity_type: entityType, entity_id: entityId });
+  const response = await fetch(`/api/comments?${params.toString()}`);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    list.innerHTML = `<div class="empty compact">${escapeHtml(data.error || "No se pudieron cargar los comentarios.")}</div>`;
+    return;
+  }
+  list.innerHTML = renderCommentsList(data.items || []);
+  widget.dataset.commentsLoaded = "1";
+  const summary = data.summary || {};
+  const compact = widget.querySelector(".comments-compact");
+  if (compact) {
+    compact.querySelector(".comments-toggle").innerHTML = escapeHtml(commentCountText(summary.count || 0));
+    const latest = compact.querySelector(".comments-latest");
+    if (latest) {
+      const template = document.createElement("template");
+      template.innerHTML = renderCommentLatest(summary).trim();
+      latest.replaceWith(template.content.firstElementChild);
+    }
+  }
+}
+
+async function refreshRelatedCommentWidgets(widget) {
+  const entityType = widget?.dataset.commentsEntityType;
+  const entityId = widget?.dataset.commentsEntityId;
+  if (!entityType || !entityId) return;
+  const selector = `.comments-widget[data-comments-entity-type="${CSS.escape(entityType)}"][data-comments-entity-id="${CSS.escape(entityId)}"]`;
+  for (const item of document.querySelectorAll(selector)) {
+    if (!item.querySelector("[data-comments-thread]")?.hidden || item.classList.contains("comments-widget-full")) {
+      await loadCommentsWidget(item);
+    } else {
+      item.dataset.commentsLoaded = "0";
+    }
+  }
+}
+
+async function submitCommentForm(form) {
+  const widget = form.closest(".comments-widget");
+  const textarea = form.elements.body;
+  const body = textarea.value.trim();
+  if (!body) return;
+  const response = await fetch("/api/comments", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
+    body: JSON.stringify({
+      entity_type: widget.dataset.commentsEntityType,
+      entity_id: widget.dataset.commentsEntityId,
+      body,
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(data.error || "No se pudo guardar el comentario.");
+    return;
+  }
+  textarea.value = "";
+  await refreshRelatedCommentWidgets(widget);
+}
+
+async function editComment(button) {
+  const widget = button.closest(".comments-widget");
+  const item = button.closest(".comment-item");
+  const current = item?.querySelector(".comment-body")?.textContent || "";
+  const body = window.prompt("Editar comentario:", current);
+  if (body === null) return;
+  const trimmed = body.trim();
+  if (!trimmed) {
+    alert("El comentario no puede estar vacío.");
+    return;
+  }
+  const response = await fetch(`/api/comments/${button.dataset.commentEdit}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
+    body: JSON.stringify({ body: trimmed }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(data.error || "No se pudo editar el comentario.");
+    return;
+  }
+  await refreshRelatedCommentWidgets(widget);
+}
+
+async function deleteComment(button) {
+  if (!window.confirm("¿Eliminar este comentario?")) return;
+  const widget = button.closest(".comments-widget");
+  const response = await fetch(`/api/comments/${button.dataset.commentDelete}`, {
+    method: "DELETE",
+    headers: csrfHeaders(),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(data.error || "No se pudo eliminar el comentario.");
+    return;
+  }
+  await refreshRelatedCommentWidgets(widget);
+}
+
+async function pinComment(button) {
+  const widget = button.closest(".comments-widget");
+  const pinned = button.dataset.commentPinned === "1";
+  const response = await fetch(`/api/comments/${button.dataset.commentPin}/${pinned ? "unpin" : "pin"}`, {
+    method: "POST",
+    headers: csrfHeaders(),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(data.error || "No se pudo actualizar el comentario.");
+    return;
+  }
+  await refreshRelatedCommentWidgets(widget);
+}
+
+function handleCommentsClick(event) {
+  const toggle = event.target.closest("[data-comments-toggle]");
+  if (toggle) {
+    const widget = toggle.closest(".comments-widget");
+    const thread = widget?.querySelector("[data-comments-thread]");
+    if (!thread) return false;
+    thread.hidden = !thread.hidden;
+    if (!thread.hidden && widget.dataset.commentsLoaded !== "1") loadCommentsWidget(widget);
+    return true;
+  }
+  const editButton = event.target.closest("[data-comment-edit]");
+  if (editButton) {
+    editComment(editButton);
+    return true;
+  }
+  const deleteButton = event.target.closest("[data-comment-delete]");
+  if (deleteButton) {
+    deleteComment(deleteButton);
+    return true;
+  }
+  const pinButton = event.target.closest("[data-comment-pin]");
+  if (pinButton) {
+    pinComment(pinButton);
+    return true;
+  }
+  return false;
+}
+
+function handleCommentsSubmit(event) {
+  const form = event.target.closest("[data-comments-form]");
+  if (!form) return false;
+  event.preventDefault();
+  submitCommentForm(form);
+  return true;
+}
+
+function hydrateFullCommentWidgets(root = document) {
+  root.querySelectorAll(".comments-widget-full").forEach((widget) => {
+    if (widget.dataset.commentsLoaded !== "1") loadCommentsWidget(widget);
+  });
+}
+
 function defaultNuriaReviewEmail() {
   const settings = appState.config?.settings || {};
   return (
@@ -1022,9 +1269,9 @@ function renderActuacionCard(item) {
           <div class="detail"><span>Vínculos</span>${escapeHtml(String(item.licitaciones_count || linked.length || 0))}</div>
         </div>
         ${item.descripcion ? `<p class="muted">${escapeHtml(item.descripcion)}</p>` : ""}
+        ${renderCommentsWidget("actuacion", item.id, item.comments_summary)}
         <div class="card-actions">
           <button data-edit-actuacion="${escapeHtml(item.id)}">Editar</button>
-          <button data-comment-actuacion="${escapeHtml(item.id)}">Añadir comentario</button>
           <button data-duplicate-actuacion="${escapeHtml(item.id)}">Duplicar actuación</button>
           ${canClose ? `<button data-close-actuacion="${escapeHtml(item.id)}">Cerrar</button>` : ""}
           ${canClose ? `<button class="danger" data-cancel-actuacion="${escapeHtml(item.id)}">Cancelar</button>` : ""}
@@ -1120,25 +1367,24 @@ function findLicitacionSelection(id) {
   return null;
 }
 
-function renderActuacionHistory(entries = []) {
+function renderActuacionHistory(entries = [], item = null) {
   if (!actuacionForm.elements.id.value) {
     actuacionHistoryPanel.hidden = true;
     actuacionHistory.innerHTML = "";
     return;
   }
   actuacionHistoryPanel.hidden = false;
-  if (!entries.length) {
-    actuacionHistory.innerHTML = `<div class="empty">Sin movimientos registrados.</div>`;
-    return;
-  }
-  actuacionHistory.innerHTML = entries.map((entry) => `
+  const historyHtml = entries.length ? entries.map((entry) => `
     <article class="history-item">
       <strong>${escapeHtml(entry.event_type || "evento")}</strong>
       <small>${escapeHtml(entry.created_at || "")}${entry.user_id ? ` · ${escapeHtml(entry.user_id)}` : ""}</small>
       ${entry.comentario ? `<p>${escapeHtml(entry.comentario)}</p>` : ""}
       ${entry.old_value || entry.new_value ? `<small>${escapeHtml(entry.old_value || "vacío")} -> ${escapeHtml(entry.new_value || "vacío")}</small>` : ""}
     </article>
-  `).join("");
+  `).join("") : `<div class="empty">Sin movimientos registrados.</div>`;
+  const commentsHtml = item?.id ? renderCommentsWidget("actuacion", item.id, item.comments_summary, { full: true }) : "";
+  actuacionHistory.innerHTML = `${historyHtml}${commentsHtml}`;
+  hydrateFullCommentWidgets(actuacionHistoryPanel);
 }
 
 async function openActuacionDialog(licitacionId = "") {
@@ -1173,7 +1419,7 @@ async function editActuacion(id) {
   actuacionForm.elements.estado.value = normalizedTaskStateValue(item.estado || "pendiente");
   actuacionForm.elements.recordatorio_email.checked = Boolean(item.recordatorio_email);
   setSelectedActuacionLicitaciones(item.licitaciones || []);
-  renderActuacionHistory(item.historial || []);
+  renderActuacionHistory(item.historial || [], item);
   actuacionDialog.showModal();
 }
 
@@ -1838,7 +2084,6 @@ function renderAgendaActions(item) {
     actions.push(`<button type="button" data-new-actuacion-id="${escapeHtml(item.source_id)}">Nueva actuación</button>`);
   }
   if (item.source_type === "actuacion") {
-    actions.push(`<button type="button" data-agenda-comment="${escapeHtml(item.source_id)}">Añadir comentario</button>`);
     actions.push(`<button type="button" data-agenda-duplicate="${escapeHtml(item.source_id)}">Duplicar actuación</button>`);
   }
   if (item.source_type === "interno" && !isPendingAgendaView()) {
@@ -2195,9 +2440,9 @@ function renderPendingTaskCard(item, colorClass) {
     `<button type="button" data-agenda-open="${escapeHtml(token)}">Abrir</button>`,
   ];
   if (item.source_type === "actuacion") {
-    sideActions.push(`<button type="button" data-agenda-comment="${escapeHtml(item.source_id)}">Añadir comentario</button>`);
     sideActions.push(`<button type="button" data-agenda-duplicate="${escapeHtml(item.source_id)}">Duplicar actuación</button>`);
   }
+  const commentEntityType = commentEntityTypeForAgenda(item);
   return `
     <article class="card compact-card agenda-card pending-task-card ${colorClass}" data-calendar-date="${escapeHtml(item.date || "sin-fecha")}">
       <div class="card-layout">
@@ -2220,6 +2465,7 @@ function renderPendingTaskCard(item, colorClass) {
             <div class="detail"><span>Estado</span>${escapeHtml(agendaStatusLabel(item))}</div>
             <div class="detail"><span>Fecha límite</span>${escapeHtml(dueText)}</div>
           </div>
+          ${renderCommentsWidget(commentEntityType, item.source_id, item.comments_summary)}
         </div>
 
         <div class="card-side-actions">
@@ -2252,6 +2498,8 @@ function renderAgendaCompactCard(item) {
       <small>${escapeHtml(item.date ? formatDate(item.date) : "Sin fecha")}${agendaEventTime(item) ? ` · ${escapeHtml(agendaEventTime(item))}` : ""}</small>
       <small>${escapeHtml(item.subtitle || "")}</small>
       ${linked ? `<small>Licitación vinculada: ${escapeHtml(linked)}</small>` : ""}
+      ${renderAiSummaryBadge(item)}
+      ${renderCommentsWidget(commentEntityTypeForAgenda(item), item.source_id, item.comments_summary)}
       ${renderAgendaActions(item)}
     </article>
   `;
@@ -3064,6 +3312,19 @@ monitorRunsBoard?.addEventListener("click", (event) => {
   if (button) openMonitorRun(button.dataset.monitorRun);
 });
 
+document.addEventListener("click", (event) => {
+  if (handleCommentsClick(event)) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+}, true);
+
+document.addEventListener("submit", (event) => {
+  if (handleCommentsSubmit(event)) {
+    event.stopPropagation();
+  }
+}, true);
+
 function renderCard(item, options = {}) {
   const fechaLimite = [formatDate(item.fecha_limite), item.hora_limite].filter(Boolean).join(" ");
   const remainingDays = daysUntil(item.fecha_limite, item.hora_limite);
@@ -3097,6 +3358,7 @@ function renderCard(item, options = {}) {
               <p class="object">${escapeHtml(item.objeto || "Sin objeto informado")}</p>
             </div>
             <div class="card-flags">
+              ${renderAiSummaryBadge(item)}
               <span class="badge ${badgeClass(item.estado)}">${escapeHtml(estadoLabel(item.estado))}</span>
               <span class="due-chip ${dueClassName}">${escapeHtml(dueText)}</span>
               ${item.provincia ? `<span class="province-chip">${escapeHtml(item.provincia)}</span>` : ""}
@@ -3110,6 +3372,7 @@ function renderCard(item, options = {}) {
           </div>
 
           ${(links || folderText) ? `<div class="links card-footer-links">${links}<span class="card-folder-path${folderClass}" title="${escapeHtml(folderPath || folderText)}" data-folder-path="${escapeHtml(folderPath || "")}">${escapeHtml(folderText)}</span></div>` : ""}
+          ${renderCommentsWidget("licitacion", item.id, item.comments_summary)}
 
           ${showStateActions ? `<div class="card-actions state-actions">
             ${stateActions.map((estado) => `
@@ -3186,7 +3449,6 @@ function renderExpandedCard(item, detail) {
 
 function renderLicitacionDetailView(item) {
   const actuaciones = item.actuaciones || [];
-  const seguimiento = item.seguimiento || {};
   const folder = folderDisplayPath(item);
   const folderLabel = folderStatusLabel(item);
   const profile = normalizeUrl(item.enlace_perfil);
@@ -3202,21 +3464,6 @@ function renderLicitacionDetailView(item) {
     ["CPV", item.cpv],
     ["Cliente / representada", item.cliente || item.representada],
   ];
-  const technicalRows = [
-    ["ID interno", item.id],
-    ["Expediente", item.expediente],
-    ["Plataforma", item.plataforma],
-    ["Fecha Infonalia", formatDate(item.fecha_infonalia)],
-    ["Estado interno", item.estado_interno || "Nueva"],
-    ["Revisada", item.revisada ? "Sí" : "No"],
-    ["Seguimiento activo", item.seguimiento_activo ? "Sí" : "No"],
-    ["Ruta registrada", folder || item.ruta_carpeta],
-    ["Enlace plataforma", profile],
-    ["Enlace Infonalia", infonalia],
-  ];
-  if (item.descarga_fallida || item.download_error) {
-    technicalRows.push(["Error descarga", item.download_error || "Descarga fallida"]);
-  }
 
   return `
     <article class="licitacion-detail-workspace">
@@ -3228,6 +3475,7 @@ function renderLicitacionDetailView(item) {
           <p class="detail-cover-meta">${escapeHtml([item.organismo, item.provincia].filter(Boolean).join(" · "))}</p>
         </div>
         <div class="detail-cover-side">
+          ${renderAiSummaryBadge(item)}
           <span class="badge ${badgeClass(item.estado)}">${escapeHtml(estadoLabel(item.estado))}</span>
           ${fechaLimite ? `<div class="detail-kpi"><span>Fecha límite</span><strong>${escapeHtml(fechaLimite)}</strong></div>` : ""}
           ${item.presupuesto ? `<div class="detail-kpi"><span>Presupuesto</span><strong>${escapeHtml(formatMoney(item.presupuesto))}</strong></div>` : ""}
@@ -3238,10 +3486,9 @@ function renderLicitacionDetailView(item) {
       <nav class="detail-tabs no-print" aria-label="Secciones de la ficha">
         <button type="button" class="detail-tab-button active" data-detail-tab="resumen">Resumen</button>
         <button type="button" class="detail-tab-button" data-detail-tab="actuaciones">Actuaciones</button>
-        <button type="button" class="detail-tab-button" data-detail-tab="documentos">Documentos</button>
+        <button type="button" class="detail-tab-button" data-detail-tab="documentos-seguimiento">Documentos y seguimiento</button>
+        <button type="button" class="detail-tab-button" data-detail-tab="comentarios">Comentarios</button>
         <button type="button" class="detail-tab-button" data-detail-tab="ai">Análisis IA</button>
-        <button type="button" class="detail-tab-button" data-detail-tab="seguimiento">Seguimiento</button>
-        <button type="button" class="detail-tab-button" data-detail-tab="tecnico">Técnico</button>
       </nav>
 
       <section class="detail-tab-panel active" data-detail-tab-panel="resumen">
@@ -3252,8 +3499,6 @@ function renderLicitacionDetailView(item) {
           </div>
         </div>
         ${renderCleanDetailGrid(summaryRows)}
-        ${item.comentario ? `<div class="internal-note"><span>Observaciones</span>${escapeHtml(item.comentario)}</div>` : ""}
-        ${item.notas_internas ? `<div class="internal-note"><span>Notas internas</span>${escapeHtml(item.notas_internas)}</div>` : ""}
         <div class="detail-action-bar no-print">
           ${isAdmin() ? `<button class="download-button primary" data-download-id="${escapeHtml(item.id)}">Descargar documentación</button>` : ""}
           <button data-new-actuacion-id="${escapeHtml(item.id)}">Crear actuación</button>
@@ -3278,10 +3523,10 @@ function renderLicitacionDetailView(item) {
         ${actuaciones.length ? renderLinkedActuaciones(actuaciones) : `<div class="empty">No hay actuaciones ni hitos vinculados a esta licitación.</div>`}
       </section>
 
-      <section class="detail-tab-panel" data-detail-tab-panel="documentos">
+      <section class="detail-tab-panel" data-detail-tab-panel="documentos-seguimiento">
         <div class="detail-panel-head">
           <div>
-            <p class="eyebrow">Documentación</p>
+            <p class="eyebrow">Documentos y seguimiento</p>
             <h3>${escapeHtml(documentCount)}</h3>
           </div>
           ${isAdmin() ? `<button class="download-button" data-download-id="${escapeHtml(item.id)}">Descargar / actualizar</button>` : ""}
@@ -3290,6 +3535,18 @@ function renderLicitacionDetailView(item) {
         ${item.descarga_fallida || item.download_error ? `<div class="warning-detail document-warning"><strong>Error de descarga</strong><span>${escapeHtml(item.download_error || "La última descarga falló.")}</span></div>` : ""}
         ${renderDocumentSummary(item)}
         ${renderLicitacionDocuments(item)}
+        ${renderLicitacionTracking(item)}
+        ${renderLicitacionHistory(item)}
+      </section>
+
+      <section class="detail-tab-panel" data-detail-tab-panel="comentarios">
+        <div class="detail-panel-head">
+          <div>
+            <p class="eyebrow">Comentarios</p>
+            <h3>Hilo interno de trabajo</h3>
+          </div>
+        </div>
+        ${renderCommentsWidget("licitacion", item.id, item.comments_summary, { full: true })}
       </section>
 
       <section class="detail-tab-panel" data-detail-tab-panel="ai">
@@ -3304,32 +3561,6 @@ function renderLicitacionDetailView(item) {
         </div>
       </section>
 
-      <section class="detail-tab-panel" data-detail-tab-panel="seguimiento">
-        <div class="detail-panel-head">
-          <div>
-            <p class="eyebrow">Seguimiento</p>
-            <h3>${escapeHtml(seguimiento.activo ? "En seguimiento" : "Sin seguimiento activo")}</h3>
-          </div>
-        </div>
-        ${renderLicitacionTracking(item)}
-      </section>
-
-      <section class="detail-tab-panel" data-detail-tab-panel="tecnico">
-        <div class="detail-panel-head">
-          <div>
-            <p class="eyebrow">Historial / Técnico</p>
-            <h3>Datos secundarios</h3>
-          </div>
-        </div>
-        ${renderCleanDetailGrid(technicalRows, { technical: true })}
-        ${isAdmin() ? `
-          <div class="technical-work-panel">
-            ${renderLicitacionWorkFields(item)}
-            <button data-save-licitacion-work="${escapeHtml(item.id)}">Guardar datos internos</button>
-          </div>
-        ` : ""}
-        ${renderLicitacionHistory(item)}
-      </section>
     </article>
   `;
 }
@@ -3347,9 +3578,6 @@ function renderLicitacionSummary(item) {
     ["Provincia", item.provincia],
     ["Presupuesto", formatMoney(item.presupuesto)],
     ["Fecha límite", [formatDate(item.fecha_limite), item.hora_limite].filter(Boolean).join(" ")],
-    ["Estado interno", item.estado_interno || "Nueva"],
-    ["Revisión", item.revisada ? "Revisada" : "No revisada"],
-    ["Seguimiento", item.seguimiento_activo ? "Sí" : "No"],
     ["Carpeta", folderLabel],
   ];
   return `
@@ -4478,10 +4706,10 @@ function renderLinkedActuaciones(items) {
             <strong>${escapeHtml(actuacion.titulo || "Actuación")}</strong>
             <small>${escapeHtml(actuacion.deadline_at ? formatDateTime(actuacion.deadline_at) : "Sin fecha")}</small>
             ${actuacion.ultimo_comentario ? `<small>${escapeHtml(actuacion.ultimo_comentario)}</small>` : `<small>${escapeHtml(actuacion.historial_count || 0)} comentario(s)</small>`}
+            ${renderCommentsWidget("actuacion", actuacion.id, actuacion.comments_summary)}
           </div>
           <div class="links">
             <button data-edit-actuacion="${escapeHtml(actuacion.id)}">Abrir actuación</button>
-            <button data-comment-actuacion="${escapeHtml(actuacion.id)}">Añadir comentario</button>
           </div>
         </article>
       `).join("")}
@@ -4783,6 +5011,7 @@ async function openLicitacionDetail(id) {
   appState.cardDetails[id] = { ...(appState.cardDetails[id] || {}), item };
   licitacionDetailTitle.textContent = "Ficha de licitación";
   licitacionDetailContent.innerHTML = renderLicitacionDetailView(item);
+  hydrateFullCommentWidgets(licitacionDetailContent);
   loadAiSummary(id);
 }
 
@@ -4833,6 +5062,7 @@ async function runLicitacionMarkerAction(id, action, button) {
     if (detail && licitacionDetailDialog.open) {
       licitacionDetailTitle.textContent = "Ficha de licitación";
       licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
+      hydrateFullCommentWidgets(licitacionDetailContent);
       loadAiSummary(id);
       setMarkerActionResult(id, message, "success");
     }
@@ -4883,6 +5113,7 @@ async function patchLicitacionWork(id, payload) {
   if (detail && licitacionDetailDialog.open) {
     licitacionDetailTitle.textContent = "Ficha de licitación";
     licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
+    hydrateFullCommentWidgets(licitacionDetailContent);
     loadAiSummary(id);
   }
   showPreparedNoticeFromResult(result);
@@ -5285,7 +5516,7 @@ document.getElementById("clear-licitacion-selection").addEventListener("click", 
   appState.actuacionSelectorDraft.clear();
   renderLicitacionSelectorResults();
 });
-document.getElementById("add-actuacion-comment").addEventListener("click", addActuacionComment);
+document.getElementById("add-actuacion-comment")?.addEventListener("click", addActuacionComment);
 actuacionForm.elements.deadline_at.addEventListener("input", () => (
   showDateWarning(actuacionDateWarning, actuacionForm.elements.deadline_at.value)
 ));

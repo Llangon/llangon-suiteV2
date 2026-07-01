@@ -182,8 +182,10 @@ def test_licitaciones_center_ui_is_simplified_and_has_detail_view() -> None:
     assert 'data-open-licitacion-detail="${escapeHtml(item.id)}"' in script
     assert "function renderLicitacionDetailView" in script
     assert "data-detail-tab=\"resumen\"" in script
-    assert "data-detail-tab-panel=\"documentos\"" in script
+    assert "data-detail-tab-panel=\"documentos-seguimiento\"" in script
+    assert "data-detail-tab-panel=\"comentarios\"" in script
     assert "data-document-filter" in script
+    assert "renderCommentsWidget" in script
     assert "Copiar ruta" in script
     assert "Crear nueva actuación" in script
     assert "@media print" in styles
@@ -242,7 +244,8 @@ def test_licitacion_cards_and_detail_keep_hotfix_ux_noise_out() -> None:
     assert "Crear nueva actuación" in card_render
 
     summary_render = detail_render.split('data-detail-tab-panel="resumen"', 1)[1].split('data-detail-tab-panel="actuaciones"', 1)[0]
-    documents_render = detail_render.split('data-detail-tab-panel="documentos"', 1)[1].split('data-detail-tab-panel="seguimiento"', 1)[0]
+    documents_render = detail_render.split('data-detail-tab-panel="documentos-seguimiento"', 1)[1].split('data-detail-tab-panel="comentarios"', 1)[0]
+    comments_render = detail_render.split('data-detail-tab-panel="comentarios"', 1)[1].split('data-detail-tab-panel="ai"', 1)[0]
 
     assert "renderLicitacionDocuments(item)" not in summary_render
     assert "Ruta registrada" not in summary_render
@@ -250,8 +253,12 @@ def test_licitacion_cards_and_detail_keep_hotfix_ux_noise_out() -> None:
     assert "renderLicitacionDocuments(item)" in documents_render
     assert "renderFolderPanel" in documents_render
     assert "renderDocumentSummary(item)" in documents_render
-    assert "renderLicitacionWorkFields" in detail_render
-    assert "renderLicitacionHistory" in detail_render
+    assert "renderLicitacionTracking(item)" in documents_render
+    assert "renderLicitacionHistory(item)" in documents_render
+    assert 'renderCommentsWidget("licitacion", item.id, item.comments_summary, { full: true })' in comments_render
+    assert "renderLicitacionWorkFields" not in detail_render
+    assert "Notas internas" not in detail_render
+    assert "Estado interno" not in detail_render
     assert "file:///" not in script
 
 

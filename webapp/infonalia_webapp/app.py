@@ -404,6 +404,44 @@ except ImportError:
     from notification_records import notification_items_and_unread, notification_query_filters
 
 try:
+    from .email_actions import (
+        action_mailbox_cc,
+        action_mailbox_to,
+        build_infonalia_review_email_html,
+        ensure_review_action_codes,
+    )
+except ImportError:
+    from email_actions import (
+        action_mailbox_cc,
+        action_mailbox_to,
+        build_infonalia_review_email_html,
+        ensure_review_action_codes,
+    )
+
+try:
+    from .comments import (
+        comments_summary_for_entities,
+        create_comment,
+        create_system_comment,
+        delete_comment,
+        list_comments,
+        recent_comments,
+        set_comment_pinned,
+        update_comment,
+    )
+except ImportError:
+    from comments import (
+        comments_summary_for_entities,
+        create_comment,
+        create_system_comment,
+        delete_comment,
+        list_comments,
+        recent_comments,
+        set_comment_pinned,
+        update_comment,
+    )
+
+try:
     from .db_migrations import enable_foreign_keys, run_migrations
 except ImportError:
     from db_migrations import enable_foreign_keys, run_migrations
@@ -657,6 +695,8 @@ PREPARED_NOTICE_EMAIL_TO = (
     os.environ.get("INFONALIA_PREPARED_NOTICE_EMAIL_TO", "").strip()
     or "info3@llangon.com"
 )
+ACTION_MAILBOX_TO = action_mailbox_to()
+ACTION_MAILBOX_CC = action_mailbox_cc()
 MONITOR_SCHEDULER_ENABLED = os.environ.get("MONITOR_SCHEDULER_ENABLED", "0") == "1"
 MONITOR_YEAR_MIN, MONITOR_YEAR_MAX = monitor_year_bounds()
 COOKIE_SECURE = os.environ.get("INFONALIA_COOKIE_SECURE", "0") == "1"
@@ -1179,6 +1219,27 @@ def delete_licitacion_dependents(conn: sqlite3.Connection, licitacion_ids: list[
         f"DELETE FROM licitacion_seguimiento_novedades WHERE licitacion_id IN ({placeholders})",
         licitacion_ids,
     )
+    try:
+        conn.execute(
+            f"DELETE FROM email_action_codes WHERE licitacion_id IN ({placeholders})",
+            licitacion_ids,
+        )
+    except sqlite3.OperationalError:
+        pass
+    try:
+        timestamp = now_iso()
+        conn.execute(
+            f"""
+            UPDATE comments
+            SET is_deleted = 1, deleted_at = ?, updated_at = ?
+            WHERE entity_type = 'licitacion'
+              AND entity_id IN ({placeholders})
+              AND is_deleted = 0
+            """,
+            [timestamp, timestamp, *licitacion_ids],
+        )
+    except sqlite3.OperationalError:
+        return
 
 
 def seed_users_and_settings(conn: sqlite3.Connection) -> None:
@@ -1208,6 +1269,83 @@ def row_to_dict(row: sqlite3.Row) -> dict:
         "label": folder_status_label(resolution),
     }
     return item
+
+
+def ai_summary_indicators(conn: sqlite3.Connection, licitacion_ids: list[int]) -> dict[int, dict[str, object]]:
+    if not licitacion_ids:
+        return {}
+    placeholders = ",".join("?" for _ in licitacion_ids)
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT licitacion_id,
+                   MAX(id) AS ai_summary_id,
+                   MAX(updated_at) AS ai_summary_updated_at
+            FROM ai_summaries
+            WHERE licitacion_id IN ({placeholders})
+              AND COALESCE(summary_json, '') <> ''
+              AND COALESCE(summary_json, '') <> '{{}}'
+              AND COALESCE(quality_status, '') NOT IN ('empty_analysis', 'low_quality_analysis', 'encoding_error')
+            GROUP BY licitacion_id
+            """,
+            licitacion_ids,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {
+        int(row["licitacion_id"]): {
+            "has_ai_summary": True,
+            "ai_summary_status": "available",
+            "ai_summary_id": int(row["ai_summary_id"] or 0),
+            "ai_summary_updated_at": row["ai_summary_updated_at"] or "",
+        }
+        for row in rows
+    }
+
+
+def apply_licitacion_list_metadata(conn: sqlite3.Connection, rows: list[dict[str, object]]) -> None:
+    licitacion_ids = [int(row["id"]) for row in rows if row.get("id")]
+    ai = ai_summary_indicators(conn, licitacion_ids)
+    comments = comments_summary_for_entities(conn, [("licitacion", licitacion_id) for licitacion_id in licitacion_ids])
+    for row in rows:
+        licitacion_id = int(row["id"])
+        ai_row = ai.get(licitacion_id, {})
+        row["has_ai_summary"] = bool(ai_row.get("has_ai_summary"))
+        row["ai_summary_status"] = ai_row.get("ai_summary_status") or ""
+        row["ai_summary_id"] = ai_row.get("ai_summary_id") or 0
+        row["ai_summary_updated_at"] = ai_row.get("ai_summary_updated_at") or ""
+        row["comments_summary"] = comments.get(("licitacion", licitacion_id), {"count": 0, "latest": None, "pinned_count": 0})
+
+
+def apply_comments_metadata(conn: sqlite3.Connection, items: list[dict[str, object]]) -> None:
+    entities: list[tuple[str, int]] = []
+    for item in items:
+        source_type = clean_text(item.get("source_type") or item.get("type"))
+        source_id = item.get("source_id") or item.get("id")
+        if source_type == "interno":
+            source_type = "agenda_evento"
+        if source_type not in {"licitacion", "actuacion", "agenda_evento"}:
+            continue
+        try:
+            entities.append((source_type, int(source_id)))
+        except (TypeError, ValueError):
+            continue
+    summaries = comments_summary_for_entities(conn, entities)
+    ai = ai_summary_indicators(conn, [entity_id for entity_type, entity_id in entities if entity_type == "licitacion"])
+    for item in items:
+        source_type = clean_text(item.get("source_type") or item.get("type"))
+        source_id = item.get("source_id") or item.get("id")
+        if source_type == "interno":
+            source_type = "agenda_evento"
+        try:
+            entity_id = int(source_id)
+        except (TypeError, ValueError):
+            continue
+        item["comments_summary"] = summaries.get((source_type, entity_id), {"count": 0, "latest": None, "pinned_count": 0})
+        if source_type == "licitacion":
+            ai_row = ai.get(entity_id, {})
+            item["has_ai_summary"] = bool(ai_row.get("has_ai_summary"))
+            item["ai_summary_status"] = ai_row.get("ai_summary_status") or ""
 
 
 def get_user_record(username: object, include_password: bool = False) -> dict | None:
@@ -1797,6 +1935,7 @@ def send_notification_email(
     asunto: str,
     cuerpo: str,
     email_recipients: list[str] | None = None,
+    html_body: str | None = None,
 ) -> tuple[str | None, str | None]:
     settings = get_settings()
     recipients = email_recipients if email_recipients is not None else notification_recipients(usuario_destino)
@@ -1805,7 +1944,7 @@ def send_notification_email(
         recipients=recipients,
         subject=asunto,
         body=cuerpo,
-        html_body=render_notification_email_html(asunto, cuerpo or asunto, usuario_destino),
+        html_body=html_body or render_notification_email_html(asunto, cuerpo or asunto, usuario_destino),
         logo_path=STATIC_ROOT / "logo-llangon.png",
         now=now_iso,
         smtp_factory=smtplib.SMTP,
@@ -2162,8 +2301,15 @@ def create_notification(
     cuerpo: str,
     ficheros_adjuntos: str = "",
     email_recipients: list[str] | None = None,
+    html_body: str | None = None,
 ) -> int:
-    sent_at, email_error = send_notification_email(usuario_destino, asunto, cuerpo, email_recipients=email_recipients)
+    sent_at, email_error = send_notification_email(
+        usuario_destino,
+        asunto,
+        cuerpo,
+        email_recipients=email_recipients,
+        html_body=html_body,
+    )
     return create_notification_record(
         conn,
         usuario_origen=usuario_origen,
@@ -2223,6 +2369,10 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_agenda_workbench()
         elif path == "/api/agenda":
             self.api_agenda(parsed.query)
+        elif path == "/api/comments/recent":
+            self.api_recent_comments(parsed.query)
+        elif path == "/api/comments":
+            self.api_list_comments(parsed.query)
         elif path == "/api/licitaciones/search":
             self.api_search_licitaciones(parsed.query)
         elif path == "/api/licitaciones":
@@ -2316,6 +2466,20 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         if path == "/api/licitaciones":
             self.api_create_licitacion()
+        elif path == "/api/comments":
+            self.api_create_comment()
+        elif path.startswith("/api/comments/") and path.endswith("/pin"):
+            comment_id = path.removeprefix("/api/comments/").removesuffix("/pin").strip("/")
+            if not comment_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_pin_comment(int(comment_id), True)
+        elif path.startswith("/api/comments/") and path.endswith("/unpin"):
+            comment_id = path.removeprefix("/api/comments/").removesuffix("/unpin").strip("/")
+            if not comment_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_pin_comment(int(comment_id), False)
         elif path == "/api/licitaciones/capture":
             self.api_capture_licitacion()
         elif path == "/api/config/users":
@@ -2501,7 +2665,13 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if self.csrf_required_for_path("PATCH", path) and not self.require_csrf_token():
             return
 
-        if path.startswith("/api/agenda/eventos/"):
+        if path.startswith("/api/comments/"):
+            comment_id = path.removeprefix("/api/comments/").strip("/")
+            if not comment_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_update_comment(int(comment_id))
+        elif path.startswith("/api/agenda/eventos/"):
             evento_id = path.removeprefix("/api/agenda/eventos/").strip("/")
             if not evento_id.isdigit():
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
@@ -2543,7 +2713,13 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if self.csrf_required_for_path("DELETE", path) and not self.require_csrf_token():
             return
 
-        if path.startswith("/api/licitaciones/") and path.endswith("/ai-summary"):
+        if path.startswith("/api/comments/"):
+            comment_id = path.removeprefix("/api/comments/").strip("/")
+            if not comment_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_delete_comment(int(comment_id))
+        elif path.startswith("/api/licitaciones/") and path.endswith("/ai-summary"):
             licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ai-summary").strip("/")
             if not licitacion_id.isdigit():
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
@@ -2629,7 +2805,13 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "/api/news",
                 "/api/import/csv",
                 "/api/import/msg",
+                "/api/comments",
             }:
+                return True
+            if path.startswith("/api/comments/") and (
+                path.endswith("/pin")
+                or path.endswith("/unpin")
+            ):
                 return True
             if path.startswith("/api/dias/") and (
                 path.endswith("/revisado")
@@ -2675,7 +2857,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             return False
         if method == "PATCH":
             return (
-                path.startswith("/api/agenda/eventos/")
+                path.startswith("/api/comments/")
+                or path.startswith("/api/agenda/eventos/")
                 or path.startswith("/api/actuaciones/")
                 or path.startswith("/api/licitaciones/")
                 or path.startswith("/api/config/users/")
@@ -2684,7 +2867,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             )
         if method == "DELETE":
             return (
-                path.startswith("/api/licitaciones/")
+                path.startswith("/api/comments/")
+                or path.startswith("/api/licitaciones/")
                 or path.startswith("/api/dias/")
                 or path.startswith("/api/config/users/")
                 or path.startswith("/api/news/")
@@ -2814,6 +2998,96 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.send_json(payload)
         except StorageConfigurationError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def send_comment_error(self, exc: Exception) -> None:
+        if isinstance(exc, LookupError):
+            self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            return
+        if isinstance(exc, PermissionError):
+            self.send_json({"error": str(exc)}, HTTPStatus.FORBIDDEN)
+            return
+        if isinstance(exc, (ValueError, json.JSONDecodeError)):
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        raise exc
+
+    def api_list_comments(self, query: str) -> None:
+        params = parse_qs(query)
+        entity_type = params.get("entity_type", [""])[0]
+        entity_id = params.get("entity_id", [""])[0]
+        user = self.current_user() or {}
+        try:
+            with db_session() as conn:
+                items = list_comments(conn, entity_type=entity_type, entity_id=entity_id, user=user)
+                summary = comments_summary_for_entities(conn, [(clean_text(entity_type).lower(), int(entity_id))])
+        except Exception as exc:
+            self.send_comment_error(exc)
+            return
+        self.send_json(
+            {
+                "items": items,
+                "summary": summary.get((clean_text(entity_type).lower(), int(entity_id)), {"count": 0, "latest": None, "pinned_count": 0}),
+            }
+        )
+
+    def api_recent_comments(self, query: str) -> None:
+        params = parse_qs(query)
+        try:
+            limit = int(params.get("limit", ["20"])[0])
+        except ValueError:
+            limit = 20
+        with db_session() as conn:
+            items = recent_comments(conn, limit=limit)
+        self.send_json({"items": items})
+
+    def api_create_comment(self) -> None:
+        user = self.current_user() or {}
+        try:
+            data = self.read_json()
+            with db_session() as conn:
+                item = create_comment(
+                    conn,
+                    entity_type=data.get("entity_type"),
+                    entity_id=data.get("entity_id"),
+                    body=data.get("body"),
+                    visibility=data.get("visibility", "internal"),
+                    user=user,
+                )
+        except Exception as exc:
+            self.send_comment_error(exc)
+            return
+        self.send_json({"ok": True, "comment": item}, HTTPStatus.CREATED)
+
+    def api_update_comment(self, comment_id: int) -> None:
+        user = self.current_user() or {}
+        try:
+            data = self.read_json()
+            with db_session() as conn:
+                item = update_comment(conn, comment_id=comment_id, body=data.get("body"), user=user)
+        except Exception as exc:
+            self.send_comment_error(exc)
+            return
+        self.send_json({"ok": True, "comment": item})
+
+    def api_delete_comment(self, comment_id: int) -> None:
+        user = self.current_user() or {}
+        try:
+            with db_session() as conn:
+                item = delete_comment(conn, comment_id=comment_id, user=user)
+        except Exception as exc:
+            self.send_comment_error(exc)
+            return
+        self.send_json({"ok": True, "comment": item})
+
+    def api_pin_comment(self, comment_id: int, pinned: bool) -> None:
+        user = self.current_user() or {}
+        try:
+            with db_session() as conn:
+                item = set_comment_pinned(conn, comment_id=comment_id, pinned=pinned, user=user)
+        except Exception as exc:
+            self.send_comment_error(exc)
+            return
+        self.send_json({"ok": True, "comment": item})
 
     def api_storage_dropbox_test(self) -> None:
         if not self.require_admin():
@@ -3300,6 +3574,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         params = parse_qs(query)
         with db_session() as conn:
             response = build_agenda_response(conn, params=params)
+            apply_comments_metadata(conn, response.get("events") or [])
+            for group_items in (response.get("groups") or {}).values():
+                apply_comments_metadata(conn, group_items)
         self.send_json(response)
 
     def api_agenda_pending_tasks(self, query: str) -> None:
@@ -3309,11 +3586,14 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         search = clean_text(params.get("q", [""])[0])
         with db_session() as conn:
             response = build_pending_tasks_response(conn, query=search)
+            apply_comments_metadata(conn, response.get("items") or [])
         self.send_json(response)
 
     def api_agenda_workbench(self) -> None:
         with db_session() as conn:
             response = build_agenda_workbench(conn)
+            for section in response.get("sections") or []:
+                apply_comments_metadata(conn, section.get("items") or [])
         self.send_json(response)
 
     def api_send_agenda_email_summary(self) -> None:
@@ -3596,6 +3876,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 licitacion_ids = [int(row["id"]) for row in rows]
                 counts = fetch_licitacion_actuacion_indicators(conn, licitacion_ids, current=current)
                 downloads = fetch_licitacion_download_indicators(conn, licitacion_ids)
+                apply_licitacion_list_metadata(conn, rows)
                 for row in rows:
                     count_row = counts.get(row["id"])
                     download_row = downloads.get(row["id"], {})
@@ -3747,6 +4028,11 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 }
             )
             item = build_licitacion_center_detail(conn, item, actuaciones=actuaciones)
+            apply_licitacion_list_metadata(conn, [item])
+            for actuacion in item.get("actuaciones") or []:
+                actuacion["source_type"] = "actuacion"
+                actuacion["source_id"] = int(actuacion["id"])
+            apply_comments_metadata(conn, item.get("actuaciones") or [])
             marker_status = get_marker_status_for_licitacion(item, find_dropbox_root())
             item["seguimiento_activo"] = bool(marker_status.get("activo"))
             item["seguimiento"] = {
@@ -3902,6 +4188,10 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         with db_session() as conn:
             rows = conn.execute(actuaciones_select_sql(where), values).fetchall()
             items = [actuacion_response(conn, row, now=current) for row in rows]
+            for item in items:
+                item["source_type"] = "actuacion"
+                item["source_id"] = int(item["id"])
+            apply_comments_metadata(conn, items)
 
         if clean_text(params.get("vencidas", [""])[0]) == "1":
             items = [item for item in items if item["estado_visual"] == "vencida"]
@@ -3936,6 +4226,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Actuacion no encontrada"}, HTTPStatus.NOT_FOUND)
                 return
             item = actuacion_response(conn, row, include_historial=True)
+            item["source_type"] = "actuacion"
+            item["source_id"] = int(item["id"])
+            apply_comments_metadata(conn, [item])
         self.send_json({"item": item})
 
     def api_create_actuacion(self, default_licitacion_id: int | None = None) -> None:
@@ -4003,6 +4296,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 )
             row = get_actuacion_row(conn, actuacion_id)
             item = actuacion_response(conn, row, include_historial=True)
+            item["source_type"] = "actuacion"
+            item["source_id"] = int(item["id"])
+            apply_comments_metadata(conn, [item])
 
         self.send_json({"ok": True, "item": item}, HTTPStatus.CREATED)
 
@@ -4053,6 +4349,14 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     new_value=payload["estado"],
                     timestamp=timestamp,
                 )
+                create_system_comment(
+                    conn,
+                    entity_type="actuacion",
+                    entity_id=actuacion_id,
+                    body=f"Estado cambiado: {old_estado or 'Sin estado'} -> {payload['estado'] or 'Sin estado'}",
+                    metadata={"event_type": "estado", "old_value": old_estado or "", "new_value": payload["estado"] or ""},
+                    timestamp=timestamp,
+                )
             if "deadline_at" in payload and (payload["deadline_at"] or "") != old_deadline:
                 record_actuacion_event(
                     conn,
@@ -4074,6 +4378,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 )
             row = get_actuacion_row(conn, actuacion_id)
             item = actuacion_response(conn, row, include_historial=True)
+            item["source_type"] = "actuacion"
+            item["source_id"] = int(item["id"])
+            apply_comments_metadata(conn, [item])
 
         self.send_json({"ok": True, "item": item})
 
@@ -4110,8 +4417,19 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 new_value=estado,
                 timestamp=timestamp,
             )
+            create_system_comment(
+                conn,
+                entity_type="actuacion",
+                entity_id=actuacion_id,
+                body=f"Estado cambiado: {row['estado'] or 'Sin estado'} -> {estado}",
+                metadata={"event_type": "estado", "old_value": row["estado"] or "", "new_value": estado},
+                timestamp=timestamp,
+            )
             updated = get_actuacion_row(conn, actuacion_id)
             item = actuacion_response(conn, updated, include_historial=True)
+            item["source_type"] = "actuacion"
+            item["source_id"] = int(item["id"])
+            apply_comments_metadata(conn, [item])
         self.send_json({"ok": True, "item": item})
 
     def api_add_actuacion_historial(self, actuacion_id: int) -> None:
@@ -4140,7 +4458,18 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 comentario=comentario,
                 timestamp=timestamp,
             )
+            create_comment(
+                conn,
+                entity_type="actuacion",
+                entity_id=actuacion_id,
+                body=comentario,
+                user=user,
+                timestamp=timestamp,
+            )
             item = actuacion_response(conn, row, include_historial=True)
+            item["source_type"] = "actuacion"
+            item["source_id"] = int(item["id"])
+            apply_comments_metadata(conn, [item])
         self.send_json({"ok": True, "item": item}, HTTPStatus.CREATED)
 
     def api_duplicate_actuacion(self, actuacion_id: int) -> None:
@@ -4380,6 +4709,21 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 + counts.get(ESTADO_PREPARAR_FICHA, 0)
             )
             nuria_total = pendientes_nuria + decisiones_nuria
+            review_rows = conn.execute(
+                """
+                SELECT *
+                FROM licitaciones
+                WHERE infonalia_dia_id = ?
+                  AND estado IN (?, ?, ?)
+                ORDER BY fecha_limite ASC, hora_limite ASC, id ASC
+                """,
+                (
+                    dia_id,
+                    ESTADO_ENVIADA_NURIA,
+                    ESTADO_DESCARGAR_PARA_VER,
+                    ESTADO_PREPARAR_FICHA,
+                ),
+            ).fetchall()
             pending_rows = conn.execute(
                 """
                 SELECT expediente, objeto, fecha_limite, hora_limite
@@ -4411,6 +4755,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 return
 
             timestamp = now_iso()
+            action_codes = ensure_review_action_codes(
+                conn,
+                review_id=dia_id,
+                licitaciones=review_rows,
+                timestamp=timestamp,
+            )
             conn.execute(
                 """
                 UPDATE infonalia_dias
@@ -4423,7 +4773,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 """,
                 (timestamp, timestamp, dia_id),
             )
-            asunto = f"Infonalia del día {format_date_es(day['fecha'])} disponible para revisar"
+            asunto = f"Infonalia del día {format_date_es(day['fecha'])}"
             intro = (
                 f"{user.get('display_name', 'Administrador')} ha dejado disponible el día {day['titulo']} para su revisión."
             )
@@ -4452,6 +4802,14 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                         f"{fecha_hora or 'Sin fecha'}"
                     )
             cuerpo = "\n".join(body_lines)
+            html_body = build_infonalia_review_email_html(
+                day=day,
+                licitaciones=review_rows,
+                action_codes=action_codes,
+                mailbox_to=ACTION_MAILBOX_TO,
+                mailbox_cc=ACTION_MAILBOX_CC,
+                generated_at=datetime.fromisoformat(timestamp),
+            )
             create_notification(
                 conn,
                 user.get("username"),
@@ -4459,6 +4817,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 asunto,
                 cuerpo,
                 email_recipients=email_recipients,
+                html_body=html_body,
             )
             row = conn.execute("SELECT * FROM infonalia_dias WHERE id = ?", (dia_id,)).fetchone()
             item = dia_to_dict(conn, row)
@@ -5290,17 +5649,30 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 if not row:
                     self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
                     return
+                old_estado = row["estado"] or ""
                 if normalize_licitacion_estado(row["estado"]) not in NURIA_VISIBLE_STATES:
                     self.send_json({"error": "Esta licitacion no esta en revision de Nuria."}, HTTPStatus.FORBIDDEN)
                     return
+                timestamp = now_iso()
                 conn.execute(
                     "UPDATE licitaciones SET estado = ?, updated_at = ? WHERE id = ?",
-                    (estado, now_iso(), licitacion_id),
+                    (estado, timestamp, licitacion_id),
                 )
+                if estado != old_estado:
+                    create_system_comment(
+                        conn,
+                        entity_type="licitacion",
+                        entity_id=licitacion_id,
+                        body=f"Estado cambiado: {old_estado or 'Sin estado'} -> {estado or 'Sin estado'}",
+                        metadata={"event_type": "estado", "old_value": old_estado, "new_value": estado},
+                        timestamp=timestamp,
+                    )
                 row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
                 if row and row["infonalia_dia_id"]:
                     refresh_dia_estado(conn, int(row["infonalia_dia_id"]))
-            self.send_json(row_to_dict(row))
+                response = row_to_dict(row)
+                apply_licitacion_list_metadata(conn, [response])
+            self.send_json(response)
             return
 
         if user.get("role") != "admin":
@@ -5389,6 +5761,15 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                         user_id=clean_text(user.get("username")),
                         timestamp=timestamp,
                     )
+                    if key == "estado":
+                        create_system_comment(
+                            conn,
+                            entity_type="licitacion",
+                            entity_id=licitacion_id,
+                            body=f"Estado cambiado: {old_value or 'Sin estado'} -> {new_value or 'Sin estado'}",
+                            metadata={"event_type": "estado", "old_value": old_value or "", "new_value": new_value or ""},
+                            timestamp=timestamp,
+                        )
             for key, old_value, new_value in center_history:
                 if key in updates:
                     continue
@@ -5411,6 +5792,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     mark_dia_nuria_dirty(conn, int(row["infonalia_dia_id"]))
                 refresh_dia_estado(conn, int(row["infonalia_dia_id"]))
         response = row_to_dict(row)
+        with db_session() as conn:
+            apply_licitacion_list_metadata(conn, [response])
         if row and is_prepared_state_transition(old_row["estado"], row["estado"]):
             response["prepared_notice_preview"] = build_prepared_notice_preview(
                 row,
@@ -5476,6 +5859,10 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     )
                     return
                 delete_licitacion_dependents(conn, licitacion_ids)
+                try:
+                    conn.execute("DELETE FROM email_action_codes WHERE review_id = ?", (dia_id,))
+                except sqlite3.OperationalError:
+                    pass
                 if licitacion_ids:
                     placeholders = ",".join("?" for _ in licitacion_ids)
                     conn.execute(

@@ -26,13 +26,14 @@ def test_send_dia_to_nuria_uses_confirmed_email_recipient(monkeypatch) -> None:
     app = load_app_module()
     sent: list[dict] = []
 
-    def fake_send_notification_email(usuario_destino, asunto, cuerpo, email_recipients=None):
+    def fake_send_notification_email(usuario_destino, asunto, cuerpo, email_recipients=None, html_body=None):
         sent.append(
             {
                 "usuario_destino": usuario_destino,
                 "asunto": asunto,
                 "cuerpo": cuerpo,
                 "email_recipients": email_recipients,
+                "html_body": html_body,
             }
         )
         return ("2026-06-24T10:00:00", None)
@@ -55,6 +56,10 @@ def test_send_dia_to_nuria_uses_confirmed_email_recipient(monkeypatch) -> None:
     assert sent[0]["email_recipients"] == ["otro-destino@example.test"]
     assert "Infonalia del día" in sent[0]["asunto"]
     assert "EXP-NURIA-1" in sent[0]["cuerpo"]
+    assert "Descartar" in sent[0]["html_body"]
+    assert "Descargar para ver" in sent[0]["html_body"]
+    assert "Preparar ficha" in sent[0]["html_body"]
+    assert "Revisado" in sent[0]["html_body"]
 
 
 def test_send_dia_to_nuria_rejects_invalid_confirmed_email(monkeypatch) -> None:
