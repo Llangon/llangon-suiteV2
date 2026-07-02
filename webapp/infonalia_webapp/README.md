@@ -87,7 +87,7 @@ INFONALIA_ENABLE_ADMIN_ALIAS=0
 INFONALIA_HOST=127.0.0.1
 INFONALIA_PORT=8787
 LLANGON_DROPBOX_BASE_PATH=
-INFONALIA_DROPBOX_ROOT=C:\ReplicaDb
+INFONALIA_DROPBOX_ROOT=
 INFONALIA_PDFTOTEXT=
 INFONALIA_PLATFORM_URL=
 INFONALIA_SMTP_HOST=
@@ -112,7 +112,7 @@ LLANGON_INFONALIA_IMPORT_ENABLED=0
 LLANGON_INFONALIA_IMPORT_FROM=envios@infonalia.net
 LLANGON_INFONALIA_IMPORT_SUBJECT=LICITACIONES - Envío de Novedades - 149022
 LLANGON_INFONALIA_IMPORT_NOTIFY_EMAIL=info3@llangon.com
-LLANGON_INFONALIA_IMPORT_FOLDER=INBOX
+LLANGON_INFONALIA_IMPORT_FOLDER=LLANGON_INFONALIA
 LLANGON_INFONALIA_IMPORT_LOOKBACK_HOURS=48
 LLANGON_INFONALIA_IMPORT_MARK_READ_ON_SUCCESS=1
 LLANGON_INFONALIA_IMPORT_POLL_MINUTES=30
@@ -147,9 +147,9 @@ python -m webapp.infonalia_webapp.email_actions_processor --check-code 000000141
 
 ## Importación automática del correo Infonalia
 
-El importador `infonalia_mail_importer` lee el mismo buzón IMAP técnico y solo acepta el correo diario de `envios@infonalia.net` con asunto exacto `LICITACIONES - Envío de Novedades - 149022`. Extrae las licitaciones, crea/actualiza el día Infonalia correspondiente a la fecha del mensaje y envía un aviso a `LLANGON_INFONALIA_IMPORT_NOTIFY_EMAIL` cuando la importación real termina.
+El importador `infonalia_mail_importer` lee el mismo buzón IMAP técnico, pero solo dentro de la etiqueta/carpeta `LLANGON_INFONALIA`. Gmail debe aplicar esa etiqueta al correo diario de Infonalia. La Suite usa `UID SEARCH UNSEEN`, recupera cabeceras y cuerpo con `BODY.PEEK`, y decide si importa por la estructura parseada del cuerpo, no por remitente ni asunto en la búsqueda IMAP. Extrae las licitaciones, crea/actualiza el día Infonalia correspondiente a la fecha del mensaje y envía un aviso a `LLANGON_INFONALIA_IMPORT_NOTIFY_EMAIL` cuando la importación real termina.
 
-La importación es idempotente: `infonalia_email_imports` registra `message_id`, huella del cuerpo, UID IMAP, estado, recuentos y fecha de aviso. Si el mismo mensaje vuelve a aparecer, no duplica licitaciones ni vuelve a notificar.
+La importación es idempotente: `infonalia_email_imports` registra `message_id`, huella del cuerpo, UID IMAP, estado, recuentos y fecha de aviso. Si el mismo mensaje vuelve a aparecer o se marca manualmente como no leído, no duplica licitaciones ni vuelve a notificar. Solo se marca como leído cuando termina importado o reconocido como duplicado controlado; si el cuerpo no tiene estructura válida de Infonalia, queda sin marcar como leído y se registra el motivo.
 
 Pruebas locales sin IMAP:
 
@@ -210,9 +210,11 @@ En este equipo:
 $env:LLANGON_DROPBOX_BASE_PATH="C:\Users\LLangon03\Dropbox\00000 LLANGON"
 ```
 
-No se debe hardcodear esa ruta en el código. Si la variable no está configurada, la app conserva el flujo local/de pruebas. `INFONALIA_DROPBOX_ROOT` queda como compatibilidad histórica para réplicas locales, por ejemplo `C:\ReplicaDb`, pero la variable principal para Dropbox real es `LLANGON_DROPBOX_BASE_PATH`.
+No se debe hardcodear esa ruta en el código. Si la variable no está configurada, la app conserva el flujo local/de pruebas. `INFONALIA_DROPBOX_ROOT` queda como compatibilidad histórica para réplicas locales configuradas explícitamente, pero la variable principal para Dropbox real es `LLANGON_DROPBOX_BASE_PATH`.
 
 Si `LLANGON_DROPBOX_BASE_PATH` está definida pero la carpeta no existe, las funciones que necesitan Dropbox real devuelven un error controlado. Si una ruta de expediente queda fuera de la base configurada, se muestra como “La ruta está fuera de la carpeta base de Dropbox”.
+
+El flujo local de descarga crea y guarda expedientes como ruta relativa `AÑO\MES\CARPETA_EXPEDIENTE`, por ejemplo `2026\07 JULIO\20 JULIO 1400 ALICANTE ...`. Las rutas históricas sin año se pueden resolver si ya existen, pero no se usan para crear nuevas carpetas.
 
 Si no se encuentra una ruta válida, la app puede usar `data/descargas/` como destino local. Esa carpeta también está ignorada.
 

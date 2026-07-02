@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import imaplib
 from email.headerregistry import Address
 from email.message import EmailMessage
 
@@ -7,8 +8,11 @@ from webapp.infonalia_webapp.infonalia_mail_importer import (
     EXPECTED_FROM,
     EXPECTED_SUBJECT,
     InfonaliaImportConfig,
+    config_from_env,
     ensure_infonalia_email_import_schema,
     import_parsed_email,
+    INCLUDE_SEEN_UID_LIMIT,
+    imap_search_criteria,
     is_expected_infonalia_message,
     parse_infonalia_email,
     process_mailbox_once,
@@ -56,6 +60,17 @@ def make_infonalia_message(*, sender: str = EXPECTED_FROM, subject: str = EXPECT
     return msg.as_bytes()
 
 
+def make_regular_message() -> bytes:
+    msg = EmailMessage()
+    msg["Subject"] = "Correo normal"
+    msg["From"] = Address(addr_spec="cliente@example.test")
+    msg["To"] = "info3llangon@gmail.com"
+    msg["Date"] = "Fri, 05 Jun 2026 12:33:00 +0200"
+    msg["Message-ID"] = "<regular@example.test>"
+    msg.set_content("Este correo no contiene una estructura de licitaciones Infonalia.")
+    return msg.as_bytes()
+
+
 class FakeIMAP:
     def __init__(self, messages: dict[bytes, dict[str, object]]):
         self.messages = messages
@@ -100,6 +115,15 @@ class FakeIMAP:
         raise AssertionError(f"Unexpected IMAP command: {command} {args}")
 
 
+class BadSearchIMAP(FakeIMAP):
+    def uid(self, command, *args):
+        normalized = str(command).upper()
+        self.calls.append((normalized, args))
+        if normalized == "SEARCH":
+            raise imaplib.IMAP4.error("BAD [b'Could not parse command']")
+        return super().uid(command, *args)
+
+
 def fake_config(*, enabled: bool = True) -> InfonaliaImportConfig:
     return InfonaliaImportConfig(
         enabled=enabled,
@@ -107,7 +131,7 @@ def fake_config(*, enabled: bool = True) -> InfonaliaImportConfig:
         port=993,
         user="info3llangon@gmail.com",
         password="secret",
-        folder="INBOX",
+        folder="LLANGON_INFONALIA",
         expected_from=EXPECTED_FROM,
         expected_subject=EXPECTED_SUBJECT,
         notify_email="info3@llangon.com",
@@ -115,6 +139,21 @@ def fake_config(*, enabled: bool = True) -> InfonaliaImportConfig:
         test_forwarders=[],
         lookback_hours=48,
     )
+
+
+def test_config_defaults_to_infonalia_label_not_general_inbox() -> None:
+    config = config_from_env(
+        {
+            "LLANGON_INFONALIA_IMPORT_ENABLED": "1",
+            "LLANGON_ACTIONS_IMAP_HOST": "imap.example.test",
+            "LLANGON_ACTIONS_IMAP_PORT": "993",
+            "LLANGON_ACTIONS_IMAP_USER": "info3llangon@gmail.com",
+            "LLANGON_ACTIONS_IMAP_PASSWORD": "secret",
+            "LLANGON_ACTIONS_IMAP_FOLDER": "INBOX",
+        }
+    )
+
+    assert config.folder == "LLANGON_INFONALIA"
 
 
 def test_parser_decodes_mime_subject_and_extracts_plain_items() -> None:
@@ -238,7 +277,7 @@ def test_mailbox_uses_body_peek_and_marks_only_successful_candidate() -> None:
     raw = make_infonalia_message()
     fake = FakeIMAP(
         {
-            b"1": {"seen": False, "raw": make_infonalia_message(sender="cliente@example.test", subject="Correo normal")},
+            b"1": {"seen": False, "raw": make_regular_message()},
             b"2": {"seen": False, "raw": raw},
         }
     )
@@ -253,7 +292,99 @@ def test_mailbox_uses_body_peek_and_marks_only_successful_candidate() -> None:
     assert result["imported"] == 2
     assert fake.messages[b"1"]["seen"] is False
     assert fake.messages[b"2"]["seen"] is True
+    select_calls = [args for command, args in fake.calls if command == "SELECT"]
+    assert select_calls == [("LLANGON_INFONALIA",)]
+    search_calls = [args for command, args in fake.calls if command == "SEARCH"]
+    assert search_calls == [("UNSEEN",)]
+    assert all(None not in args for args in search_calls)
     assert all("BODY.PEEK" in query for _uid, query in fake.fetch_calls)
+
+
+def test_mailbox_search_uses_simple_unseen_without_headers_or_since() -> None:
+    config = fake_config()
+    criteria = imap_search_criteria(config)
+
+    assert criteria == ("UNSEEN",)
+    assert "SUBJECT" not in {str(item).upper() for item in criteria}
+    assert "FROM" not in {str(item).upper() for item in criteria}
+    assert "SINCE" not in {str(item).upper() for item in criteria}
+    assert config.expected_subject not in criteria
+    for item in criteria:
+        if isinstance(item, str):
+            item.encode("ascii")
+
+
+def test_mailbox_include_seen_uses_simple_all_without_headers_or_since() -> None:
+    config = fake_config()
+    criteria = imap_search_criteria(config, include_seen=True)
+
+    assert criteria == ("ALL",)
+    assert "SUBJECT" not in {str(item).upper() for item in criteria}
+    assert "FROM" not in {str(item).upper() for item in criteria}
+    assert "SINCE" not in {str(item).upper() for item in criteria}
+
+
+def test_mailbox_include_seen_limits_uid_scan_to_recent_tail() -> None:
+    messages = {
+        str(i).encode("ascii"): {"seen": True, "raw": make_regular_message()}
+        for i in range(1, INCLUDE_SEEN_UID_LIMIT + 6)
+    }
+    fake = FakeIMAP(messages)
+
+    result = process_mailbox_once(
+        config=fake_config(),
+        imap_factory=lambda *_args, **_kwargs: fake,
+        include_seen=True,
+        notification_sender=lambda *_args: (_ for _ in ()).throw(AssertionError("no notify")),
+    )
+
+    assert result["include_seen_total_uids"] == INCLUDE_SEEN_UID_LIMIT + 5
+    assert result["include_seen_limited_to"] == INCLUDE_SEEN_UID_LIMIT
+    assert result["ignored"] == INCLUDE_SEEN_UID_LIMIT
+    assert len({uid for uid, _query in fake.fetch_calls}) == INCLUDE_SEEN_UID_LIMIT
+    assert b"1" not in {uid for uid, _query in fake.fetch_calls}
+
+
+def test_mailbox_imports_labeled_unread_message_by_structure_not_sender_or_subject() -> None:
+    raw = make_infonalia_message(sender="otro@example.test", subject="Asunto ya filtrado por Gmail")
+    fake = FakeIMAP(
+        {
+            b"1": {"seen": False, "raw": raw},
+        }
+    )
+
+    result = process_mailbox_once(
+        config=fake_config(),
+        imap_factory=lambda *_args, **_kwargs: fake,
+        dry_run=True,
+        notification_sender=lambda *_args: (_ for _ in ()).throw(AssertionError("no notify")),
+    )
+
+    search_calls = [args for command, args in fake.calls if command == "SEARCH"]
+    assert search_calls
+    assert all(None not in args for args in search_calls)
+    assert result["candidates_seen"] == 1
+    assert result["parsed_items"] == 2
+    assert fake.messages[b"1"]["seen"] is False
+    assert all("BODY.PEEK[HEADER" in query or "BODY.PEEK[]" in query for _uid, query in fake.fetch_calls)
+
+
+def test_mailbox_invalid_labeled_message_is_not_imported_or_marked_read() -> None:
+    fake = FakeIMAP({b"1": {"seen": False, "raw": make_regular_message()}})
+
+    result = process_mailbox_once(
+        config=fake_config(),
+        imap_factory=lambda *_args, **_kwargs: fake,
+        notification_sender=lambda *_args: (_ for _ in ()).throw(AssertionError("no notify")),
+    )
+
+    assert result["candidates_seen"] == 0
+    assert result["ignored"] == 1
+    assert result["imported"] == 0
+    assert result["errors"] == 0
+    assert result["last_ignored_reason"] == "Correo sin estructura válida de LICITACIONES Infonalia."
+    assert fake.messages[b"1"]["seen"] is False
+    assert fake.store_calls == []
 
 
 def test_mailbox_keeps_candidate_unread_if_import_fails(monkeypatch) -> None:
@@ -277,6 +408,45 @@ def test_mailbox_keeps_candidate_unread_if_import_fails(monkeypatch) -> None:
     assert fake.store_calls == []
 
 
+class MissingFolderIMAP(FakeIMAP):
+    def select(self, folder):
+        self.calls.append(("SELECT", (folder,)))
+        return "NO", [b"Unknown Mailbox"]
+
+
+def test_mailbox_missing_label_is_controlled_and_does_not_search_or_mark_read() -> None:
+    fake = MissingFolderIMAP({b"2": {"seen": False, "raw": make_infonalia_message()}})
+
+    result = process_mailbox_once(
+        config=fake_config(),
+        imap_factory=lambda *_args, **_kwargs: fake,
+        notification_sender=lambda *_args: (_ for _ in ()).throw(AssertionError("no notify")),
+    )
+
+    assert result["status"] == "failed"
+    assert result["errors"] == 1
+    assert "No se pudo seleccionar la etiqueta IMAP LLANGON_INFONALIA" in result["last_error"]
+    assert [command for command, _args in fake.calls] == ["LOGIN", "SELECT"]
+    assert fake.store_calls == []
+    assert fake.messages[b"2"]["seen"] is False
+
+
+def test_mailbox_imap_search_bad_is_controlled_and_does_not_mark_read() -> None:
+    fake = BadSearchIMAP({b"2": {"seen": False, "raw": make_infonalia_message()}})
+
+    result = process_mailbox_once(
+        config=fake_config(),
+        imap_factory=lambda *_args, **_kwargs: fake,
+        notification_sender=lambda *_args: (_ for _ in ()).throw(AssertionError("no notify")),
+    )
+
+    assert result["status"] == "failed"
+    assert result["errors"] == 1
+    assert "Could not parse command" in result["last_error"]
+    assert fake.store_calls == []
+    assert fake.messages[b"2"]["seen"] is False
+
+
 def test_mailbox_dry_run_does_not_mark_read_or_notify() -> None:
     raw = make_infonalia_message()
     fake = FakeIMAP({b"2": {"seen": False, "raw": raw}})
@@ -291,3 +461,31 @@ def test_mailbox_dry_run_does_not_mark_read_or_notify() -> None:
     assert result["parsed_items"] == 2
     assert fake.messages[b"2"]["seen"] is False
     assert fake.store_calls == []
+
+
+def test_mailbox_reprocessing_unread_duplicate_does_not_duplicate_or_notify_again() -> None:
+    app = load_app_module()
+    raw = make_infonalia_message(message_id="<repeat@example.test>")
+    sent: list[tuple[str, str]] = []
+
+    with temporary_app_database(app):
+        first_fake = FakeIMAP({b"2": {"seen": False, "raw": raw}})
+        first = process_mailbox_once(
+            config=fake_config(),
+            imap_factory=lambda *_args, **_kwargs: first_fake,
+            notification_sender=lambda to, subject, body, html: sent.append((to, subject)) or ("2026-06-05T12:34:00", None),
+        )
+        second_fake = FakeIMAP({b"2": {"seen": False, "raw": raw}})
+        second = process_mailbox_once(
+            config=fake_config(),
+            imap_factory=lambda *_args, **_kwargs: second_fake,
+            notification_sender=lambda *_args: (_ for _ in ()).throw(AssertionError("no second notify")),
+        )
+
+    assert first["imported"] == 2
+    assert first_fake.messages[b"2"]["seen"] is True
+    assert second["imported"] == 0
+    assert second["duplicates"] >= 2
+    assert second["ignored"] == 1
+    assert second_fake.messages[b"2"]["seen"] is True
+    assert len(sent) == 1

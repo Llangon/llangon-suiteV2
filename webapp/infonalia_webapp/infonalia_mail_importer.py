@@ -11,7 +11,7 @@ import pprint
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from email.header import decode_header, make_header
 from email.message import Message
 from email.utils import parseaddr, parsedate_to_datetime
@@ -42,6 +42,7 @@ EXPECTED_FROM = "envios@infonalia.net"
 EXPECTED_SUBJECT = "LICITACIONES - Envío de Novedades - 149022"
 HEADER_PEEK_QUERY = "(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE MESSAGE-ID)])"
 FULL_PEEK_QUERY = "(BODY.PEEK[])"
+INCLUDE_SEEN_UID_LIMIT = 100
 
 
 @dataclass(frozen=True)
@@ -97,7 +98,7 @@ def config_from_env(environ: dict[str, str] | None = None) -> InfonaliaImportCon
         port=env_int("LLANGON_ACTIONS_IMAP_PORT", 993, env, minimum=1),
         user=clean_text(env.get("LLANGON_ACTIONS_IMAP_USER")),
         password=clean_text(env.get("LLANGON_ACTIONS_IMAP_PASSWORD")),
-        folder=clean_text(env.get("LLANGON_INFONALIA_IMPORT_FOLDER") or env.get("LLANGON_ACTIONS_IMAP_FOLDER") or "INBOX"),
+        folder=clean_text(env.get("LLANGON_INFONALIA_IMPORT_FOLDER") or "LLANGON_INFONALIA"),
         expected_from=clean_text(env.get("LLANGON_INFONALIA_IMPORT_FROM")) or EXPECTED_FROM,
         expected_subject=clean_text(env.get("LLANGON_INFONALIA_IMPORT_SUBJECT")) or EXPECTED_SUBJECT,
         notify_email=clean_text(env.get("LLANGON_INFONALIA_IMPORT_NOTIFY_EMAIL")) or "info3@llangon.com",
@@ -333,6 +334,14 @@ def is_expected_infonalia_message(parsed: dict[str, object], config: InfonaliaIm
     if subject != config.expected_subject:
         return False, "asunto no coincide"
     return True, ""
+
+
+def imap_search_criteria(config: InfonaliaImportConfig, *, include_seen: bool = False) -> tuple[object, ...]:
+    return ("ALL",) if include_seen else ("UNSEEN",)
+
+
+def has_infonalia_structure(parsed: dict[str, object]) -> bool:
+    return bool(parsed.get("items"))
 
 
 def body_hash_for_raw(raw_bytes: bytes) -> str:
@@ -639,71 +648,90 @@ def process_mailbox_once(
         "errors": 0,
         "notified": 0,
     }
-    criteria: tuple[object, ...] = ("FROM", config.expected_from, "SUBJECT", config.expected_subject)
-    if not include_seen:
-        criteria = ("UNSEEN", *criteria)
-    if config.lookback_hours:
-        # IMAP SEARCH supports SINCE by date, not by exact hour. We keep the
-        # precise idempotency in SQLite and use SINCE only to avoid scanning
-        # very old mailbox candidates.
-        since_date = (datetime.now(ZoneInfo("Europe/Madrid")) - timedelta(hours=config.lookback_hours)).strftime("%d-%b-%Y")
-        criteria = (*criteria, "SINCE", since_date)
-    with imap_factory(config.host, config.port) as client:
-        client.login(config.user, config.password)
-        client.select(config.folder)
-        status, data = client.uid("SEARCH", None, *criteria)
-        uids = (data[0] or b"").split() if status == "OK" and data else []
-        for uid in uids:
-            header_status, header_data = client.uid("FETCH", uid, HEADER_PEEK_QUERY)
-            if header_status != "OK":
+    criteria = imap_search_criteria(config, include_seen=include_seen)
+    try:
+        with imap_factory(config.host, config.port) as client:
+            client.login(config.user, config.password)
+            select_status, _select_data = client.select(config.folder)
+            if select_status != "OK":
                 summary["errors"] += 1
-                continue
-            header_message = email.message_from_bytes(_fetch_bytes(header_data))
-            header_parsed = {
-                "subject": safe_header(header_message.get("Subject")),
-                "from_email": normalized_from(header_message.get("From")),
-            }
-            valid, reason = is_expected_infonalia_message(header_parsed, config)
-            if not valid:
-                summary["ignored"] += 1
-                if verbose:
-                    LOGGER.info("Correo ignorado uid=%s: %s", uid, reason)
-                continue
-            summary["candidates_seen"] += 1
-            full_status, full_data = client.uid("FETCH", uid, FULL_PEEK_QUERY)
-            if full_status != "OK":
-                summary["errors"] += 1
-                continue
-            raw = _fetch_bytes(full_data)
-            parsed = parse_infonalia_email(raw)
-            valid, reason = is_expected_infonalia_message(parsed, config)
-            if not valid:
-                summary["ignored"] += 1
-                continue
-            try:
-                result = import_parsed_email(
-                    parsed,
-                    raw_bytes=raw,
-                    mailbox_user=config.user,
-                    imap_uid=uid.decode("ascii", errors="ignore"),
-                    dry_run=dry_run,
-                    notify=True,
-                    notification_sender=notification_sender,
-                    notify_email=config.notify_email,
+                summary["status"] = "failed"
+                summary["last_error"] = (
+                    f"No se pudo seleccionar la etiqueta IMAP {config.folder}. "
+                    "Comprueba que existe y que IMAP la muestra como carpeta."
                 )
-            except Exception as exc:
-                LOGGER.exception("Error importando candidato Infonalia uid=%s", uid)
+                return summary
+            status, data = client.uid("SEARCH", *criteria)
+            if status != "OK":
                 summary["errors"] += 1
-                summary["last_error"] = str(exc)
-                continue
-            for key in ("parsed_items", "imported", "duplicates", "notified"):
-                summary[key] = int(summary.get(key, 0) or 0) + int(result.get(key, 0) or 0)
-            if result.get("status") == "duplicate":
-                summary["ignored"] += 1
-            if result.get("errors"):
-                summary["errors"] += int(result.get("errors") or 0)
-            if result.get("status") in {"imported", "duplicate"} and not dry_run and config.mark_read_on_success:
-                client.uid("STORE", uid, "+FLAGS", "\\Seen")
+                summary["status"] = "failed"
+                summary["last_error"] = f"IMAP UID SEARCH devolvió estado {status}."
+                return summary
+            uids = (data[0] or b"").split() if data else []
+            if include_seen and len(uids) > INCLUDE_SEEN_UID_LIMIT:
+                summary["include_seen_total_uids"] = len(uids)
+                summary["include_seen_limited_to"] = INCLUDE_SEEN_UID_LIMIT
+                uids = uids[-INCLUDE_SEEN_UID_LIMIT:]
+            for uid in uids:
+                header_status, header_data = client.uid("FETCH", uid, HEADER_PEEK_QUERY)
+                if header_status != "OK":
+                    summary["errors"] += 1
+                    continue
+                header_message = email.message_from_bytes(_fetch_bytes(header_data))
+                header_subject = safe_header(header_message.get("Subject"))
+                header_from = normalized_from(header_message.get("From"))
+                full_status, full_data = client.uid("FETCH", uid, FULL_PEEK_QUERY)
+                if full_status != "OK":
+                    summary["errors"] += 1
+                    continue
+                raw = _fetch_bytes(full_data)
+                parsed = parse_infonalia_email(raw)
+                if not has_infonalia_structure(parsed):
+                    summary["ignored"] += 1
+                    summary["last_ignored_reason"] = "Correo sin estructura válida de LICITACIONES Infonalia."
+                    if verbose:
+                        LOGGER.info(
+                            "Correo ignorado uid=%s: sin estructura Infonalia (from=%s subject=%s)",
+                            uid,
+                            header_from,
+                            header_subject,
+                        )
+                    continue
+                summary["candidates_seen"] += 1
+                try:
+                    result = import_parsed_email(
+                        parsed,
+                        raw_bytes=raw,
+                        mailbox_user=config.user,
+                        imap_uid=uid.decode("ascii", errors="ignore"),
+                        dry_run=dry_run,
+                        notify=True,
+                        notification_sender=notification_sender,
+                        notify_email=config.notify_email,
+                    )
+                except Exception as exc:
+                    LOGGER.exception("Error importando candidato Infonalia uid=%s", uid)
+                    summary["errors"] += 1
+                    summary["last_error"] = str(exc)
+                    continue
+                for key in ("parsed_items", "imported", "duplicates", "notified"):
+                    summary[key] = int(summary.get(key, 0) or 0) + int(result.get(key, 0) or 0)
+                if result.get("status") == "duplicate":
+                    summary["ignored"] += 1
+                if result.get("errors"):
+                    summary["errors"] += int(result.get("errors") or 0)
+                if result.get("status") in {"imported", "duplicate"} and not dry_run and config.mark_read_on_success:
+                    client.uid("STORE", uid, "+FLAGS", "\\Seen")
+    except imaplib.IMAP4.error as exc:
+        LOGGER.exception("Error IMAP en importador Infonalia")
+        summary["errors"] += 1
+        summary["status"] = "failed"
+        summary["last_error"] = f"Error IMAP: {exc}"
+    except OSError as exc:
+        LOGGER.exception("Error de conexión IMAP en importador Infonalia")
+        summary["errors"] += 1
+        summary["status"] = "failed"
+        summary["last_error"] = f"Error de conexión IMAP: {exc}"
     return summary
 
 

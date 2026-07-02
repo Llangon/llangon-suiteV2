@@ -164,18 +164,25 @@ python -m webapp.infonalia_webapp.monitor.scheduler --once
 
 Cada ejecucion termina. El propio script `run_scheduler_once.ps1` usa un bloqueo local para evitar solapes si una ejecucion anterior sigue activa.
 
-En esa misma pasada se ejecutan tambien las tareas de correo si estan activadas en `.env`:
+En esa misma pasada se ejecutan tambien las tareas de correo e inventario si estan activadas en `.env`:
 
 ```text
 LLANGON_INFONALIA_IMPORT_ENABLED=1
 LLANGON_INFONALIA_IMPORT_POLL_MINUTES=30
 LLANGON_EMAIL_ACTIONS_ENABLED=1
 LLANGON_EMAIL_ACTIONS_POLL_MINUTES=10
+LLANGON_FILE_INVENTORY_ENABLED=1
+LLANGON_FILE_INVENTORY_POLL_MINUTES=60
+LLANGON_DROPBOX_BASE_PATH=C:\Users\LLangon03\Dropbox\00000 LLANGON
 ```
 
-Ambas usan la configuracion IMAP `LLANGON_ACTIONS_IMAP_*`. El importador de Infonalia filtra por remitente/asunto exactos y las ordenes tecnicas solo aceptan asuntos que empiezan por `LLANGON_CMD`.
+Las tareas de correo usan la configuracion IMAP `LLANGON_ACTIONS_IMAP_*`. El importador de Infonalia lee la etiqueta IMAP `LLANGON_INFONALIA`, busca solo no leidos con `UID SEARCH UNSEEN` y decide la importacion por la estructura parseada del cuerpo. No envia remitente, asunto, acentos ni `SINCE` a `IMAP SEARCH`. Las ordenes tecnicas solo aceptan asuntos que empiezan por `LLANGON_CMD`.
 
-El diagnostico local muestra tambien el estado de esos dos trabajos:
+El inventario usa `LLANGON_DROPBOX_BASE_PATH` como raiz principal. `INFONALIA_DROPBOX_ROOT` queda como fallback historico si la variable principal no esta configurada. Si la ruta no existe, el scheduler registra el error de inventario y continua con el resto de trabajos.
+
+Las descargas locales deben crear carpetas bajo `LLANGON_DROPBOX_BASE_PATH\AÑO\MES\CARPETA_EXPEDIENTE`, por ejemplo `C:\Users\LLangon03\Dropbox\00000 LLANGON\2026\07 JULIO\20 JULIO 1400 ...`. En base de datos se guarda solo la parte relativa `2026\07 JULIO\...`. Las rutas antiguas sin año se conservan como compatibilidad de lectura si ya existen, pero las carpetas nuevas no deben crearse directamente bajo `LLANGON_DROPBOX_BASE_PATH\MES`.
+
+El diagnostico local muestra tambien el estado de esos trabajos:
 
 ```powershell
 python -m webapp.infonalia_webapp.monitor.scheduler --status

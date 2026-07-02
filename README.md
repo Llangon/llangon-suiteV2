@@ -115,7 +115,29 @@ En este equipo:
 LLANGON_DROPBOX_BASE_PATH=C:\Users\LLangon03\Dropbox\00000 LLANGON
 ```
 
-Si `LLANGON_DROPBOX_BASE_PATH` no está definida, el entorno de desarrollo y tests siguen usando las rutas locales/de prueba actuales. Las funciones que necesitan validar Dropbox real devuelven mensajes controlados como “Carpeta no configurada”, “La ruta no existe” o “La ruta está fuera de la carpeta base de Dropbox”.
+Si `LLANGON_DROPBOX_BASE_PATH` no está definida, el entorno de desarrollo y tests siguen usando las rutas locales/de prueba actuales cuando se configuran expresamente. Las funciones que necesitan validar Dropbox real devuelven mensajes controlados como “Carpeta no configurada”, “La ruta no existe” o “La ruta está fuera de la carpeta base de Dropbox”.
+
+Las carpetas nuevas de expedientes se crean siempre dentro de esa raíz con la estructura:
+
+```text
+AÑO\MES\CARPETA_EXPEDIENTE
+```
+
+Ejemplo:
+
+```text
+2026\07 JULIO\20 JULIO 1400 ALICANTE EL PINOSO ESCUELA INFANTIL PASO202613SIM 1418652R
+```
+
+En SQLite se guarda esa ruta relativa, nunca la raíz completa de Windows. Las rutas antiguas que empiecen directamente por el mes, por ejemplo `07 JULIO\...`, se mantienen solo como compatibilidad de lectura si la carpeta ya existe; las descargas nuevas no deben crear carpetas de expediente directamente bajo la raíz de Dropbox sin el año.
+
+El inventario/monitor usa esta prioridad de raíz local:
+
+1. `INFONALIA_MONITOR_ROOT`, solo como override técnico explícito.
+2. `LLANGON_DROPBOX_BASE_PATH`, ruta principal recomendada.
+3. `INFONALIA_DROPBOX_ROOT`, compatibilidad histórica.
+
+Si no existe ninguna raíz válida, el scheduler no se cae: registra un error controlado en el bloque de inventario e indica que `LLANGON_DROPBOX_BASE_PATH` no está configurada o la ruta no existe.
 
 Reglas de seguridad:
 
@@ -141,7 +163,9 @@ El flujo de documentos recomendado sigue siendo Dropbox local/Desktop con `INFON
 
 ## Importación automática del correo Infonalia
 
-La Suite puede vigilar el buzón técnico `info3llangon@gmail.com` para importar automáticamente el correo diario de Infonalia. El importador solo acepta mensajes con remitente `envios@infonalia.net` y asunto exacto `LICITACIONES - Envío de Novedades - 149022`; el resto queda intacto.
+La Suite puede vigilar el buzón técnico `info3llangon@gmail.com` para importar automáticamente el correo diario de Infonalia. Gmail debe aplicar previamente la etiqueta IMAP `LLANGON_INFONALIA` a esos mensajes; la Suite no busca en todo `INBOX` ni filtra por remitente/asunto en `IMAP SEARCH`.
+
+El importador selecciona la etiqueta configurada, busca únicamente correos no leídos con `UID SEARCH UNSEEN` y recupera cabeceras/cuerpo con `BODY.PEEK`. Un correo se considera importable cuando el cuerpo parsea bloques reales de LICITACIONES Infonalia. Si no hay estructura válida, queda sin marcar como leído y se registra el motivo controlado.
 
 Variables principales:
 
@@ -150,14 +174,14 @@ LLANGON_INFONALIA_IMPORT_ENABLED=0
 LLANGON_INFONALIA_IMPORT_FROM=envios@infonalia.net
 LLANGON_INFONALIA_IMPORT_SUBJECT=LICITACIONES - Envío de Novedades - 149022
 LLANGON_INFONALIA_IMPORT_NOTIFY_EMAIL=info3@llangon.com
-LLANGON_INFONALIA_IMPORT_FOLDER=INBOX
+LLANGON_INFONALIA_IMPORT_FOLDER=LLANGON_INFONALIA
 LLANGON_INFONALIA_IMPORT_LOOKBACK_HOURS=48
 LLANGON_INFONALIA_IMPORT_MARK_READ_ON_SUCCESS=1
 LLANGON_INFONALIA_IMPORT_POLL_MINUTES=30
 LLANGON_INFONALIA_IMPORT_TEST_FORWARDERS=
 ```
 
-Reutiliza la configuración IMAP `LLANGON_ACTIONS_IMAP_*`. La lectura usa `BODY.PEEK`: no marca correos como leídos por inspeccionarlos, no borra mensajes y solo marca como leído un candidato cuando termina importado o reconocido como duplicado. La tabla `infonalia_email_imports` guarda `message_id` y huella del cuerpo para no importar ni notificar dos veces el mismo correo.
+Reutiliza la configuración IMAP `LLANGON_ACTIONS_IMAP_*`. `LLANGON_INFONALIA_IMPORT_FROM`, `LLANGON_INFONALIA_IMPORT_SUBJECT` y `LLANGON_INFONALIA_IMPORT_LOOKBACK_HOURS` quedan como referencia/compatibilidad, pero el flujo normal por etiqueta no depende de ellos. La lectura usa `BODY.PEEK`: no marca correos como leídos por inspeccionarlos, no borra mensajes y solo marca como leído un candidato cuando termina importado o reconocido como duplicado. La tabla `infonalia_email_imports` guarda `message_id` y huella del cuerpo para no importar ni notificar dos veces el mismo correo aunque se vuelva a marcar como no leído.
 
 Pruebas sin tocar IMAP:
 
@@ -236,7 +260,7 @@ Simular un código sin tocar IMAP ni cambiar estados:
 python -m webapp.infonalia_webapp.email_actions_processor --simulate-code 00000014101 --from-email correoautorizado@ejemplo.com --dry-run
 ```
 
-El scheduler local de Windows no crea un sistema paralelo: cuando `MONITOR_SCHEDULER_ENABLED=1`, la tarea `LlangonSuite-Scheduler` ejecuta `python -m webapp.infonalia_webapp.monitor.scheduler --once`. En esa pasada se procesan, si están activados, tanto la importación automática de Infonalia como las órdenes `LLANGON_CMD`, respetando `LLANGON_INFONALIA_IMPORT_POLL_MINUTES` y `LLANGON_EMAIL_ACTIONS_POLL_MINUTES`.
+El scheduler local de Windows no crea un sistema paralelo: cuando `MONITOR_SCHEDULER_ENABLED=1`, la tarea `LlangonSuite-Scheduler` ejecuta `python -m webapp.infonalia_webapp.monitor.scheduler --once`. En esa pasada se procesan, si están activados, la importación automática de Infonalia, las órdenes `LLANGON_CMD` y el inventario local de ficheros, respetando `LLANGON_INFONALIA_IMPORT_POLL_MINUTES`, `LLANGON_EMAIL_ACTIONS_POLL_MINUTES` y `LLANGON_FILE_INVENTORY_POLL_MINUTES`.
 
 ## Licitaciones y seguimiento
 
