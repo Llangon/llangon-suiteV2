@@ -5,6 +5,7 @@ from datetime import datetime
 from webapp.infonalia_webapp.monitor import scheduler
 from webapp.infonalia_webapp.monitor.repository import (
     TASK_TYPE_EMAIL_ACTIONS_PROCESSOR,
+    TASK_TYPE_FILE_INVENTORY,
     TASK_TYPE_INFONALIA_MAIL_IMPORT,
 )
 from webapp.infonalia_webapp.tests.test_import_endpoints import load_app_module, temporary_app_database
@@ -18,6 +19,7 @@ def test_mail_scheduler_jobs_stay_disabled_by_default(monkeypatch) -> None:
         reports = scheduler.run_once(db_path=db_path, current=datetime(2026, 6, 5, 12, 0), dry_run=True)
 
     assert all(report.get("task_type") not in {TASK_TYPE_INFONALIA_MAIL_IMPORT, TASK_TYPE_EMAIL_ACTIONS_PROCESSOR} for report in reports)
+    assert all(report.get("task_type") != TASK_TYPE_FILE_INVENTORY for report in reports)
 
 
 def test_mail_scheduler_runs_enabled_jobs_without_interference(monkeypatch) -> None:
@@ -101,3 +103,41 @@ def test_mail_scheduler_does_not_break_with_incomplete_imap_config(monkeypatch) 
     assert importer_reports[0]["enabled"] is False
     assert "falta configuración IMAP" in importer_reports[0]["message"]
     assert status["infonalia_mail_importer"]["last_run"]["status"] == "completed"
+
+
+def test_file_inventory_scheduler_runs_when_enabled(monkeypatch) -> None:
+    app = load_app_module()
+    monkeypatch.setenv("LLANGON_INFONALIA_IMPORT_ENABLED", "0")
+    monkeypatch.setenv("LLANGON_EMAIL_ACTIONS_ENABLED", "0")
+    monkeypatch.setenv("LLANGON_FILE_INVENTORY_ENABLED", "1")
+    monkeypatch.setenv("LLANGON_FILE_INVENTORY_POLL_MINUTES", "60")
+    calls = {"count": 0}
+
+    def fake_run_monitor(*_args, **_kwargs):
+        calls["count"] += 1
+        return {
+            "status": "completed",
+            "inventory_files_count": 7,
+            "route_updates_count": 2,
+            "conflicts": [{"type": "duplicate_licitacion_marker"}],
+            "warnings": [],
+            "errors": 0,
+        }
+
+    monkeypatch.setattr(scheduler, "run_monitor", fake_run_monitor)
+
+    with temporary_app_database(app) as db_path:
+        first = scheduler.run_once(db_path=db_path, current=datetime(2026, 6, 5, 12, 0), dry_run=True)
+        second = scheduler.run_once(db_path=db_path, current=datetime(2026, 6, 5, 12, 30), dry_run=True)
+        status = scheduler.monitor_scheduler_status(db_path)
+
+    inventory_reports = [report for report in first if report.get("task_type") == TASK_TYPE_FILE_INVENTORY]
+    assert len(inventory_reports) == 1
+    assert inventory_reports[0]["inventory_files_count"] == 7
+    assert calls["count"] == 1
+    assert all(report.get("task_type") != TASK_TYPE_FILE_INVENTORY for report in second)
+    assert status["file_inventory"]["enabled"] is True
+    assert status["file_inventory"]["last_run"]["processed_items_count"] == 7
+    assert status["file_inventory"]["last_run"]["inventory_files_count"] == 7
+    assert status["file_inventory"]["last_run"]["route_updates_count"] == 2
+    assert status["file_inventory"]["last_run"]["conflicts_count"] == 1

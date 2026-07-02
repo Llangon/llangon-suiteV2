@@ -45,11 +45,19 @@ def timestamp_iso(seconds: float) -> str:
     return datetime.fromtimestamp(seconds).replace(microsecond=0).isoformat()
 
 
-def scan_inventory_files(marker: MarkerRecord) -> list[InventoryFile]:
+def scan_inventory_files(marker: MarkerRecord, *, max_files: int = 1000, max_depth: int = 8) -> list[InventoryFile]:
     files: list[InventoryFile] = []
     if not marker.folder_path.exists() or not marker.folder_path.is_dir():
         return files
+    limit = max(1, int(max_files or 1000))
+    depth_limit = max(1, int(max_depth or 8))
     for path in sorted(marker.folder_path.rglob("*"), key=lambda item: str(item).casefold()):
+        try:
+            relative_parts = path.relative_to(marker.folder_path).parts
+        except ValueError:
+            continue
+        if len(relative_parts) > depth_limit:
+            continue
         if not path.is_file() or is_monitor_marker(path):
             continue
         relative_path = str(path.relative_to(marker.folder_path))
@@ -73,4 +81,6 @@ def scan_inventory_files(marker: MarkerRecord) -> list[InventoryFile]:
                 modified_at=timestamp_iso(stat.st_mtime),
             )
         )
+        if len(files) >= limit:
+            break
     return files

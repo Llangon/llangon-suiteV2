@@ -337,7 +337,9 @@ def get_ai_summary_payload(conn: sqlite3.Connection, licitacion_id: int) -> dict
     selected, diagnostics = _select_documents(config, row)
     document_hash = hash_documents(selected) if selected else ""
     payload = _base_payload(config, selected, document_hash, diagnostics)
-    summary = _latest_useful_summary(conn, licitacion_id, document_hash) if document_hash else _latest_useful_summary(conn, licitacion_id)
+    summary = _latest_useful_summary(conn, licitacion_id, document_hash) if document_hash else None
+    if summary is None:
+        summary = _latest_useful_summary(conn, licitacion_id)
     job = active_job(conn, licitacion_id, document_hash, provider=config.analysis_provider) if document_hash else None
     if not job:
         job = latest_job(conn, licitacion_id, document_hash or None, provider=config.analysis_provider)

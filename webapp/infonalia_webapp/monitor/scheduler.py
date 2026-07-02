@@ -11,6 +11,7 @@ from typing import Callable
 
 from .repository import (
     TASK_TYPE_EMAIL_ACTIONS_PROCESSOR,
+    TASK_TYPE_FILE_INVENTORY,
     TASK_TYPE_INFONALIA_MAIL_IMPORT,
     connect_db,
     ensure_monitor_schema,
@@ -25,6 +26,7 @@ from .service import (
     monitor_automation_schedules,
     record_scheduler_heartbeat,
     reset_scheduler_test_state,
+    run_monitor,
     run_due_automation_tasks,
     schedule_runs_on_date,
     scheduler_now_iso,
@@ -170,6 +172,9 @@ def _record_interval_run(
     dry_run: bool,
     processed_items_count: int = 0,
     emails_sent_count: int = 0,
+    inventory_files_count: int = 0,
+    route_updates_count: int = 0,
+    conflicts_count: int = 0,
     error_message: str = "",
     details: dict[str, object] | None = None,
     schedule_key: str | None = None,
@@ -178,9 +183,10 @@ def _record_interval_run(
         """
         INSERT INTO monitor_runs (
             task_type, mode, root_path, started_at, finished_at, status, dry_run,
-            schedule_key, processed_items_count, emails_sent_count, error_message, details_json
+            schedule_key, processed_items_count, emails_sent_count, inventory_files_count,
+            route_updates_count, conflicts_count, error_message, details_json
         )
-        VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task_type,
@@ -192,6 +198,9 @@ def _record_interval_run(
             schedule_key or localize_scheduler_datetime().date().isoformat(),
             processed_items_count,
             emails_sent_count,
+            inventory_files_count,
+            route_updates_count,
+            conflicts_count,
             error_message,
             json.dumps(details or {}, ensure_ascii=False, sort_keys=True, default=str),
         ),
@@ -206,6 +215,11 @@ def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: 
     ensure_monitor_schema(conn)
     try:
         jobs = [
+            (
+                TASK_TYPE_FILE_INVENTORY,
+                "LLANGON_FILE_INVENTORY_ENABLED",
+                env_minutes("LLANGON_FILE_INVENTORY_POLL_MINUTES", 60),
+            ),
             (
                 TASK_TYPE_INFONALIA_MAIL_IMPORT,
                 "LLANGON_INFONALIA_IMPORT_ENABLED",
@@ -248,7 +262,10 @@ def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: 
                 )
                 processed = int(result.get("imported", 0) or 0) + int(result.get("duplicates", 0) or 0)
                 emails_sent = int(result.get("notified", 0) or 0)
-            else:
+                inventory_count = 0
+                route_updates = 0
+                conflicts = 0
+            elif task_type == TASK_TYPE_EMAIL_ACTIONS_PROCESSOR:
                 result = process_action_mailbox_once(
                     db_session_factory=app.db_session,
                     notification_sender=lambda to, subject, body, html: app.send_monitor_email(to, subject, body, html),
@@ -256,11 +273,24 @@ def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: 
                 )
                 processed = int(result.get("processed", 0) or 0)
                 emails_sent = 0
+                inventory_count = 0
+                route_updates = 0
+                conflicts = 0
+            else:
+                result = run_monitor("inventory", db_path=db_file, dry_run=dry_run)
+                processed = int(result.get("inventory_files_count", 0) or 0)
+                emails_sent = 0
+                inventory_count = int(result.get("inventory_files_count", 0) or 0)
+                route_updates = int(result.get("route_updates_count", 0) or 0)
+                conflicts = len(result.get("conflicts", []) or [])
             status = "failed" if result.get("errors") else "completed"
         except Exception as exc:  # pragma: no cover
             result = {"enabled": True, "task_type": task_type, "errors": 1, "error_message": str(exc)}
             processed = 0
             emails_sent = 0
+            inventory_count = 0
+            route_updates = 0
+            conflicts = 0
             status = "failed"
             error_message = str(exc)
         finished_at = scheduler_now_iso()
@@ -276,6 +306,9 @@ def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: 
                 dry_run=dry_run,
                 processed_items_count=processed,
                 emails_sent_count=emails_sent,
+                inventory_files_count=inventory_count,
+                route_updates_count=route_updates,
+                conflicts_count=conflicts,
                 error_message=error_message or str(result.get("message") or result.get("error_message") or ""),
                 details=result,
                 schedule_key=localize_scheduler_datetime(current).date().isoformat(),
@@ -283,7 +316,7 @@ def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: 
             conn.commit()
         finally:
             conn.close()
-        reports.append({"task_type": task_type, "monitor_run_id": run_id, **result})
+        reports.append({**result, "task_type": task_type, "monitor_run_id": run_id})
     return reports
 
 
@@ -380,6 +413,14 @@ def monitor_scheduler_status(db_path: str | Path | None = None) -> dict[str, obj
             "interval_minutes": env_minutes("LLANGON_EMAIL_ACTIONS_POLL_MINUTES", 10),
             "last_run": None,
         },
+        "file_inventory": {
+            "enabled": env_bool("LLANGON_FILE_INVENTORY_ENABLED", False),
+            "interval_minutes": env_minutes("LLANGON_FILE_INVENTORY_POLL_MINUTES", 60),
+            "max_files_per_run": env_minutes("LLANGON_FILE_INVENTORY_MAX_FILES_PER_RUN", 1000),
+            "max_depth": env_minutes("LLANGON_FILE_INVENTORY_MAX_DEPTH", 8),
+            "reconcile_paths": env_bool("LLANGON_FILE_INVENTORY_RECONCILE_PATHS", True),
+            "last_run": None,
+        },
         "last_automatic_run": None,
     }
     db_file = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
@@ -426,11 +467,13 @@ def monitor_scheduler_status(db_path: str | Path | None = None) -> dict[str, obj
         for key, task_type in (
             ("infonalia_mail_importer", TASK_TYPE_INFONALIA_MAIL_IMPORT),
             ("email_actions_processor", TASK_TYPE_EMAIL_ACTIONS_PROCESSOR),
+            ("file_inventory", TASK_TYPE_FILE_INVENTORY),
         ):
             row = conn.execute(
                 """
                 SELECT id, task_type, mode, started_at, finished_at, status,
-                       processed_items_count, emails_sent_count, error_message
+                       processed_items_count, emails_sent_count, error_message,
+                       inventory_files_count, route_updates_count, conflicts_count
                 FROM monitor_runs
                 WHERE task_type = ?
                 ORDER BY id DESC
@@ -448,6 +491,9 @@ def monitor_scheduler_status(db_path: str | Path | None = None) -> dict[str, obj
                     "status": row["status"] or "",
                     "processed_items_count": row["processed_items_count"],
                     "emails_sent_count": row["emails_sent_count"],
+                    "inventory_files_count": row["inventory_files_count"],
+                    "route_updates_count": row["route_updates_count"],
+                    "conflicts_count": row["conflicts_count"],
                     "error_message": row["error_message"] or "",
                 }
         conn.close()

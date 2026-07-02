@@ -250,7 +250,10 @@ def test_licitacion_cards_and_detail_keep_hotfix_ux_noise_out() -> None:
     assert "renderLicitacionDocuments(item)" not in summary_render
     assert "Ruta registrada" not in summary_render
     assert "Error descarga" not in summary_render
-    assert "renderLicitacionDocuments(item)" in documents_render
+    assert "renderLicitacionDocuments(item)" not in documents_render
+    assert "data-document-tree-panel" in documents_render
+    assert "renderDocumentTreePayload" in script
+    assert "/document-tree" in script
     assert "renderFolderPanel" in documents_render
     assert "renderDocumentSummary(item)" in documents_render
     assert "renderLicitacionTracking(item)" in documents_render

@@ -15,6 +15,7 @@ TASK_TYPE_AVISO_VENCIMIENTO_3D = "aviso_vencimiento_3d"
 TASK_TYPE_AVISO_VENCIMIENTO_1D = "aviso_vencimiento_1d"
 TASK_TYPE_AVISO_VENCIMIENTO_HOY = "aviso_vencimiento_hoy"
 TASK_TYPE_MONITOR_LICITACIONES = "monitor_licitaciones"
+TASK_TYPE_FILE_INVENTORY = "file_inventory"
 TASK_TYPE_INFONALIA_MAIL_IMPORT = "infonalia_mail_import"
 TASK_TYPE_EMAIL_ACTIONS_PROCESSOR = "email_actions_processor"
 TASK_TYPE_AVISOS_VENCIMIENTOS = "avisos_vencimientos"
@@ -31,6 +32,7 @@ TASK_TYPES = {
     TASK_TYPE_AVISO_VENCIMIENTO_1D,
     TASK_TYPE_AVISO_VENCIMIENTO_HOY,
     TASK_TYPE_MONITOR_LICITACIONES,
+    TASK_TYPE_FILE_INVENTORY,
     TASK_TYPE_INFONALIA_MAIL_IMPORT,
     TASK_TYPE_EMAIL_ACTIONS_PROCESSOR,
     TASK_TYPE_AVISOS_VENCIMIENTOS,
@@ -142,6 +144,27 @@ def ensure_monitor_schema(conn: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_licitacion_file_inventory_licitacion
         ON licitacion_file_inventory(licitacion_id, is_missing)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS licitacion_path_reconciliation_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            licitacion_id INTEGER,
+            created_at TEXT NOT NULL,
+            old_path TEXT,
+            new_path TEXT,
+            marker_path TEXT,
+            result TEXT NOT NULL,
+            reason TEXT,
+            details_json TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_licitacion_path_reconciliation_events_licitacion
+        ON licitacion_path_reconciliation_events(licitacion_id, created_at)
         """
     )
     conn.execute(

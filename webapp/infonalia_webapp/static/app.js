@@ -42,6 +42,7 @@ const appState = {
   storage: null,
   expandedCards: new Set(),
   cardDetails: {},
+  documentTrees: {},
   preparedNoticePreview: null,
   preparedNoticeSending: false,
   downloadFolder: null,
@@ -3480,6 +3481,7 @@ function renderLicitacionDetailView(item) {
           ${fechaLimite ? `<div class="detail-kpi"><span>Fecha límite</span><strong>${escapeHtml(fechaLimite)}</strong></div>` : ""}
           ${item.presupuesto ? `<div class="detail-kpi"><span>Presupuesto</span><strong>${escapeHtml(formatMoney(item.presupuesto))}</strong></div>` : ""}
           <span class="folder-status-chip ${escapeHtml(folderTone)}">Carpeta: ${escapeHtml(folderLabel)}</span>
+          ${renderDetailHeaderActions(item)}
         </div>
       </section>
 
@@ -3499,13 +3501,6 @@ function renderLicitacionDetailView(item) {
           </div>
         </div>
         ${renderCleanDetailGrid(summaryRows)}
-        <div class="detail-action-bar no-print">
-          ${isAdmin() ? `<button class="download-button primary" data-download-id="${escapeHtml(item.id)}">Descargar documentación</button>` : ""}
-          <button data-new-actuacion-id="${escapeHtml(item.id)}">Crear actuación</button>
-          ${isAdmin() ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""}
-          ${isAdmin() ? `<button data-duplicate-id="${escapeHtml(item.id)}">Duplicar</button>` : ""}
-          ${isAdmin() ? `<button class="danger" data-delete-id="${escapeHtml(item.id)}">Borrar</button>` : ""}
-        </div>
         <div class="links no-print">
           ${profile ? `<a href="${escapeHtml(profile)}" target="_blank" rel="noreferrer">Abrir enlace plataforma</a>` : ""}
           ${infonalia ? `<a href="${escapeHtml(infonalia)}" target="_blank" rel="noreferrer">Abrir Infonalia</a>` : ""}
@@ -3518,7 +3513,6 @@ function renderLicitacionDetailView(item) {
             <p class="eyebrow">Actuaciones / Agenda</p>
             <h3>${escapeHtml(actuaciones.length ? `${actuaciones.length} actuación(es) vinculada(s)` : "Sin actuaciones vinculadas")}</h3>
           </div>
-          <button type="button" data-new-actuacion-id="${escapeHtml(item.id)}">Crear actuación</button>
         </div>
         ${actuaciones.length ? renderLinkedActuaciones(actuaciones) : `<div class="empty">No hay actuaciones ni hitos vinculados a esta licitación.</div>`}
       </section>
@@ -3529,13 +3523,14 @@ function renderLicitacionDetailView(item) {
             <p class="eyebrow">Documentos y seguimiento</p>
             <h3>${escapeHtml(documentCount)}</h3>
           </div>
-          ${isAdmin() ? `<button class="download-button" data-download-id="${escapeHtml(item.id)}">Descargar / actualizar</button>` : ""}
         </div>
+        ${renderLicitacionTracking(item)}
         ${renderFolderPanel(item, folder, folderLabel)}
         ${item.descarga_fallida || item.download_error ? `<div class="warning-detail document-warning"><strong>Error de descarga</strong><span>${escapeHtml(item.download_error || "La última descarga falló.")}</span></div>` : ""}
         ${renderDocumentSummary(item)}
-        ${renderLicitacionDocuments(item)}
-        ${renderLicitacionTracking(item)}
+        <div class="document-tree-panel" data-document-tree-panel="${escapeHtml(item.id)}">
+          <div class="empty">Cargando árbol documental...</div>
+        </div>
         ${renderLicitacionHistory(item)}
       </section>
 
@@ -3562,6 +3557,18 @@ function renderLicitacionDetailView(item) {
       </section>
 
     </article>
+  `;
+}
+
+function renderDetailHeaderActions(item) {
+  return `
+    <div class="detail-header-actions no-print">
+      ${isAdmin() ? `<button class="download-button primary" data-download-id="${escapeHtml(item.id)}">Descargar documentación</button>` : ""}
+      <button data-new-actuacion-id="${escapeHtml(item.id)}">Crear actuación</button>
+      ${isAdmin() ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""}
+      ${isAdmin() ? `<button data-duplicate-id="${escapeHtml(item.id)}">Duplicar</button>` : ""}
+      ${isAdmin() ? `<button class="danger" data-delete-id="${escapeHtml(item.id)}">Borrar</button>` : ""}
+    </div>
   `;
 }
 
@@ -3762,6 +3769,79 @@ function renderLicitacionDocuments(item) {
       }).join("")}
     </div>
   `;
+}
+
+function renderDocumentTreeNode(node, depth = 0) {
+  const children = node.children || [];
+  if (node.type === "folder") {
+    return `
+      <details class="document-tree-folder" ${depth < 2 ? "open" : ""}>
+        <summary>
+          <span class="document-tree-indent" style="--depth:${depth}"></span>
+          <span class="document-tree-icon">▸</span>
+          <strong>${escapeHtml(node.name || "Carpeta")}</strong>
+          <small>${escapeHtml(children.length ? `${children.length} elemento(s)` : "Vacía")}</small>
+        </summary>
+        <div class="document-tree-children">
+          ${children.map((child) => renderDocumentTreeNode(child, depth + 1)).join("")}
+        </div>
+      </details>
+    `;
+  }
+  const openUrl = safeDocumentOpenUrl(node.open_url);
+  return `
+    <article class="document-tree-file">
+      <span class="document-tree-indent" style="--depth:${depth}"></span>
+      <span class="document-tree-file-icon">${escapeHtml((node.extension || "doc").slice(0, 4).toUpperCase())}</span>
+      <div>
+        <strong title="${escapeHtml(node.relative_path || node.name)}">${escapeHtml(node.name || "Documento")}</strong>
+        <small>${escapeHtml([node.category, formatBytes(node.size_bytes), formatDateTime(node.modified_at)].filter(Boolean).join(" · "))}</small>
+      </div>
+      ${openUrl ? `<a href="${escapeHtml(openUrl)}" target="_blank" rel="noreferrer">Abrir</a>` : ""}
+    </article>
+  `;
+}
+
+function renderDocumentTreePayload(payload) {
+  const tree = payload.tree || [];
+  const statusClass = payload.root_status === "valid" ? "ok" : payload.root_status === "missing" ? "danger" : "warning";
+  const sourceLabel = payload.source === "inventory" ? "Inventario guardado" : "Lectura directa de carpeta";
+  return `
+    <section class="document-tree-wrap">
+      <div class="document-tree-head">
+        <div>
+          <p class="eyebrow">Documentación</p>
+          <h4>${escapeHtml(payload.root_name || "Carpeta del expediente")}</h4>
+          <span class="folder-status-chip ${escapeHtml(statusClass)}">${escapeHtml(payload.message || sourceLabel)}</span>
+          ${payload.path_reconcile_message ? `<span class="folder-status-chip warning">${escapeHtml(payload.path_reconcile_message)}</span>` : ""}
+        </div>
+        <div class="document-tree-meta">
+          <strong>${escapeHtml(`${payload.count || 0} fichero(s)`)}</strong>
+          <span>${escapeHtml(sourceLabel)}</span>
+          ${payload.truncated ? `<span class="danger-text">Listado limitado por seguridad</span>` : ""}
+        </div>
+      </div>
+      ${tree.length ? `<div class="document-tree">${tree.map((node) => renderDocumentTreeNode(node, 0)).join("")}</div>` : `<div class="empty">${escapeHtml(payload.message || "No hay documentación inventariada.")}</div>`}
+    </section>
+  `;
+}
+
+async function loadDocumentTree(licitacionId, options = {}) {
+  const panel = licitacionDetailContent.querySelector(`[data-document-tree-panel="${licitacionId}"]`);
+  if (!panel) return;
+  if (!options.silent) panel.innerHTML = `<div class="empty">Cargando árbol documental...</div>`;
+  try {
+    const response = await fetch(`/api/licitaciones/${licitacionId}/document-tree`);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) {
+      panel.innerHTML = `<div class="empty">${escapeHtml(payload.error || "No se pudo consultar la documentación.")}</div>`;
+      return;
+    }
+    appState.documentTrees[licitacionId] = payload;
+    panel.innerHTML = renderDocumentTreePayload(payload);
+  } catch (error) {
+    panel.innerHTML = `<div class="empty">${escapeHtml(error.message || "No se pudo consultar la documentación.")}</div>`;
+  }
 }
 
 function aiStatusLabel(payload) {
@@ -5012,6 +5092,7 @@ async function openLicitacionDetail(id) {
   licitacionDetailTitle.textContent = "Ficha de licitación";
   licitacionDetailContent.innerHTML = renderLicitacionDetailView(item);
   hydrateFullCommentWidgets(licitacionDetailContent);
+  loadDocumentTree(id);
   loadAiSummary(id);
 }
 
@@ -5060,12 +5141,13 @@ async function runLicitacionMarkerAction(id, action, button) {
     renderBoard();
     const detail = appState.cardDetails[id]?.item;
     if (detail && licitacionDetailDialog.open) {
-      licitacionDetailTitle.textContent = "Ficha de licitación";
-      licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
-      hydrateFullCommentWidgets(licitacionDetailContent);
-      loadAiSummary(id);
-      setMarkerActionResult(id, message, "success");
-    }
+    licitacionDetailTitle.textContent = "Ficha de licitación";
+    licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
+    hydrateFullCommentWidgets(licitacionDetailContent);
+    loadDocumentTree(id, { silent: true });
+    loadAiSummary(id);
+    setMarkerActionResult(id, message, "success");
+  }
   } finally {
     if (button) {
       button.disabled = false;
@@ -5114,6 +5196,7 @@ async function patchLicitacionWork(id, payload) {
     licitacionDetailTitle.textContent = "Ficha de licitación";
     licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
     hydrateFullCommentWidgets(licitacionDetailContent);
+    loadDocumentTree(id, { silent: true });
     loadAiSummary(id);
   }
   showPreparedNoticeFromResult(result);
@@ -5589,6 +5672,14 @@ function activateDetailTab(button) {
   workspace.querySelectorAll("[data-detail-tab-panel]").forEach((panel) => {
     panel.classList.toggle("active", panel.dataset.detailTabPanel === tab);
   });
+  const aiPanel = workspace.querySelector("[data-ai-summary-panel]");
+  if (tab === "ai" && aiPanel?.dataset.aiSummaryPanel) {
+    loadAiSummary(aiPanel.dataset.aiSummaryPanel, { silent: true });
+  }
+  const treePanel = workspace.querySelector("[data-document-tree-panel]");
+  if (tab === "documentos-seguimiento" && treePanel?.dataset.documentTreePanel) {
+    loadDocumentTree(treePanel.dataset.documentTreePanel, { silent: true });
+  }
 }
 
 function filterDocumentCards(button) {

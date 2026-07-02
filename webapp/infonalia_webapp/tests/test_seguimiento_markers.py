@@ -19,6 +19,7 @@ from webapp.infonalia_webapp.seguimiento_markers import (
     scan_follow_markers,
     sync_marker_paths,
 )
+from webapp.infonalia_webapp.monitor.repository import ensure_monitor_schema
 
 
 def test_year_folder_detection_uses_exact_name_and_configurable_range(tmp_path: Path) -> None:
@@ -113,6 +114,7 @@ def test_sync_marker_paths_repairs_moved_folder_and_follow_state(tmp_path: Path)
     (folder / "33.llangon").write_text("", encoding="utf-8")
     (folder / FOLLOW_MARKER_NAME).write_text("", encoding="utf-8")
     conn = make_conn()
+    ensure_monitor_schema(conn)
     conn.execute(
         "INSERT INTO licitaciones (id, expediente, ruta_carpeta, updated_at) VALUES (33, 'EXP-33', '2026/antigua', '')"
     )
@@ -132,6 +134,10 @@ def test_sync_marker_paths_repairs_moved_folder_and_follow_state(tmp_path: Path)
     assert row["seguimiento_activo"] == 1
     assert row["seguimiento_ultima_sync"] == "2026-06-17T10:00:00"
     assert row["seguimiento_marker_path"].endswith("33.llangon")
+    event = conn.execute("SELECT * FROM licitacion_path_reconciliation_events WHERE licitacion_id = 33").fetchone()
+    assert event["result"] == "updated"
+    assert event["old_path"] == "2026/antigua"
+    assert Path(event["new_path"]).parts == ("2026", "06 JUNIO", "no", "licitacion X")
 
 
 def test_sync_marker_paths_reports_conflicts_without_updating(tmp_path: Path) -> None:
@@ -146,6 +152,7 @@ def test_sync_marker_paths_reports_conflicts_without_updating(tmp_path: Path) ->
     (folder_multi / "44.llangon").write_text("", encoding="utf-8")
     (folder_multi / "55.llangon").write_text("", encoding="utf-8")
     conn = make_conn()
+    ensure_monitor_schema(conn)
     conn.execute("INSERT INTO licitaciones (id, expediente, ruta_carpeta, updated_at) VALUES (33, 'EXP-33', '', '')")
     conn.execute("INSERT INTO licitaciones (id, expediente, ruta_carpeta, updated_at) VALUES (44, 'EXP-44', '', '')")
 
@@ -162,6 +169,14 @@ def test_sync_marker_paths_reports_conflicts_without_updating(tmp_path: Path) ->
         (33, "", 0),
         (44, "", 0),
     ]
+    event_results = conn.execute(
+        "SELECT result, reason FROM licitacion_path_reconciliation_events ORDER BY id"
+    ).fetchall()
+    assert {row["result"] for row in event_results} == {"conflict"}
+    assert {row["reason"] for row in event_results} == {
+        "duplicate_licitacion_marker",
+        "folder_multiple_id_markers",
+    }
 
 
 def test_marker_status_is_derived_from_existing_files(tmp_path: Path) -> None:

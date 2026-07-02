@@ -447,6 +447,11 @@ except ImportError:
     from db_migrations import enable_foreign_keys, run_migrations
 
 try:
+    from .document_tree import build_document_tree_payload
+except ImportError:
+    from document_tree import build_document_tree_payload
+
+try:
     from .seguimiento_markers import (
         create_follow_marker_for_licitacion,
         create_id_marker_for_licitacion,
@@ -2389,6 +2394,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_get_ai_summary(int(licitacion_id))
+        elif path.startswith("/api/licitaciones/") and path.endswith("/document-tree"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/document-tree").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_get_document_tree(int(licitacion_id))
         elif path.startswith("/api/licitaciones/") and path.endswith("/actuaciones"):
             licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/actuaciones").strip("/")
             if not licitacion_id.isdigit():
@@ -4052,6 +4063,20 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 return
             items = list_licitacion_actuaciones(conn, licitacion_id, current=current)
         self.send_json({"items": items})
+
+    def api_get_document_tree(self, licitacion_id: int) -> None:
+        try:
+            with db_session() as conn:
+                ensure_monitor_schema(conn)
+                payload = build_document_tree_payload(conn, licitacion_id)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            return
+        except Exception as exc:
+            print(f"No se pudo construir arbol documental de licitacion {licitacion_id}: {exc}", file=sys.stderr)
+            self.send_json({"error": "No se pudo consultar la documentacion del expediente."}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(payload)
 
     def api_create_licitacion_marker(self, licitacion_id: int, *, marker_type: str) -> None:
         if not self.require_admin():

@@ -21,6 +21,7 @@ from .repository import (
     TASK_TYPE_AVISO_VENCIMIENTO_3D,
     TASK_TYPE_AVISO_VENCIMIENTO_7D,
     TASK_TYPE_AVISO_VENCIMIENTO_HOY,
+    TASK_TYPE_FILE_INVENTORY,
     TASK_TYPE_LICITACIONES,
     TASK_TYPE_MONITOR_LICITACIONES,
     TASK_TYPE_RESUMEN_AGENDA,
@@ -184,6 +185,13 @@ def env_bool(name: str, default: bool = False) -> bool:
     return clean_text(raw).lower() in {"1", "true", "yes", "on", "si", "sí"}
 
 
+def env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, str(default)) or default))
+    except (TypeError, ValueError):
+        return default
+
+
 def active_monitor_automation_schedules() -> dict[str, dict[str, object]]:
     schedules: dict[str, dict[str, object]] = {}
     if env_bool("MONITOR_AGENDA_PENDING_DAILY_ENABLED", True):
@@ -225,7 +233,10 @@ def mode_steps(mode: str) -> set[str]:
     if mode == "repair-routes":
         return {"repair"}
     if mode == "inventory":
-        return {"inventory"}
+        steps = {"inventory"}
+        if env_bool("LLANGON_FILE_INVENTORY_RECONCILE_PATHS", True):
+            steps.add("repair")
+        return steps
     return {"repair", "follow", "platforms", "email"}
 
 
@@ -368,11 +379,14 @@ def inventory_files(
     dry_run: bool,
     timestamp: str,
     warnings: list[MonitorIssue],
+    *,
+    max_files: int = 1000,
+    max_depth: int = 8,
 ) -> list[dict[str, object]]:
     markers, _rows = existing_markers(conn, scan_result, warnings)
     discovered: list[dict[str, object]] = []
     for marker in markers:
-        files = scan_inventory_files(marker)
+        files = scan_inventory_files(marker, max_files=max_files, max_depth=max_depth)
         discovered.extend(item.to_dict() for item in files)
         if dry_run:
             continue
@@ -549,6 +563,11 @@ def run_monitor(
             "document_summaries": [],
             "conflicts": [issue.to_dict() for issue in scan_result.conflicts],
             "warnings": [],
+            "task_details": {
+                "inventory_max_files_per_folder": env_int("LLANGON_FILE_INVENTORY_MAX_FILES_PER_RUN", 1000),
+                "inventory_max_depth": env_int("LLANGON_FILE_INVENTORY_MAX_DEPTH", 8),
+                "inventory_reconcile_paths": env_bool("LLANGON_FILE_INVENTORY_RECONCILE_PATHS", True),
+            },
         }
 
         steps = mode_steps(clean_mode)
@@ -584,7 +603,22 @@ def run_monitor(
             report["emails_sent_count"] = email_result.get("emails_sent_count", 0)
             report["email_drafts"] = email_result.get("drafts", [])[:20]
         if "inventory" in steps:
-            inventory = inventory_files(conn, scan_result, effective_dry_run, timestamp, warnings)
+            max_files = env_int("LLANGON_FILE_INVENTORY_MAX_FILES_PER_RUN", 1000)
+            max_depth = env_int("LLANGON_FILE_INVENTORY_MAX_DEPTH", 8)
+            report["task_details"] = {
+                **dict(report.get("task_details") or {}),
+                "inventory_max_files_per_folder": max_files,
+                "inventory_max_depth": max_depth,
+            }
+            inventory = inventory_files(
+                conn,
+                scan_result,
+                effective_dry_run,
+                timestamp,
+                warnings,
+                max_files=max_files,
+                max_depth=max_depth,
+            )
             report["inventory_files"] = inventory[:200]
             report["inventory_files_count"] = len(inventory)
             report["relevant_files_count"] = sum(

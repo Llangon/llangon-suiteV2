@@ -37,7 +37,7 @@ from webapp.infonalia_webapp.ai.postprocess import postprocess_summary
 from webapp.infonalia_webapp.ai.queue import active_job, create_job, ensure_ai_schema, latest_job, latest_summary, save_summary, update_job
 from webapp.infonalia_webapp.ai.rate_limit import check_rate_limit
 from webapp.infonalia_webapp.ai.schemas import parse_summary_json, summary_quality_check
-from webapp.infonalia_webapp.ai.service import cancel_ai_job, delete_ai_summary, dismiss_ai_job, get_ai_queue_payload, mark_stale_ai_jobs, process_ai_job, request_ai_analysis
+from webapp.infonalia_webapp.ai.service import cancel_ai_job, delete_ai_summary, dismiss_ai_job, get_ai_queue_payload, get_ai_summary_payload, mark_stale_ai_jobs, process_ai_job, request_ai_analysis
 from webapp.infonalia_webapp.ai.worker import mark_stale_jobs, process_one_job
 from webapp.infonalia_webapp.ai.worker_launcher import start_ai_worker_for_job
 from webapp.infonalia_webapp.ai.workspace import prepare_ai_workspace
@@ -2178,6 +2178,40 @@ def test_ai_summary_api_without_config_returns_controlled_state(tmp_path: Path, 
         assert status == HTTPStatus.OK
         assert payload["enabled"] is False
         assert payload["selected_documents"]
+
+
+def test_ai_summary_payload_falls_back_to_saved_summary_when_current_hash_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    monkeypatch.setenv("AI_ANALYSIS_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_ENABLED", "false")
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    _write_pdf(folder / "PCAP.pdf", b"%PDF-1.4\nversion inicial\n")
+    conn = _conn()
+    try:
+        _insert_licitacion(conn, folder)
+        save_summary(
+            conn,
+            licitacion_id=1,
+            document_hash="hash-anterior",
+            model="gemini-test",
+            summary=_useful_summary_payload("Resumen guardado visible."),
+            text="Resumen guardado visible.",
+            job_id=1,
+            provider="gemini",
+            timestamp="2026-07-01T10:00:00",
+        )
+        _write_pdf(folder / "Anexo nuevo.pdf", b"%PDF-1.4\nnuevo\n")
+
+        payload = get_ai_summary_payload(conn, 1)
+    finally:
+        conn.close()
+
+    assert payload["has_summary"] is True
+    assert payload["summary"]["summary_text"] == "Resumen guardado visible."
+    assert payload["document_hash"] != "hash-anterior"
 
 
 def test_ai_generate_api_with_disabled_gemini_creates_disabled_job(

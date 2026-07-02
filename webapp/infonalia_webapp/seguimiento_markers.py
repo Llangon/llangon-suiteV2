@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -406,6 +407,48 @@ def _update_licitacion_marker_cache(
     )
 
 
+def _reconciliation_events_table_exists(conn: sqlite3.Connection) -> bool:
+    return bool(
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'licitacion_path_reconciliation_events'"
+        ).fetchone()
+    )
+
+
+def _record_path_reconciliation_event(
+    conn: sqlite3.Connection,
+    *,
+    licitacion_id: int | None,
+    timestamp: str,
+    old_path: str = "",
+    new_path: str = "",
+    marker_path: str = "",
+    result: str,
+    reason: str = "",
+    details: dict[str, object] | None = None,
+) -> None:
+    if not _reconciliation_events_table_exists(conn):
+        return
+    conn.execute(
+        """
+        INSERT INTO licitacion_path_reconciliation_events (
+            licitacion_id, created_at, old_path, new_path, marker_path, result, reason, details_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            licitacion_id,
+            timestamp,
+            old_path,
+            new_path,
+            marker_path,
+            result,
+            reason,
+            json.dumps(details or {}, ensure_ascii=False, sort_keys=True),
+        ),
+    )
+
+
 def sync_marker_paths(
     conn: sqlite3.Connection,
     dropbox_root: Path | str,
@@ -433,21 +476,67 @@ def sync_marker_paths(
     conflicts: list[dict[str, object]] = []
     warnings: list[dict[str, object]] = []
     for folder in sorted(folder_conflict_paths):
+        items = by_folder[folder]
+        ids = sorted({int(item["licitacion_id"]) for item in items})
         conflicts.append(
             {
                 "type": "folder_multiple_id_markers",
                 "folder_path": folder,
-                "ids": sorted({int(item["licitacion_id"]) for item in by_folder[folder]}),
+                "ids": ids,
             }
         )
+        for item in items:
+            warning = "Conflicto de marcadores: se encontraron varios identificadores en la misma carpeta."
+            if conn.execute("SELECT 1 FROM licitaciones WHERE id = ?", (int(item["licitacion_id"]),)).fetchone():
+                _update_licitacion_marker_cache(
+                    conn,
+                    int(item["licitacion_id"]),
+                    ruta_carpeta=None,
+                    seguimiento_activo=False,
+                    marker_path=str(item["marker_path"]),
+                    warning=warning,
+                    timestamp=timestamp,
+                )
+            _record_path_reconciliation_event(
+                conn,
+                licitacion_id=int(item["licitacion_id"]),
+                timestamp=timestamp,
+                marker_path=str(item["marker_path"]),
+                result="conflict",
+                reason="folder_multiple_id_markers",
+                details={"folder_path": folder, "ids": ids},
+            )
     for licitacion_id in sorted(duplicate_ids):
+        items = by_id[licitacion_id]
+        folders = sorted({str(item["folder_path"]) for item in items})
         conflicts.append(
             {
                 "type": "duplicate_licitacion_marker",
                 "licitacion_id": licitacion_id,
-                "folders": sorted({str(item["folder_path"]) for item in by_id[licitacion_id]}),
+                "folders": folders,
             }
         )
+        warning = "Conflicto de marcadores: se encontraron varias carpetas posibles para esta licitación."
+        for item in items:
+            if conn.execute("SELECT 1 FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone():
+                _update_licitacion_marker_cache(
+                    conn,
+                    licitacion_id,
+                    ruta_carpeta=None,
+                    seguimiento_activo=False,
+                    marker_path=str(item["marker_path"]),
+                    warning=warning,
+                    timestamp=timestamp,
+                )
+            _record_path_reconciliation_event(
+                conn,
+                licitacion_id=licitacion_id,
+                timestamp=timestamp,
+                marker_path=str(item["marker_path"]),
+                result="conflict",
+                reason="duplicate_licitacion_marker",
+                details={"folders": folders},
+            )
 
     updated = 0
     following = 0
@@ -465,6 +554,15 @@ def sync_marker_paths(
                     "folder_path": folder_text,
                 }
             )
+            _record_path_reconciliation_event(
+                conn,
+                licitacion_id=licitacion_id,
+                timestamp=timestamp,
+                marker_path=str(record["marker_path"]),
+                result="missing_licitacion",
+                reason="marker_without_database_row",
+                details={"folder_path": folder_text},
+            )
             continue
         normalized_folder = normalize_folder_path(Path(record["folder_path"])) if normalize_folder_path else folder_text
         old_folder = clean_text(row["ruta_carpeta"])
@@ -481,12 +579,64 @@ def sync_marker_paths(
         )
         updated += 1 if should_update_path else 0
         following += 1 if record["follow_marker_exists"] else 0
+        _record_path_reconciliation_event(
+            conn,
+            licitacion_id=licitacion_id,
+            timestamp=timestamp,
+            old_path=old_folder,
+            new_path=normalized_folder,
+            marker_path=str(record["marker_path"]),
+            result="updated" if should_update_path else "unchanged",
+            reason="unique_marker_found",
+            details={"follow_marker_exists": bool(record["follow_marker_exists"])},
+        )
+
+    missing_without_marker = 0
+    rows_without_marker = conn.execute("SELECT id, ruta_carpeta FROM licitaciones").fetchall()
+    for row in rows_without_marker:
+        licitacion_id = int(row["id"])
+        if licitacion_id in by_id:
+            continue
+        old_folder = clean_text(row["ruta_carpeta"])
+        if not old_folder:
+            continue
+        resolved = resolve_marker_folder(row, Path(dropbox_root))
+        if resolved is not None and resolved.exists() and resolved.is_dir():
+            continue
+        missing_without_marker += 1
+        warning = "Carpeta no encontrada y sin marcador localizable."
+        _update_licitacion_marker_cache(
+            conn,
+            licitacion_id,
+            ruta_carpeta=None,
+            seguimiento_activo=False,
+            marker_path="",
+            warning=warning,
+            timestamp=timestamp,
+        )
+        _record_path_reconciliation_event(
+            conn,
+            licitacion_id=licitacion_id,
+            timestamp=timestamp,
+            old_path=old_folder,
+            result="not_found",
+            reason="folder_missing_without_marker",
+            details={"dropbox_root": str(dropbox_root)},
+        )
+        warnings.append(
+            {
+                "type": "folder_missing_without_marker",
+                "licitacion_id": licitacion_id,
+                "folder_path": old_folder,
+            }
+        )
 
     return {
         "ok": True,
         "found": len(marker_records),
         "updated": updated,
         "following": following,
+        "missing_without_marker": missing_without_marker,
         "conflicts": conflicts,
         "warnings": warnings,
         "year_roots": [str(path) for path in iter_monitor_year_roots(dropbox_root, min_year, max_year)],
