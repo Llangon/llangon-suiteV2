@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import getpass
 import json
 import os
@@ -49,9 +50,16 @@ EXCLUDED_ROOT_DIR_NAMES = {
     "logs",
     "runtime",
 }
+EXCLUDED_DIR_PREFIXES = {
+    ".pytest_tmp",
+}
 EXCLUDED_FILE_SUFFIXES = {".pyc"}
 EXCLUDED_FILE_NAMES = {
     PRIVATE_BACKUP_MARKER,
+}
+EXCLUDED_ROOT_FILE_PATTERNS = {
+    "pytest_*.txt",
+    "*_output.txt",
 }
 MONTH_NAMES_ES = [
     "ENERO",
@@ -188,10 +196,14 @@ def should_exclude(path: Path, project_root: Path, config: FullBackupConfig) -> 
     parts = set(rel.parts)
     if config.exclude_rebuildable and parts & EXCLUDED_DIR_NAMES:
         return True, "rebuildable"
+    if config.exclude_rebuildable and any(part.startswith(prefix) for part in rel.parts for prefix in EXCLUDED_DIR_PREFIXES):
+        return True, "test_temporary"
     if rel.parts and rel.parts[0] in EXCLUDED_ROOT_DIR_NAMES:
         return True, "runtime_or_local"
     if path.is_file() and path.suffix.lower() in EXCLUDED_FILE_SUFFIXES:
         return True, "compiled"
+    if path.is_file() and len(rel.parts) == 1 and any(fnmatch.fnmatch(path.name, pattern) for pattern in EXCLUDED_ROOT_FILE_PATTERNS):
+        return True, "test_temporary"
     if path.name in EXCLUDED_FILE_NAMES:
         return True, "backup_marker"
     if rel.as_posix() == "webapp/infonalia_webapp/data/infonalia.db":
@@ -466,12 +478,23 @@ def cleanup_audit(project_root: Path = PROJECT_ROOT) -> list[dict[str, object]]:
     names = {".pytest_cache", "__pycache__", ".mypy_cache", ".ruff_cache"}
     prefixes = (".pytest_tmp",)
     for path in project_root.rglob("*"):
-        if path.name in names or any(path.name.startswith(prefix) for prefix in prefixes):
+        rel = path.relative_to(project_root)
+        if len(rel.parts) > 1 and (
+            rel.parts[0] in EXCLUDED_DIR_NAMES
+            or rel.parts[0] in EXCLUDED_ROOT_DIR_NAMES
+            or any(rel.parts[0].startswith(prefix) for prefix in prefixes)
+        ):
+            continue
+        is_temp_file = path.is_file() and (
+            path.suffix.lower() in EXCLUDED_FILE_SUFFIXES
+            or (len(rel.parts) == 1 and any(fnmatch.fnmatch(path.name, pattern) for pattern in EXCLUDED_ROOT_FILE_PATTERNS))
+        )
+        if path.name in names or path.name in EXCLUDED_DIR_NAMES or any(path.name.startswith(prefix) for prefix in prefixes) or is_temp_file:
             try:
                 size = sum(item.stat().st_size for item in path.rglob("*") if item.is_file()) if path.is_dir() else path.stat().st_size
             except OSError:
                 size = 0
-            candidates.append({"path": str(path), "is_dir": path.is_dir(), "size_bytes": size})
+            candidates.append({"path": str(path), "is_dir": path.is_dir(), "size_bytes": size, "will_delete": False})
     return candidates
 
 
@@ -544,6 +567,8 @@ def create_full_backup(
             warnings=warnings,
             errors=[],
         )
+        if verbose:
+            print(json.dumps(manifest, ensure_ascii=False, indent=2, default=str))
         return FullBackupResult(status="dry-run", manifest=manifest, zip_path=zip_path, manifest_path=manifest_path)
 
     destination_dir.mkdir(parents=True, exist_ok=True)
@@ -681,6 +706,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cleanup_audit:
         items = cleanup_audit(PROJECT_ROOT)
         print(json.dumps(items, ensure_ascii=False, indent=2, default=str))
+        print("No se ha borrado nada.")
         return 0
     if not args.once:
         parser.print_help()

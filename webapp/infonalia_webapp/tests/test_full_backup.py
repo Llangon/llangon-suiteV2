@@ -15,6 +15,7 @@ from webapp.infonalia_webapp.full_backup import (
     RESTORE_GUIDE_NAME,
     RESTORE_SCRIPT_NAME,
     apply_full_backup_retention,
+    cleanup_audit,
     create_full_backup,
     validate_backup_root,
     verify_backup_zip,
@@ -53,6 +54,27 @@ def make_project(root: Path, *, include_env: bool = True) -> Path:
     (project / ".pytest_cache" / "cache.txt").write_text("cache\n", encoding="utf-8")
     (app_dir / "__pycache__").mkdir()
     (app_dir / "__pycache__" / "mod.pyc").write_bytes(b"pyc")
+    for name in (
+        ".pytest_tmp",
+        ".pytest_tmp_ai_inline_all",
+        ".pytest_tmp_ai_inline_pdf",
+        ".pytest_tmp_ai_json_all",
+        ".pytest_tmp_ai_migration_full",
+        ".pytest_tmp_codex_full",
+        ".pytest_tmp_monitor_final",
+        ".pytest_tmp_public_web_full",
+    ):
+        (project / name).mkdir()
+        (project / name / "temporary.txt").write_text("temporal\n", encoding="utf-8")
+    for name in (
+        "pytest_clean_output.txt",
+        "pytest_errors.txt",
+        "pytest_errors_2.txt",
+        "pytest_errors_3.txt",
+        "pytest_full_output.txt",
+        "custom_output.txt",
+    ):
+        (project / name).write_text("salida temporal de pruebas\n", encoding="utf-8")
     return project
 
 
@@ -121,6 +143,38 @@ def test_rebuildable_directories_are_excluded(tmp_path: Path) -> None:
     assert all(".venv/" not in name for name in names)
     assert all("__pycache__/" not in name for name in names)
     assert all(".pytest_cache/" not in name for name in names)
+    assert all(".pytest_tmp" not in name for name in names)
+    assert all(not Path(name).name.startswith("pytest_") for name in names)
+    assert all(not Path(name).name.endswith("_output.txt") for name in names)
+    assert result.manifest["exclusions_applied"]["test_temporary"] >= 1
+    assert result.manifest["exclusions_applied"]["rebuildable"] >= 1
+
+
+def test_dry_run_reports_test_temporary_exclusions(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+
+    result = create_full_backup(
+        config=config_for(project, tmp_path / "backups"),
+        now=datetime(2026, 7, 2, 3, 30),
+        dry_run=True,
+    )
+
+    assert result.status == "dry-run"
+    assert result.manifest["exclusions_applied"]["test_temporary"] >= 1
+    assert result.manifest["exclusions_applied"]["sqlite_replaced_by_safe_copy"] == 1
+
+
+def test_cleanup_audit_lists_temporaries_without_deleting(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+
+    items = cleanup_audit(project)
+
+    paths = {Path(str(item["path"])).name for item in items}
+    assert ".pytest_tmp_ai_inline_all" in paths
+    assert "pytest_errors.txt" in paths
+    assert all(item["will_delete"] is False for item in items)
+    assert (project / ".pytest_tmp_ai_inline_all").exists()
+    assert (project / "pytest_errors.txt").exists()
 
 
 def test_backup_root_is_required_and_not_shared_by_default(tmp_path: Path) -> None:
