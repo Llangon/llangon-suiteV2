@@ -4,7 +4,8 @@ $ErrorActionPreference = "Stop"
 $TaskNames = @(
     "LlangonSuite-Web",
     "LlangonSuite-Scheduler",
-    "LlangonSuite-Backup"
+    "LlangonSuite-Backup",
+    "LlangonSuite-AgendaWake"
 )
 
 foreach ($TaskName in $TaskNames) {
@@ -19,4 +20,3 @@ foreach ($TaskName in $TaskNames) {
 }
 
 Write-Host "No se han borrado datos, logs ni copias de seguridad."
-

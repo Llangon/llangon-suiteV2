@@ -30,6 +30,11 @@ LLANGON_RUNTIME_ROOT=
 LLANGON_SQLITE_BACKUP_DIR=
 LLANGON_SQLITE_BACKUP_RETENTION=30
 MONITOR_SCHEDULER_POLL_MINUTES=5
+LLANGON_AGENDA_WAKE_ENABLED=0
+LLANGON_AGENDA_WAKE_TIME=06:00
+LLANGON_AGENDA_WAKE_AUTO_SLEEP=1
+LLANGON_AGENDA_WAKE_SKIP_SLEEP_IF_USER_ACTIVE=1
+LLANGON_AGENDA_WAKE_MIN_IDLE_SECONDS=120
 ```
 
 Si `LLANGON_RUNTIME_ROOT` queda vacia, se usa:
@@ -50,6 +55,8 @@ scripts/windows/
 | --- | --- |
 | `start_web_production.ps1` | Arranca la web local con logs. |
 | `run_scheduler_once.ps1` | Ejecuta el scheduler una vez y termina. |
+| `run_agenda_wake_once.ps1` | Ejecuta la Agenda programada y suspende si es seguro. |
+| `suspend_windows.ps1` | Solicita suspension normal de Windows con comprobacion de usuario activo. |
 | `run_backup_once.ps1` | Crea una copia SQLite una vez y termina. |
 | `install_local_deployment.ps1` | Registra las tareas programadas. |
 | `status_local_deployment.ps1` | Comprueba tareas, logs y healthcheck. |
@@ -74,8 +81,11 @@ Esto crea o actualiza estas tareas:
 - `LlangonSuite-Web`: al iniciar sesion.
 - `LlangonSuite-Scheduler`: cada pocos minutos, sin solapes.
 - `LlangonSuite-Backup`: diariamente a las 03:30.
+- `LlangonSuite-AgendaWake`: laborables a las 06:00, con despertar del equipo activado.
 
 El instalador es idempotente: se puede ejecutar de nuevo para actualizar las tareas.
+
+`LlangonSuite-AgendaWake` queda instalada pero desactivada por defecto si `LLANGON_AGENDA_WAKE_ENABLED` no vale `1`. Esto evita que un equipo empiece a despertar y suspenderse sin activacion consciente.
 
 ## Comprobacion
 
@@ -176,7 +186,7 @@ LLANGON_FILE_INVENTORY_POLL_MINUTES=60
 LLANGON_DROPBOX_BASE_PATH=C:\Users\LLangon03\Dropbox\00000 LLANGON
 ```
 
-Las tareas de correo usan la configuracion IMAP `LLANGON_ACTIONS_IMAP_*`. El importador de Infonalia lee la etiqueta IMAP `LLANGON_INFONALIA`, busca solo no leidos con `UID SEARCH UNSEEN` y decide la importacion por la estructura parseada del cuerpo. No envia remitente, asunto, acentos ni `SINCE` a `IMAP SEARCH`. Las ordenes tecnicas solo aceptan asuntos que empiezan por `LLANGON_CMD`.
+Las tareas de correo usan la configuracion IMAP `LLANGON_ACTIONS_IMAP_*`. El importador de Infonalia lee la etiqueta IMAP `LLANGON_INFONALIA`, busca solo no leidos con `UID SEARCH UNSEEN` y decide la importacion por la estructura parseada del cuerpo. No envia remitente, asunto, acentos ni `SINCE` a `IMAP SEARCH`. Para completar tipo de contrato y hora limite reutiliza el enriquecimiento PDF de la importacion manual; si no encuentra `pdftotext.exe`, revisar `INFONALIA_PDFTOTEXT`. Las ordenes tecnicas solo aceptan asuntos que empiezan por `LLANGON_CMD`.
 
 El inventario usa `LLANGON_DROPBOX_BASE_PATH` como raiz principal. `INFONALIA_DROPBOX_ROOT` queda como fallback historico si la variable principal no esta configurada. Si la ruta no existe, el scheduler registra el error de inventario y continua con el resto de trabajos.
 
@@ -187,6 +197,95 @@ El diagnostico local muestra tambien el estado de esos trabajos:
 ```powershell
 python -m webapp.infonalia_webapp.monitor.scheduler --status
 ```
+
+## Agenda Wake
+
+`LlangonSuite-AgendaWake` es una tarea programada independiente del scheduler general. Su objetivo es despertar Windows a las 06:00, ejecutar la tarea de negocio existente `agenda_pendientes_diaria` y volver a suspender el equipo solo si termina correctamente y no hay usuario activo.
+
+La tarea real de Agenda detectada en la suite es:
+
+```text
+agenda_pendientes_diaria
+```
+
+La agenda semanal existe como compatibilidad historica, pero esta marcada como inactiva/manual. Por eso la tarea Windows de despertar se aplica a `agenda_pendientes_diaria`.
+
+Importante: `LlangonSuite-Scheduler` no suspende el equipo tras sus pasadas normales de cada pocos minutos. La suspension pertenece solo a `LlangonSuite-AgendaWake`.
+
+Para activar Agenda Wake, configurar en `webapp/infonalia_webapp/.env` o en variables del proceso antes de instalar:
+
+```text
+LLANGON_AGENDA_WAKE_ENABLED=1
+LLANGON_AGENDA_WAKE_TIME=06:00
+LLANGON_AGENDA_WAKE_AUTO_SLEEP=1
+LLANGON_AGENDA_WAKE_SKIP_SLEEP_IF_USER_ACTIVE=1
+LLANGON_AGENDA_WAKE_MIN_IDLE_SECONDS=120
+```
+
+Despues, reinstalar tareas:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\install_local_deployment.ps1
+```
+
+La tarea queda configurada con `WakeToRun`, equivalente a "Activar el equipo para ejecutar esta tarea". Windows solo despertara si la BIOS/UEFI, energia y permisos de Windows permiten temporizadores de activacion.
+
+El script `run_agenda_wake_once.ps1` fuerza esa pasada a usar solo Agenda pendiente:
+
+```text
+MONITOR_AGENDA_PENDING_DAILY_ENABLED=1
+LLANGON_INFONALIA_IMPORT_ENABLED=0
+LLANGON_EMAIL_ACTIONS_ENABLED=0
+LLANGON_FILE_INVENTORY_ENABLED=0
+MONITOR_LICITACIONES_SCHEDULE_ENABLED=0
+```
+
+Asi no se mezclan importador Infonalia, procesamiento de correo, inventario ni monitor de licitaciones con esta tarea especial.
+
+Si Agenda falla, se registra el error y no se suspende el equipo. Si Agenda termina correctamente, espera unos segundos y llama a `suspend_windows.ps1`.
+
+La suspension usa PowerShell/C# con `powrprof.dll` y `SetSuspendState(false, false, false)`, que solicita suspension normal, no apagado, reinicio ni hibernacion. Antes de suspender, si `LLANGON_AGENDA_WAKE_SKIP_SLEEP_IF_USER_ACTIVE=1`, comprueba inactividad de teclado/raton mediante `GetLastInputInfo`. Si el usuario esta activo o no se puede comprobar de forma segura, escribe:
+
+```text
+Suspension omitida: usuario activo.
+```
+
+o el motivo equivalente en:
+
+```text
+runtime/logs/agenda_wake.log
+```
+
+Comprobar estado:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\status_local_deployment.ps1
+```
+
+Debe mostrar:
+
+```text
+LlangonSuite-AgendaWake
+Wake enabled
+Auto suspension
+runtime/logs/agenda_wake.log
+```
+
+Si Windows no despierta:
+
+- revisar que `LLANGON_AGENDA_WAKE_ENABLED=1` y se ha reinstalado la tarea;
+- revisar en Programador de tareas que `LlangonSuite-AgendaWake` no esta deshabilitada;
+- revisar que la tarea tiene `WakeToRun`;
+- revisar Opciones de energia > Permitir temporizadores de activacion;
+- revisar si el equipo estaba hibernado o apagado, no suspendido.
+
+Si no vuelve a suspension:
+
+- revisar `runtime/logs/agenda_wake.log`;
+- comprobar si Agenda fallo;
+- comprobar si el log indica usuario activo;
+- revisar `LLANGON_AGENDA_WAKE_AUTO_SLEEP`;
+- revisar `LLANGON_AGENDA_WAKE_MIN_IDLE_SECONDS`.
 
 ## Desinstalacion
 

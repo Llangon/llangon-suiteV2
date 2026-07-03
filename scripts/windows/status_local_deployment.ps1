@@ -32,6 +32,36 @@ if (Test-Path -LiteralPath $EnvPath) {
 
 $HealthUrl = "http://127.0.0.1:$Port/api/health"
 
+function Get-EnvValue {
+    param([string]$Name, [string]$Default = "")
+    $Value = [Environment]::GetEnvironmentVariable($Name, "Process")
+    if ($Value) {
+        return $Value
+    }
+    if (Test-Path -LiteralPath $EnvPath) {
+        foreach ($Line in Get-Content -LiteralPath $EnvPath) {
+            $Trimmed = $Line.Trim()
+            if ($Trimmed -eq "" -or $Trimmed.StartsWith("#") -or -not $Trimmed.Contains("=")) {
+                continue
+            }
+            $Key, $RawValue = $Trimmed.Split("=", 2)
+            if ($Key.Trim() -eq $Name) {
+                return $RawValue.Trim().Trim('"').Trim("'")
+            }
+        }
+    }
+    return $Default
+}
+
+function Get-TaskWakeEnabled {
+    param([string]$TaskName)
+    $Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($null -eq $Task) {
+        return "no disponible"
+    }
+    return $Task.Settings.WakeToRun
+}
+
 function Test-WebHealth {
     try {
         $Response = Invoke-WebRequest -Uri $HealthUrl -UseBasicParsing -TimeoutSec 3
@@ -78,7 +108,8 @@ Write-Host ""
 $TaskNames = @(
     "LlangonSuite-Web",
     "LlangonSuite-Scheduler",
-    "LlangonSuite-Backup"
+    "LlangonSuite-Backup",
+    "LlangonSuite-AgendaWake"
 )
 
 foreach ($TaskName in $TaskNames) {
@@ -91,6 +122,18 @@ foreach ($TaskName in $TaskNames) {
         Write-Host "$TaskName : $($Task.State) | ultima ejecucion: $($Info.LastRunTime) | resultado: $($Info.LastTaskResult)"
     }
 }
+
+Write-Host ""
+$AgendaWakeLog = Join-Path $LogDir "agenda_wake.log"
+Write-Host "AgendaWake:"
+Write-Host "  Tarea instalada: $([bool](Get-ScheduledTask -TaskName 'LlangonSuite-AgendaWake' -ErrorAction SilentlyContinue))"
+Write-Host "  Wake enabled: $(Get-TaskWakeEnabled -TaskName 'LlangonSuite-AgendaWake')"
+Write-Host "  Habilitada por config: $(Get-EnvValue -Name 'LLANGON_AGENDA_WAKE_ENABLED' -Default '0')"
+Write-Host "  Hora configurada: $(Get-EnvValue -Name 'LLANGON_AGENDA_WAKE_TIME' -Default '06:00')"
+Write-Host "  Laborables solamente: $(Get-EnvValue -Name 'MONITOR_AGENDA_PENDING_DAILY_WEEKDAYS_ONLY' -Default '1')"
+Write-Host "  Auto suspension: $(Get-EnvValue -Name 'LLANGON_AGENDA_WAKE_AUTO_SLEEP' -Default '1')"
+Write-Host "  Omitir si usuario activo: $(Get-EnvValue -Name 'LLANGON_AGENDA_WAKE_SKIP_SLEEP_IF_USER_ACTIVE' -Default '1')"
+Write-Host "  Log: $AgendaWakeLog"
 
 Write-Host ""
 $Listeners = @(Get-WebListeners)

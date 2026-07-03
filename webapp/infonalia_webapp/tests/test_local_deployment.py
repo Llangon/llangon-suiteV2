@@ -98,6 +98,8 @@ def test_windows_deployment_scripts_are_relative_and_documented() -> None:
         "status_local_deployment.ps1",
         "start_web_production.ps1",
         "run_scheduler_once.ps1",
+        "run_agenda_wake_once.ps1",
+        "suspend_windows.ps1",
         "run_backup_once.ps1",
     }
     script_names = {path.name for path in scripts_root.glob("*.ps1")}
@@ -106,7 +108,10 @@ def test_windows_deployment_scripts_are_relative_and_documented() -> None:
     for script in expected:
         text = (scripts_root / script).read_text(encoding="utf-8")
         assert "C:\\Users\\LLangon03" not in text
-        assert "Resolve-Path (Join-Path $ScriptRoot" in text or script == "uninstall_local_deployment.ps1"
+        assert (
+            "Resolve-Path (Join-Path $ScriptRoot" in text
+            or script in {"uninstall_local_deployment.ps1", "suspend_windows.ps1"}
+        )
 
     start_web = (scripts_root / "start_web_production.ps1").read_text(encoding="utf-8")
     assert "Test-WebHealth" in start_web
@@ -118,9 +123,43 @@ def test_windows_deployment_scripts_are_relative_and_documented() -> None:
     assert "shell.Run(command, 0, True)" in hidden_runner
     assert "wscript.exe" in installer
     assert "run_powershell_hidden.vbs" in installer
+    assert "LlangonSuite-AgendaWake" in installer
+    assert "-WakeToRun $true" in installer
+    assert "LLANGON_AGENDA_WAKE_ENABLED" in installer
+    assert "MONITOR_AGENDA_PENDING_DAILY_WEEKDAYS_ONLY" in installer
+    assert "run_agenda_wake_once.ps1" in installer
+
+    scheduler_script = (scripts_root / "run_scheduler_once.ps1").read_text(encoding="utf-8")
+    assert "suspend_windows.ps1" not in scheduler_script
+    assert "SetSuspendState" not in scheduler_script
+
+    agenda_wake = (scripts_root / "run_agenda_wake_once.ps1").read_text(encoding="utf-8")
+    assert "agenda_wake.log" in agenda_wake
+    assert "agenda_pendientes_diaria" in agenda_wake
+    assert 'LLANGON_INFONALIA_IMPORT_ENABLED = "0"' in agenda_wake
+    assert 'LLANGON_EMAIL_ACTIONS_ENABLED = "0"' in agenda_wake
+    assert 'LLANGON_FILE_INVENTORY_ENABLED = "0"' in agenda_wake
+    assert 'MONITOR_LICITACIONES_SCHEDULE_ENABLED = "0"' in agenda_wake
+    assert "suspend_windows.ps1" in agenda_wake
+
+    suspend_script = (scripts_root / "suspend_windows.ps1").read_text(encoding="utf-8")
+    assert "GetLastInputInfo" in suspend_script
+    assert "SetSuspendState($false, $false, $false)" in suspend_script
+    assert "Suspension omitida: usuario activo" in suspend_script
+
+    status_script = (scripts_root / "status_local_deployment.ps1").read_text(encoding="utf-8")
+    assert "AgendaWake:" in status_script
+    assert "Wake enabled" in status_script
+    assert "agenda_wake.log" in status_script
+
+    uninstall_script = (scripts_root / "uninstall_local_deployment.ps1").read_text(encoding="utf-8")
+    assert "LlangonSuite-AgendaWake" in uninstall_script
 
     docs = PROJECT_ROOT / "docs" / "DESPLIEGUE_LOCAL_WINDOWS.md"
     assert docs.exists()
     doc_text = docs.read_text(encoding="utf-8")
     assert "LlangonSuite-Web" in doc_text
+    assert "LlangonSuite-AgendaWake" in doc_text
+    assert "agenda_pendientes_diaria" in doc_text
+    assert "LlangonSuite-Scheduler` no suspende" in doc_text
     assert "http://127.0.0.1:8787" in doc_text
