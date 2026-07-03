@@ -3,6 +3,7 @@ from __future__ import annotations
 import imaplib
 from email.headerregistry import Address
 from email.message import EmailMessage
+from pathlib import Path
 
 from webapp.infonalia_webapp.infonalia_mail_importer import (
     EXPECTED_FROM,
@@ -42,6 +43,36 @@ Presupuesto: 5000,00 EUR
 Plazo Presentación: 01/07/2026
 Ver el texto íntegro del anuncio: https://infonalia.example/anuncio/2
 Perfil del Contratante (Pliegos): https://www.juntadeandalucia.es/perfil/2
+"""
+
+
+def sample_html_split_body() -> str:
+    return """
+<html><body>
+Ref. Infonalia:<br>
+2026095120<br>
+Nº Expediente:<br>
+2026/C004/000002<br>
+Organismo:<br>
+JUNTA DE GOBIERNO DEL AYUNTAMIENTO DE NEDA (A CORUÑA)<br>
+Resumen del Objeto:<br>
+XXXVI Edición de la Fiesta del Pan de Neda, 2026<br>
+Provincia de Ejecución:<br>
+A Coruña<br>
+Presupuesto:<br>
+22.975,21 € Importe sin impuestos<br>
+Plazo Presentación: Hasta el próximo día<br>
+16/07/26<br>
+Ver el texto íntegro del anuncio:<br>
+www.infonalia.es/licitaciones0726/2026095120.pdf<br>
+Perfil del Contratante (Pliegos):<br>
+contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&idEvl=cw6vHqgjQnDI8aL3PRS10Q%3D%3D<br>
+Información extraída del<br>
+Plataforma de Contratación del Estado<br>
+del día<br>
+02/07/26<br>
+______________________________________________________________________________________________________________________<br>
+</body></html>
 """
 
 
@@ -186,6 +217,22 @@ def test_parser_falls_back_to_html_when_plain_is_empty() -> None:
     assert parsed["items"][1]["expediente"] == "EXP-002"
 
 
+def test_parser_accepts_html_values_split_across_lines() -> None:
+    raw = make_infonalia_message(plain="", html=sample_html_split_body(), message_id="<html-split@example.test>")
+
+    parsed = parse_infonalia_email(raw)
+
+    assert len(parsed["items"]) == 1
+    assert parsed["items"][0]["ref_infonalia"] == "2026095120"
+    assert parsed["items"][0]["expediente"] == "2026/C004/000002"
+    assert parsed["items"][0]["organismo"] == "JUNTA DE GOBIERNO DEL AYUNTAMIENTO DE NEDA (A CORUÑA)"
+    assert parsed["items"][0]["provincia_ejecucion"] == "A Coruña"
+    assert parsed["items"][0]["presupuesto"] == 22975.21
+    assert parsed["items"][0]["plazo_presentacion_fecha"] == "2026-07-16"
+    assert parsed["items"][0]["url_anuncio_infonalia"] == "https://www.infonalia.es/licitaciones0726/2026095120.pdf"
+    assert "contrataciondelestado.es" in parsed["items"][0]["url_perfil_contratante"]
+
+
 def test_candidate_validation_uses_real_sender_and_subject_with_optional_forwarder() -> None:
     parsed = parse_infonalia_email(make_infonalia_message(sender="otra@example.test"))
     valid, reason = is_expected_infonalia_message(parsed, fake_config())
@@ -256,6 +303,109 @@ def test_import_does_not_break_if_notification_sender_fails() -> None:
     assert result["notified"] == 0
     assert "SMTP no configurado" in result["notification_error"]
     assert licitaciones == 2
+
+
+def test_automatic_import_reuses_manual_pdf_enrichment_for_tipo_and_hora(monkeypatch) -> None:
+    app = load_app_module()
+    raw = make_infonalia_message(message_id="<pdf-enriched@example.test>")
+    parsed = parse_infonalia_email(raw)
+    calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(app, "find_pdftotext", lambda: Path("pdftotext.exe"))
+    monkeypatch.setattr(
+        app,
+        "enrich_from_infonalia_pdf",
+        lambda url, fecha: calls.append((url, fecha)) or {"tipo": "Suministro", "hora_limite": "14:00"},
+    )
+
+    with temporary_app_database(app):
+        result = import_parsed_email(
+            parsed,
+            raw_bytes=raw,
+            mailbox_user="info3llangon@gmail.com",
+            notify=False,
+        )
+        with app.db_session() as conn:
+            rows = conn.execute("SELECT expediente, tipo, hora_limite FROM licitaciones ORDER BY expediente").fetchall()
+
+    assert result["status"] == "imported"
+    assert result["imported"] == 2
+    assert result["pdf_warning_count"] == 0
+    assert len(calls) == 2
+    assert calls[0] == ("https://infonalia.example/anuncio/1", "2026-06-30")
+    assert rows[0]["tipo"] == "Suministro"
+    assert rows[0]["hora_limite"] == "14:00"
+
+
+def test_automatic_import_pdf_warning_does_not_break_basic_import(monkeypatch) -> None:
+    app = load_app_module()
+    raw = make_infonalia_message(message_id="<pdf-warning@example.test>")
+    parsed = parse_infonalia_email(raw)
+
+    monkeypatch.setattr(app, "find_pdftotext", lambda: Path("pdftotext.exe"))
+    monkeypatch.setattr(
+        app,
+        "enrich_from_infonalia_pdf",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("PDF no disponible")),
+    )
+
+    with temporary_app_database(app):
+        result = import_parsed_email(
+            parsed,
+            raw_bytes=raw,
+            mailbox_user="info3llangon@gmail.com",
+            notify=False,
+        )
+        with app.db_session() as conn:
+            licitaciones = conn.execute("SELECT COUNT(*) FROM licitaciones").fetchone()[0]
+
+    assert result["status"] == "imported"
+    assert result["imported"] == 2
+    assert result["errors"] == 0
+    assert result["pdf_warning_count"] == 2
+    assert "PDF no disponible" in result["pdf_warnings"][0]
+    assert licitaciones == 2
+
+
+def test_automatic_import_does_not_overwrite_existing_fields_with_empty_pdf(monkeypatch) -> None:
+    app = load_app_module()
+    raw = make_infonalia_message(message_id="<pdf-empty@example.test>")
+    parsed = parse_infonalia_email(raw)
+
+    monkeypatch.setattr(app, "find_pdftotext", lambda: Path("pdftotext.exe"))
+    monkeypatch.setattr(app, "enrich_from_infonalia_pdf", lambda *_args: {})
+
+    with temporary_app_database(app):
+        with app.db_session() as conn:
+            dia_id = app.get_or_create_dia(conn, "2026-06-05")
+            app.insert_payload(
+                conn,
+                {
+                    "fecha_infonalia": "2026-06-05",
+                    "expediente": "EXP-001",
+                    "objeto": "Anterior",
+                    "organismo": "AYUNTAMIENTO DE PRUEBA",
+                    "tipo": "Servicios",
+                    "hora_limite": "10:30",
+                    "estado": "Importada",
+                },
+                dia_id,
+            )
+        result = import_parsed_email(
+            parsed,
+            raw_bytes=raw,
+            mailbox_user="info3llangon@gmail.com",
+            notify=False,
+        )
+        with app.db_session() as conn:
+            row = conn.execute(
+                "SELECT tipo, hora_limite FROM licitaciones WHERE expediente = ?",
+                ("EXP-001",),
+            ).fetchone()
+
+    assert result["status"] == "imported"
+    assert row["tipo"] == "Servicios"
+    assert row["hora_limite"] == "10:30"
 
 
 def test_dry_run_from_parsed_email_does_not_import_or_notify() -> None:
@@ -488,4 +638,46 @@ def test_mailbox_reprocessing_unread_duplicate_does_not_duplicate_or_notify_agai
     assert second["duplicates"] >= 2
     assert second["ignored"] == 1
     assert second_fake.messages[b"2"]["seen"] is True
+    assert len(sent) == 1
+
+
+def test_mailbox_reprocessing_duplicate_can_complete_missing_pdf_fields(monkeypatch) -> None:
+    app = load_app_module()
+    raw = make_infonalia_message(message_id="<repeat-complete@example.test>")
+    sent: list[tuple[str, str]] = []
+
+    with temporary_app_database(app):
+        monkeypatch.setattr(app, "find_pdftotext", lambda: None)
+        first_fake = FakeIMAP({b"2": {"seen": False, "raw": raw}})
+        first = process_mailbox_once(
+            config=fake_config(),
+            imap_factory=lambda *_args, **_kwargs: first_fake,
+            notification_sender=lambda to, subject, body, html: sent.append((to, subject)) or ("2026-06-05T12:34:00", None),
+        )
+        with app.db_session() as conn:
+            before = conn.execute("SELECT tipo, hora_limite FROM licitaciones WHERE expediente = ?", ("EXP-001",)).fetchone()
+
+        monkeypatch.setattr(app, "find_pdftotext", lambda: Path("pdftotext.exe"))
+        monkeypatch.setattr(app, "enrich_from_infonalia_pdf", lambda *_args: {"tipo": "Suministro", "hora_limite": "14:00"})
+        second_fake = FakeIMAP({b"2": {"seen": False, "raw": raw}})
+        second = process_mailbox_once(
+            config=fake_config(),
+            imap_factory=lambda *_args, **_kwargs: second_fake,
+            notification_sender=lambda *_args: (_ for _ in ()).throw(AssertionError("no second notify")),
+        )
+        with app.db_session() as conn:
+            after = conn.execute("SELECT tipo, hora_limite FROM licitaciones WHERE expediente = ?", ("EXP-001",)).fetchone()
+            licitaciones = conn.execute("SELECT COUNT(*) FROM licitaciones").fetchone()[0]
+
+    assert first["imported"] == 2
+    assert before["tipo"] == ""
+    assert before["hora_limite"] == ""
+    assert second["imported"] == 0
+    assert second["duplicates"] >= 2
+    assert second["ignored"] == 1
+    assert second["enriched_updates"] == 2
+    assert second_fake.messages[b"2"]["seen"] is True
+    assert after["tipo"] == "Suministro"
+    assert after["hora_limite"] == "14:00"
+    assert licitaciones == 2
     assert len(sent) == 1

@@ -298,8 +298,23 @@ def parse_licitacion_blocks(text: str) -> list[dict[str, object]]:
                 else:
                     item[target_field] = clean_text(value)
                 continue
-            if current_field in {"resumen_objeto", "organismo"} and not re.search(r":\s*", line):
-                item[current_field] = clean_text(f"{item[current_field]} {line}")
+            if current_field:
+                continuation = clean_text(line)
+                if re.match(r"^[^:]{1,120}:\s*$", continuation):
+                    continue
+                existing_value = clean_text(item.get(current_field))
+                if current_field == "presupuesto":
+                    if item[current_field] is None:
+                        parsed_money = parse_money_value(continuation)
+                        if parsed_money is not None:
+                            item[current_field] = parsed_money
+                elif current_field in {"url_anuncio_infonalia", "url_perfil_contratante"}:
+                    if not existing_value:
+                        item[current_field] = normalize_url(continuation)
+                elif current_field in {"resumen_objeto", "organismo", "fuente_texto", "plazo_presentacion_texto"}:
+                    item[current_field] = clean_text(f"{existing_value} {continuation}")
+                elif not existing_value:
+                    item[current_field] = continuation
         item["plazo_presentacion_fecha"] = extraer_fecha_msg(clean_text(item["plazo_presentacion_texto"]))
         source_text = clean_text(item["fuente_texto"])
         item["fecha_fuente"] = parse_source_date(source_text)
@@ -421,6 +436,35 @@ def item_to_payload(item: dict[str, object], fecha_infonalia: str) -> dict[str, 
     }
 
 
+def enrich_payload_from_manual_pdf_flow(
+    payload: dict[str, object],
+    *,
+    app_module: Any,
+) -> tuple[dict[str, object], str]:
+    enriched_payload = dict(payload)
+    url = clean_text(enriched_payload.get("enlace_infonalia"))
+    if not url:
+        return enriched_payload, ""
+
+    pdftotext_path = app_module.find_pdftotext()
+    if not pdftotext_path:
+        return enriched_payload, "No se encontró pdftotext.exe; revisa INFONALIA_PDFTOTEXT."
+
+    try:
+        enriched = app_module.enrich_from_infonalia_pdf(url, clean_text(enriched_payload.get("fecha_limite")))
+    except Exception as exc:
+        LOGGER.warning("No se pudo enriquecer PDF Infonalia %s: %s", url, exc)
+        return enriched_payload, f"No se pudo enriquecer el PDF de Infonalia: {exc}"
+
+    if not enriched:
+        return enriched_payload, "No se pudo enriquecer el PDF de Infonalia."
+    if clean_text(enriched.get("tipo")):
+        enriched_payload["tipo"] = clean_text(enriched.get("tipo"))
+    if clean_text(enriched.get("hora_limite")):
+        enriched_payload["hora_limite"] = clean_text(enriched.get("hora_limite"))
+    return enriched_payload, ""
+
+
 def import_parsed_email(
     parsed: dict[str, object],
     *,
@@ -452,6 +496,9 @@ def import_parsed_email(
         "ignored": 0,
         "errors": 0,
         "notified": 0,
+        "enriched_updates": 0,
+        "pdf_warning_count": 0,
+        "pdf_warnings": [],
         "dia_id": None,
         "fecha_infonalia": fecha_infonalia,
     }
@@ -467,18 +514,35 @@ def import_parsed_email(
     timestamp = now_iso()
     with app.db_session() as conn:
         ensure_infonalia_email_import_schema(conn)
+        pdf_warnings: list[str] = []
         previous = existing_import_row(
             conn,
             message_id=clean_text(parsed.get("message_id")),
             body_hash=body_hash,
         )
         if previous:
+            dia_id = previous["infonalia_dia_id"] or app.get_or_create_dia(conn, fecha_infonalia)
+            enriched_updates = 0
+            for item in items:
+                payload = item_to_payload(item, fecha_infonalia)
+                payload, warning = enrich_payload_from_manual_pdf_flow(payload, app_module=app)
+                if warning:
+                    pdf_warnings.append(warning)
+                result = app.insert_payload(conn, payload, dia_id)
+                if result == "updated":
+                    enriched_updates += 1
+                    app.mark_dia_nuria_dirty(conn, dia_id)
+            if enriched_updates:
+                app.refresh_dia_estado(conn, dia_id)
             summary.update(
                 {
                     "status": "duplicate",
                     "duplicates": len(items),
-                    "dia_id": previous["infonalia_dia_id"],
+                    "dia_id": dia_id,
                     "notified": 0,
+                    "enriched_updates": enriched_updates,
+                    "pdf_warning_count": len(pdf_warnings),
+                    "pdf_warnings": pdf_warnings,
                     "message": "Correo ya importado anteriormente.",
                 }
             )
@@ -501,7 +565,7 @@ def import_parsed_email(
                     clean_text(parsed.get("subject")),
                     clean_text(parsed.get("received_at")),
                     body_hash,
-                    previous["infonalia_dia_id"],
+                    dia_id,
                     len(items),
                 ),
             )
@@ -511,6 +575,9 @@ def import_parsed_email(
         duplicates = 0
         for item in items:
             payload = item_to_payload(item, fecha_infonalia)
+            payload, warning = enrich_payload_from_manual_pdf_flow(payload, app_module=app)
+            if warning:
+                pdf_warnings.append(warning)
             result = app.insert_payload(conn, payload, dia_id)
             if result in {"inserted", "updated"}:
                 imported += 1
@@ -567,6 +634,8 @@ def import_parsed_email(
                 "dia_id": dia_id,
                 "notified": notified,
                 "notification_error": notification_error,
+                "pdf_warning_count": len(pdf_warnings),
+                "pdf_warnings": pdf_warnings,
             }
         )
         return summary
@@ -714,8 +783,10 @@ def process_mailbox_once(
                     summary["errors"] += 1
                     summary["last_error"] = str(exc)
                     continue
-                for key in ("parsed_items", "imported", "duplicates", "notified"):
+                for key in ("parsed_items", "imported", "duplicates", "notified", "enriched_updates", "pdf_warning_count"):
                     summary[key] = int(summary.get(key, 0) or 0) + int(result.get(key, 0) or 0)
+                if result.get("pdf_warnings"):
+                    summary["pdf_warnings"] = list(summary.get("pdf_warnings") or []) + list(result.get("pdf_warnings") or [])
                 if result.get("status") == "duplicate":
                     summary["ignored"] += 1
                 if result.get("errors"):
