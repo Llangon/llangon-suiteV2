@@ -137,7 +137,7 @@ Register-LlangonTask `
     -Name "LlangonSuite-Backup" `
     -ScriptPath $BackupScript `
     -Trigger $BackupTrigger `
-    -Description "Copia diaria de la base SQLite de Llangon Suite." `
+    -Description "Copia diaria SQLite y backup completo privado si esta activado." `
     -ExecutionTimeLimit (New-TimeSpan -Hours 1)
 
 Register-LlangonTask `

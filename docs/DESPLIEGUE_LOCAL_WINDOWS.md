@@ -29,6 +29,14 @@ Variables opcionales:
 LLANGON_RUNTIME_ROOT=
 LLANGON_SQLITE_BACKUP_DIR=
 LLANGON_SQLITE_BACKUP_RETENTION=30
+LLANGON_FULL_BACKUP_ENABLED=0
+LLANGON_FULL_BACKUP_ROOT=C:\Users\LLangon03\Dropbox\BACKUPS_LL_Suite
+LLANGON_FULL_BACKUP_RETENTION_DAILY=30
+LLANGON_FULL_BACKUP_RETENTION_MONTHLY=12
+LLANGON_FULL_BACKUP_INCLUDE_ENV=1
+LLANGON_FULL_BACKUP_INCLUDE_SECRETS=1
+LLANGON_FULL_BACKUP_INCLUDE_CODE=1
+LLANGON_FULL_BACKUP_EXCLUDE_REBUILDABLE=1
 MONITOR_SCHEDULER_POLL_MINUTES=5
 LLANGON_AGENDA_WAKE_ENABLED=0
 LLANGON_AGENDA_WAKE_TIME=06:00
@@ -57,7 +65,7 @@ scripts/windows/
 | `run_scheduler_once.ps1` | Ejecuta el scheduler una vez y termina. |
 | `run_agenda_wake_once.ps1` | Ejecuta la Agenda programada y suspende si es seguro. |
 | `suspend_windows.ps1` | Solicita suspension normal de Windows con comprobacion de usuario activo. |
-| `run_backup_once.ps1` | Crea una copia SQLite una vez y termina. |
+| `run_backup_once.ps1` | Crea copia SQLite local y, si esta activado, backup completo privado. |
 | `install_local_deployment.ps1` | Registra las tareas programadas. |
 | `status_local_deployment.ps1` | Comprueba tareas, logs y healthcheck. |
 | `uninstall_local_deployment.ps1` | Quita las tareas programadas sin borrar datos. |
@@ -163,6 +171,138 @@ Retencion por defecto:
 ```text
 30 copias
 ```
+
+## Backup completo privado
+
+La copia SQLite local protege frente a errores de base de datos, pero se queda en el equipo. Para poder restaurar la Suite si el PC se rompe existe un backup completo privado en ZIP.
+
+Se ejecuta con:
+
+```powershell
+python -m webapp.infonalia_webapp.full_backup --once --verbose
+```
+
+Y se puede probar sin crear ZIP ni copiar secretos con:
+
+```powershell
+python -m webapp.infonalia_webapp.full_backup --once --dry-run --verbose
+```
+
+La tarea `LlangonSuite-Backup` sigue haciendo primero la copia SQLite local. Si esa copia falla, no continúa. Si pasa correctamente, llama al backup completo. Por defecto el backup completo está desactivado; se activa con:
+
+```text
+LLANGON_FULL_BACKUP_ENABLED=1
+LLANGON_FULL_BACKUP_ROOT=C:\Users\LLangon03\Dropbox\BACKUPS_LL_Suite
+```
+
+La ruta debe apuntar al Dropbox privado. No debe apuntar a:
+
+```text
+C:\Users\LLangon03\Dropbox\00000 LLANGON
+```
+
+Esa carpeta puede estar compartida con otras personas. El backup completo contiene información sensible, incluido `.env` si `LLANGON_FULL_BACKUP_INCLUDE_ENV=1`.
+
+Estructura esperada:
+
+```text
+C:\Users\LLangon03\Dropbox\BACKUPS_LL_Suite\
+  2026\
+    07 JULIO\
+      2026-07-02_0330_LLANGON_SUITE_FULL_PRIVATE_BACKUP.zip
+      2026-07-02_0330_LLANGON_SUITE_FULL_PRIVATE_BACKUP_manifest.json
+```
+
+El ZIP incluye:
+
+- código fuente de la Suite;
+- `webapp/infonalia_webapp/data/infonalia.db`, obtenida mediante copia SQLite segura;
+- `webapp/infonalia_webapp/.env`, si está activado;
+- scripts Windows;
+- documentación;
+- tests y configuración;
+- herramientas Python y macros del proyecto;
+- `backup_manifest.json`;
+- `restore_from_backup.ps1`;
+- `RESTAURAR_LL_SUITE.md`.
+
+El ZIP excluye elementos reconstruibles o poco útiles para restaurar:
+
+- `.venv`;
+- `node_modules`;
+- `__pycache__`;
+- `.pytest_cache`;
+- `.mypy_cache`;
+- `.ruff_cache`;
+- `.git`;
+- `runtime`;
+- `logs`;
+- `.local_backups`;
+- `.local_runtime`;
+- ficheros `*.pyc`.
+
+No se borra nada del proyecto para hacer el backup. Esas carpetas solo se excluyen del ZIP.
+
+La base SQLite no se comprime directamente desde la base abierta. El proceso crea primero una copia segura con `sqlite3.Connection.backup()`, comprueba que responde a una consulta básica y mete esa copia consistente dentro del ZIP.
+
+El manifest externo y el manifest incluido en el ZIP registran:
+
+- fecha y hora;
+- equipo y usuario Windows;
+- ruta del proyecto;
+- ruta de backup;
+- commit Git y si había cambios sin commitear;
+- tamaño del ZIP;
+- base SQLite incluida;
+- si `.env` fue incluido;
+- exclusiones;
+- verificación;
+- versión Python;
+- errores y avisos.
+
+La verificación del ZIP exige que existan:
+
+- `.env`, si está activado;
+- `infonalia.db`;
+- `README.md`;
+- `restore_from_backup.ps1`;
+- `RESTAURAR_LL_SUITE.md`;
+- `backup_manifest.json`.
+
+Retención:
+
+```text
+LLANGON_FULL_BACKUP_RETENTION_DAILY=30
+LLANGON_FULL_BACKUP_RETENTION_MONTHLY=12
+```
+
+La retención solo elimina ZIPs antiguos y sus manifests dentro de `LLANGON_FULL_BACKUP_ROOT`. Nunca borra fuera de esa carpeta.
+
+Auditoría de temporales, sin borrar nada:
+
+```powershell
+python -m webapp.infonalia_webapp.full_backup --cleanup-audit --verbose
+```
+
+Restauración:
+
+1. Copiar el ZIP al equipo nuevo.
+2. Descomprimirlo.
+3. Ejecutar:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\restore_from_backup.ps1
+```
+
+El script pregunta una carpeta destino, no sobrescribe sin confirmación, copia la Suite, advierte de que `.env` contiene secretos, crea `.venv`, instala dependencias e indica cómo reinstalar tareas Windows y comprobar `/api/health`.
+
+Comprobar estado del backup completo:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\status_local_deployment.ps1
+```
+
+El estado muestra si está activado, ruta, último ZIP, fecha, tamaño, manifest y último error registrado en el manifest si existe.
 
 ## Scheduler
 

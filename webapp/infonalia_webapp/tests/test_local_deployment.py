@@ -133,6 +133,11 @@ def test_windows_deployment_scripts_are_relative_and_documented() -> None:
     assert "suspend_windows.ps1" not in scheduler_script
     assert "SetSuspendState" not in scheduler_script
 
+    backup_script = (scripts_root / "run_backup_once.ps1").read_text(encoding="utf-8")
+    assert "webapp.infonalia_webapp.backup_sqlite" in backup_script
+    assert "webapp.infonalia_webapp.full_backup --once" in backup_script
+    assert "Copia SQLite fallida. No se ejecuta backup completo." in backup_script
+
     agenda_wake = (scripts_root / "run_agenda_wake_once.ps1").read_text(encoding="utf-8")
     assert "agenda_wake.log" in agenda_wake
     assert "agenda_pendientes_diaria" in agenda_wake
@@ -151,6 +156,9 @@ def test_windows_deployment_scripts_are_relative_and_documented() -> None:
     assert "AgendaWake:" in status_script
     assert "Wake enabled" in status_script
     assert "agenda_wake.log" in status_script
+    assert "Backup completo privado activado" in status_script
+    assert "LLANGON_FULL_BACKUP_ROOT" in status_script
+    assert "LLANGON_SUITE_FULL_PRIVATE_BACKUP.zip" in status_script
 
     uninstall_script = (scripts_root / "uninstall_local_deployment.ps1").read_text(encoding="utf-8")
     assert "LlangonSuite-AgendaWake" in uninstall_script
@@ -162,4 +170,6 @@ def test_windows_deployment_scripts_are_relative_and_documented() -> None:
     assert "LlangonSuite-AgendaWake" in doc_text
     assert "agenda_pendientes_diaria" in doc_text
     assert "LlangonSuite-Scheduler` no suspende" in doc_text
+    assert "LLANGON_FULL_BACKUP_ROOT" in doc_text
+    assert "BACKUPS_LL_Suite" in doc_text
     assert "http://127.0.0.1:8787" in doc_text

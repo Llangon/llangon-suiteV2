@@ -23,4 +23,21 @@ $ExitCode = $LASTEXITCODE
 if ($null -eq $ExitCode) {
     $ExitCode = 0
 }
+if ($ExitCode -ne 0) {
+    "[$(Get-Date -Format s)] Copia SQLite fallida. No se ejecuta backup completo." | Out-File -FilePath $LogPath -Append -Encoding utf8
+    exit $ExitCode
+}
+
+"[$(Get-Date -Format s)] Ejecutando backup completo privado si esta activado..." | Out-File -FilePath $LogPath -Append -Encoding utf8
+& $Python -m webapp.infonalia_webapp.full_backup --once 2>&1 | ForEach-Object {
+    $_ | Out-File -FilePath $LogPath -Append -Encoding utf8
+}
+$FullBackupExitCode = $LASTEXITCODE
+if ($null -eq $FullBackupExitCode) {
+    $FullBackupExitCode = 0
+}
+if ($FullBackupExitCode -ne 0) {
+    "[$(Get-Date -Format s)] Backup completo fallido. Codigo: $FullBackupExitCode" | Out-File -FilePath $LogPath -Append -Encoding utf8
+    exit $FullBackupExitCode
+}
 exit $ExitCode

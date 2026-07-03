@@ -136,6 +136,55 @@ Write-Host "  Omitir si usuario activo: $(Get-EnvValue -Name 'LLANGON_AGENDA_WAK
 Write-Host "  Log: $AgendaWakeLog"
 
 Write-Host ""
+$FullBackupEnabled = Get-EnvValue -Name "LLANGON_FULL_BACKUP_ENABLED" -Default "0"
+$FullBackupRoot = Get-EnvValue -Name "LLANGON_FULL_BACKUP_ROOT" -Default ""
+$SqliteBackupDir = Get-EnvValue -Name "LLANGON_SQLITE_BACKUP_DIR" -Default (Join-Path $RuntimeRoot "backups\sqlite")
+Write-Host "Backups:"
+Write-Host "  SQLite local: $SqliteBackupDir"
+Write-Host "  Backup completo privado activado: $FullBackupEnabled"
+if ($FullBackupRoot) {
+    Write-Host "  Ruta backup completo: $FullBackupRoot"
+    if (Test-Path -LiteralPath $FullBackupRoot) {
+        $LatestFullBackup = Get-ChildItem -LiteralPath $FullBackupRoot -Recurse -Filter "*_LLANGON_SUITE_FULL_PRIVATE_BACKUP.zip" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        if ($LatestFullBackup) {
+            $LatestManifest = $LatestFullBackup.FullName -replace "\.zip$", "_manifest.json"
+            Write-Host "  Ultimo backup completo: $($LatestFullBackup.FullName)"
+            Write-Host "  Fecha: $($LatestFullBackup.LastWriteTime)"
+            Write-Host "  Tamano: $($LatestFullBackup.Length) bytes"
+            if (Test-Path -LiteralPath $LatestManifest) {
+                Write-Host "  Manifest: $LatestManifest"
+                try {
+                    $ManifestJson = Get-Content -Raw -LiteralPath $LatestManifest | ConvertFrom-Json
+                    if ($ManifestJson.status) {
+                        Write-Host "  Estado manifest: $($ManifestJson.status)"
+                    }
+                    if ($ManifestJson.errors -and $ManifestJson.errors.Count -gt 0) {
+                        Write-Host "  Ultimo error: $($ManifestJson.errors -join '; ')"
+                    }
+                }
+                catch {
+                    Write-Host "  Manifest: no se pudo leer ($($_.Exception.Message))"
+                }
+            }
+            else {
+                Write-Host "  Manifest: no localizado junto al ZIP"
+            }
+        }
+        else {
+            Write-Host "  Ultimo backup completo: no localizado"
+        }
+    }
+    else {
+        Write-Host "  Ruta backup completo: no existe todavia"
+    }
+}
+else {
+    Write-Host "  Ruta backup completo: no configurada"
+}
+
+Write-Host ""
 $Listeners = @(Get-WebListeners)
 if ($Listeners.Count -eq 0) {
     Write-Host "Puerto 127.0.0.1:$Port : sin LISTENING"
@@ -184,7 +233,7 @@ else {
 }
 
 Write-Host ""
-foreach ($LogName in @("web.log", "web.stdout.log", "web.stderr.log", "scheduler.log", "backup.log")) {
+foreach ($LogName in @("web.log", "web.stdout.log", "web.stderr.log", "scheduler.log", "backup.log", "full_backup.log")) {
     $LogPath = Join-Path $LogDir $LogName
     if (Test-Path -LiteralPath $LogPath) {
         $Item = Get-Item -LiteralPath $LogPath
