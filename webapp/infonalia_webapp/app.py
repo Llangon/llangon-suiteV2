@@ -1200,51 +1200,172 @@ def open_actuaciones_count(conn: sqlite3.Connection, licitacion_ids: list[int]) 
     return int(row["total"] if row else 0)
 
 
+def sqlite_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def sqlite_delete_if_table(
+    conn: sqlite3.Connection,
+    table_name: str,
+    where_sql: str,
+    values: list[object],
+) -> int:
+    if not sqlite_table_exists(conn, table_name):
+        return 0
+    cur = conn.execute(f"DELETE FROM {table_name} WHERE {where_sql}", values)
+    return int(cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0)
+
+
+def sqlite_update_if_table(
+    conn: sqlite3.Connection,
+    table_name: str,
+    set_sql: str,
+    where_sql: str,
+    values: list[object],
+) -> int:
+    if not sqlite_table_exists(conn, table_name):
+        return 0
+    cur = conn.execute(f"UPDATE {table_name} SET {set_sql} WHERE {where_sql}", values)
+    return int(cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0)
+
+
 def delete_licitacion_dependents(conn: sqlite3.Connection, licitacion_ids: list[int]) -> None:
+    delete_licitacion_dependents_with_counts(conn, licitacion_ids)
+
+
+def delete_licitacion_dependents_with_counts(conn: sqlite3.Connection, licitacion_ids: list[int]) -> dict[str, int]:
+    counts = {
+        "storage_uploads": 0,
+        "download_jobs": 0,
+        "import_results_unlinked": 0,
+        "actuacion_licitaciones": 0,
+        "licitacion_historial": 0,
+        "licitacion_seguimiento_novedades": 0,
+        "licitacion_file_inventory": 0,
+        "licitacion_path_reconciliation_events_unlinked": 0,
+        "ai_usage_log": 0,
+        "ai_summaries": 0,
+        "ai_analysis_jobs": 0,
+        "email_action_codes": 0,
+        "email_action_events": 0,
+        "comments_deleted": 0,
+    }
     if not licitacion_ids:
-        return
+        return counts
     placeholders = ",".join("?" for _ in licitacion_ids)
-    conn.execute(
-        f"DELETE FROM download_jobs WHERE licitacion_id IN ({placeholders})",
-        licitacion_ids,
-    )
-    conn.execute(
-        f"UPDATE import_results SET licitacion_id = NULL WHERE licitacion_id IN ({placeholders})",
-        licitacion_ids,
-    )
-    conn.execute(
-        f"DELETE FROM actuacion_licitaciones WHERE licitacion_id IN ({placeholders})",
-        licitacion_ids,
-    )
-    conn.execute(
-        f"DELETE FROM licitacion_historial WHERE licitacion_id IN ({placeholders})",
-        licitacion_ids,
-    )
-    conn.execute(
-        f"DELETE FROM licitacion_seguimiento_novedades WHERE licitacion_id IN ({placeholders})",
-        licitacion_ids,
-    )
-    try:
-        conn.execute(
-            f"DELETE FROM email_action_codes WHERE licitacion_id IN ({placeholders})",
+
+    if sqlite_table_exists(conn, "ai_analysis_jobs"):
+        job_rows = conn.execute(
+            f"SELECT id FROM ai_analysis_jobs WHERE licitacion_id IN ({placeholders})",
             licitacion_ids,
+        ).fetchall()
+        ai_job_ids = [int(row["id"]) for row in job_rows]
+    else:
+        ai_job_ids = []
+    ai_job_placeholders = ",".join("?" for _ in ai_job_ids)
+    if ai_job_ids:
+        counts["ai_usage_log"] += sqlite_delete_if_table(
+            conn,
+            "ai_usage_log",
+            f"job_id IN ({ai_job_placeholders})",
+            ai_job_ids,
         )
-    except sqlite3.OperationalError:
-        pass
-    try:
-        timestamp = now_iso()
-        conn.execute(
-            f"""
-            UPDATE comments
-            SET is_deleted = 1, deleted_at = ?, updated_at = ?
-            WHERE entity_type = 'licitacion'
-              AND entity_id IN ({placeholders})
-              AND is_deleted = 0
-            """,
-            [timestamp, timestamp, *licitacion_ids],
-        )
-    except sqlite3.OperationalError:
-        return
+    counts["ai_usage_log"] += sqlite_delete_if_table(
+        conn,
+        "ai_usage_log",
+        f"licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
+    counts["ai_summaries"] += sqlite_delete_if_table(
+        conn,
+        "ai_summaries",
+        f"licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
+    counts["ai_analysis_jobs"] += sqlite_delete_if_table(
+        conn,
+        "ai_analysis_jobs",
+        f"licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
+
+    counts["storage_uploads"] += sqlite_delete_if_table(
+        conn,
+        "storage_uploads",
+        f"licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
+    counts["download_jobs"] += sqlite_delete_if_table(
+        conn,
+        "download_jobs",
+        f"licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
+
+    counts["import_results_unlinked"] += sqlite_update_if_table(
+        conn,
+        "import_results",
+        "licitacion_id = NULL",
+        f"licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
+    counts["actuacion_licitaciones"] += sqlite_delete_if_table(
+        conn,
+        "actuacion_licitaciones",
+        f"licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
+    counts["licitacion_historial"] += sqlite_delete_if_table(
+        conn,
+        "licitacion_historial",
+        f"licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
+    counts["licitacion_seguimiento_novedades"] += sqlite_delete_if_table(
+        conn,
+        "licitacion_seguimiento_novedades",
+        f"licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
+    counts["licitacion_file_inventory"] += sqlite_delete_if_table(
+        conn,
+        "licitacion_file_inventory",
+        f"licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
+    counts["licitacion_path_reconciliation_events_unlinked"] += sqlite_update_if_table(
+        conn,
+        "licitacion_path_reconciliation_events",
+        "licitacion_id = NULL",
+        f"licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
+    counts["email_action_events"] += sqlite_delete_if_table(
+        conn,
+        "email_action_events",
+        f"licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
+    counts["email_action_codes"] += sqlite_delete_if_table(
+        conn,
+        "email_action_codes",
+        f"licitacion_id IN ({placeholders})",
+        licitacion_ids,
+    )
+
+    timestamp = now_iso()
+    counts["comments_deleted"] += sqlite_update_if_table(
+        conn,
+        "comments",
+        "is_deleted = 1, deleted_at = ?, updated_at = ?",
+        f"entity_type = 'licitacion' AND entity_id IN ({placeholders}) AND is_deleted = 0",
+        [timestamp, timestamp, *licitacion_ids],
+    )
+    return counts
 
 
 def seed_users_and_settings(conn: sqlite3.Connection) -> None:
@@ -1405,7 +1526,6 @@ def marker_allowed_roots() -> list[Path]:
     configured = preferred_dropbox_base_path()
     if configured:
         roots.append(configured)
-    roots.append(Path(r"C:\ReplicaDb"))
     roots.append(DOWNLOAD_ROOT)
     unique: list[Path] = []
     seen: set[str] = set()
@@ -1421,8 +1541,17 @@ def marker_dropbox_root() -> Path | None:
     configured = preferred_dropbox_base_path()
     if configured:
         return configured if configured.exists() and configured.is_dir() else None
-    replica = Path(r"C:\ReplicaDb")
-    return replica if replica.exists() and replica.is_dir() else None
+    return None
+
+
+def download_allowed_destination_roots() -> list[Path]:
+    download_root = download_staging_root_for_backend(REPOSITORY_ROOT, DOWNLOAD_ROOT)
+    roots = [download_root]
+    if not uses_dropbox_api_backend():
+        dropbox_root = find_dropbox_root()
+        if dropbox_root:
+            roots.append(dropbox_root)
+    return roots
 
 
 def is_internal_download_path(value: object) -> bool:
@@ -1865,6 +1994,383 @@ def validate_confirmed_download_folder_name(value: object) -> str:
 def confirmed_download_destination(default_destination: Path, folder_name: object) -> Path:
     return default_destination.parent / validate_confirmed_download_folder_name(folder_name)
 
+
+DOWNLOAD_JOB_STATUS_PENDING = "pending"
+DOWNLOAD_JOB_STATUS_RUNNING = "running"
+DOWNLOAD_JOB_STATUS_COMPLETED = "completed"
+DOWNLOAD_JOB_STATUS_FAILED = "failed"
+
+DOWNLOAD_REQUEST_SOURCE_MANUAL = "manual_button"
+DOWNLOAD_REQUEST_SOURCE_EMAIL_ACTION = "email_action"
+
+
+def _latest_download_job(conn: sqlite3.Connection, licitacion_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT *
+        FROM download_jobs
+        WHERE licitacion_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (licitacion_id,),
+    ).fetchone()
+
+
+def request_licitacion_download(
+    conn: sqlite3.Connection,
+    licitacion_id: int,
+    *,
+    timestamp: str | None = None,
+    request_source: str = "",
+    request_action: str = "",
+    request_message_id: str = "",
+    requested_by: str = "",
+) -> dict[str, object]:
+    created_at = timestamp or now_iso()
+    row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+    if not row:
+        return {
+            "ok": False,
+            "status": "error",
+            "error_code": "LICITACION_NOT_FOUND",
+            "message": "La licitación no existe.",
+        }
+
+    latest_job = _latest_download_job(conn, licitacion_id)
+    if latest_job and clean_text(latest_job["status"]) in {DOWNLOAD_JOB_STATUS_PENDING, DOWNLOAD_JOB_STATUS_RUNNING}:
+        return {
+            "ok": True,
+            "status": "already_pending",
+            "created": False,
+            "job_id": int(latest_job["id"]),
+            "message": "Ya existe una descarga en curso o pendiente para esta licitación.",
+        }
+
+    if clean_text(row["ruta_carpeta"]):
+        return {
+            "ok": True,
+            "status": "already_downloaded",
+            "created": False,
+            "job_id": int(latest_job["id"]) if latest_job else None,
+            "message": "La documentación ya figura como descargada.",
+        }
+
+    if latest_job and clean_text(latest_job["status"]) == DOWNLOAD_JOB_STATUS_COMPLETED:
+        return {
+            "ok": True,
+            "status": "already_downloaded",
+            "created": False,
+            "job_id": int(latest_job["id"]),
+            "message": "La documentación ya se descargó correctamente.",
+        }
+
+    job_id = create_download_job(
+        conn,
+        licitacion_id,
+        timestamp=created_at,
+        status=DOWNLOAD_JOB_STATUS_PENDING,
+        request_source=request_source,
+        request_action=request_action,
+        request_message_id=request_message_id,
+        requested_by=requested_by,
+    )
+    record_licitacion_history(
+        conn,
+        licitacion_id,
+        event_type="download_request",
+        old_value=request_source,
+        new_value=f"job:{job_id} {clean_text(request_action)}".strip(),
+        user_id=clean_text(requested_by),
+        timestamp=created_at,
+    )
+    return {
+        "ok": True,
+        "status": "queued",
+        "created": True,
+        "job_id": job_id,
+        "message": "Descarga solicitada y encolada.",
+    }
+
+
+def start_download_worker(*, job_id: int | None = None) -> dict[str, object]:
+    command = [sys.executable, "-m", "webapp.infonalia_webapp.download_worker", "--once"]
+    if job_id is not None:
+        command.extend(["--job-id", str(int(job_id))])
+    kwargs: dict[str, object] = {
+        "cwd": str(REPOSITORY_ROOT),
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        process = subprocess.Popen(command, **kwargs)
+    except Exception as exc:
+        return {"started": False, "error": str(exc), "command": command}
+    return {"started": True, "pid": process.pid, "command": command}
+
+
+def _finish_failed_download_job(download_job_id: int, error_message: str) -> None:
+    with db_session() as conn:
+        finish_download_job(
+            conn,
+            download_job_id,
+            status=DOWNLOAD_JOB_STATUS_FAILED,
+            error_message=error_message[:2000],
+            timestamp=now_iso(),
+        )
+
+
+def execute_download_for_destination(
+    *,
+    licitacion_id: int,
+    row: sqlite3.Row,
+    destino: Path,
+    ruta_guardada: str,
+    download_job_id: int,
+    source_url: str,
+) -> tuple[HTTPStatus, dict[str, object]]:
+    url = clean_text(source_url)
+    destino.mkdir(parents=True, exist_ok=True)
+    write_http_url(destino, url)
+
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(LAUNCHER_PATH), url],
+            cwd=str(destino),
+            capture_output=True,
+            text=True,
+            timeout=MAX_DOWNLOAD_RUNTIME_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        error_message = "La descarga ha tardado demasiado y se ha detenido."
+        _finish_failed_download_job(download_job_id, error_message)
+        return (
+            HTTPStatus.REQUEST_TIMEOUT,
+            {"error": error_message, "carpeta": str(destino), "ruta_carpeta": ruta_guardada},
+        )
+
+    output_summary = summarize_process_output(
+        completed.stdout,
+        completed.stderr,
+        MAX_CAPTURED_OUTPUT_CHARS,
+    )
+    salida = output_summary["combined"]
+
+    if completed.returncode != 0:
+        error_message = f"El descargador devolvio codigo {completed.returncode}: {salida}".strip()
+        _finish_failed_download_job(download_job_id, error_message)
+        return (
+            HTTPStatus.BAD_REQUEST,
+            {
+                "ok": False,
+                "codigo": completed.returncode,
+                "carpeta": str(destino),
+                "ruta_carpeta": ruta_guardada,
+                "salida": salida,
+                "error": error_message,
+            },
+        )
+
+    try:
+        folder_summary = scan_download_folder(destino)
+        validate_download_folder_limits(
+            folder_summary,
+            max_total_bytes=MAX_DOWNLOAD_TOTAL_BYTES,
+            max_file_count=MAX_DOWNLOAD_FILE_COUNT,
+        )
+        storage_root = storage_root_for_destination(destino, download_allowed_destination_roots())
+        manifest_object = write_local_manifest(storage_root, destino, source_url=url)
+        storage_result = finalize_download_storage(
+            local_storage_root=storage_root,
+            local_folder=destino,
+            local_manifest_uri=manifest_object.uri,
+            licitacion_id=licitacion_id,
+            expediente=row["expediente"],
+            source_url=url,
+        )
+    except DownloadSafetyError as exc:
+        _finish_failed_download_job(download_job_id, str(exc))
+        return (
+            HTTPStatus.BAD_REQUEST,
+            {
+                "ok": False,
+                "codigo": completed.returncode,
+                "error": str(exc),
+                "carpeta": str(destino),
+                "ruta_carpeta": ruta_guardada,
+                "salida": salida,
+            },
+        )
+    except (LocalStorageError, OSError, StorageConfigurationError, DropboxStorageError) as exc:
+        error_message = f"No se pudo confirmar el almacenamiento de descarga: {exc}"
+        _finish_failed_download_job(download_job_id, error_message)
+        return (
+            HTTPStatus.BAD_REQUEST,
+            {
+                "ok": False,
+                "codigo": completed.returncode,
+                "error": error_message,
+                "carpeta": str(destino),
+                "ruta_carpeta": ruta_guardada,
+                "salida": salida,
+            },
+        )
+
+    marker_result = ensure_id_marker(licitacion_id, destino)
+    marker_status = marker_status_for_folder(licitacion_id, destino)
+    if marker_result.get("error") and not marker_status.get("warning"):
+        marker_status["warning"] = marker_result.get("error")
+
+    timestamp = now_iso()
+    updates = {
+        "ruta_carpeta": ruta_guardada,
+        "seguimiento_activo": 1 if marker_status.get("activo") else 0,
+        "seguimiento_ultimo_check": timestamp,
+        "seguimiento_ultima_sync": timestamp,
+        "seguimiento_marker_path": clean_text(marker_result.get("path")),
+        "seguimiento_marker_warning": clean_text(marker_status.get("warning")),
+        "updated_at": timestamp,
+    }
+
+    set_clause = ", ".join(f"{key} = ?" for key in updates)
+    storage_status = str(storage_result.get("job_status") or DOWNLOAD_JOB_STATUS_COMPLETED)
+    storage_errors = storage_result.get("errors") or []
+    storage_error_message = "; ".join(str(error) for error in storage_errors)[:2000]
+    with db_session() as conn:
+        conn.execute(
+            f"UPDATE licitaciones SET {set_clause} WHERE id = ?",
+            list(updates.values()) + [licitacion_id],
+        )
+        if row["infonalia_dia_id"]:
+            refresh_dia_estado(conn, int(row["infonalia_dia_id"]))
+        finish_download_job(
+            conn,
+            download_job_id,
+            status=storage_status,
+            storage_backend=str(storage_result.get("backend") or "local"),
+            storage_uri=str(storage_result.get("storage_uri") or ""),
+            file_manifest=str(storage_result.get("manifest_uri") or manifest_object.uri),
+            error_message=storage_error_message or None,
+            timestamp=timestamp,
+        )
+        record_storage_upload(
+            conn,
+            licitacion_id=licitacion_id,
+            download_job_id=download_job_id,
+            backend=str(storage_result.get("backend") or "local"),
+            destination_uri=str(storage_result.get("storage_uri") or ""),
+            manifest=storage_result,
+            status=storage_status,
+            dry_run=bool(storage_result.get("dry_run")),
+            mode=str(storage_result.get("mode") or ""),
+            uploaded_count=int(storage_result.get("uploaded_count") or 0),
+            skipped_existing_count=int(storage_result.get("skipped_existing_count") or 0),
+            failed_count=int(storage_result.get("failed_count") or 0),
+            no_changes=bool(storage_result.get("no_changes")),
+            timestamp=timestamp,
+            error_message=storage_error_message,
+        )
+
+    return (
+        HTTPStatus.OK,
+        {
+            "ok": True,
+            "codigo": completed.returncode,
+            "carpeta": str(destino),
+            "ruta_carpeta": ruta_guardada,
+            "salida": salida,
+            "marker": marker_result,
+            "storage": {
+                "backend": storage_result.get("backend"),
+                "dry_run": storage_result.get("dry_run"),
+                "mode": storage_result.get("mode"),
+                "storage_uri": storage_result.get("storage_uri"),
+                "manifest_uri": storage_result.get("manifest_uri"),
+                "uploaded_count": storage_result.get("uploaded_count"),
+                "skipped_existing_count": storage_result.get("skipped_existing_count"),
+                "failed_count": storage_result.get("failed_count"),
+                "would_upload_count": storage_result.get("would_upload_count"),
+                "no_changes": storage_result.get("no_changes"),
+                "warnings": storage_result.get("warnings") or [],
+                "errors": storage_result.get("errors") or [],
+            },
+        },
+    )
+
+
+def process_download_job(job_id: int) -> dict[str, object]:
+    base_status = dropbox_base_status()
+    if not uses_dropbox_api_backend() and base_status.configured and not base_status.ok:
+        _finish_failed_download_job(job_id, base_status.error or "La carpeta base de Dropbox no es válida.")
+        return {
+            "ok": False,
+            "status": "failed",
+            "job_id": job_id,
+            "message": base_status.error or "La carpeta base de Dropbox no es válida.",
+        }
+    with db_session() as conn:
+        job = conn.execute("SELECT * FROM download_jobs WHERE id = ?", (job_id,)).fetchone()
+        if not job:
+            return {"ok": False, "status": "error", "message": "Trabajo de descarga no encontrado."}
+        claimed = conn.execute(
+            """
+            UPDATE download_jobs
+            SET status = ?, started_at = COALESCE(started_at, ?), updated_at = ?
+            WHERE id = ? AND status = ?
+            """,
+            (
+                DOWNLOAD_JOB_STATUS_RUNNING,
+                now_iso(),
+                now_iso(),
+                job_id,
+                DOWNLOAD_JOB_STATUS_PENDING,
+            ),
+        ).rowcount
+        if claimed == 0:
+            current = conn.execute("SELECT status FROM download_jobs WHERE id = ?", (job_id,)).fetchone()
+            return {
+                "ok": True,
+                "status": "ignored",
+                "job_id": job_id,
+                "message": f"Trabajo no procesado porque está en estado {clean_text(current['status']) or 'desconocido'}.",
+            }
+        licitacion_id = int(job["licitacion_id"])
+        row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+        if not row:
+            finish_download_job(
+                conn,
+                job_id,
+                status=DOWNLOAD_JOB_STATUS_FAILED,
+                error_message="La licitación asociada ya no existe.",
+                timestamp=now_iso(),
+            )
+            return {"ok": False, "status": "failed", "job_id": job_id, "message": "Licitación asociada no encontrada."}
+
+    url = normalize_url(row["enlace_perfil"])
+    if not url:
+        _finish_failed_download_job(job_id, "Esta licitación no tiene enlace de perfil.")
+        return {"ok": False, "status": "failed", "job_id": job_id, "message": "La licitación no tiene enlace de perfil."}
+    try:
+        url = validate_download_url(url)
+        destino = validate_resolved_destination(resolve_destination_folder(row), download_allowed_destination_roots())
+    except DownloadSafetyError as exc:
+        _finish_failed_download_job(job_id, str(exc))
+        return {"ok": False, "status": "failed", "job_id": job_id, "message": str(exc)}
+    if destino.exists() and not destino.is_dir():
+        _finish_failed_download_job(job_id, "La ruta de destino existe pero no es una carpeta.")
+        return {"ok": False, "status": "failed", "job_id": job_id, "message": "La ruta de destino no es una carpeta."}
+    ruta_guardada = folder_path_for_storage(destino)
+    http_status, payload = execute_download_for_destination(
+        licitacion_id=licitacion_id,
+        row=row,
+        destino=destino,
+        ruta_guardada=ruta_guardada,
+        download_job_id=job_id,
+        source_url=url,
+    )
+    return {"ok": http_status == HTTPStatus.OK, "status": payload.get("ok") and "completed" or "failed", "job_id": job_id, "payload": payload}
 
 def repair_internal_download_routes() -> int:
     dropbox_root = find_dropbox_root()
@@ -5402,7 +5908,6 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.send_json({"error": f"No se encuentra el lanzador: {LAUNCHER_PATH}"}, HTTPStatus.BAD_REQUEST)
             return
 
-        download_root = download_staging_root_for_backend(REPOSITORY_ROOT, DOWNLOAD_ROOT)
         base_status = dropbox_base_status()
         if not uses_dropbox_api_backend() and base_status.configured and not base_status.ok:
             self.send_json(
@@ -5411,10 +5916,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             )
             return
 
-        dropbox_root = None if uses_dropbox_api_backend() else find_dropbox_root()
-        allowed_destination_roots = [download_root]
-        if dropbox_root:
-            allowed_destination_roots.append(dropbox_root)
+        allowed_destination_roots = download_allowed_destination_roots()
 
         try:
             destino_sugerido = validate_resolved_destination(resolve_destination_folder(row), allowed_destination_roots)
@@ -5459,202 +5961,26 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             return
 
         ruta_guardada = folder_path_for_storage(destino)
-        destino.mkdir(parents=True, exist_ok=True)
-        write_http_url(destino, url)
         with db_session() as conn:
-            download_job_id = create_download_job(conn, licitacion_id, timestamp=now_iso())
-
-        try:
-            completed = subprocess.run(
-                [sys.executable, str(LAUNCHER_PATH), url],
-                cwd=str(destino),
-                capture_output=True,
-                text=True,
-                timeout=MAX_DOWNLOAD_RUNTIME_SECONDS,
-            )
-        except subprocess.TimeoutExpired:
-            error_message = "La descarga ha tardado demasiado y se ha detenido."
-            with db_session() as conn:
-                finish_download_job(
-                    conn,
-                    download_job_id,
-                    status="failed",
-                    error_message=error_message,
-                    timestamp=now_iso(),
-                )
-            self.send_json(
-                {"error": error_message, "carpeta": str(destino)},
-                HTTPStatus.REQUEST_TIMEOUT,
-            )
-            return
-
-        output_summary = summarize_process_output(
-            completed.stdout,
-            completed.stderr,
-            MAX_CAPTURED_OUTPUT_CHARS,
-        )
-        salida = output_summary["combined"]
-
-        if completed.returncode != 0:
-            error_message = f"El descargador devolvio codigo {completed.returncode}: {salida}".strip()
-            with db_session() as conn:
-                finish_download_job(
-                    conn,
-                    download_job_id,
-                    status="failed",
-                    error_message=error_message[:2000],
-                    timestamp=now_iso(),
-                )
-            self.send_json(
-                {
-                    "ok": False,
-                    "codigo": completed.returncode,
-                    "carpeta": str(destino),
-                    "ruta_carpeta": ruta_guardada,
-                    "salida": salida,
-                },
-                HTTPStatus.BAD_REQUEST,
-            )
-            return
-
-        try:
-            folder_summary = scan_download_folder(destino)
-            validate_download_folder_limits(
-                folder_summary,
-                max_total_bytes=MAX_DOWNLOAD_TOTAL_BYTES,
-                max_file_count=MAX_DOWNLOAD_FILE_COUNT,
-            )
-            storage_root = storage_root_for_destination(destino, allowed_destination_roots)
-            manifest_object = write_local_manifest(storage_root, destino, source_url=url)
-            storage_result = finalize_download_storage(
-                local_storage_root=storage_root,
-                local_folder=destino,
-                local_manifest_uri=manifest_object.uri,
-                licitacion_id=licitacion_id,
-                expediente=row["expediente"],
-                source_url=url,
-            )
-        except DownloadSafetyError as exc:
-            with db_session() as conn:
-                finish_download_job(
-                    conn,
-                    download_job_id,
-                    status="failed",
-                    error_message=str(exc)[:2000],
-                    timestamp=now_iso(),
-                )
-            self.send_json(
-                {
-                    "ok": False,
-                    "codigo": completed.returncode,
-                    "error": str(exc),
-                    "carpeta": str(destino),
-                    "ruta_carpeta": ruta_guardada,
-                    "salida": salida,
-                },
-                HTTPStatus.BAD_REQUEST,
-            )
-            return
-        except (LocalStorageError, OSError, StorageConfigurationError, DropboxStorageError) as exc:
-            error_message = f"No se pudo confirmar el almacenamiento de descarga: {exc}"
-            with db_session() as conn:
-                finish_download_job(
-                    conn,
-                    download_job_id,
-                    status="failed",
-                    error_message=error_message[:2000],
-                    timestamp=now_iso(),
-                )
-            self.send_json(
-                {
-                    "ok": False,
-                    "codigo": completed.returncode,
-                    "error": error_message,
-                    "carpeta": str(destino),
-                    "ruta_carpeta": ruta_guardada,
-                    "salida": salida,
-                },
-                HTTPStatus.BAD_REQUEST,
-            )
-            return
-
-        marker_result = ensure_id_marker(licitacion_id, destino)
-        marker_status = marker_status_for_folder(licitacion_id, destino)
-        if marker_result.get("error") and not marker_status.get("warning"):
-            marker_status["warning"] = marker_result.get("error")
-
-        timestamp = now_iso()
-        updates = {
-            "ruta_carpeta": ruta_guardada,
-            "seguimiento_activo": 1 if marker_status.get("activo") else 0,
-            "seguimiento_ultimo_check": timestamp,
-            "seguimiento_ultima_sync": timestamp,
-            "seguimiento_marker_path": clean_text(marker_result.get("path")),
-            "seguimiento_marker_warning": clean_text(marker_status.get("warning")),
-            "updated_at": timestamp,
-        }
-
-        set_clause = ", ".join(f"{key} = ?" for key in updates)
-        storage_status = str(storage_result.get("job_status") or "completed")
-        storage_errors = storage_result.get("errors") or []
-        storage_error_message = "; ".join(str(error) for error in storage_errors)[:2000]
-        with db_session() as conn:
-            conn.execute(
-                f"UPDATE licitaciones SET {set_clause} WHERE id = ?",
-                list(updates.values()) + [licitacion_id],
-            )
-            if row["infonalia_dia_id"]:
-                refresh_dia_estado(conn, int(row["infonalia_dia_id"]))
-            finish_download_job(
+            download_job_id = create_download_job(
                 conn,
-                download_job_id,
-                status=storage_status,
-                storage_backend=str(storage_result.get("backend") or "local"),
-                storage_uri=str(storage_result.get("storage_uri") or ""),
-                file_manifest=str(storage_result.get("manifest_uri") or manifest_object.uri),
-                error_message=storage_error_message or None,
-                timestamp=timestamp,
-            )
-            record_storage_upload(
-                conn,
-                licitacion_id=licitacion_id,
-                download_job_id=download_job_id,
-                backend=str(storage_result.get("backend") or "local"),
-                destination_uri=str(storage_result.get("storage_uri") or ""),
-                manifest=storage_result,
-                status=storage_status,
-                dry_run=bool(storage_result.get("dry_run")),
-                mode=str(storage_result.get("mode") or ""),
-                uploaded_count=int(storage_result.get("uploaded_count") or 0),
-                skipped_existing_count=int(storage_result.get("skipped_existing_count") or 0),
-                failed_count=int(storage_result.get("failed_count") or 0),
-                no_changes=bool(storage_result.get("no_changes")),
-                timestamp=timestamp,
-                error_message=storage_error_message,
+                licitacion_id,
+                timestamp=now_iso(),
+                status=DOWNLOAD_JOB_STATUS_RUNNING,
+                request_source=DOWNLOAD_REQUEST_SOURCE_MANUAL,
+                request_action="manual_download",
+                requested_by=clean_text((self.current_user() or {}).get("username")),
             )
 
-        self.send_json(
-            {
-                "ok": True,
-                "codigo": completed.returncode,
-                "carpeta": str(destino),
-                "ruta_carpeta": ruta_guardada,
-                "salida": salida,
-                "marker": marker_result,
-                "storage": {
-                    "backend": storage_result.get("backend"),
-                    "dry_run": storage_result.get("dry_run"),
-                    "storage_uri": storage_result.get("storage_uri"),
-                    "manifest_uri": storage_result.get("manifest_uri"),
-                    "no_changes": storage_result.get("no_changes"),
-                    "uploaded_count": storage_result.get("uploaded_count"),
-                    "skipped_existing_count": storage_result.get("skipped_existing_count"),
-                    "failed_count": storage_result.get("failed_count"),
-                    "would_upload_count": storage_result.get("would_upload_count"),
-                },
-            },
-            HTTPStatus.OK,
+        http_status, payload = execute_download_for_destination(
+            licitacion_id=licitacion_id,
+            row=row,
+            destino=destino,
+            ruta_guardada=ruta_guardada,
+            download_job_id=download_job_id,
+            source_url=url,
         )
+        self.send_json(payload, http_status)
 
     def api_update_licitacion(self, licitacion_id: int) -> None:
         user = self.current_user() or {}
@@ -5877,17 +6203,37 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 ).fetchall()
                 licitacion_ids = [int(row["id"]) for row in licitacion_rows]
 
-                if open_actuaciones_count(conn, licitacion_ids):
+                open_count = open_actuaciones_count(conn, licitacion_ids)
+                if open_count:
                     self.send_json(
-                        {"error": "No se puede borrar el día porque contiene licitaciones con actuaciones abiertas."},
+                        {
+                            "ok": False,
+                            "error": "No se puede borrar el Día Infonalia porque existen actuaciones abiertas vinculadas.",
+                            "blocking": {"open_actuaciones": open_count},
+                        },
                         HTTPStatus.CONFLICT,
                     )
                     return
-                delete_licitacion_dependents(conn, licitacion_ids)
-                try:
-                    conn.execute("DELETE FROM email_action_codes WHERE review_id = ?", (dia_id,))
-                except sqlite3.OperationalError:
-                    pass
+                deleted_counts = delete_licitacion_dependents_with_counts(conn, licitacion_ids)
+                deleted_counts["email_action_events"] = deleted_counts.get("email_action_events", 0) + sqlite_delete_if_table(
+                    conn,
+                    "email_action_events",
+                    "review_id = ?",
+                    [dia_id],
+                )
+                deleted_counts["email_action_codes"] = deleted_counts.get("email_action_codes", 0) + sqlite_delete_if_table(
+                    conn,
+                    "email_action_codes",
+                    "review_id = ?",
+                    [dia_id],
+                )
+                deleted_counts["infonalia_email_imports_unlinked"] = sqlite_update_if_table(
+                    conn,
+                    "infonalia_email_imports",
+                    "status = 'deleted', infonalia_dia_id = NULL, error_message = ?",
+                    "infonalia_dia_id = ?",
+                    [f"Día Infonalia {dia_id} eliminado; se permite reimportación controlada.", dia_id],
+                )
                 if licitacion_ids:
                     placeholders = ",".join("?" for _ in licitacion_ids)
                     conn.execute(
@@ -5901,8 +6247,23 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         except sqlite3.IntegrityError as exc:
             print(f"No se pudo borrar Dia Infonalia {dia_id}: {exc}", file=sys.stderr)
             self.send_json(
-                {"error": "No se pudo borrar el Dia Infonalia por datos relacionados"},
+                {
+                    "ok": False,
+                    "error": "No se pudo borrar el Día Infonalia por datos relacionados.",
+                    "detail": clean_text(exc),
+                },
                 HTTPStatus.CONFLICT,
+            )
+            return
+        except Exception as exc:
+            print(f"Error inesperado al borrar Dia Infonalia {dia_id}: {exc}", file=sys.stderr)
+            self.send_json(
+                {
+                    "ok": False,
+                    "error": "No se pudo borrar el Día Infonalia. La operación se ha cancelado de forma segura.",
+                    "detail": clean_text(exc),
+                },
+                HTTPStatus.INTERNAL_SERVER_ERROR,
             )
             return
 
@@ -5911,6 +6272,11 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "titulo": clean_text(day["titulo"]),
                 "licitaciones_borradas": len(licitacion_ids),
+                "deleted": {
+                    "dia_id": dia_id,
+                    "licitaciones": len(licitacion_ids),
+                    **deleted_counts,
+                },
             }
         )
 

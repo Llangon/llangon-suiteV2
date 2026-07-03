@@ -58,6 +58,10 @@ def make_conn() -> sqlite3.Connection:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             licitacion_id INTEGER NOT NULL,
             status TEXT NOT NULL,
+            request_source TEXT,
+            request_action TEXT,
+            request_message_id TEXT,
+            requested_by TEXT,
             storage_backend TEXT,
             storage_uri TEXT,
             file_manifest TEXT,
@@ -122,7 +126,16 @@ def test_import_run_helpers_record_candidate_result() -> None:
 def test_download_job_helpers_record_success_metadata() -> None:
     conn = make_conn()
 
-    job_id = create_download_job(conn, 7, timestamp="2026-06-12T10:00:00")
+    job_id = create_download_job(
+        conn,
+        7,
+        timestamp="2026-06-12T10:00:00",
+        status="pending",
+        request_source="email_action",
+        request_action="Descargar para ver",
+        request_message_id="<msg-1>",
+        requested_by="nuria@example.test",
+    )
     finish_download_job(
         conn,
         job_id,
@@ -137,6 +150,10 @@ def test_download_job_helpers_record_success_metadata() -> None:
 
     assert row["licitacion_id"] == 7
     assert row["status"] == "completed"
+    assert row["request_source"] == "email_action"
+    assert row["request_action"] == "Descargar para ver"
+    assert row["request_message_id"] == "<msg-1>"
+    assert row["requested_by"] == "nuria@example.test"
     assert row["storage_backend"] == "local"
     assert row["storage_uri"] == "local://descarga"
     assert row["file_manifest"].endswith(".infonalia_manifest.json")

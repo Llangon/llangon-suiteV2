@@ -5,6 +5,7 @@ from email.message import EmailMessage
 from webapp.infonalia_webapp.email_actions import (
     ACTION_DISCARD,
     ACTION_DOWNLOAD_REVIEW,
+    ACTION_PREPARE,
     check_action_code,
     ensure_review_action_codes,
     generate_action_code,
@@ -111,6 +112,15 @@ def run_with_fake_imap(app, fake: FakeIMAP, **kwargs):
         imap_factory=lambda *_args, **_kwargs: fake,
         **kwargs,
     )
+
+
+def download_jobs_for_licitacion(app, licitacion_id: int) -> list[dict]:
+    with app.db_session() as conn:
+        rows = conn.execute(
+            "SELECT * FROM download_jobs WHERE licitacion_id = ? ORDER BY id ASC",
+            (licitacion_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def test_normal_mode_searches_only_llangon_cmd_and_does_not_touch_normal_mail() -> None:
@@ -317,3 +327,95 @@ def test_check_code_and_simulate_code_without_imap(monkeypatch) -> None:
     assert simulated["would_change"] is True
     assert state_after_simulation == "Enviada a Nuria"
     assert direct["reason"] == "remitente no autorizado"
+
+
+def test_download_review_email_action_queues_download_job_and_starts_worker(monkeypatch) -> None:
+    app = load_app_module()
+    worker_calls: list[int] = []
+
+    def fake_start_download_worker(*, job_id=None):
+        worker_calls.append(int(job_id))
+        return {"started": True, "pid": 4321}
+
+    monkeypatch.setattr(app, "start_download_worker", fake_start_download_worker)
+
+    with temporary_app_database(app):
+        _dia_id, licitacion_id = prepare_action(app, estado="Enviada a Nuria")
+        code = generate_action_code(licitacion_id, ACTION_DOWNLOAD_REVIEW)
+        fake = FakeIMAP(
+            {
+                b"9": {
+                    "subject": f"LLANGON_CMD {code} - Descargar para ver",
+                    "seen": False,
+                    "raw": make_message(
+                        f"LLANGON_CMD {code} - Descargar para ver",
+                        "nuria@example.test",
+                        f"LLANGON_ACTION_CODE={code}",
+                        "<download-review>",
+                    ),
+                }
+            }
+        )
+
+        result = run_with_fake_imap(app, fake)
+        jobs = download_jobs_for_licitacion(app, licitacion_id)
+        current_state = licitacion_state(app, licitacion_id)
+
+    assert result["processed"] == 1
+    assert current_state == "Descargar para ver"
+    assert len(jobs) == 1
+    assert jobs[0]["status"] == "pending"
+    assert jobs[0]["request_source"] == "email_action"
+    assert jobs[0]["request_action"] == "Descargar para ver"
+    assert jobs[0]["requested_by"] == "nuria@example.test"
+    assert worker_calls == [jobs[0]["id"]]
+
+
+def test_prepare_email_action_does_not_duplicate_existing_pending_download_job(monkeypatch) -> None:
+    app = load_app_module()
+    worker_calls: list[int] = []
+
+    def fake_start_download_worker(*, job_id=None):
+        worker_calls.append(int(job_id))
+        return {"started": True, "pid": 4321}
+
+    monkeypatch.setattr(app, "start_download_worker", fake_start_download_worker)
+
+    with temporary_app_database(app):
+        _dia_id, licitacion_id = prepare_action(app, estado="Descargar para ver")
+        with app.db_session() as conn:
+            app.create_download_job(
+                conn,
+                licitacion_id,
+                timestamp="2026-07-03T10:00:00",
+                status="pending",
+                request_source="email_action",
+                request_action="Descargar para ver",
+                request_message_id="<prev>",
+                requested_by="nuria@example.test",
+            )
+        code = generate_action_code(licitacion_id, ACTION_PREPARE)
+        fake = FakeIMAP(
+            {
+                b"10": {
+                    "subject": f"LLANGON_CMD {code} - Preparar ficha",
+                    "seen": False,
+                    "raw": make_message(
+                        f"LLANGON_CMD {code} - Preparar ficha",
+                        "nuria@example.test",
+                        f"LLANGON_ACTION_CODE={code}",
+                        "<prepare>",
+                    ),
+                }
+            }
+        )
+
+        result = run_with_fake_imap(app, fake)
+        jobs = download_jobs_for_licitacion(app, licitacion_id)
+        current_state = licitacion_state(app, licitacion_id)
+
+    assert result["processed"] == 1
+    assert current_state == "Preparar ficha"
+    assert len(jobs) == 1
+    assert jobs[0]["status"] == "pending"
+    assert worker_calls == []

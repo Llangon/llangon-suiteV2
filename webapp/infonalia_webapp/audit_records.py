@@ -161,19 +161,43 @@ def record_import_result(
     )
 
 
-def create_download_job(conn: sqlite3.Connection, licitacion_id: int, *, timestamp: str) -> int:
+def create_download_job(
+    conn: sqlite3.Connection,
+    licitacion_id: int,
+    *,
+    timestamp: str,
+    status: str = "running",
+    request_source: str = "",
+    request_action: str = "",
+    request_message_id: str = "",
+    requested_by: str = "",
+) -> int:
     cur = conn.execute(
         """
         INSERT INTO download_jobs (
             licitacion_id,
             status,
+            request_source,
+            request_action,
+            request_message_id,
+            requested_by,
             created_at,
             started_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (licitacion_id, "running", timestamp, timestamp, timestamp),
+        (
+            licitacion_id,
+            clean_text(status) or "running",
+            clean_text(request_source),
+            clean_text(request_action),
+            clean_text(request_message_id),
+            clean_text(requested_by),
+            timestamp,
+            timestamp if (clean_text(status) or "running") == "running" else None,
+            timestamp,
+        ),
     )
     return int(cur.lastrowid)
 

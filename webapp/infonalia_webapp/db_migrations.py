@@ -94,6 +94,10 @@ def _download_jobs_schema(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             licitacion_id INTEGER NOT NULL,
             status TEXT NOT NULL,
+            request_source TEXT,
+            request_action TEXT,
+            request_message_id TEXT,
+            requested_by TEXT,
             storage_backend TEXT,
             storage_uri TEXT,
             file_manifest TEXT,
@@ -106,6 +110,14 @@ def _download_jobs_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    if not _column_exists(conn, "download_jobs", "request_source"):
+        conn.execute("ALTER TABLE download_jobs ADD COLUMN request_source TEXT")
+    if not _column_exists(conn, "download_jobs", "request_action"):
+        conn.execute("ALTER TABLE download_jobs ADD COLUMN request_action TEXT")
+    if not _column_exists(conn, "download_jobs", "request_message_id"):
+        conn.execute("ALTER TABLE download_jobs ADD COLUMN request_message_id TEXT")
+    if not _column_exists(conn, "download_jobs", "requested_by"):
+        conn.execute("ALTER TABLE download_jobs ADD COLUMN requested_by TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_download_jobs_licitacion ON download_jobs(licitacion_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_download_jobs_status ON download_jobs(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_download_jobs_created ON download_jobs(created_at)")

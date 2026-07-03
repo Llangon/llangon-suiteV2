@@ -43,6 +43,7 @@ except ImportError:
 ACTION_DISCARD = "01"
 ACTION_DOWNLOAD_REVIEW = "02"
 ACTION_PREPARE = "03"
+ACTION_AI_SUMMARY = "04"
 ACTION_REVIEWED = "99"
 
 ACTION_MAILBOX_TO_DEFAULT = "info3llangon@gmail.com"
@@ -70,6 +71,13 @@ ACTION_DEFINITIONS: dict[str, dict[str, str]] = {
         "state": ESTADO_PREPARAR_FICHA,
         "body_label": "Preparar ficha de licitación.",
         "comment": "Acción recibida desde correo de revisión Infonalia: Nuria solicitó PREPARAR FICHA.",
+    },
+    ACTION_AI_SUMMARY: {
+        "name": "Solicitar resumen IA",
+        "subject": "Solicitar resumen IA de licitación",
+        "state": ESTADO_DESCARGAR_PARA_VER,
+        "body_label": "Solicitar resumen IA de licitación.",
+        "comment": "Acción futura reservada para solicitar resumen IA tras descargar la documentación.",
     },
     ACTION_REVIEWED: {
         "name": "Revisado",
@@ -112,6 +120,11 @@ def action_mailbox_cc(environ: Mapping[str, str] | None = None) -> str:
 def action_notify_email(environ: Mapping[str, str] | None = None) -> str:
     env = environ or os.environ
     return clean_text(env.get("LLANGON_ACTION_NOTIFY_EMAIL")) or ACTION_NOTIFY_EMAIL_DEFAULT
+
+
+def review_ai_summary_button_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    env = environ or os.environ
+    return clean_text(env.get("LLANGON_REVIEW_AI_SUMMARY_BUTTON_ENABLED") or "0").lower() in {"1", "true", "yes", "on"}
 
 
 def split_emails(value: object) -> list[str]:
@@ -736,6 +749,52 @@ def _mark_action(
     )
 
 
+def _request_automatic_download_after_email_action(
+    conn: sqlite3.Connection,
+    *,
+    licitacion_id: int,
+    action_code: str,
+    sender_email: str,
+    source_message_id: str,
+    timestamp: str,
+) -> dict[str, object]:
+    if action_code not in {ACTION_DOWNLOAD_REVIEW, ACTION_PREPARE}:
+        return {"requested": False, "reason": "action_without_download"}
+    try:
+        try:
+            from . import app as app_module
+        except ImportError:
+            import app as app_module  # type: ignore
+
+        queue_result = app_module.request_licitacion_download(
+            conn,
+            licitacion_id,
+            timestamp=timestamp,
+            request_source=app_module.DOWNLOAD_REQUEST_SOURCE_EMAIL_ACTION,
+            request_action=ACTION_DEFINITIONS[action_code]["name"],
+            request_message_id=source_message_id,
+            requested_by=sender_email,
+        )
+        worker_result: dict[str, object] | None = None
+        if queue_result.get("created") and queue_result.get("job_id"):
+            worker_result = app_module.start_download_worker(job_id=int(queue_result["job_id"]))
+        return {
+            "requested": True,
+            "queue": queue_result,
+            "worker": worker_result or {},
+        }
+    except Exception as exc:
+        return {
+            "requested": True,
+            "queue": {
+                "ok": False,
+                "status": "error",
+                "message": f"No se pudo solicitar la descarga automática: {exc}",
+            },
+            "worker": {},
+        }
+
+
 def _process_individual_action(
     conn: sqlite3.Connection,
     *,
@@ -841,7 +900,30 @@ def _process_individual_action(
             timestamp=timestamp,
         )
     refresh_day_status(conn, review_id, timestamp=timestamp)
+    download_request = _request_automatic_download_after_email_action(
+        conn,
+        licitacion_id=licitacion_id,
+        action_code=action_code,
+        sender_email=sender_email,
+        source_message_id=source_message_id,
+        timestamp=timestamp,
+    )
     message = f"Acción {action['name']} aplicada a la licitación {licitacion_id}."
+    queue_info = download_request.get("queue") if isinstance(download_request, dict) else None
+    if isinstance(queue_info, Mapping) and action_code in {ACTION_DOWNLOAD_REVIEW, ACTION_PREPARE}:
+        queue_status = clean_text(queue_info.get("status"))
+        if queue_status == "queued":
+            message += f" Descarga automática encolada (trabajo {queue_info.get('job_id')})."
+        elif queue_status == "already_pending":
+            message += f" Descarga automática ya pendiente (trabajo {queue_info.get('job_id')})."
+        elif queue_status == "already_downloaded":
+            message += " La documentación ya estaba descargada."
+        elif queue_status == "error":
+            message += f" Error al solicitar la descarga automática: {clean_text(queue_info.get('message'))}."
+    worker_info = download_request.get("worker") if isinstance(download_request, dict) else None
+    if isinstance(worker_info, Mapping) and queue_info and clean_text(queue_info.get("status")) == "queued":
+        if worker_info.get("started") is False:
+            message += f" Worker de descarga no iniciado automáticamente: {clean_text(worker_info.get('error'))}."
     _insert_email_action_event(
         conn,
         created_at=timestamp,
@@ -865,6 +947,7 @@ def _process_individual_action(
         "old_state": old_state,
         "new_state": new_state,
         "changed": changed,
+        "download_request": download_request,
         "message": message,
     }
 

@@ -165,7 +165,7 @@ El flujo de documentos recomendado sigue siendo Dropbox local/Desktop con `INFON
 
 La Suite puede vigilar el buzón técnico `info3llangon@gmail.com` para importar automáticamente el correo diario de Infonalia. Gmail debe aplicar previamente la etiqueta IMAP `LLANGON_INFONALIA` a esos mensajes; la Suite no busca en todo `INBOX` ni filtra por remitente/asunto en `IMAP SEARCH`.
 
-El importador selecciona la etiqueta configurada, busca únicamente correos no leídos con `UID SEARCH UNSEEN` y recupera cabeceras/cuerpo con `BODY.PEEK`. Un correo se considera importable cuando el cuerpo parsea bloques reales de LICITACIONES Infonalia. Si no hay estructura válida, queda sin marcar como leído y se registra el motivo controlado.
+El importador selecciona la etiqueta configurada, busca únicamente correos no leídos con `UID SEARCH UNSEEN` y recupera cabeceras/cuerpo con `BODY.PEEK`. Un correo se considera importable cuando el cuerpo parsea bloques reales de LICITACIONES Infonalia. Para cada licitación reutiliza el mismo enriquecimiento por PDF que la importación manual: descarga el anuncio de Infonalia, lo convierte con `pdftotext.exe` y completa campos como tipo de contrato y hora límite cuando aparecen en el PDF. Si no hay estructura válida, queda sin marcar como leído y se registra el motivo controlado.
 
 Variables principales:
 
@@ -181,7 +181,7 @@ LLANGON_INFONALIA_IMPORT_POLL_MINUTES=30
 LLANGON_INFONALIA_IMPORT_TEST_FORWARDERS=
 ```
 
-Reutiliza la configuración IMAP `LLANGON_ACTIONS_IMAP_*`. `LLANGON_INFONALIA_IMPORT_FROM`, `LLANGON_INFONALIA_IMPORT_SUBJECT` y `LLANGON_INFONALIA_IMPORT_LOOKBACK_HOURS` quedan como referencia/compatibilidad, pero el flujo normal por etiqueta no depende de ellos. La lectura usa `BODY.PEEK`: no marca correos como leídos por inspeccionarlos, no borra mensajes y solo marca como leído un candidato cuando termina importado o reconocido como duplicado. La tabla `infonalia_email_imports` guarda `message_id` y huella del cuerpo para no importar ni notificar dos veces el mismo correo aunque se vuelva a marcar como no leído.
+Reutiliza la configuración IMAP `LLANGON_ACTIONS_IMAP_*`. `LLANGON_INFONALIA_IMPORT_FROM`, `LLANGON_INFONALIA_IMPORT_SUBJECT` y `LLANGON_INFONALIA_IMPORT_LOOKBACK_HOURS` quedan como referencia/compatibilidad, pero el flujo normal por etiqueta no depende de ellos. La lectura usa `BODY.PEEK`: no marca correos como leídos por inspeccionarlos, no borra mensajes y solo marca como leído un candidato cuando termina importado o reconocido como duplicado. La tabla `infonalia_email_imports` guarda `message_id` y huella del cuerpo para no importar ni notificar dos veces el mismo correo aunque se vuelva a marcar como no leído. Si un correo ya importado se reprocesa y había licitaciones incompletas, se intenta completar campos vacíos con el enriquecimiento PDF sin duplicar ni reenviar aviso. Si falta `pdftotext.exe`, revisar `INFONALIA_PDFTOTEXT`; se registrará aviso por licitación y se conservarán los datos básicos.
 
 Pruebas sin tocar IMAP:
 
@@ -218,9 +218,11 @@ LLANGON_ACTIONS_IMAP_PORT=993
 LLANGON_ACTIONS_IMAP_USER=
 LLANGON_ACTIONS_IMAP_PASSWORD=
 LLANGON_ACTIONS_IMAP_FOLDER=INBOX
+LLANGON_REVIEW_AI_SUMMARY_BUTTON_ENABLED=0
 ```
 
 `LLANGON_ACTIONS_IMAP_PASSWORD` no debe subirse a Git. Si falta la configuración IMAP, el procesador queda desactivado de forma controlada y la app sigue funcionando. `LLANGON_ACTION_ALLOWED_SENDERS` debe contener el correo real desde el que Nuria enviará las órdenes; si está vacío, no se procesa ninguna orden.
+Cuando Nuria responde con `Descargar para ver` o `Preparar ficha`, la Suite mantiene el cambio de estado y además encola una descarga automática de documentación reutilizando la misma lógica de descarga de la ficha. La cola evita duplicados si ya existe un trabajo pendiente o si la documentación ya figura como descargada. `LLANGON_REVIEW_AI_SUMMARY_BUTTON_ENABLED` queda reservado para una futura acción de resumen IA y permanece desactivado por defecto.
 
 El procesador solo atiende correos cuyo asunto empieza exactamente por `LLANGON_CMD`. Los correos normales del buzón no se leen en cuerpo, no se borran y no se marcan como leídos. La lectura de candidatos usa `BODY.PEEK` para evitar añadir la marca `Leído` por inspección.
 
