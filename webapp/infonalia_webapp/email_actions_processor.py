@@ -20,6 +20,7 @@ try:
         split_emails,
     )
     from .normalization import clean_text
+    from .operational_settings import effective_text
 except ImportError:
     from email_actions import (
         action_notify_email,
@@ -29,6 +30,7 @@ except ImportError:
         split_emails,
     )
     from normalization import clean_text
+    from operational_settings import effective_text
 
 
 LOGGER = logging.getLogger(__name__)
@@ -49,19 +51,22 @@ class MailboxConfig:
 
     @property
     def complete(self) -> bool:
-        return bool(self.host and self.port and self.user and self.password)
+        return bool(self.host and self.port and self.user and self.password and self.folder)
 
 
-def mailbox_config_from_env(environ: dict[str, str] | None = None) -> MailboxConfig:
+def mailbox_config_from_env(
+    environ: dict[str, str] | None = None,
+    settings: dict[str, object] | None = None,
+) -> MailboxConfig:
     env = environ or os.environ
     return MailboxConfig(
-        host=clean_text(env.get("LLANGON_ACTIONS_IMAP_HOST") or "imap.gmail.com"),
-        port=int(clean_text(env.get("LLANGON_ACTIONS_IMAP_PORT")) or "993"),
-        user=clean_text(env.get("LLANGON_ACTIONS_IMAP_USER")),
+        host=effective_text("actions_imap_host", settings=settings, environ=env),
+        port=int(effective_text("actions_imap_port", settings=settings, environ=env) or "993"),
+        user=effective_text("actions_imap_user", settings=settings, environ=env),
         password=clean_text(env.get("LLANGON_ACTIONS_IMAP_PASSWORD")),
-        folder=clean_text(env.get("LLANGON_ACTIONS_IMAP_FOLDER")) or "INBOX",
-        allowed_senders=split_emails(env.get("LLANGON_ACTION_ALLOWED_SENDERS")),
-        notify_email=action_notify_email(env),
+        folder=effective_text("actions_imap_folder", settings=settings, environ=env) or "INBOX",
+        allowed_senders=split_emails(effective_text("action_allowed_senders", settings=settings, environ=env)),
+        notify_email=effective_text("action_notify_email", settings=settings, environ=env) or action_notify_email(env),
     )
 
 

@@ -87,6 +87,8 @@ def test_notification_recipients_for_target_lists_active_users_and_deduplicates(
 def test_build_notification_message_preserves_headers_text_and_html(tmp_path: Path) -> None:
     logo_path = tmp_path / "logo-llangon.png"
     logo_path.write_bytes(b"fake-png")
+    attachment = tmp_path / "resumen.pdf"
+    attachment.write_bytes(b"%PDF-1.4\nfake\n")
 
     message = build_notification_message(
         smtp_from="infonalia@example.test",
@@ -95,6 +97,7 @@ def test_build_notification_message_preserves_headers_text_and_html(tmp_path: Pa
         text_body="Texto",
         html_body="<p>HTML</p>",
         logo_path=logo_path,
+        attachments=[attachment],
     )
 
     assert message["From"] == "infonalia@example.test"
@@ -103,6 +106,7 @@ def test_build_notification_message_preserves_headers_text_and_html(tmp_path: Pa
     assert "Texto" in message.get_body(preferencelist=("plain",)).get_content()
     assert "HTML" in message.get_body(preferencelist=("html",)).get_content()
     assert any(part.get("Content-ID") == "<llangon-logo>" for part in message.walk())
+    assert any(part.get_filename() == "resumen.pdf" for part in message.iter_attachments())
 
 
 def test_attach_logo_to_message_ignores_missing_or_invalid_message(tmp_path: Path) -> None:
@@ -136,6 +140,7 @@ def test_send_notification_email_with_settings_returns_configuration_errors(
         body="Cuerpo",
         html_body="<p>Cuerpo</p>",
         logo_path=None,
+        attachments=None,
         now=lambda: "2026-06-12T10:00:00",
         smtp_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no smtp")),
         smtp_ssl_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no smtp ssl")),
@@ -167,6 +172,7 @@ def test_send_notification_email_with_settings_uses_tls_login_and_send() -> None
         body="",
         html_body="<p>Asunto</p>",
         logo_path=None,
+        attachments=None,
         now=lambda: "2026-06-12T10:00:00",
         smtp_factory=smtp_factory,
         smtp_ssl_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no ssl")),
@@ -208,6 +214,7 @@ def test_send_notification_email_with_settings_uses_ssl_without_starttls() -> No
         body="Cuerpo",
         html_body="<p>Cuerpo</p>",
         logo_path=None,
+        attachments=None,
         now=lambda: "2026-06-12T10:00:00",
         smtp_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no plain smtp")),
         smtp_ssl_factory=smtp_ssl_factory,
@@ -235,6 +242,7 @@ def test_send_notification_email_with_settings_preserves_windows_socket_error_me
         body="Cuerpo",
         html_body="<p>Cuerpo</p>",
         logo_path=None,
+        attachments=None,
         now=lambda: "2026-06-12T10:00:00",
         smtp_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
         smtp_ssl_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no ssl")),

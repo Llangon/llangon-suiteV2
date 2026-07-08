@@ -26,12 +26,14 @@ try:
     from .formatting import format_date_es, format_datetime_es
     from .msg_parsing import extraer_fecha_msg
     from .normalization import clean_text
+    from .operational_settings import effective_bool, effective_int, effective_text
 except ImportError:
     from email_templates import build_llangon_email_shell
     from environment import load_env_file
     from formatting import format_date_es, format_datetime_es
     from msg_parsing import extraer_fecha_msg
     from normalization import clean_text
+    from operational_settings import effective_bool, effective_int, effective_text
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -62,7 +64,7 @@ class InfonaliaImportConfig:
 
     @property
     def complete(self) -> bool:
-        return bool(self.host and self.port and self.user and self.password)
+        return bool(self.host and self.port and self.user and self.password and self.folder and self.notify_email)
 
 
 def env_bool(name: str, default: bool = False, environ: dict[str, str] | None = None) -> bool:
@@ -90,21 +92,24 @@ def split_emails(value: object) -> list[str]:
     return result
 
 
-def config_from_env(environ: dict[str, str] | None = None) -> InfonaliaImportConfig:
+def config_from_env(
+    environ: dict[str, str] | None = None,
+    settings: dict[str, object] | None = None,
+) -> InfonaliaImportConfig:
     env = environ or os.environ
     return InfonaliaImportConfig(
-        enabled=env_bool("LLANGON_INFONALIA_IMPORT_ENABLED", False, env),
-        host=clean_text(env.get("LLANGON_ACTIONS_IMAP_HOST") or "imap.gmail.com"),
-        port=env_int("LLANGON_ACTIONS_IMAP_PORT", 993, env, minimum=1),
-        user=clean_text(env.get("LLANGON_ACTIONS_IMAP_USER")),
+        enabled=effective_bool("infonalia_import_enabled", settings=settings, environ=env),
+        host=effective_text("actions_imap_host", settings=settings, environ=env) or "imap.gmail.com",
+        port=effective_int("actions_imap_port", 993, settings=settings, environ=env, minimum=1),
+        user=effective_text("actions_imap_user", settings=settings, environ=env),
         password=clean_text(env.get("LLANGON_ACTIONS_IMAP_PASSWORD")),
-        folder=clean_text(env.get("LLANGON_INFONALIA_IMPORT_FOLDER") or "LLANGON_INFONALIA"),
+        folder=effective_text("infonalia_import_folder", settings=settings, environ=env) or "LLANGON_INFONALIA",
         expected_from=clean_text(env.get("LLANGON_INFONALIA_IMPORT_FROM")) or EXPECTED_FROM,
         expected_subject=clean_text(env.get("LLANGON_INFONALIA_IMPORT_SUBJECT")) or EXPECTED_SUBJECT,
-        notify_email=clean_text(env.get("LLANGON_INFONALIA_IMPORT_NOTIFY_EMAIL")) or "info3@llangon.com",
-        mark_read_on_success=env_bool("LLANGON_INFONALIA_IMPORT_MARK_READ_ON_SUCCESS", True, env),
+        notify_email=effective_text("infonalia_import_notify_email", settings=settings, environ=env) or "info3@llangon.com",
+        mark_read_on_success=effective_bool("infonalia_import_mark_read_on_success", settings=settings, environ=env),
         test_forwarders=split_emails(env.get("LLANGON_INFONALIA_IMPORT_TEST_FORWARDERS")),
-        lookback_hours=env_int("LLANGON_INFONALIA_IMPORT_LOOKBACK_HOURS", 48, env, minimum=0),
+        lookback_hours=effective_int("infonalia_import_lookback_hours", 48, settings=settings, environ=env, minimum=1),
     )
 
 
@@ -385,6 +390,11 @@ def ensure_infonalia_email_import_schema(conn: sqlite3.Connection) -> None:
             skipped_duplicate_count INTEGER NOT NULL DEFAULT 0,
             error_message TEXT,
             notification_sent_at TEXT,
+            telegram_notification_attempted_at TEXT,
+            telegram_notification_status TEXT,
+            telegram_notification_target TEXT,
+            telegram_notification_error TEXT,
+            telegram_notification_message_id TEXT,
             FOREIGN KEY (infonalia_dia_id) REFERENCES infonalia_dias(id)
         )
         """
@@ -392,6 +402,17 @@ def ensure_infonalia_email_import_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_infonalia_email_imports_message ON infonalia_email_imports(message_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_infonalia_email_imports_hash ON infonalia_email_imports(body_hash)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_infonalia_email_imports_status ON infonalia_email_imports(status)")
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(infonalia_email_imports)").fetchall()}
+    if "telegram_notification_attempted_at" not in existing_columns:
+        conn.execute("ALTER TABLE infonalia_email_imports ADD COLUMN telegram_notification_attempted_at TEXT")
+    if "telegram_notification_status" not in existing_columns:
+        conn.execute("ALTER TABLE infonalia_email_imports ADD COLUMN telegram_notification_status TEXT")
+    if "telegram_notification_target" not in existing_columns:
+        conn.execute("ALTER TABLE infonalia_email_imports ADD COLUMN telegram_notification_target TEXT")
+    if "telegram_notification_error" not in existing_columns:
+        conn.execute("ALTER TABLE infonalia_email_imports ADD COLUMN telegram_notification_error TEXT")
+    if "telegram_notification_message_id" not in existing_columns:
+        conn.execute("ALTER TABLE infonalia_email_imports ADD COLUMN telegram_notification_message_id TEXT")
 
 
 def existing_import_row(conn: sqlite3.Connection, *, message_id: str, body_hash: str) -> sqlite3.Row | None:
@@ -626,6 +647,38 @@ def import_parsed_email(
                     "UPDATE infonalia_email_imports SET notification_sent_at = ? WHERE id = ?",
                     (sent_at, import_id),
                 )
+        telegram_delivery = {"ok": False, "status": "", "target": "", "message_id": None, "error": ""}
+        if notify:
+            try:
+                telegram_delivery = _deliver_import_telegram_notification(
+                    conn,
+                    app_module=app,
+                    parsed=parsed,
+                    summary=summary
+                    | {
+                        "dia_id": dia_id,
+                        "imported": imported,
+                        "duplicates": duplicates,
+                    },
+                )
+            except Exception as exc:
+                telegram_delivery = {
+                    "ok": False,
+                    "status": "failed",
+                    "target": "",
+                    "message_id": None,
+                    "error": f"No se pudo enviar el Telegram: {exc}",
+                }
+                LOGGER.warning("Importación Infonalia realizada, pero falló el Telegram: %s", exc)
+            _mark_import_telegram_result(
+                conn,
+                import_id=import_id,
+                timestamp=now_iso(),
+                status=str(telegram_delivery.get("status") or "failed"),
+                target=str(telegram_delivery.get("target") or ""),
+                error=str(telegram_delivery.get("error") or ""),
+                message_id=telegram_delivery.get("message_id"),
+            )
         summary.update(
             {
                 "status": "imported",
@@ -634,11 +687,138 @@ def import_parsed_email(
                 "dia_id": dia_id,
                 "notified": notified,
                 "notification_error": notification_error,
+                "telegram_notified": 1 if telegram_delivery.get("ok") else 0,
+                "telegram_notification_status": clean_text(telegram_delivery.get("status")),
+                "telegram_notification_target": clean_text(telegram_delivery.get("target")),
+                "telegram_notification_error": clean_text(telegram_delivery.get("error")),
                 "pdf_warning_count": len(pdf_warnings),
                 "pdf_warnings": pdf_warnings,
             }
         )
         return summary
+
+
+def build_import_telegram_message(parsed: dict[str, object], summary: dict[str, object]) -> str:
+    fecha = clean_text(summary.get("fecha_infonalia"))
+    fecha_label = format_date_es(fecha) or fecha or "Sin fecha"
+    received_label = format_datetime_es(parsed.get("received_at")) or clean_text(parsed.get("received_at")) or "No consta"
+    mailbox_user = clean_text(summary.get("mailbox_user")) or "info3.llangon@gmail.com"
+    parsed_items = int(summary.get("parsed_items") or 0)
+    imported = int(summary.get("imported") or 0)
+    duplicates = int(summary.get("duplicates") or 0)
+    dia_id = clean_text(summary.get("dia_id")) or "No consta"
+
+    return "\n".join(
+        [
+            "📥 Nuevo día de Infonalia importado",
+            "",
+            "Ya tienes disponible en la Suite un nuevo día de Infonalia para revisar.",
+            "",
+            f"Día: {fecha_label}",
+            f"Licitaciones importadas: {imported}",
+            f"Duplicadas detectadas: {duplicates}",
+            f"Registros detectados: {parsed_items}",
+            "Correo origen: Infonalia",
+            f"Buzón revisado: {mailbox_user}",
+            f"Fecha/hora del correo: {received_label}",
+            f"Asunto: {clean_text(parsed.get('subject')) or 'No consta'}",
+            f"Día Infonalia en Suite: {dia_id}",
+            "",
+            "Puedes revisarlo en la Suite.",
+        ]
+    )
+
+
+def _deliver_import_telegram_notification(
+    conn: sqlite3.Connection,
+    *,
+    app_module: Any,
+    parsed: dict[str, object],
+    summary: dict[str, object],
+) -> dict[str, object]:
+    text = build_import_telegram_message(parsed, summary)
+    errors: list[str] = []
+
+    for admin_row in app_module._preferred_admin_rows_for_telegram(conn):
+        username = clean_text(admin_row["username"])
+        result = app_module.send_telegram_user_message(admin_row, text, env=os.environ)
+        if result.ok:
+            LOGGER.info(
+                "Telegram Infonalia enviado al admin. message_id=%s target=user:%s dia_id=%s",
+                clean_text(parsed.get("message_id")),
+                username,
+                clean_text(summary.get("dia_id")),
+            )
+            return {
+                "ok": True,
+                "status": "sent_user",
+                "target": f"user:{username}",
+                "message_id": result.telegram_message_id,
+                "error": "",
+            }
+        errors.append(f"user:{username}:{result.error_code or result.status}")
+
+    group_result = app_module.send_telegram_group_message(text, env=os.environ)
+    if group_result.ok:
+        LOGGER.info(
+            "Telegram Infonalia enviado al grupo. message_id=%s dia_id=%s",
+            clean_text(parsed.get("message_id")),
+            clean_text(summary.get("dia_id")),
+        )
+        return {
+            "ok": True,
+            "status": "sent_group",
+            "target": "group",
+            "message_id": group_result.telegram_message_id,
+            "error": "",
+        }
+
+    errors.append(f"group:{group_result.error_code or group_result.status}")
+    error_text = "; ".join(error for error in errors if error)[:1000]
+    LOGGER.warning(
+        "Telegram Infonalia no enviado. message_id=%s dia_id=%s errors=%s",
+        clean_text(parsed.get("message_id")),
+        clean_text(summary.get("dia_id")),
+        error_text,
+    )
+    return {
+        "ok": False,
+        "status": "failed",
+        "target": "",
+        "message_id": None,
+        "error": error_text or clean_text(group_result.error_message) or "Telegram no configurado.",
+    }
+
+
+def _mark_import_telegram_result(
+    conn: sqlite3.Connection,
+    *,
+    import_id: int,
+    timestamp: str,
+    status: str,
+    target: str = "",
+    error: str = "",
+    message_id: object = None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE infonalia_email_imports
+        SET telegram_notification_attempted_at = ?,
+            telegram_notification_status = ?,
+            telegram_notification_target = ?,
+            telegram_notification_error = ?,
+            telegram_notification_message_id = ?
+        WHERE id = ?
+        """,
+        (
+            timestamp,
+            clean_text(status),
+            clean_text(target),
+            clean_text(error)[:1000],
+            clean_text(message_id),
+            import_id,
+        ),
+    )
 
 
 def build_import_notification(parsed: dict[str, object], summary: dict[str, object]) -> tuple[str, str, str]:

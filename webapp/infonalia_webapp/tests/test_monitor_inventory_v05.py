@@ -265,6 +265,31 @@ def test_inventory_mode_reconciles_route_from_unique_marker_and_tree_reports_it(
     assert payload["count"] == 1
 
 
+def test_inventory_mode_reconciles_legacy_month_route_to_year_month_marker(tmp_path: Path) -> None:
+    root = tmp_path / "ReplicaDb"
+    folder = root / "2026" / "07 JULIO" / "licitacion real"
+    folder.mkdir(parents=True)
+    (folder / "33.llangon").write_text("", encoding="utf-8")
+    db_path = tmp_path / "infonalia.db"
+    make_db(db_path, [(33, "07 JULIO\\licitacion real")])
+
+    report = run_monitor("inventory", db_path=db_path, root=root, normalize_folder_path=lambda path: str(Path(path).relative_to(root)))
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute("SELECT ruta_carpeta, seguimiento_marker_warning FROM licitaciones WHERE id = 33").fetchone()
+        event = conn.execute("SELECT * FROM licitacion_path_reconciliation_events WHERE licitacion_id = 33 ORDER BY id DESC LIMIT 1").fetchone()
+    finally:
+        conn.close()
+
+    assert report["route_updates_count"] == 1
+    assert Path(row["ruta_carpeta"]).parts == ("2026", "07 JULIO", "licitacion real")
+    assert row["seguimiento_marker_warning"] == ""
+    assert event["old_path"] == "07 JULIO\\licitacion real"
+    assert Path(event["new_path"]).parts == ("2026", "07 JULIO", "licitacion real")
+
+
 def test_inventory_mode_does_not_update_duplicate_marker_conflict(tmp_path: Path) -> None:
     root = tmp_path / "ReplicaDb"
     folder_a = root / "2026" / "A"
@@ -316,6 +341,73 @@ def test_inventory_mode_records_missing_folder_without_marker_without_route_chan
     assert row["seguimiento_marker_warning"] == "Carpeta no encontrada y sin marcador localizable."
     assert event["result"] == "not_found"
     assert event["reason"] == "folder_missing_without_marker"
+    assert "C:\\ReplicaDb" not in (event["old_path"] or "")
+    assert '"normalized_path": "2026\\\\carpeta inexistente"' in event["details_json"]
+    assert '"reason": "missing_after_normalization"' in event["details_json"]
+
+
+def test_inventory_mode_normalizes_absolute_dropbox_route_once(tmp_path: Path) -> None:
+    root = tmp_path / "ReplicaDb"
+    folder = root / "2026" / "07 JULIO" / "licitacion real"
+    folder.mkdir(parents=True)
+    (folder / "33.llangon").write_text("", encoding="utf-8")
+    db_path = tmp_path / "infonalia.db"
+    make_db(db_path, [(33, str(folder))])
+
+    first = run_monitor("inventory", db_path=db_path, root=root)
+    second = run_monitor("inventory", db_path=db_path, root=root)
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute("SELECT ruta_carpeta FROM licitaciones WHERE id = 33").fetchone()
+        updated_events = conn.execute(
+            """
+            SELECT COUNT(*) FROM licitacion_path_reconciliation_events
+            WHERE licitacion_id = 33 AND result = 'updated'
+            """
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert first["route_updates_count"] == 1
+    assert second["route_updates_count"] == 0
+    assert Path(row["ruta_carpeta"]).parts == ("2026", "07 JULIO", "licitacion real")
+    assert updated_events == 1
+
+
+def test_inventory_mode_is_idempotent_for_persistent_missing_folder_warning(tmp_path: Path) -> None:
+    root = tmp_path / "ReplicaDb"
+    (root / "2026").mkdir(parents=True)
+    db_path = tmp_path / "infonalia.db"
+    make_db(db_path, [(33, "2026\\carpeta inexistente")])
+
+    first = run_monitor("inventory", db_path=db_path, root=root)
+    second = run_monitor("inventory", db_path=db_path, root=root)
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT ruta_carpeta, seguimiento_marker_warning, updated_at FROM licitaciones WHERE id = 33"
+        ).fetchone()
+        not_found_events = conn.execute(
+            """
+            SELECT COUNT(*) FROM licitacion_path_reconciliation_events
+            WHERE licitacion_id = 33 AND result = 'not_found'
+            """
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert first["route_updates_count"] == 0
+    assert second["route_updates_count"] == 0
+    assert first["status"] == "completed"
+    assert second["status"] == "completed"
+    assert first["warnings"] == second["warnings"]
+    assert row["ruta_carpeta"] == "2026\\carpeta inexistente"
+    assert row["seguimiento_marker_warning"] == "Carpeta no encontrada y sin marcador localizable."
+    assert not_found_events == 1
 
 
 def test_document_tree_payload_uses_inventory_as_folder_tree(tmp_path: Path) -> None:
@@ -459,7 +551,7 @@ def test_static_detail_ui_hides_inventory_specific_summary_and_groups() -> None:
     script = Path("webapp/infonalia_webapp/static/app.js").read_text(encoding="utf-8")
     documents_render = script.split("function renderLicitacionDocuments", 1)[1].split("function renderLicitacionTracking", 1)[0]
 
-    assert "document_summary" in script
+    assert "documentCountLabel" in script
     assert "document_groups" not in script
     assert "renderDocumentSummary(item)" not in documents_render
     assert "item.document_groups" not in documents_render
@@ -470,13 +562,16 @@ def test_static_detail_ui_hides_inventory_specific_summary_and_groups() -> None:
 
 def test_static_detail_ui_uses_header_actions_and_document_tree() -> None:
     script = Path("webapp/infonalia_webapp/static/app.js").read_text(encoding="utf-8")
-    detail_render = script.split("function renderLicitacionDetailView", 1)[1].split("function renderDetailHeaderActions", 1)[0]
+    detail_render = script.split("function renderLicitacionDetailView", 1)[1].split("function renderDetailActionBar", 1)[0]
     summary_tab = detail_render.split('data-detail-tab-panel="resumen"', 1)[1].split('data-detail-tab-panel="documentos-seguimiento"', 1)[0]
     docs_tab = detail_render.split('data-detail-tab-panel="documentos-seguimiento"', 1)[1].split('data-detail-tab-panel="ai"', 1)[0]
 
-    assert "renderDetailHeaderActions(item)" in detail_render
+    assert "renderDetailActionBar(item)" in detail_render
     assert "detail-action-bar" not in summary_tab
-    assert "renderLicitacionTracking(item)" in docs_tab
+    assert "renderDocumentosTabActions(item, folder)" in docs_tab
+    assert "renderFolderPanel(item, folder, folderLabel)" in docs_tab
+    assert "renderLicitacionTrackingSummary(item)" in docs_tab
+    assert "renderLicitacionHistory(item)" in docs_tab
     assert "data-document-tree-panel" in docs_tab
     assert "renderLicitacionDocuments(item)" not in docs_tab
     assert "/document-tree" in script

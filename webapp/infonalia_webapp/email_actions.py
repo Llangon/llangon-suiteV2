@@ -208,17 +208,28 @@ def ensure_email_action_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    additions = {
+    code_additions = {
         "processed_at": "TEXT",
         "processed_by_email": "TEXT",
         "source_message_id": "TEXT",
         "result_message": "TEXT",
         "error_message": "TEXT",
     }
+    event_additions = {
+        "telegram_notification_status": "TEXT",
+        "telegram_notification_attempted_at": "TEXT",
+        "telegram_notification_target": "TEXT",
+        "telegram_notification_error": "TEXT",
+        "telegram_notification_message_id": "TEXT",
+    }
     existing = {row[1] for row in conn.execute("PRAGMA table_info(email_action_codes)").fetchall()}
-    for column, definition in additions.items():
+    for column, definition in code_additions.items():
         if column not in existing:
             conn.execute(f"ALTER TABLE email_action_codes ADD COLUMN {column} {definition}")
+    event_existing = {row[1] for row in conn.execute("PRAGMA table_info(email_action_events)").fetchall()}
+    for column, definition in event_additions.items():
+        if column not in event_existing:
+            conn.execute(f"ALTER TABLE email_action_events ADD COLUMN {column} {definition}")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_email_action_codes_code ON email_action_codes(code)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_email_action_codes_review ON email_action_codes(review_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_email_action_codes_licitacion ON email_action_codes(licitacion_id)")

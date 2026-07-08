@@ -11,6 +11,7 @@ from webapp.infonalia_webapp.storage_paths import (
     DOWNLOAD_BAT_FILENAME,
     default_dropbox_folder,
     dropbox_relative_path,
+    expected_dropbox_relative_folder,
     folder_descriptor,
     folder_path_for_storage,
     get_nombre_mes,
@@ -77,6 +78,39 @@ def test_default_dropbox_folder_preserves_current_date_shape(tmp_path) -> None:
     assert get_nombre_mes(6) == "JUNIO"
 
 
+def test_expected_dropbox_relative_folder_includes_year_month_and_leaf() -> None:
+    row = {
+        "expediente": "1718652R",
+        "provincia": "Alicante",
+        "organismo": "Alcaldia del Ayuntamiento de Pinoso (Alicante)",
+        "objeto": "Suministro de alimentos para el comedor de la escuela infantil municipal",
+        "fecha_limite": "2026-07-20",
+        "hora_limite": "14:00",
+    }
+
+    relative = expected_dropbox_relative_folder(row)
+
+    assert relative.parts[:2] == ("2026", "07 JULIO")
+    assert relative.name == "20 JULIO 1400 ALICANTE EL PINOSO ESCUELA INFANTIL 1718652R"
+
+
+def test_default_dropbox_folder_falls_back_to_fecha_infonalia_with_year_month(tmp_path) -> None:
+    row = {
+        "expediente": "EXP-7",
+        "provincia": "Jaen",
+        "organismo": "Ayuntamiento de Martos",
+        "objeto": "",
+        "fecha_limite": "",
+        "fecha_infonalia": "2026-07-02",
+        "hora_limite": "",
+    }
+
+    folder = default_dropbox_folder(row, tmp_path)
+
+    assert folder.parts[-3:-1] == ("2026", "07 JULIO")
+    assert folder.name == "02 JULIO JAEN MARTOS EXP7"
+
+
 def test_resolve_destination_folder_uses_download_root_without_dropbox(tmp_path) -> None:
     row = {
         "id": 7,
@@ -88,6 +122,43 @@ def test_resolve_destination_folder_uses_download_root_without_dropbox(tmp_path)
     destination = resolve_destination_folder(row, download_root=tmp_path, dropbox_root=None)
 
     assert destination == tmp_path / "2026-06-30 EXP-7"
+
+
+def test_resolve_destination_folder_rehomes_missing_legacy_month_route_under_year(tmp_path) -> None:
+    dropbox_root = tmp_path / "00000 LLANGON"
+    dropbox_root.mkdir()
+    row = {
+        "id": 7,
+        "expediente": "EXP-7",
+        "ruta_carpeta": r"07 JULIO\20 JULIO 1400 ALICANTE EL PINOSO ESCUELA INFANTIL EXP7",
+        "fecha_limite": "2026-07-20",
+        "hora_limite": "14:00",
+        "provincia": "Alicante",
+        "organismo": "Ayuntamiento de Pinoso",
+        "objeto": "Suministro de alimentos para la escuela infantil",
+    }
+
+    destination = resolve_destination_folder(row, download_root=tmp_path / "descargas", dropbox_root=dropbox_root)
+
+    assert destination == dropbox_root / "2026" / "07 JULIO" / "20 JULIO 1400 ALICANTE EL PINOSO ESCUELA INFANTIL EXP7"
+    assert not (dropbox_root / "07 JULIO").exists()
+
+
+def test_resolve_destination_folder_keeps_existing_legacy_month_route_readable(tmp_path) -> None:
+    dropbox_root = tmp_path / "00000 LLANGON"
+    legacy_folder = dropbox_root / "07 JULIO" / "carpeta antigua"
+    legacy_folder.mkdir(parents=True)
+    row = {
+        "id": 7,
+        "expediente": "EXP-7",
+        "ruta_carpeta": r"07 JULIO\carpeta antigua",
+        "fecha_limite": "2026-07-20",
+        "hora_limite": "14:00",
+    }
+
+    destination = resolve_destination_folder(row, download_root=tmp_path / "descargas", dropbox_root=dropbox_root)
+
+    assert destination == legacy_folder
 
 
 def test_storage_root_for_destination_rejects_outside_path(tmp_path) -> None:

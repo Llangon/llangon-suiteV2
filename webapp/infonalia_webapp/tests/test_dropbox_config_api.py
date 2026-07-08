@@ -155,6 +155,9 @@ def test_storage_status_uses_configured_dropbox_before_legacy(monkeypatch, tmp_p
     assert app.find_dropbox_root() == dropbox_root
     assert payload["local_download_root"] == str(dropbox_root)
     assert payload["dropbox_base"]["source"] == "env"
+    marker_roots = [str(root) for root in app.marker_allowed_roots()]
+    assert str(dropbox_root) in marker_roots
+    assert str(replica_root) not in marker_roots
 
 
 def test_storage_status_uses_legacy_root_as_fallback(monkeypatch, tmp_path: Path) -> None:

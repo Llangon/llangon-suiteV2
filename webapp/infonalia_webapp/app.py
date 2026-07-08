@@ -52,6 +52,11 @@ except ImportError:
     )
 
 try:
+    from .operational_settings import SETTING_DEFINITIONS, effective_bool, effective_int, effective_setting, effective_text
+except ImportError:
+    from operational_settings import SETTING_DEFINITIONS, effective_bool, effective_int, effective_setting, effective_text
+
+try:
     from .actuaciones import (
         ACTUACION_ESTADOS,
         ACTUACION_ESTADOS_ABIERTOS,
@@ -91,6 +96,21 @@ except ImportError:
         make_session_token,
         read_session_token,
         verify_password,
+    )
+
+try:
+    from .services.telegram_notifications import (
+        DEFAULT_TELEGRAM_TIMEOUT_SECONDS,
+        send_telegram_group_message,
+        send_telegram_user_message,
+        telegram_public_status,
+    )
+except ImportError:
+    from services.telegram_notifications import (
+        DEFAULT_TELEGRAM_TIMEOUT_SECONDS,
+        send_telegram_group_message,
+        send_telegram_user_message,
+        telegram_public_status,
     )
 
 try:
@@ -326,14 +346,18 @@ except ImportError:
     )
 
 try:
+    from .ai_summary_pdf import generate_ai_summary_pdf
+except ImportError:
+    from ai_summary_pdf import generate_ai_summary_pdf
+
+try:
     from .ai.config import get_ai_config
     from .ai.file_selection import AIFileSelectionError, list_ai_files
     from .ai.notifications import (
         EmailListError,
-        create_job_notifications,
+        generate_ai_summary_pdf_and_email,
         normalize_email_list,
         notification_status_payload,
-        send_pending_job_notifications,
     )
     from .ai.service import (
         cancel_ai_job,
@@ -352,10 +376,9 @@ except ImportError:
     from ai.file_selection import AIFileSelectionError, list_ai_files
     from ai.notifications import (
         EmailListError,
-        create_job_notifications,
+        generate_ai_summary_pdf_and_email,
         normalize_email_list,
         notification_status_payload,
-        send_pending_job_notifications,
     )
     from ai.service import (
         cancel_ai_job,
@@ -447,6 +470,11 @@ except ImportError:
     from db_migrations import enable_foreign_keys, run_migrations
 
 try:
+    from .infonalia_mail_importer import process_mailbox_once as process_infonalia_mailbox_once
+except ImportError:
+    from infonalia_mail_importer import process_mailbox_once as process_infonalia_mailbox_once
+
+try:
     from .document_tree import build_document_tree_payload
 except ImportError:
     from document_tree import build_document_tree_payload
@@ -478,10 +506,30 @@ try:
     from .monitor.service import MonitorError, run_automation_task, run_monitor
     from .monitor.repository import ensure_monitor_schema, get_monitor_run, list_monitor_runs
     from .monitor.scheduler import monitor_scheduler_status, start_monitor_scheduler, stop_monitor_scheduler
+    from .automation_orchestrator import (
+        automation_diagnostic,
+        automation_runs_payload,
+        automation_status_payload,
+        automation_tasks_payload,
+        run_task as run_internal_automation_task,
+        scheduler_tick as run_internal_scheduler_tick,
+        set_task_enabled as set_internal_automation_enabled,
+        windows_tasks_payload,
+    )
 except ImportError:
     from monitor.service import MonitorError, run_automation_task, run_monitor
     from monitor.repository import ensure_monitor_schema, get_monitor_run, list_monitor_runs
     from monitor.scheduler import monitor_scheduler_status, start_monitor_scheduler, stop_monitor_scheduler
+    from automation_orchestrator import (
+        automation_diagnostic,
+        automation_runs_payload,
+        automation_status_payload,
+        automation_tasks_payload,
+        run_task as run_internal_automation_task,
+        scheduler_tick as run_internal_scheduler_tick,
+        set_task_enabled as set_internal_automation_enabled,
+        windows_tasks_payload,
+    )
 
 try:
     from .actuacion_indicators import (
@@ -700,6 +748,8 @@ PREPARED_NOTICE_EMAIL_TO = (
     os.environ.get("INFONALIA_PREPARED_NOTICE_EMAIL_TO", "").strip()
     or "info3@llangon.com"
 )
+TELEGRAM_ENABLED = os.environ.get("LLANGON_TELEGRAM_ENABLED", "0").strip()
+TELEGRAM_GROUP_CHAT_ID = os.environ.get("LLANGON_TELEGRAM_GROUP_CHAT_ID", "").strip()
 ACTION_MAILBOX_TO = action_mailbox_to()
 ACTION_MAILBOX_CC = action_mailbox_cc()
 MONITOR_SCHEDULER_ENABLED = os.environ.get("MONITOR_SCHEDULER_ENABLED", "0") == "1"
@@ -916,6 +966,10 @@ def init_db() -> None:
                 role TEXT NOT NULL,
                 display_name TEXT NOT NULL,
                 email TEXT,
+                telegram_chat_id TEXT,
+                telegram_notifications_enabled INTEGER NOT NULL DEFAULT 0,
+                telegram_last_test_at TEXT,
+                telegram_last_error TEXT,
                 active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -958,6 +1012,10 @@ def init_db() -> None:
         ensure_column(conn, "notificaciones", "email_error", "TEXT")
         ensure_column(conn, "notificaciones", "read_at", "TEXT")
         ensure_column(conn, "usuarios", "email", "TEXT")
+        ensure_column(conn, "usuarios", "telegram_chat_id", "TEXT")
+        ensure_column(conn, "usuarios", "telegram_notifications_enabled", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "usuarios", "telegram_last_test_at", "TEXT")
+        ensure_column(conn, "usuarios", "telegram_last_error", "TEXT")
         ensure_column(conn, "usuarios", "active", "INTEGER NOT NULL DEFAULT 1")
         ensure_column(conn, "usuarios", "created_at", "TEXT")
         ensure_column(conn, "usuarios", "updated_at", "TEXT")
@@ -1493,6 +1551,25 @@ def list_user_records(active_only: bool = False) -> list[dict]:
         return [user_row_to_dict(row) for row in conn.execute(sql, values)]
 
 
+def update_user_telegram_test_status(
+    conn: sqlite3.Connection,
+    username: str,
+    *,
+    tested_at: str | None = None,
+    error_message: str = "",
+) -> None:
+    conn.execute(
+        """
+        UPDATE usuarios
+        SET telegram_last_test_at = ?,
+            telegram_last_error = ?,
+            updated_at = ?
+        WHERE username = ?
+        """,
+        (tested_at or "", clean_text(error_message), now_iso(), clean_text(username).lower()),
+    )
+
+
 def get_settings() -> dict[str, str]:
     with db_session() as conn:
         return {row["key"]: row["value"] or "" for row in conn.execute("SELECT key, value FROM app_settings")}
@@ -1512,6 +1589,144 @@ def update_settings(conn: sqlite3.Connection, settings: dict[str, object]) -> No
 
 def maintenance_mode_enabled() -> bool:
     return bool_text(get_setting("maintenance_mode", "0"))
+
+
+def env_enabled(name: str, default: str = "0") -> bool:
+    return bool_text(os.environ.get(name, default))
+
+
+def env_value(name: str, default: str = "") -> str:
+    return clean_text(os.environ.get(name, default))
+
+
+def env_int_value(name: str, default: int) -> int:
+    try:
+        return int(env_value(name, str(default)) or default)
+    except ValueError:
+        return default
+
+
+def configured_flag(name: str) -> bool:
+    return bool(env_value(name))
+
+
+def config_diagnostics_payload(settings: dict[str, str]) -> dict[str, object]:
+    action_enabled = effective_bool("email_actions_enabled", settings=settings)
+    action_user_configured = bool(effective_text("actions_imap_user", settings=settings))
+    action_password_configured = configured_flag("LLANGON_ACTIONS_IMAP_PASSWORD")
+    action_allowed_senders = effective_text("action_allowed_senders", settings=settings)
+    infonalia_enabled = effective_bool("infonalia_import_enabled", settings=settings)
+    infonalia_user_configured = bool(effective_text("actions_imap_user", settings=settings))
+    infonalia_password_configured = configured_flag("LLANGON_ACTIONS_IMAP_PASSWORD")
+    infonalia_folder = effective_text("infonalia_import_folder", settings=settings)
+    infonalia_notify = effective_text("infonalia_import_notify_email", settings=settings)
+    return {
+        "mailboxes": {
+            "email_actions": {
+                "enabled": action_enabled,
+                "configured": action_enabled
+                and action_user_configured
+                and action_password_configured
+                and bool(effective_text("actions_imap_host", settings=settings))
+                and bool(effective_text("actions_imap_folder", settings=settings))
+                and bool(action_allowed_senders),
+                "folder": effective_text("actions_imap_folder", settings=settings) or "INBOX",
+                "user_configured": action_user_configured,
+                "password_configured": action_password_configured,
+                "allowed_senders": action_allowed_senders or "No configurado",
+                "notify_email": effective_text("action_notify_email", settings=settings),
+                "mailbox_to": effective_text("action_mailbox_to", settings=settings),
+                "mailbox_cc": effective_text("action_mailbox_cc", settings=settings),
+                "host": effective_text("actions_imap_host", settings=settings),
+                "port": effective_int("actions_imap_port", 993, settings=settings, minimum=1),
+                "poll_minutes": effective_int("email_actions_poll_minutes", 10, settings=settings, minimum=1),
+                "sources": {
+                    key: effective_setting(key, settings=settings)["label"]
+                    for key in (
+                        "email_actions_enabled",
+                        "email_actions_poll_minutes",
+                        "action_mailbox_to",
+                        "action_mailbox_cc",
+                        "action_notify_email",
+                        "action_allowed_senders",
+                        "actions_imap_host",
+                        "actions_imap_port",
+                        "actions_imap_user",
+                        "actions_imap_folder",
+                    )
+                },
+            },
+            "infonalia_import": {
+                "enabled": infonalia_enabled,
+                "configured": infonalia_enabled
+                and infonalia_user_configured
+                and infonalia_password_configured
+                and bool(infonalia_folder)
+                and bool(infonalia_notify),
+                "folder": infonalia_folder or "LLANGON_INFONALIA",
+                "notify_email": infonalia_notify or "info3@llangon.com",
+                "poll_minutes": effective_int("infonalia_import_poll_minutes", 30, settings=settings, minimum=1),
+                "lookback_hours": effective_int("infonalia_import_lookback_hours", 48, settings=settings, minimum=1),
+                "mark_read_on_success": effective_bool("infonalia_import_mark_read_on_success", settings=settings),
+                "expected_from": env_value("LLANGON_INFONALIA_IMPORT_FROM", "envios@infonalia.net"),
+                "expected_subject": env_value("LLANGON_INFONALIA_IMPORT_SUBJECT"),
+                "test_forwarders_configured": configured_flag("LLANGON_INFONALIA_IMPORT_TEST_FORWARDERS"),
+                "imap_user_configured": infonalia_user_configured,
+                "password_configured": infonalia_password_configured,
+                "sources": {
+                    key: effective_setting(key, settings=settings)["label"]
+                    for key in (
+                        "infonalia_import_enabled",
+                        "infonalia_import_notify_email",
+                        "infonalia_import_folder",
+                        "infonalia_import_poll_minutes",
+                        "infonalia_import_mark_read_on_success",
+                        "infonalia_import_lookback_hours",
+                    )
+                },
+            },
+        },
+        "automation": {
+            "scheduler_enabled": env_enabled("MONITOR_SCHEDULER_ENABLED"),
+            "timezone": env_value("MONITOR_SCHEDULER_TIMEZONE", "Europe/Madrid"),
+            "poll_minutes": env_int_value("MONITOR_SCHEDULER_POLL_MINUTES", 5),
+            "agenda_pending_daily_enabled": env_enabled("MONITOR_AGENDA_PENDING_DAILY_ENABLED", "1"),
+            "agenda_pending_daily_time": env_value("MONITOR_AGENDA_PENDING_DAILY_TIME", "08:00"),
+            "agenda_pending_weekdays_only": env_enabled("MONITOR_AGENDA_PENDING_DAILY_WEEKDAYS_ONLY", "1"),
+            "file_inventory_enabled": env_enabled("LLANGON_FILE_INVENTORY_ENABLED"),
+            "file_inventory_poll_minutes": env_int_value("LLANGON_FILE_INVENTORY_POLL_MINUTES", 240),
+            "file_inventory_reconcile_paths": env_enabled("LLANGON_FILE_INVENTORY_RECONCILE_PATHS", "1"),
+            "monitor_licitaciones_schedule_enabled": env_enabled("MONITOR_LICITACIONES_SCHEDULE_ENABLED"),
+            "monitor_licitaciones_real_enabled": env_enabled("MONITOR_LICITACIONES_REAL_ENABLED"),
+            "full_backup_time": env_value("LLANGON_FULL_BACKUP_TIME", "16:00"),
+            "night_suspend_time": env_value("LLANGON_NIGHT_SUSPEND_TIME", "21:00"),
+        },
+        "advanced": {
+            "public_site_url": env_value("LLANGON_PUBLIC_SITE_URL", "https://llangon-web-publica-prueba.web.app/"),
+            "host": env_value("INFONALIA_HOST", "127.0.0.1"),
+            "port": env_int_value("INFONALIA_PORT", 8787),
+            "storage_backend": env_value("INFONALIA_STORAGE_BACKEND", "local"),
+            "dropbox_base_configured": configured_flag("LLANGON_DROPBOX_BASE_PATH"),
+            "legacy_dropbox_root_configured": configured_flag("INFONALIA_DROPBOX_ROOT"),
+            "download_staging_root_configured": configured_flag("INFONALIA_DOWNLOAD_STAGING_ROOT"),
+            "runtime_root_configured": configured_flag("LLANGON_RUNTIME_ROOT"),
+            "sqlite_backup_dir_configured": configured_flag("LLANGON_SQLITE_BACKUP_DIR"),
+            "sqlite_backup_retention": env_int_value("LLANGON_SQLITE_BACKUP_RETENTION", 30),
+            "full_backup_enabled": env_enabled("LLANGON_FULL_BACKUP_ENABLED"),
+            "full_backup_root_configured": configured_flag("LLANGON_FULL_BACKUP_ROOT"),
+            "full_backup_include_env": env_enabled("LLANGON_FULL_BACKUP_INCLUDE_ENV", "1"),
+            "full_backup_include_secrets": env_enabled("LLANGON_FULL_BACKUP_INCLUDE_SECRETS", "1"),
+            "pending_review": {
+                "monitor_test_email": bool(clean_text(settings.get("monitor_test_email")) or MONITOR_TEST_EMAIL),
+                "monitor_agenda_pending_email_to": bool(
+                    clean_text(settings.get("monitor_agenda_pending_email_to")) or MONITOR_AGENDA_PENDING_EMAIL_TO
+                ),
+                "infonalia_platform_url": configured_flag("INFONALIA_PLATFORM_URL"),
+                "dropbox_api_enabled": env_enabled("INFONALIA_DROPBOX_ENABLED"),
+                "review_ai_summary_button": env_enabled("LLANGON_REVIEW_AI_SUMMARY_BUTTON_ENABLED"),
+            },
+        },
+    }
 
 
 def find_dropbox_root() -> Path | None:
@@ -2003,6 +2218,14 @@ DOWNLOAD_JOB_STATUS_FAILED = "failed"
 DOWNLOAD_REQUEST_SOURCE_MANUAL = "manual_button"
 DOWNLOAD_REQUEST_SOURCE_EMAIL_ACTION = "email_action"
 
+EMAIL_ACTION_DOWNLOAD_REVIEW_CODE = "02"
+EMAIL_ACTION_PREPARE_CODE = "03"
+EMAIL_ACTION_AI_SUMMARY_CODE = "04"  # Reservado para futura fase de resumen IA por correo.
+EMAIL_ACTION_TELEGRAM_CODES = {
+    EMAIL_ACTION_DOWNLOAD_REVIEW_CODE,
+    EMAIL_ACTION_PREPARE_CODE,
+}
+
 
 def _latest_download_job(conn: sqlite3.Connection, licitacion_id: int) -> sqlite3.Row | None:
     return conn.execute(
@@ -2017,7 +2240,7 @@ def _latest_download_job(conn: sqlite3.Connection, licitacion_id: int) -> sqlite
     ).fetchone()
 
 
-def request_licitacion_download(
+def _prepare_download_job_request(
     conn: sqlite3.Connection,
     licitacion_id: int,
     *,
@@ -2030,6 +2253,12 @@ def request_licitacion_download(
     created_at = timestamp or now_iso()
     row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
     if not row:
+        LOGGER.info(
+            "Download NO solicitado porque la licitación %s no existe. source=%s action=%s",
+            licitacion_id,
+            clean_text(request_source),
+            clean_text(request_action),
+        )
         return {
             "ok": False,
             "status": "error",
@@ -2039,6 +2268,14 @@ def request_licitacion_download(
 
     latest_job = _latest_download_job(conn, licitacion_id)
     if latest_job and clean_text(latest_job["status"]) in {DOWNLOAD_JOB_STATUS_PENDING, DOWNLOAD_JOB_STATUS_RUNNING}:
+        LOGGER.info(
+            "Download NO solicitado porque ya existe trabajo pendiente/en curso. licitacion_id=%s source=%s action=%s existing_job_id=%s status=%s",
+            licitacion_id,
+            clean_text(request_source),
+            clean_text(request_action),
+            int(latest_job["id"]),
+            clean_text(latest_job["status"]),
+        )
         return {
             "ok": True,
             "status": "already_pending",
@@ -2047,23 +2284,38 @@ def request_licitacion_download(
             "message": "Ya existe una descarga en curso o pendiente para esta licitación.",
         }
 
-    if clean_text(row["ruta_carpeta"]):
-        return {
-            "ok": True,
-            "status": "already_downloaded",
-            "created": False,
-            "job_id": int(latest_job["id"]) if latest_job else None,
-            "message": "La documentación ya figura como descargada.",
-        }
+    return {
+        "ok": True,
+        "status": "ready",
+        "created": False,
+        "job_id": None,
+        "message": "Download listo para crear trabajo.",
+        "row": row,
+    }
 
-    if latest_job and clean_text(latest_job["status"]) == DOWNLOAD_JOB_STATUS_COMPLETED:
-        return {
-            "ok": True,
-            "status": "already_downloaded",
-            "created": False,
-            "job_id": int(latest_job["id"]),
-            "message": "La documentación ya se descargó correctamente.",
-        }
+
+def create_download_job_request(
+    conn: sqlite3.Connection,
+    licitacion_id: int,
+    *,
+    timestamp: str | None = None,
+    request_source: str = "",
+    request_action: str = "",
+    request_message_id: str = "",
+    requested_by: str = "",
+) -> dict[str, object]:
+    created_at = timestamp or now_iso()
+    prepared = _prepare_download_job_request(
+        conn,
+        licitacion_id,
+        timestamp=created_at,
+        request_source=request_source,
+        request_action=request_action,
+        request_message_id=request_message_id,
+        requested_by=requested_by,
+    )
+    if clean_text(prepared.get("status")) != "ready":
+        return prepared
 
     job_id = create_download_job(
         conn,
@@ -2084,6 +2336,13 @@ def request_licitacion_download(
         user_id=clean_text(requested_by),
         timestamp=created_at,
     )
+    LOGGER.info(
+        "Download solicitado por email/manual. licitacion_id=%s source=%s action=%s job_id=%s",
+        licitacion_id,
+        clean_text(request_source),
+        clean_text(request_action),
+        job_id,
+    )
     return {
         "ok": True,
         "status": "queued",
@@ -2091,6 +2350,27 @@ def request_licitacion_download(
         "job_id": job_id,
         "message": "Descarga solicitada y encolada.",
     }
+
+
+def request_licitacion_download(
+    conn: sqlite3.Connection,
+    licitacion_id: int,
+    *,
+    timestamp: str | None = None,
+    request_source: str = "",
+    request_action: str = "",
+    request_message_id: str = "",
+    requested_by: str = "",
+) -> dict[str, object]:
+    return create_download_job_request(
+        conn,
+        licitacion_id,
+        timestamp=timestamp,
+        request_source=request_source,
+        request_action=request_action,
+        request_message_id=request_message_id,
+        requested_by=requested_by,
+    )
 
 
 def start_download_worker(*, job_id: int | None = None) -> dict[str, object]:
@@ -2109,6 +2389,276 @@ def start_download_worker(*, job_id: int | None = None) -> dict[str, object]:
     except Exception as exc:
         return {"started": False, "error": str(exc), "command": command}
     return {"started": True, "pid": process.pid, "command": command}
+
+
+def _preferred_admin_rows_for_telegram(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT *
+        FROM usuarios
+        WHERE role = 'admin' AND active = 1
+        ORDER BY
+            CASE
+                WHEN LOWER(COALESCE(username, '')) = 'manolo' THEN 0
+                ELSE 1
+            END,
+            LOWER(COALESCE(display_name, username, '')),
+            LOWER(COALESCE(username, ''))
+        """
+    ).fetchall()
+
+
+def _email_action_deadline_text(row: sqlite3.Row) -> str:
+    row_keys = set(row.keys())
+    if "fecha_presentacion" in row_keys:
+        fecha = format_date_es(row["fecha_presentacion"])
+    elif "fecha_limite" in row_keys:
+        fecha = format_date_es(row["fecha_limite"])
+    else:
+        fecha = ""
+    if fecha.lower() in {"sin fecha", "fecha no válida", "fecha no valida"}:
+        fecha = ""
+    hora = clean_text(parse_time_value(row["hora_limite"])) if "hora_limite" in row_keys else ""
+    if fecha and hora:
+        return f"{fecha} {hora}"
+    if fecha:
+        return fecha
+    if hora:
+        return hora
+    return "No consta"
+
+
+def _email_action_folder_name(path_value: object) -> str:
+    ruta = clean_text(path_value)
+    if not ruta:
+        return "no consta"
+    parts = [part for part in re.split(r"[\\/]+", ruta) if part]
+    if not parts:
+        return "no consta"
+    return parts[-1]
+
+
+def _build_email_action_telegram_text(
+    *,
+    licitacion: sqlite3.Row,
+    event: sqlite3.Row,
+) -> str:
+    licitacion_keys = set(licitacion.keys())
+    action_code = clean_text(event["action_code"])
+    action_name = clean_text(event["action_name"]) or "Acción por correo"
+    if action_code == EMAIL_ACTION_PREPARE_CODE:
+        headline = "📄 Licitación lista para preparar ficha"
+        detail = "La documentación ya está disponible para preparar la ficha."
+    else:
+        headline = "✅ Licitación descargada"
+        detail = "La licitación se ha descargado correctamente."
+
+    expediente = clean_text(licitacion["expediente"]) or f"Licitación {int(licitacion['id'])}"
+    titulo = clean_text(licitacion["titulo"]) if "titulo" in licitacion_keys else ""
+    objeto = clean_text(licitacion["objeto"]) if "objeto" in licitacion_keys else ""
+    organismo = clean_text(licitacion["organismo"]) if "organismo" in licitacion_keys else ""
+    objeto = titulo or objeto or "Sin descripción"
+    organismo = organismo or "Sin organismo"
+    deadline = _email_action_deadline_text(licitacion)
+    carpeta = clean_text(licitacion["ruta_carpeta"]) or "no consta"
+    carpeta_nombre = _email_action_folder_name(licitacion["ruta_carpeta"])
+    perfil = clean_text(licitacion["enlace_perfil"]) or "Sin enlace"
+    estado = clean_text(licitacion["estado"]) or action_name
+
+    return "\n".join(
+        [
+            headline,
+            "",
+            f"Nuria ha solicitado: {action_name}",
+            "",
+            f"Expediente: {expediente}",
+            f"Título: {objeto}",
+            f"Vencimiento: {deadline}",
+            f"Estado actual: {estado}",
+            f"Organismo: {organismo}",
+            "",
+            detail,
+            "",
+            f"Carpeta: {carpeta_nombre}",
+            f"Ruta Dropbox: {carpeta}",
+            f"Perfil del contratante: {perfil}",
+            "Origen: correo de revisión Infonalia",
+        ]
+    )
+
+
+def _deliver_email_action_telegram_notification(
+    conn: sqlite3.Connection,
+    *,
+    text: str,
+    licitacion_id: int,
+    action_name: str,
+) -> dict[str, object]:
+    errors: list[str] = []
+    for admin_row in _preferred_admin_rows_for_telegram(conn):
+        username = clean_text(admin_row["username"])
+        result = send_telegram_user_message(admin_row, text, env=os.environ)
+        if result.ok:
+            LOGGER.info(
+                "Telegram email_action enviado al admin. licitacion_id=%s action=%s target=user:%s",
+                licitacion_id,
+                action_name,
+                username,
+            )
+            return {
+                "ok": True,
+                "status": "sent_user",
+                "target": f"user:{username}",
+                "message_id": result.telegram_message_id,
+                "error": "",
+            }
+        errors.append(f"user:{username}:{result.error_code or result.status}")
+
+    group_result = send_telegram_group_message(text, env=os.environ)
+    if group_result.ok:
+        LOGGER.info(
+            "Telegram email_action enviado al grupo. licitacion_id=%s action=%s",
+            licitacion_id,
+            action_name,
+        )
+        return {
+            "ok": True,
+            "status": "sent_group",
+            "target": "group",
+            "message_id": group_result.telegram_message_id,
+            "error": "",
+        }
+
+    errors.append(f"group:{group_result.error_code or group_result.status}")
+    error_text = "; ".join(error for error in errors if error)[:1000]
+    LOGGER.warning(
+        "Telegram email_action no enviado. licitacion_id=%s action=%s errors=%s",
+        licitacion_id,
+        action_name,
+        error_text,
+    )
+    return {
+        "ok": False,
+        "status": "failed",
+        "target": "",
+        "message_id": None,
+        "error": error_text or clean_text(group_result.error_message) or "No se pudo enviar el aviso de Telegram.",
+    }
+
+
+def _mark_email_action_telegram_result(
+    conn: sqlite3.Connection,
+    *,
+    event_id: int,
+    timestamp: str,
+    status: str,
+    target: str = "",
+    error: str = "",
+    message_id: object = None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE email_action_events
+        SET telegram_notification_status = ?,
+            telegram_notification_attempted_at = ?,
+            telegram_notification_target = ?,
+            telegram_notification_error = ?,
+            telegram_notification_message_id = ?
+        WHERE id = ?
+        """,
+        (
+            clean_text(status),
+            timestamp,
+            clean_text(target),
+            clean_text(error)[:1000],
+            clean_text(message_id),
+            event_id,
+        ),
+    )
+
+
+def notify_pending_email_action_telegram_events(
+    *,
+    licitacion_id: int,
+    download_job_id: int | None = None,
+) -> dict[str, object]:
+    notified = 0
+    failed = 0
+    items: list[dict[str, object]] = []
+    with db_session() as conn:
+        licitacion = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+        if not licitacion:
+            return {"checked": 0, "sent": 0, "failed": 0, "items": []}
+        event_rows = conn.execute(
+            """
+            SELECT *
+            FROM email_action_events
+            WHERE licitacion_id = ?
+              AND result = 'processed'
+              AND action_code IN (?, ?)
+              AND COALESCE(telegram_notification_attempted_at, '') = ''
+            ORDER BY id ASC
+            """,
+            (
+                licitacion_id,
+                EMAIL_ACTION_DOWNLOAD_REVIEW_CODE,
+                EMAIL_ACTION_PREPARE_CODE,
+            ),
+        ).fetchall()
+        if not event_rows:
+            return {"checked": 0, "sent": 0, "failed": 0, "items": []}
+
+        for event_row in event_rows:
+            action_name = clean_text(event_row["action_name"]) or clean_text(event_row["action_code"])
+            text = _build_email_action_telegram_text(licitacion=licitacion, event=event_row)
+            delivery = _deliver_email_action_telegram_notification(
+                conn,
+                text=text,
+                licitacion_id=licitacion_id,
+                action_name=action_name,
+            )
+            timestamp = now_iso()
+            _mark_email_action_telegram_result(
+                conn,
+                event_id=int(event_row["id"]),
+                timestamp=timestamp,
+                status=str(delivery.get("status") or "failed"),
+                target=str(delivery.get("target") or ""),
+                error=str(delivery.get("error") or ""),
+                message_id=delivery.get("message_id"),
+            )
+            items.append(
+                {
+                    "event_id": int(event_row["id"]),
+                    "action_code": clean_text(event_row["action_code"]),
+                    "action_name": action_name,
+                    "status": clean_text(delivery.get("status")),
+                    "target": clean_text(delivery.get("target")),
+                }
+            )
+            if delivery.get("ok"):
+                notified += 1
+            else:
+                failed += 1
+
+    return {
+        "checked": len(items),
+        "sent": notified,
+        "failed": failed,
+        "job_id": download_job_id,
+        "items": items,
+    }
+
+
+def _download_completed_successfully(http_status: HTTPStatus, payload: dict[str, object]) -> bool:
+    if http_status != HTTPStatus.OK or not bool(payload.get("ok")):
+        return False
+    storage = payload.get("storage")
+    if isinstance(storage, dict):
+        storage_status = clean_text(storage.get("job_status"))
+        if storage_status:
+            return storage_status == DOWNLOAD_JOB_STATUS_COMPLETED
+    return True
 
 
 def _finish_failed_download_job(download_job_id: int, error_message: str) -> None:
@@ -2370,6 +2920,11 @@ def process_download_job(job_id: int) -> dict[str, object]:
         download_job_id=job_id,
         source_url=url,
     )
+    if _download_completed_successfully(http_status, payload):
+        payload["telegram_notifications"] = notify_pending_email_action_telegram_events(
+            licitacion_id=licitacion_id,
+            download_job_id=job_id,
+        )
     return {"ok": http_status == HTTPStatus.OK, "status": payload.get("ok") and "completed" or "failed", "job_id": job_id, "payload": payload}
 
 def repair_internal_download_routes() -> int:
@@ -2934,6 +3489,19 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_get_config()
         elif path == "/api/storage/status":
             self.api_storage_status()
+        elif path == "/api/admin/automation/status":
+            self.api_admin_automation_status()
+        elif path == "/api/admin/automation/tasks":
+            self.api_admin_automation_tasks()
+        elif path.startswith("/api/admin/automation/tasks/"):
+            task_key = unquote(path.removeprefix("/api/admin/automation/tasks/").strip("/"))
+            self.api_admin_automation_task(task_key)
+        elif path == "/api/admin/automation/runs":
+            self.api_admin_automation_runs(parsed.query)
+        elif path == "/api/admin/automation/diagnostic":
+            self.api_admin_automation_diagnostic()
+        elif path == "/api/admin/automation/windows-tasks":
+            self.api_admin_automation_windows_tasks()
         elif path == "/api/monitor/runs":
             self.api_monitor_runs(parsed.query)
         elif path in {"/api/monitor/scheduler", "/api/monitor/scheduler/status"}:
@@ -3003,12 +3571,28 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_create_user()
         elif path == "/api/config/test-smtp":
             self.api_test_smtp()
+        elif path == "/api/admin/telegram/test-group":
+            self.api_test_telegram_group()
+        elif path.startswith("/api/admin/users/") and path.endswith("/telegram/test"):
+            user_key = unquote(path.removeprefix("/api/admin/users/").removesuffix("/telegram/test").strip("/"))
+            self.api_test_telegram_user(user_key)
         elif path == "/api/storage/dropbox/test":
             self.api_storage_dropbox_test()
         elif path == "/api/storage/dropbox/dry-run":
             self.api_storage_dropbox_dry_run()
         elif path == "/api/storage/markers/sync":
             self.api_storage_markers_sync()
+        elif path.startswith("/api/admin/automation/tasks/") and path.endswith("/run"):
+            task_key = unquote(path.removeprefix("/api/admin/automation/tasks/").removesuffix("/run").strip("/"))
+            self.api_admin_automation_run_task(task_key)
+        elif path.startswith("/api/admin/automation/tasks/") and path.endswith("/enable"):
+            task_key = unquote(path.removeprefix("/api/admin/automation/tasks/").removesuffix("/enable").strip("/"))
+            self.api_admin_automation_set_enabled(task_key, True)
+        elif path.startswith("/api/admin/automation/tasks/") and path.endswith("/disable"):
+            task_key = unquote(path.removeprefix("/api/admin/automation/tasks/").removesuffix("/disable").strip("/"))
+            self.api_admin_automation_set_enabled(task_key, False)
+        elif path == "/api/admin/automation/tick":
+            self.api_admin_automation_tick()
         elif path == "/api/monitor/run":
             self.api_monitor_run()
         elif path == "/api/news":
@@ -3023,6 +3607,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_import_msg()
         elif path == "/api/import/csv":
             self.api_import_csv()
+        elif path == "/api/import/infonalia-mail/run-now":
+            self.api_import_infonalia_mail_run_now()
         elif path.startswith("/api/dias/") and path.endswith("/revisado"):
             dia_id = path.removeprefix("/api/dias/").removesuffix("/revisado").strip("/")
             if not dia_id.isdigit():
@@ -3083,6 +3669,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_send_ai_summary_email(int(licitacion_id))
+        elif path.startswith("/api/licitaciones/") and path.endswith("/ai-summary/save-pdf"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ai-summary/save-pdf").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_save_ai_summary_pdf(int(licitacion_id))
         elif path == "/api/ai/jobs/mark-stale":
             self.api_mark_stale_ai_jobs()
         elif path.startswith("/api/ai/jobs/") and path.endswith("/cancel"):
@@ -3315,6 +3907,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "/api/agenda/eventos",
                 "/api/config/users",
                 "/api/config/test-smtp",
+                "/api/admin/telegram/test-group",
+                "/api/admin/automation/tick",
                 "/api/storage/dropbox/test",
                 "/api/storage/dropbox/dry-run",
                 "/api/storage/markers/sync",
@@ -3322,12 +3916,21 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "/api/news",
                 "/api/import/csv",
                 "/api/import/msg",
+                "/api/import/infonalia-mail/run-now",
                 "/api/comments",
             }:
                 return True
             if path.startswith("/api/comments/") and (
                 path.endswith("/pin")
                 or path.endswith("/unpin")
+            ):
+                return True
+            if path.startswith("/api/admin/users/") and path.endswith("/telegram/test"):
+                return True
+            if path.startswith("/api/admin/automation/tasks/") and (
+                path.endswith("/run")
+                or path.endswith("/enable")
+                or path.endswith("/disable")
             ):
                 return True
             if path.startswith("/api/dias/") and (
@@ -3344,6 +3947,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 or path.endswith("/ai-summary/generate")
                 or path.endswith("/ai-summary/regenerate")
                 or path.endswith("/ai-summary/email")
+                or path.endswith("/ai-summary/save-pdf")
                 or path.endswith("/ia-preview")
                 or path.endswith("/ia-preview/email")
                 or path.endswith("/prepared-notice/email")
@@ -3476,7 +4080,13 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         reviewer = get_user_record(REVIEWER_USER) or {}
         default_review_email = clean_text(reviewer.get("email")) or REVIEWER_EMAIL or PREPARED_NOTICE_EMAIL_TO
         payload["settings"]["nuria_review_email_to"] = default_review_email
+        payload["telegram"] = telegram_public_status(os.environ)
         payload["ai"] = get_ai_config().public_status()
+        payload["ai"]["gemini_api_key_set"] = configured_flag("GEMINI_API_KEY")
+        payload["settings_sources"] = {
+            key: effective_setting(key, settings=settings)["label"] for key in SETTING_DEFINITIONS
+        }
+        payload["diagnostics"] = config_diagnostics_payload(settings)
         return payload
 
     def api_get_config(self) -> None:
@@ -3691,6 +4301,94 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             return
         self.send_json(report)
 
+    def api_admin_automation_status(self) -> None:
+        if not self.require_admin():
+            return
+        self.send_json(automation_status_payload(db_path=DB_PATH))
+
+    def api_admin_automation_tasks(self) -> None:
+        if not self.require_admin():
+            return
+        self.send_json({"items": automation_tasks_payload(db_path=DB_PATH)})
+
+    def api_admin_automation_task(self, task_key: str) -> None:
+        if not self.require_admin():
+            return
+        clean_key = clean_text(task_key)
+        tasks = automation_tasks_payload(db_path=DB_PATH)
+        item = next((task for task in tasks if task.get("key") == clean_key), None)
+        if not item:
+            self.send_json({"error": "Automatización no encontrada."}, HTTPStatus.NOT_FOUND)
+            return
+        self.send_json({"item": item})
+
+    def api_admin_automation_runs(self, query: str) -> None:
+        if not self.require_admin():
+            return
+        params = parse_qs(query)
+        try:
+            limit = int(params.get("limit", ["100"])[0])
+        except ValueError:
+            limit = 100
+        self.send_json({
+            "items": automation_runs_payload(
+                db_path=DB_PATH,
+                task_key=clean_text(params.get("task_key", [""])[0]),
+                status=clean_text(params.get("status", [""])[0]),
+                limit=limit,
+            )
+        })
+
+    def api_admin_automation_diagnostic(self) -> None:
+        if not self.require_admin():
+            return
+        self.send_json({"diagnostic": automation_diagnostic(db_path=DB_PATH)})
+
+    def api_admin_automation_windows_tasks(self) -> None:
+        if not self.require_admin():
+            return
+        self.send_json(windows_tasks_payload())
+
+    def api_admin_automation_run_task(self, task_key: str) -> None:
+        if not self.require_admin():
+            return
+        try:
+            result = run_internal_automation_task(
+                clean_text(task_key),
+                db_path=DB_PATH,
+                source="manual",
+                triggered_by=clean_text((self.current_user() or {}).get("username")),
+            )
+        except ValueError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json({"ok": result.get("status") != "failed", **result})
+
+    def api_admin_automation_set_enabled(self, task_key: str, enabled: bool) -> None:
+        if not self.require_admin():
+            return
+        try:
+            item = set_internal_automation_enabled(
+                clean_text(task_key),
+                enabled,
+                db_path=DB_PATH,
+                updated_by=clean_text((self.current_user() or {}).get("username")),
+            )
+        except ValueError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json({"ok": True, "item": item})
+
+    def api_admin_automation_tick(self) -> None:
+        if not self.require_admin():
+            return
+        result = run_internal_scheduler_tick(
+            db_path=DB_PATH,
+            source="manual",
+            triggered_by=clean_text((self.current_user() or {}).get("username")),
+        )
+        self.send_json(result)
+
     def api_monitor_runs(self, query: str) -> None:
         if not self.require_admin():
             return
@@ -3881,11 +4579,15 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                         role,
                         display_name,
                         email,
+                        telegram_chat_id,
+                        telegram_notifications_enabled,
+                        telegram_last_test_at,
+                        telegram_last_error,
                         active,
                         created_at,
                         updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         payload["username"],
@@ -3893,6 +4595,10 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                         payload["role"],
                         payload["display_name"],
                         payload["email"],
+                        payload["telegram_chat_id"],
+                        payload["telegram_notifications_enabled"],
+                        "",
+                        "",
                         payload["active"],
                         timestamp,
                         timestamp,
@@ -3997,7 +4703,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         data = self.read_json()
         try:
-            updates = settings_update_payload(data)
+            updates = settings_update_payload(data, current_settings=get_settings(), environ=os.environ)
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -4039,6 +4745,78 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "message": "Correo de prueba enviado correctamente.",
             }
         )
+
+    def api_test_telegram_group(self) -> None:
+        if not self.require_admin():
+            return
+
+        user = self.current_user() or {}
+        username = clean_text(user.get("username")) or "admin"
+        display_name = clean_text(user.get("display_name")) or username or "Administrador"
+        message = (
+            "🔔 Prueba de Telegram - Llangon Suite\n\n"
+            "La suite ha enviado correctamente un aviso al grupo general configurado.\n\n"
+            "Destino: grupo general de avisos\n"
+            "Origen: panel de administración/configuración\n"
+            f"Usuario: {display_name}\n"
+            f"Fecha/hora: {format_datetime_es(now_iso())}"
+        )
+        LOGGER.info("Telegram test requested for general group by %s", username)
+        result = send_telegram_group_message(
+            message,
+            env=os.environ,
+            timeout_seconds=DEFAULT_TELEGRAM_TIMEOUT_SECONDS,
+        )
+        status = HTTPStatus.OK if result.ok else (
+            HTTPStatus.BAD_REQUEST if result.status != "disabled" else HTTPStatus.OK
+        )
+        self.send_json(result.to_dict(), status)
+
+    def api_test_telegram_user(self, user_key: str) -> None:
+        if not self.require_admin():
+            return
+
+        username = clean_text(user_key).lower()
+        if not username:
+            self.send_json({"ok": False, "error": "Usuario no encontrado."}, HTTPStatus.NOT_FOUND)
+            return
+
+        admin = self.current_user() or {}
+        admin_name = clean_text(admin.get("display_name")) or clean_text(admin.get("username")) or "Administrador"
+        user = get_user_record(username)
+        if not user:
+            self.send_json({"ok": False, "error": "Usuario no encontrado."}, HTTPStatus.NOT_FOUND)
+            return
+
+        message = (
+            "🔔 Prueba privada de Telegram - Llangon Suite\n\n"
+            "La suite ha enviado correctamente un aviso privado a tu cuenta de Telegram.\n\n"
+            "Destino: usuario configurado\n"
+            "Origen: panel de administración/configuración\n"
+            f"Solicitado por: {admin_name}\n"
+            f"Fecha/hora: {format_datetime_es(now_iso())}"
+        )
+        LOGGER.info("Telegram test requested for user %s by %s", username, clean_text(admin.get("username")) or "admin")
+        result = send_telegram_user_message(
+            user,
+            message,
+            env=os.environ,
+            timeout_seconds=DEFAULT_TELEGRAM_TIMEOUT_SECONDS,
+        )
+        timestamp = now_iso() if result.ok else ""
+        with db_session() as conn:
+            update_user_telegram_test_status(
+                conn,
+                username,
+                tested_at=timestamp,
+                error_message="" if result.ok else result.error_message or result.message,
+            )
+        status = HTTPStatus.OK if result.ok else (
+            HTTPStatus.BAD_REQUEST if result.status != "disabled" else HTTPStatus.OK
+        )
+        payload = result.to_dict()
+        payload["user"] = get_user_record(username)
+        self.send_json(payload, status)
 
     def api_list_notificaciones(self, query: str = "") -> None:
         user = self.current_user()
@@ -5199,6 +5977,83 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         self.send_json(result)
 
+    def api_import_infonalia_mail_run_now(self) -> None:
+        if not self.require_admin():
+            return
+
+        user = self.current_user() or {}
+        username = clean_text(user.get("username")) or "admin"
+        LOGGER.info("Importación manual Infonalia/Gmail solicitada por %s", username)
+        try:
+            result = process_infonalia_mailbox_once(
+                dry_run=False,
+                include_seen=False,
+                verbose=False,
+                notification_sender=lambda to, subject, body, html: send_monitor_email(to, subject, body, html),
+            )
+        except Exception:
+            LOGGER.exception("Error en importación manual Infonalia/Gmail solicitada por %s", username)
+            self.send_json(
+                {
+                    "ok": False,
+                    "message": "No se pudo importar desde Gmail. Revisa la configuración o los logs.",
+                    "result": {"candidates_seen": 0, "parsed_items": 0, "imported": 0, "duplicates": 0, "errors": 1, "notified": 0},
+                },
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        summary = {
+            "candidates_seen": int(result.get("candidates_seen", 0) or 0),
+            "parsed_items": int(result.get("parsed_items", 0) or 0),
+            "imported": int(result.get("imported", 0) or 0),
+            "duplicates": int(result.get("duplicates", 0) or 0),
+            "errors": int(result.get("errors", 0) or 0),
+            "notified": int(result.get("notified", 0) or 0),
+        }
+        if not result.get("enabled", True):
+            self.send_json(
+                {
+                    "ok": False,
+                    "message": "No se pudo importar desde Gmail. Revisa la configuración o los logs.",
+                    "detail": clean_text(result.get("message")),
+                    "result": summary,
+                    "source": "manual",
+                },
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+        if summary["errors"] > 0 or clean_text(result.get("status")) == "failed":
+            self.send_json(
+                {
+                    "ok": False,
+                    "message": "No se pudo importar desde Gmail. Revisa la configuración o los logs.",
+                    "detail": clean_text(result.get("last_error")) or clean_text(result.get("message")),
+                    "result": summary,
+                    "source": "manual",
+                },
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        if summary["imported"] > 0:
+            message = f"Importación completada: {summary['imported']} licitaciones importadas."
+        elif summary["duplicates"] > 0 and summary["candidates_seen"] > 0:
+            message = "No se han importado nuevas licitaciones. El correo ya estaba procesado."
+        else:
+            message = "No hay correos nuevos de Infonalia para importar."
+
+        self.send_json(
+            {
+                "ok": True,
+                "message": message,
+                "result": summary,
+                "source": "manual",
+                "uses_scheduler_importer": True,
+                "llangon_cmd_touched": False,
+            }
+        )
+
     def api_send_dia_to_nuria(self, dia_id: int) -> None:
         if not self.require_admin():
             return
@@ -5591,25 +6446,19 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if not summary_row or not int(summary_row["created_from_job_id"] or 0):
             self.send_json({"error": "El análisis IA no tiene job asociado para registrar el envío."}, HTTPStatus.BAD_REQUEST)
             return
-        job_id = int(summary_row["created_from_job_id"])
         with db_session() as conn:
-            create_job_notifications(
+            result = generate_ai_summary_pdf_and_email(
                 conn,
-                job_id=job_id,
                 licitacion_id=licitacion_id,
-                requested_by=clean_text(user.get("username")) or "ui",
                 recipients=recipients,
-                created_at=now_iso(),
-                manual=True,
-            )
-            result = send_pending_job_notifications(
-                conn,
-                job_id,
+                requested_by=clean_text(user.get("username")) or "ui",
                 now=now_iso,
                 subject_override=shorten_text(data.get("subject"), 160),
+                pdf_output_root=DATA_ROOT / "runtime" / "ai_summary_pdfs",
                 smtp_factory=smtplib.SMTP,
                 smtp_ssl_factory=smtplib.SMTP_SSL,
             )
+            job_id = int(result.get("job_id") or summary_row["created_from_job_id"] or 0)
             status_payload = notification_status_payload(
                 conn.execute(
                     "SELECT * FROM ai_analysis_notifications WHERE job_id = ? ORDER BY id ASC",
@@ -5618,6 +6467,83 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             )
         ok = int(result.get("sent") or 0) > 0 and int(result.get("error") or 0) == 0
         self.send_json({"ok": ok, "result": result, "notification_status": status_payload, "recipients": recipients})
+
+    def api_save_ai_summary_pdf(self, licitacion_id: int) -> None:
+        user = self.current_user() or {}
+        with db_session() as conn:
+            row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+            if not row:
+                self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                return
+            summary_row = conn.execute(
+                """
+                SELECT *
+                FROM ai_summaries
+                WHERE licitacion_id = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (licitacion_id,),
+            ).fetchone()
+            if not summary_row:
+                self.send_json({"error": "No hay un resumen IA disponible para guardar."}, HTTPStatus.BAD_REQUEST)
+                return
+            selected_documents = []
+            job_id = int(summary_row["created_from_job_id"] or 0)
+            if job_id:
+                job_row = conn.execute(
+                    """
+                    SELECT selected_documents_json
+                    FROM ai_analysis_jobs
+                    WHERE id = ?
+                    LIMIT 1
+                    """,
+                    (job_id,),
+                ).fetchone()
+                if job_row and clean_text(job_row["selected_documents_json"]):
+                    try:
+                        selected_documents = json.loads(job_row["selected_documents_json"] or "[]")
+                    except json.JSONDecodeError:
+                        selected_documents = []
+            try:
+                summary_payload = json.loads(summary_row["summary_json"] or "{}")
+            except json.JSONDecodeError:
+                self.send_json({"error": "El resumen IA guardado no tiene un formato válido."}, HTTPStatus.BAD_REQUEST)
+                return
+            result = generate_ai_summary_pdf(
+                row,
+                summary_payload,
+                selected_documents=selected_documents,
+                generated_at=now_iso(),
+                fallback_root=DATA_ROOT / "runtime" / "ai_summary_pdfs",
+            )
+            if not result.ok:
+                self.send_json({"error": result.error or "No se pudo guardar el PDF del resumen IA."}, HTTPStatus.BAD_REQUEST)
+                return
+            record_licitacion_history(
+                conn,
+                licitacion_id,
+                event_type="ai_summary_pdf_saved",
+                old_value="",
+                new_value=result.path,
+                user_id=clean_text(user.get("username")) or "Sistema",
+                timestamp=now_iso(),
+            )
+        self.send_json(
+            {
+                "ok": True,
+                "path": result.path,
+                "filename": result.filename,
+                "used_fallback": bool(result.used_fallback),
+                "warning": clean_text(result.warning),
+                "message": (
+                    "No se ha podido guardar en la carpeta de la licitación. "
+                    "Se ha guardado en una ubicación alternativa."
+                    if result.used_fallback
+                    else "PDF guardado correctamente en la carpeta de la licitación."
+                ),
+            }
+        )
 
     def api_get_ai_job(self, job_id: int) -> None:
         if not self.require_admin():
@@ -5960,18 +6886,41 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
 
-        ruta_guardada = folder_path_for_storage(destino)
         with db_session() as conn:
-            download_job_id = create_download_job(
+            request_result = create_download_job_request(
                 conn,
                 licitacion_id,
                 timestamp=now_iso(),
-                status=DOWNLOAD_JOB_STATUS_RUNNING,
                 request_source=DOWNLOAD_REQUEST_SOURCE_MANUAL,
                 request_action="manual_download",
                 requested_by=clean_text((self.current_user() or {}).get("username")),
             )
+            if not request_result.get("ok"):
+                self.send_json({"error": clean_text(request_result.get("message")) or "No se pudo solicitar la descarga."}, HTTPStatus.BAD_REQUEST)
+                return
+            if clean_text(request_result.get("status")) == "already_pending":
+                self.send_json(
+                    {
+                        "ok": True,
+                        "message": clean_text(request_result.get("message")),
+                        "job_id": request_result.get("job_id"),
+                    }
+                )
+                return
+            download_job_id = int(request_result.get("job_id") or 0)
+            if download_job_id <= 0:
+                self.send_json({"error": clean_text(request_result.get("message")) or "No se pudo crear el trabajo de descarga."}, HTTPStatus.BAD_REQUEST)
+                return
+            conn.execute(
+                """
+                UPDATE download_jobs
+                SET status = ?, started_at = COALESCE(started_at, ?), updated_at = ?
+                WHERE id = ?
+                """,
+                (DOWNLOAD_JOB_STATUS_RUNNING, now_iso(), now_iso(), download_job_id),
+            )
 
+        ruta_guardada = folder_path_for_storage(destino)
         http_status, payload = execute_download_for_destination(
             licitacion_id=licitacion_id,
             row=row,
@@ -5980,6 +6929,11 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             download_job_id=download_job_id,
             source_url=url,
         )
+        if _download_completed_successfully(http_status, payload):
+            payload["telegram_notifications"] = notify_pending_email_action_telegram_events(
+                licitacion_id=licitacion_id,
+                download_job_id=download_job_id,
+            )
         self.send_json(payload, http_status)
 
     def api_update_licitacion(self, licitacion_id: int) -> None:
@@ -6010,6 +6964,15 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     (estado, timestamp, licitacion_id),
                 )
                 if estado != old_estado:
+                    record_licitacion_history(
+                        conn,
+                        licitacion_id,
+                        event_type="estado",
+                        old_value=old_estado,
+                        new_value=estado,
+                        user_id=clean_text(user.get("username")),
+                        timestamp=timestamp,
+                    )
                     create_system_comment(
                         conn,
                         entity_type="licitacion",

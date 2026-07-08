@@ -97,6 +97,9 @@ INFONALIA_SMTP_PASSWORD=
 INFONALIA_SMTP_FROM=
 INFONALIA_SMTP_TLS=1
 INFONALIA_SMTP_SSL=0
+LLANGON_TELEGRAM_ENABLED=0
+LLANGON_TELEGRAM_BOT_TOKEN=
+LLANGON_TELEGRAM_GROUP_CHAT_ID=
 LLANGON_ACTION_MAILBOX_TO=info3llangon@gmail.com
 LLANGON_ACTION_MAILBOX_CC=info3@llangon.com
 LLANGON_ACTION_NOTIFY_EMAIL=info3@llangon.com
@@ -120,6 +123,32 @@ LLANGON_INFONALIA_IMPORT_TEST_FORWARDERS=
 ```
 
 La URL de acceso incluida en notificaciones solo se muestra cuando `INFONALIA_PLATFORM_URL` tiene un valor local válido.
+
+### Telegram inicial
+
+La integración inicial de Telegram se apoya en tres variables de entorno:
+
+```text
+LLANGON_TELEGRAM_ENABLED=1
+LLANGON_TELEGRAM_BOT_TOKEN=<token_del_bot>
+LLANGON_TELEGRAM_GROUP_CHAT_ID=-5269010979
+```
+
+El `telegram_chat_id` de cada usuario no va en `.env`: se guarda en la ficha del usuario desde la propia Suite. Para el administrador Manolo, el valor comprobado manualmente es:
+
+```text
+1648124154
+```
+
+Flujo recomendado de prueba:
+
+1. Configura las variables anteriores en tu `.env`.
+2. Reinicia la Suite.
+3. En `Configuracion -> Usuarios`, edita el usuario y guarda su `Telegram Chat ID` junto con `Activar notificaciones Telegram`.
+4. En `Configuracion -> Telegram`, usa `Probar Telegram grupo`.
+5. En la ficha del usuario, usa `Probar Telegram usuario`.
+
+La API nunca devuelve ni muestra el token completo; la interfaz solo informa de si el token y el grupo estan configurados.
 
 El procesador de órdenes por correo queda inactivo si falta usuario o contraseña IMAP. Además, solo procesa asuntos que empiezan exactamente por `LLANGON_CMD`; los correos normales no se leen en cuerpo ni se marcan como leídos. `LLANGON_ACTION_ALLOWED_SENDERS` es obligatorio para ejecutar órdenes reales.
 
@@ -147,9 +176,9 @@ python -m webapp.infonalia_webapp.email_actions_processor --check-code 000000141
 
 ## Importación automática del correo Infonalia
 
-El importador `infonalia_mail_importer` lee el mismo buzón IMAP técnico, pero solo dentro de la etiqueta/carpeta `LLANGON_INFONALIA`. Gmail debe aplicar esa etiqueta al correo diario de Infonalia. La Suite usa `UID SEARCH UNSEEN`, recupera cabeceras y cuerpo con `BODY.PEEK`, y decide si importa por la estructura parseada del cuerpo, no por remitente ni asunto en la búsqueda IMAP. Extrae las licitaciones, crea/actualiza el día Infonalia correspondiente a la fecha del mensaje y envía un aviso a `LLANGON_INFONALIA_IMPORT_NOTIFY_EMAIL` cuando la importación real termina.
+El importador `infonalia_mail_importer` lee el mismo buzón IMAP técnico, pero solo dentro de la etiqueta/carpeta `LLANGON_INFONALIA`. Gmail debe aplicar esa etiqueta al correo diario de Infonalia. La Suite usa `UID SEARCH UNSEEN`, recupera cabeceras y cuerpo con `BODY.PEEK`, y decide si importa por la estructura parseada del cuerpo, no por remitente ni asunto en la búsqueda IMAP. Extrae las licitaciones, reutiliza el mismo enriquecimiento PDF de la importación manual para completar tipo de contrato y hora límite, crea/actualiza el día Infonalia correspondiente a la fecha del mensaje y envía un aviso a `LLANGON_INFONALIA_IMPORT_NOTIFY_EMAIL` cuando la importación real termina.
 
-La importación es idempotente: `infonalia_email_imports` registra `message_id`, huella del cuerpo, UID IMAP, estado, recuentos y fecha de aviso. Si el mismo mensaje vuelve a aparecer o se marca manualmente como no leído, no duplica licitaciones ni vuelve a notificar. Solo se marca como leído cuando termina importado o reconocido como duplicado controlado; si el cuerpo no tiene estructura válida de Infonalia, queda sin marcar como leído y se registra el motivo.
+La importación es idempotente: `infonalia_email_imports` registra `message_id`, huella del cuerpo, UID IMAP, estado, recuentos y fecha de aviso. Si el mismo mensaje vuelve a aparecer o se marca manualmente como no leído, no duplica licitaciones ni vuelve a notificar. Si ya existían licitaciones incompletas, el reprocesado puede rellenar campos vacíos con el PDF sin sobrescribir valores útiles con vacío. Solo se marca como leído cuando termina importado o reconocido como duplicado controlado; si el cuerpo no tiene estructura válida de Infonalia, queda sin marcar como leído y se registra el motivo. Si falta `pdftotext.exe`, revisar `INFONALIA_PDFTOTEXT`; se registra aviso y se importan los datos básicos.
 
 Pruebas locales sin IMAP:
 
@@ -181,6 +210,7 @@ El scheduler local ejecuta este importador y el procesador `LLANGON_CMD` en la m
 - Vista de días y licitaciones.
 - Filtros, estados, comentarios y notificaciones.
 - Integración opcional con SMTP.
+- Integración inicial y segura con Telegram para avisos internos de prueba.
 - Descarga por plataforma mediante `herramientas_python/Descargar_Licitacion.py`.
 - Interfaz para escritorio y móvil.
 

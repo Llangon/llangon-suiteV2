@@ -8,9 +8,11 @@ from webapp.infonalia_webapp.dropbox_paths import (
     DROPBOX_BASE_ENV,
     LEGACY_DROPBOX_ROOT_ENV,
     DropboxPathError,
+    build_expected_expediente_relative_path,
     dropbox_base_status,
     folder_status_label,
     resolve_licitacion_folder,
+    resolve_expected_expediente_path,
     resolve_path_inside_base,
     validate_dropbox_base_path,
 )
@@ -123,6 +125,40 @@ def test_licitacion_folder_inside_dropbox_base(tmp_path: Path) -> None:
     assert result.inside_dropbox_base is True
     assert Path(result.path) == folder
     assert folder_status_label(result) == "Carpeta válida."
+
+
+def test_expected_expediente_path_is_year_month_folder_inside_base(tmp_path: Path) -> None:
+    licitacion = {
+        "expediente": "A2026004397",
+        "provincia": "Castilla y Leon",
+        "organismo": "Gerencia de Servicios Sociales de Castilla y Leon",
+        "objeto": "El suministro de carne y derivados para los centros dependientes",
+        "fecha_limite": "2026-06-30",
+        "hora_limite": "19:00",
+    }
+
+    relative = build_expected_expediente_relative_path(licitacion)
+    absolute = resolve_expected_expediente_path(licitacion, dropbox_base=tmp_path)
+
+    assert Path(relative).parts[:2] == ("2026", "06 JUNIO")
+    assert Path(relative).name == "30 JUNIO 1900 CASTILLA Y LEON CARNE Y DERIVADOS A2026004397"
+    assert absolute == tmp_path / relative
+
+
+def test_licitacion_folder_legacy_month_route_can_resolve_existing_year_folder(tmp_path: Path) -> None:
+    folder = tmp_path / "2026" / "07 JULIO" / "EXP TEST"
+    folder.mkdir(parents=True)
+
+    result = resolve_licitacion_folder(
+        {"ruta_carpeta": r"07 JULIO\EXP TEST"},
+        dropbox_base=tmp_path,
+    )
+
+    assert result.ok is True
+    assert result.exists is True
+    assert result.inside_dropbox_base is True
+    assert Path(result.path) == folder
+    assert result.reason == "valid"
 
 
 def test_licitacion_folder_outside_dropbox_base(tmp_path: Path) -> None:

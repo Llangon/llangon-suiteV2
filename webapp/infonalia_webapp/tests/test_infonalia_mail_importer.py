@@ -18,6 +18,7 @@ from webapp.infonalia_webapp.infonalia_mail_importer import (
     parse_infonalia_email,
     process_mailbox_once,
 )
+from webapp.infonalia_webapp.services.telegram_notifications import TelegramResult
 from webapp.infonalia_webapp.tests.test_import_endpoints import load_app_module, temporary_app_database
 
 
@@ -303,6 +304,216 @@ def test_import_does_not_break_if_notification_sender_fails() -> None:
     assert result["notified"] == 0
     assert "SMTP no configurado" in result["notification_error"]
     assert licitaciones == 2
+
+
+def test_import_sends_private_admin_telegram_after_success(monkeypatch) -> None:
+    app = load_app_module()
+    raw = make_infonalia_message(message_id="<telegram-private@example.test>")
+    parsed = parse_infonalia_email(raw)
+    telegram_calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        app,
+        "send_telegram_user_message",
+        lambda user, text, env=None: telegram_calls.append((user["username"], text))
+        or TelegramResult(ok=True, status="ok", message="ok", telegram_message_id=101),
+    )
+    monkeypatch.setattr(
+        app,
+        "send_telegram_group_message",
+        lambda text, env=None: TelegramResult(ok=False, status="error", message="unused", error_code="UNUSED"),
+    )
+
+    with temporary_app_database(app):
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                UPDATE usuarios
+                SET telegram_chat_id = ?, telegram_notifications_enabled = 1
+                WHERE username = 'admin_test'
+                """,
+                ("1648124154",),
+            )
+        result = import_parsed_email(
+            parsed,
+            raw_bytes=raw,
+            mailbox_user="info3.llangon@gmail.com",
+            notification_sender=lambda *_args: ("2026-06-05T12:34:00", None),
+        )
+        with app.db_session() as conn:
+            row = conn.execute(
+                """
+                SELECT telegram_notification_status, telegram_notification_target,
+                       telegram_notification_attempted_at, telegram_notification_message_id
+                FROM infonalia_email_imports
+                WHERE message_id = ?
+                """,
+                ("<telegram-private@example.test>",),
+            ).fetchone()
+
+    assert result["status"] == "imported"
+    assert result["notified"] == 1
+    assert result["telegram_notified"] == 1
+    assert result["telegram_notification_status"] == "sent_user"
+    assert result["telegram_notification_target"] == "user:admin_test"
+    assert len(telegram_calls) == 1
+    assert telegram_calls[0][0] == "admin_test"
+    assert "Nuevo día de Infonalia importado" in telegram_calls[0][1]
+    assert "Buzón revisado: info3.llangon@gmail.com" in telegram_calls[0][1]
+    assert row["telegram_notification_status"] == "sent_user"
+    assert row["telegram_notification_target"] == "user:admin_test"
+    assert row["telegram_notification_attempted_at"]
+    assert row["telegram_notification_message_id"] == "101"
+
+
+def test_import_uses_group_telegram_fallback_when_admin_has_no_private_chat(monkeypatch) -> None:
+    app = load_app_module()
+    raw = make_infonalia_message(message_id="<telegram-group@example.test>")
+    parsed = parse_infonalia_email(raw)
+    group_calls: list[str] = []
+
+    monkeypatch.setattr(
+        app,
+        "send_telegram_user_message",
+        lambda user, text, env=None: TelegramResult(
+            ok=False,
+            status="error",
+            message="disabled",
+            error_code="TELEGRAM_USER_DISABLED",
+            error_message="Telegram desactivado para este usuario.",
+        ),
+    )
+    monkeypatch.setattr(
+        app,
+        "send_telegram_group_message",
+        lambda text, env=None: group_calls.append(text)
+        or TelegramResult(ok=True, status="ok", message="ok", telegram_message_id=202),
+    )
+
+    with temporary_app_database(app):
+        result = import_parsed_email(
+            parsed,
+            raw_bytes=raw,
+            mailbox_user="info3.llangon@gmail.com",
+            notification_sender=lambda *_args: ("2026-06-05T12:34:00", None),
+        )
+        with app.db_session() as conn:
+            row = conn.execute(
+                "SELECT telegram_notification_status, telegram_notification_target FROM infonalia_email_imports WHERE message_id = ?",
+                ("<telegram-group@example.test>",),
+            ).fetchone()
+
+    assert result["status"] == "imported"
+    assert result["telegram_notified"] == 1
+    assert result["telegram_notification_status"] == "sent_group"
+    assert result["telegram_notification_target"] == "group"
+    assert len(group_calls) == 1
+    assert "Correo origen: Infonalia" in group_calls[0]
+    assert row["telegram_notification_status"] == "sent_group"
+    assert row["telegram_notification_target"] == "group"
+
+
+def test_import_telegram_failure_does_not_break_import_or_email(monkeypatch) -> None:
+    app = load_app_module()
+    raw = make_infonalia_message(message_id="<telegram-failure@example.test>")
+    parsed = parse_infonalia_email(raw)
+
+    monkeypatch.setattr(
+        app,
+        "send_telegram_user_message",
+        lambda user, text, env=None: TelegramResult(
+            ok=False,
+            status="error",
+            message="disabled",
+            error_code="TELEGRAM_DISABLED",
+            error_message="Telegram deshabilitado.",
+        ),
+    )
+    monkeypatch.setattr(
+        app,
+        "send_telegram_group_message",
+        lambda text, env=None: TelegramResult(
+            ok=False,
+            status="error",
+            message="disabled",
+            error_code="TELEGRAM_DISABLED",
+            error_message="Telegram deshabilitado.",
+        ),
+    )
+
+    with temporary_app_database(app):
+        result = import_parsed_email(
+            parsed,
+            raw_bytes=raw,
+            mailbox_user="info3.llangon@gmail.com",
+            notification_sender=lambda *_args: ("2026-06-05T12:34:00", None),
+        )
+        with app.db_session() as conn:
+            row = conn.execute(
+                """
+                SELECT notification_sent_at, telegram_notification_status, telegram_notification_error
+                FROM infonalia_email_imports
+                WHERE message_id = ?
+                """,
+                ("<telegram-failure@example.test>",),
+            ).fetchone()
+
+    assert result["status"] == "imported"
+    assert result["notified"] == 1
+    assert result["telegram_notified"] == 0
+    assert result["telegram_notification_status"] == "failed"
+    assert "TELEGRAM_DISABLED" in result["telegram_notification_error"]
+    assert row["notification_sent_at"] == "2026-06-05T12:34:00"
+    assert row["telegram_notification_status"] == "failed"
+    assert "TELEGRAM_DISABLED" in row["telegram_notification_error"]
+
+
+def test_import_duplicate_does_not_send_duplicate_telegram(monkeypatch) -> None:
+    app = load_app_module()
+    raw = make_infonalia_message(message_id="<telegram-duplicate@example.test>")
+    parsed = parse_infonalia_email(raw)
+    telegram_calls: list[str] = []
+
+    monkeypatch.setattr(
+        app,
+        "send_telegram_user_message",
+        lambda user, text, env=None: telegram_calls.append(text)
+        or TelegramResult(ok=True, status="ok", message="ok", telegram_message_id=303),
+    )
+    monkeypatch.setattr(
+        app,
+        "send_telegram_group_message",
+        lambda text, env=None: TelegramResult(ok=False, status="error", message="unused", error_code="UNUSED"),
+    )
+
+    with temporary_app_database(app):
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                UPDATE usuarios
+                SET telegram_chat_id = ?, telegram_notifications_enabled = 1
+                WHERE username = 'admin_test'
+                """,
+                ("1648124154",),
+            )
+        first = import_parsed_email(
+            parsed,
+            raw_bytes=raw,
+            mailbox_user="info3.llangon@gmail.com",
+            notification_sender=lambda *_args: ("2026-06-05T12:34:00", None),
+        )
+        second = import_parsed_email(
+            parsed,
+            raw_bytes=raw,
+            mailbox_user="info3.llangon@gmail.com",
+            notification_sender=lambda *_args: ("2026-06-05T12:35:00", None),
+        )
+
+    assert first["status"] == "imported"
+    assert first["telegram_notified"] == 1
+    assert second["status"] == "duplicate"
+    assert second["notified"] == 0
+    assert len(telegram_calls) == 1
 
 
 def test_automatic_import_reuses_manual_pdf_enrichment_for_tipo_and_hora(monkeypatch) -> None:

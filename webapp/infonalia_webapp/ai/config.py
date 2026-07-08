@@ -3,6 +3,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+try:
+    from ..operational_settings import effective_bool, effective_int, effective_setting, effective_text
+except ImportError:
+    from operational_settings import effective_bool, effective_int, effective_setting, effective_text
+
 
 def _bool_env(name: str, default: bool = False) -> bool:
     value = os.environ.get(name)
@@ -106,18 +111,27 @@ class AIConfig:
 
 
 def get_ai_config() -> AIConfig:
+    provider_info = effective_setting("ai_analysis_provider")
+    provider = (provider_info["value"] or "gemini").strip().lower()
+    if provider_info["source"] != "settings" and "AI_ANALYSIS_PROVIDER" in os.environ and not os.environ.get("AI_ANALYSIS_PROVIDER", "").strip():
+        provider = "disabled"
+    if provider not in {"gemini", "codex_local", "disabled"}:
+        provider = "gemini"
+    input_mode = (effective_text("gemini_input_mode") or "text").strip().lower()
+    if input_mode not in {"text", "pdf_inline", "auto"}:
+        input_mode = "text"
     return AIConfig(
-        analysis_provider=_choice_env("AI_ANALYSIS_PROVIDER", "gemini", {"gemini", "codex_local", "disabled"}),
-        enabled=_bool_env("GEMINI_ENABLED", False),
+        analysis_provider=provider,
+        enabled=effective_bool("gemini_enabled"),
         api_key=os.environ.get("GEMINI_API_KEY", "").strip(),
-        model=os.environ.get("GEMINI_MODEL", "gemini-3.5-flash").strip() or "gemini-3.5-flash",
-        max_requests_per_minute=max(1, _int_env("GEMINI_MAX_REQUESTS_PER_MINUTE", 2)),
-        max_requests_per_day=max(1, _int_env("GEMINI_MAX_REQUESTS_PER_DAY", 20)),
+        model=effective_text("gemini_model") or "gemini-3.5-flash",
+        max_requests_per_minute=effective_int("gemini_max_requests_per_minute", 2, minimum=1),
+        max_requests_per_day=effective_int("gemini_max_requests_per_day", 20, minimum=1),
         cooldown_on_429_minutes=max(1, _int_env("GEMINI_COOLDOWN_ON_429_MINUTES", 15)),
-        max_documents_per_analysis=max(1, _int_env("GEMINI_MAX_DOCUMENTS_PER_ANALYSIS", 4)),
-        max_file_mb=max(1, _int_env("GEMINI_MAX_FILE_MB", 45)),
-        timeout_seconds=max(1, _int_env("GEMINI_TIMEOUT_SECONDS", 120)),
-        input_mode=_choice_env("GEMINI_INPUT_MODE", "text", {"text", "pdf_inline", "auto"}),
+        max_documents_per_analysis=effective_int("gemini_max_documents_per_analysis", 4, minimum=1),
+        max_file_mb=effective_int("gemini_max_file_mb", 45, minimum=1),
+        timeout_seconds=effective_int("gemini_timeout_seconds", 120, minimum=1),
+        input_mode=input_mode,
         max_extracted_chars=max(1000, _int_env("GEMINI_MAX_EXTRACTED_CHARS", 180000)),
         max_chars_per_document=max(1000, _int_env("GEMINI_MAX_CHARS_PER_DOCUMENT", 90000)),
         pdf_inline_fallback=_bool_env("GEMINI_PDF_INLINE_FALLBACK", False),

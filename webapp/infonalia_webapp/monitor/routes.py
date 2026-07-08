@@ -11,13 +11,14 @@ from .scanner import MonitorIssue, ScanResult
 
 try:
     from ..normalization import clean_text
-    from ..seguimiento_markers import resolve_marker_folder
+    from ..seguimiento_markers import resolve_marker_folder, resolve_marker_folder_details
 except ImportError:
     from normalization import clean_text
-    from seguimiento_markers import resolve_marker_folder
+    from seguimiento_markers import resolve_marker_folder, resolve_marker_folder_details
 
 
 FolderNormalizer = Callable[[Path], str]
+MISSING_FOLDER_WARNING = "Carpeta no encontrada y sin marcador localizable."
 
 
 def normalize_path(value: str | Path) -> str:
@@ -25,6 +26,22 @@ def normalize_path(value: str | Path) -> str:
     if not text:
         return ""
     return os.path.normcase(os.path.abspath(text))
+
+
+def normalize_route_key(value: str | Path, root_path: Path | str) -> str:
+    text = clean_text(value).strip('"')
+    if not text:
+        return ""
+    root = Path(root_path).resolve(strict=False)
+    candidate = Path(text)
+    if candidate.is_absolute() or (len(text) >= 2 and text[1] == ":"):
+        resolved = candidate.resolve(strict=False)
+        try:
+            return os.path.normcase(str(resolved.relative_to(root)))
+        except ValueError:
+            return os.path.normcase(str(resolved))
+    parts = [part for part in text.replace("\\", "/").split("/") if part and part not in {".", ".."}]
+    return os.path.normcase(str(Path(*parts))) if parts else ""
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -77,6 +94,15 @@ def _update_marker_warning(
     marker_path: str,
     timestamp: str,
 ) -> None:
+    existing = conn.execute(
+        "SELECT * FROM licitaciones WHERE id = ?",
+        (licitacion_id,),
+    ).fetchone()
+    if existing is not None:
+        current_warning = clean_text(row_value(existing, "seguimiento_marker_warning", ""))
+        current_marker_path = clean_text(row_value(existing, "seguimiento_marker_path", ""))
+        if current_warning == clean_text(warning) and current_marker_path == clean_text(marker_path):
+            return
     updates: dict[str, object] = {"updated_at": timestamp}
     if _column_exists(conn, "licitaciones", "seguimiento_marker_warning"):
         updates["seguimiento_marker_warning"] = warning
@@ -155,20 +181,11 @@ def repair_routes(
             continue
         new_path = normalize_folder_path(marker.folder_path) if normalize_folder_path else str(marker.folder_path)
         old_path = str(row_value(row, "ruta_carpeta", "") or "")
-        if normalize_path(old_path) == normalize_path(new_path):
+        old_key = normalize_route_key(old_path, scan_result.root_path)
+        new_key = normalize_route_key(new_path, scan_result.root_path)
+        if old_key == new_key and clean_text(old_path) == clean_text(new_path):
             if not dry_run:
                 _update_marker_warning(conn, marker.licitacion_id, warning="", marker_path=str(marker.marker_path), timestamp=timestamp)
-                _record_reconciliation_event(
-                    conn,
-                    licitacion_id=marker.licitacion_id,
-                    timestamp=timestamp,
-                    old_path=old_path,
-                    new_path=new_path,
-                    marker_path=str(marker.marker_path),
-                    result="unchanged",
-                    reason="unique_marker_found",
-                    details=marker.to_dict(),
-                )
             continue
         updates.append(
             {
@@ -203,22 +220,16 @@ def repair_routes(
         old_path = clean_text(row_value(row, "ruta_carpeta", ""))
         if not old_path:
             continue
+        folder_details = resolve_marker_folder_details(row, scan_result.root_path)
         folder = resolve_marker_folder(row, scan_result.root_path)
         if folder is not None and folder.exists() and folder.is_dir():
             continue
-        warnings.append(
-            MonitorIssue(
-                code="folder_missing_without_marker",
-                message="Carpeta no encontrada y sin marcador localizable.",
-                path=old_path,
-                licitacion_id=licitacion_id,
-            )
-        )
-        if not dry_run:
+        if folder_details.get("reason") == "multiple_markers":
+            warning = "Conflicto de marcadores: se encontraron varias carpetas posibles para esta licitación."
             _update_marker_warning(
                 conn,
                 licitacion_id,
-                warning="Carpeta no encontrada y sin marcador localizable.",
+                warning=warning,
                 marker_path="",
                 timestamp=timestamp,
             )
@@ -227,8 +238,49 @@ def repair_routes(
                 licitacion_id=licitacion_id,
                 timestamp=timestamp,
                 old_path=old_path,
-                result="not_found",
-                reason="folder_missing_without_marker",
-                details={"root_path": str(scan_result.root_path)},
+                result="conflict",
+                reason="multiple_markers",
+                details=folder_details,
             )
+            warnings.append(
+                MonitorIssue(
+                    code="multiple_markers",
+                    message=warning,
+                    path=clean_text(folder_details.get("checked_path")) or old_path,
+                    licitacion_id=licitacion_id,
+                )
+            )
+            continue
+        warnings.append(
+            MonitorIssue(
+                code="folder_missing_without_marker",
+                message=MISSING_FOLDER_WARNING,
+                path=clean_text(folder_details.get("checked_path")) or clean_text(folder_details.get("normalized_path")) or old_path,
+                licitacion_id=licitacion_id,
+            )
+        )
+        if not dry_run:
+            current_warning = clean_text(row_value(row, "seguimiento_marker_warning", ""))
+            current_marker_path = clean_text(row_value(row, "seguimiento_marker_path", ""))
+            already_recorded = current_warning == MISSING_FOLDER_WARNING and current_marker_path == ""
+            _update_marker_warning(
+                conn,
+                licitacion_id,
+                warning=MISSING_FOLDER_WARNING,
+                marker_path="",
+                timestamp=timestamp,
+            )
+            if not already_recorded:
+                _record_reconciliation_event(
+                    conn,
+                    licitacion_id=licitacion_id,
+                    timestamp=timestamp,
+                    old_path=old_path,
+                    result="not_found",
+                    reason="folder_missing_without_marker",
+                    details={
+                        "root_path": str(scan_result.root_path),
+                        **folder_details,
+                    },
+                )
     return updates

@@ -15,6 +15,7 @@ if (-not (Test-Path -LiteralPath $Python)) {
 
 $HostAddress = "127.0.0.1"
 $Port = 8787
+$AllowNonLoopback = $false
 $EnvPath = Join-Path $ProjectRoot "webapp\infonalia_webapp\.env"
 if (Test-Path -LiteralPath $EnvPath) {
     foreach ($Line in Get-Content -LiteralPath $EnvPath) {
@@ -33,6 +34,9 @@ if (Test-Path -LiteralPath $EnvPath) {
                 $Port = $ParsedPort
             }
         }
+        elseif ($Key -eq "INFONALIA_ALLOW_NON_LOOPBACK" -and $Value) {
+            $AllowNonLoopback = @("1", "true", "yes", "on", "si", "sí") -contains $Value.ToLowerInvariant()
+        }
     }
 }
 
@@ -45,11 +49,17 @@ $HealthUrl = "http://127.0.0.1:$Port/api/health"
 
 function Write-WebLog {
     param([string]$Message)
-    "[$(Get-Date -Format s)] $Message" | Out-File -FilePath $LogPath -Append -Encoding utf8
+    $Line = "[$(Get-Date -Format s)] $Message"
+    try {
+        $Line | Out-File -FilePath $LogPath -Append -Encoding utf8 -ErrorAction Stop
+    }
+    catch {
+        Write-Host $Line
+    }
 }
 
 trap {
-    "[$(Get-Date -Format s)] ERROR PowerShell en start_web_production.ps1: $($_.Exception.Message)" | Out-File -FilePath $LogPath -Append -Encoding utf8
+    Write-WebLog "ERROR PowerShell en start_web_production.ps1: $($_.Exception.Message)"
     exit 99
 }
 
@@ -65,18 +75,53 @@ function Test-WebHealth {
 
 function Get-WebListener {
     try {
-        return Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+        return Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
     }
     catch {
         return $null
     }
 }
 
+function Test-CanAppendFile {
+    param([string]$Path)
+    try {
+        $Stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+        $Stream.Close()
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Resolve-LogOutputPath {
+    param(
+        [string]$PreferredPath,
+        [string]$Prefix
+    )
+    if (Test-CanAppendFile -Path $PreferredPath) {
+        return $PreferredPath
+    }
+    $AlternativePath = Join-Path $LogDir ("{0}.{1}.log" -f $Prefix, $PID)
+    if (Test-CanAppendFile -Path $AlternativePath) {
+        Write-WebLog "No se puede escribir en $PreferredPath. Usando $AlternativePath."
+        return $AlternativePath
+    }
+    $TempPath = Join-Path $env:TEMP ("{0}.{1}.log" -f $Prefix, $PID)
+    Write-WebLog "No se puede escribir en logs runtime. Usando $TempPath."
+    return $TempPath
+}
+
 Set-Location -LiteralPath $ProjectRoot
 Write-WebLog "Arrancando servidor local Llangon Suite..."
 
-if ($HostAddress -ne "127.0.0.1" -and $HostAddress -ne "localhost") {
-    Write-WebLog "ERROR: INFONALIA_HOST debe ser 127.0.0.1 o localhost para despliegue local. Valor actual: $HostAddress"
+if (($HostAddress -ne "127.0.0.1" -and $HostAddress -ne "localhost" -and $HostAddress -ne "0.0.0.0") -or (($HostAddress -eq "0.0.0.0") -and -not $AllowNonLoopback)) {
+    if ($HostAddress -eq "0.0.0.0" -and -not $AllowNonLoopback) {
+        Write-WebLog "ERROR: INFONALIA_HOST=0.0.0.0 requiere INFONALIA_ALLOW_NON_LOOPBACK=1."
+    }
+    else {
+        Write-WebLog "ERROR: INFONALIA_HOST debe ser 127.0.0.1, localhost o 0.0.0.0. Valor actual: $HostAddress"
+    }
     exit 2
 }
 
@@ -122,6 +167,8 @@ if (Test-Path -LiteralPath $LockPath) {
 }
 
 Write-WebLog "Ejecutando proceso web en primer plano. El healthcheck posterior lo realiza serve.py."
+$StdoutPath = Resolve-LogOutputPath -PreferredPath $StdoutPath -Prefix "web.stdout"
+$StderrPath = Resolve-LogOutputPath -PreferredPath $StderrPath -Prefix "web.stderr"
 & $Python -u -m webapp.infonalia_webapp.serve 1>> $StdoutPath 2>> $StderrPath
 $ExitCode = $LASTEXITCODE
 if ($null -eq $ExitCode) {

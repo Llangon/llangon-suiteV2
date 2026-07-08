@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import smtplib
 import sqlite3
@@ -7,13 +8,17 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from ..ai_summary_pdf import generate_ai_summary_pdf
+from ..email_templates import build_llangon_email_shell
 from ..notification_delivery import send_notification_email_with_settings
+from ..formatting import format_date_es
 from ..normalization import clean_text
 
 
 EMAIL_RE = re.compile(r"^[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}$", re.IGNORECASE)
 EMAIL_EXTRACT_RE = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
 STATIC_ROOT = Path(__file__).resolve().parents[1] / "static"
+LOGGER = logging.getLogger(__name__)
 
 
 class EmailListError(ValueError):
@@ -35,11 +40,24 @@ def ensure_ai_notifications_schema(conn: sqlite3.Connection) -> None:
             error_message TEXT,
             attempts INTEGER DEFAULT 0,
             manual INTEGER DEFAULT 0,
+            pdf_path TEXT,
+            pdf_generated_at TEXT,
+            pdf_attached INTEGER DEFAULT 0,
+            pdf_error TEXT,
             FOREIGN KEY (job_id) REFERENCES ai_analysis_jobs(id),
             FOREIGN KEY (licitacion_id) REFERENCES licitaciones(id)
         )
         """
     )
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(ai_analysis_notifications)").fetchall()}
+    for column, definition in (
+        ("pdf_path", "TEXT"),
+        ("pdf_generated_at", "TEXT"),
+        ("pdf_attached", "INTEGER DEFAULT 0"),
+        ("pdf_error", "TEXT"),
+    ):
+        if column not in existing_columns:
+            conn.execute(f"ALTER TABLE ai_analysis_notifications ADD COLUMN {column} {definition}")
     conn.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_notifications_job_recipient
@@ -238,59 +256,55 @@ def build_ai_summary_email(
 ) -> tuple[str, str, str]:
     metadata = summary.get("metadata") if isinstance(summary.get("metadata"), dict) else {}
     ejecutivo = summary.get("resumen_ejecutivo") if isinstance(summary.get("resumen_ejecutivo"), dict) else {}
-    alertas = summary.get("alertas") if isinstance(summary.get("alertas"), list) else []
-    acciones = summary.get("acciones_recomendadas") if isinstance(summary.get("acciones_recomendadas"), list) else []
-    criterios = summary.get("criterios_adjudicacion") if isinstance(summary.get("criterios_adjudicacion"), dict) else {}
     docs = ", ".join(clean_text(doc.get("name") or doc.get("relative_path")) for doc in selected_documents if isinstance(doc, dict))
     titulo = _row_value(licitacion, "objeto") or clean_text(metadata.get("titulo"))
     expediente = _row_value(licitacion, "expediente") or clean_text(metadata.get("expediente"))
     organismo = _row_value(licitacion, "organismo") or clean_text(metadata.get("organismo"))
-    fecha_limite = " ".join(
-        part for part in [_row_value(licitacion, "fecha_limite"), _row_value(licitacion, "hora_limite")] if part
-    )
-    presupuesto = _row_value(licitacion, "presupuesto")
+    fecha_limite = " ".join(part for part in [format_date_es(_row_value(licitacion, "fecha_limite")), _row_value(licitacion, "hora_limite")] if part).strip()
+    presupuesto = _row_value(licitacion, "presupuesto") or "No consta"
     subject = f"Análisis IA disponible - {expediente} - {titulo[:70]}".strip()
+    resumen = clean_text(ejecutivo.get("texto")) or "El detalle completo se adjunta en PDF."
+    text_intro = "Adjuntamos el resumen IA en PDF para su revisión."
     lines = [
-        "El análisis IA solicitado ya está disponible en la Suite.",
+        "El análisis IA solicitado ya está disponible.",
+        text_intro,
         "",
         f"Expediente: {expediente}",
         f"Título: {titulo}",
         f"Organismo: {organismo}",
-        f"Fecha límite: {fecha_limite}",
+        f"Fecha límite: {fecha_limite or 'No consta'}",
         f"Presupuesto: {presupuesto}",
         f"Proveedor IA: {provider}",
-        f"Documentos analizados: {docs}",
+        f"Documentos analizados: {docs or 'No consta'}",
         "",
-        clean_text(ejecutivo.get("texto")),
+        resumen,
         "",
-        "Análisis automático. Revisar siempre contra los pliegos antes de enviar información al cliente.",
+        "Revisar siempre contra los pliegos antes de usarlo con clientes.",
     ]
-    html = f"""
-    <html><body style="font-family:Calibri,Arial,sans-serif;color:#172033;">
-      <div style="max-width:760px;margin:0 auto;border:1px solid #d7e4d9;border-radius:8px;overflow:hidden;">
-        <div style="padding:22px 26px;background:#f1fff2;border-left:6px solid #29a329;">
-          <h1 style="margin:0;font-size:22px;">Análisis IA disponible</h1>
-          <p style="margin:8px 0 0 0;">El análisis IA solicitado ya está disponible en la Suite.</p>
-        </div>
-        <div style="padding:22px 26px;">
-          <h2 style="margin-top:0;font-size:18px;">{_escape(expediente)}</h2>
-          <p><strong>{_escape(titulo)}</strong></p>
-          <table style="width:100%;border-collapse:collapse;margin:16px 0;">
-            <tr><td><strong>Organismo</strong></td><td>{_escape(organismo)}</td></tr>
-            <tr><td><strong>Fecha límite</strong></td><td>{_escape(fecha_limite)}</td></tr>
-            <tr><td><strong>Presupuesto</strong></td><td>{_escape(presupuesto)}</td></tr>
-            <tr><td><strong>Proveedor IA</strong></td><td>{_escape(provider)}</td></tr>
-            <tr><td><strong>Documentos</strong></td><td>{_escape(docs)}</td></tr>
-          </table>
-          {_summary_section("Resumen ejecutivo", _escape(ejecutivo.get("texto")))}
-          <h3>Alertas</h3>{_list_html(alertas) or "<p>Sin alertas destacadas.</p>"}
-          <h3>Acciones recomendadas</h3>{_list_html(acciones) or "<p>Sin acciones destacadas.</p>"}
-          <h3>Criterios</h3>{_list_html(criterios.get("juicio_valor"))}{_list_html(criterios.get("formulas")) or "<p>No localizados.</p>"}
-          <p style="margin-top:24px;color:#5d6878;"><strong>Aviso:</strong> Análisis automático. Revisar siempre contra los pliegos antes de enviar información al cliente.</p>
-        </div>
-      </div>
-    </body></html>
+    body_html = f"""
+      <p style="margin:0 0 14px 0;">El análisis IA solicitado ya está disponible.</p>
+      <p style="margin:0 0 18px 0;">Adjuntamos el resumen en PDF para que lo puedas revisar con calma.</p>
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin:0 0 18px 0;">
+        <tr><td style="padding:0 0 8px 0; color:#667085; width:150px;"><strong>Expediente</strong></td><td style="padding:0 0 8px 0;">{_escape(expediente)}</td></tr>
+        <tr><td style="padding:0 0 8px 0; color:#667085;"><strong>Título</strong></td><td style="padding:0 0 8px 0;">{_escape(titulo)}</td></tr>
+        <tr><td style="padding:0 0 8px 0; color:#667085;"><strong>Organismo</strong></td><td style="padding:0 0 8px 0;">{_escape(organismo)}</td></tr>
+        <tr><td style="padding:0 0 8px 0; color:#667085;"><strong>Fecha límite</strong></td><td style="padding:0 0 8px 0;">{_escape(fecha_limite or 'No consta')}</td></tr>
+        <tr><td style="padding:0 0 8px 0; color:#667085;"><strong>Proveedor IA</strong></td><td style="padding:0 0 8px 0;">{_escape(provider)}</td></tr>
+      </table>
+      <p style="margin:0 0 12px 0;"><strong>Resumen breve</strong></p>
+      <p style="margin:0 0 18px 0; line-height:1.55;">{_escape(resumen)}</p>
+      <p style="margin:0; color:#667085;">Documentos analizados: {_escape(docs or 'No consta')}</p>
     """
+    html = build_llangon_email_shell(
+        eyebrow="Resumen IA adjunto",
+        title=expediente or "Análisis IA disponible",
+        subtitle=titulo,
+        body_html=body_html,
+        footer_left_html="Adjunto: resumen IA en PDF",
+        footer_right_html=f"Fecha límite: {_escape(fecha_limite or 'No consta')}",
+        closing_html="<strong>Aviso:</strong> Análisis automático. Revisar siempre contra los pliegos antes de usarlo con clientes.",
+        compact=False,
+    )
     return subject, "\n".join(line for line in lines if line is not None), html
 
 
@@ -313,9 +327,10 @@ def send_pending_job_notifications(
     *,
     now: Callable[[], str],
     subject_override: str = "",
+    pdf_output_root: Path | None = None,
     smtp_factory: Callable[..., Any] = smtplib.SMTP,
     smtp_ssl_factory: Callable[..., Any] = smtplib.SMTP_SSL,
-) -> dict[str, int]:
+) -> dict[str, object]:
     ensure_ai_notifications_schema(conn)
     pending = conn.execute(
         """
@@ -354,6 +369,40 @@ def send_pending_job_notifications(
     subject, body, html_body = build_ai_summary_email(first, summary, provider=clean_text(first["provider"]), selected_documents=selected)
     if clean_text(subject_override):
         subject = clean_text(subject_override)
+    pdf_result = generate_ai_summary_pdf(
+        first,
+        summary,
+        selected_documents=selected,
+        generated_at=now(),
+        fallback_root=pdf_output_root,
+    )
+    if not pdf_result.ok:
+        error_message = pdf_result.error or "No se pudo generar el PDF del resumen IA."
+        LOGGER.error("No se enviará el resumen IA job_id=%s porque el PDF no pudo generarse: %s", job_id, error_message)
+        for row in pending:
+            conn.execute(
+                """
+                UPDATE ai_analysis_notifications
+                SET status = 'error', attempts = COALESCE(attempts, 0) + 1, error_message = ?,
+                    pdf_path = '', pdf_generated_at = ?, pdf_attached = 0, pdf_error = ?
+                WHERE id = ?
+                """,
+                (error_message, now(), error_message, row["id"]),
+            )
+        return {"sent": 0, "error": len(pending), "pdf_path": "", "pdf_warning": "", "pdf_error": error_message}
+    attachments = [Path(pdf_result.path)]
+    if pdf_result.warning:
+        LOGGER.warning("PDF IA generado con fallback job_id=%s path=%s", job_id, pdf_result.path)
+    pdf_generated_at = now()
+    for row in pending:
+        conn.execute(
+            """
+            UPDATE ai_analysis_notifications
+            SET pdf_path = ?, pdf_generated_at = ?, pdf_attached = 0, pdf_error = ?
+            WHERE id = ?
+            """,
+            (pdf_result.path, pdf_generated_at, clean_text(pdf_result.warning), row["id"]),
+        )
     settings = settings_from_conn(conn)
     sent = 0
     errors = 0
@@ -365,6 +414,7 @@ def send_pending_job_notifications(
             body=body,
             html_body=html_body,
             logo_path=STATIC_ROOT / "logo-llangon.png",
+            attachments=attachments,
             now=now,
             smtp_factory=smtp_factory,
             smtp_ssl_factory=smtp_ssl_factory,
@@ -374,7 +424,7 @@ def send_pending_job_notifications(
             conn.execute(
                 """
                 UPDATE ai_analysis_notifications
-                SET status = 'error', attempts = COALESCE(attempts, 0) + 1, error_message = ?
+                SET status = 'error', attempts = COALESCE(attempts, 0) + 1, error_message = ?, pdf_attached = 0
                 WHERE id = ?
                 """,
                 (clean_text(error), row["id"]),
@@ -384,9 +434,65 @@ def send_pending_job_notifications(
             conn.execute(
                 """
                 UPDATE ai_analysis_notifications
-                SET status = 'sent', attempts = COALESCE(attempts, 0) + 1, sent_at = ?, error_message = ''
+                SET status = 'sent', attempts = COALESCE(attempts, 0) + 1, sent_at = ?, error_message = '', pdf_attached = 1
                 WHERE id = ?
                 """,
                 (sent_at or now(), row["id"]),
             )
-    return {"sent": sent, "error": errors}
+    return {
+        "sent": sent,
+        "error": errors,
+        "pdf_path": pdf_result.path,
+        "pdf_warning": pdf_result.warning,
+        "pdf_error": "",
+    }
+
+
+def generate_ai_summary_pdf_and_email(
+    conn: sqlite3.Connection,
+    *,
+    licitacion_id: int,
+    recipients: Sequence[str],
+    requested_by: str,
+    now: Callable[[], str],
+    subject_override: str = "",
+    pdf_output_root: Path | None = None,
+    smtp_factory: Callable[..., Any] = smtplib.SMTP,
+    smtp_ssl_factory: Callable[..., Any] = smtplib.SMTP_SSL,
+) -> dict[str, object]:
+    ensure_ai_notifications_schema(conn)
+    summary_row = conn.execute(
+        """
+        SELECT *
+        FROM ai_summaries
+        WHERE licitacion_id = ?
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+        """,
+        (licitacion_id,),
+    ).fetchone()
+    if not summary_row:
+        raise ValueError("No hay un análisis IA útil para enviar.")
+    job_id = int(summary_row["created_from_job_id"] or 0)
+    if not job_id:
+        raise ValueError("El análisis IA no tiene job asociado para registrar el envío.")
+    create_job_notifications(
+        conn,
+        job_id=job_id,
+        licitacion_id=licitacion_id,
+        requested_by=clean_text(requested_by) or "ui",
+        recipients=normalize_email_list(list(recipients), required=True),
+        created_at=now(),
+        manual=True,
+    )
+    result = send_pending_job_notifications(
+        conn,
+        job_id,
+        now=now,
+        subject_override=subject_override,
+        pdf_output_root=pdf_output_root,
+        smtp_factory=smtp_factory,
+        smtp_ssl_factory=smtp_ssl_factory,
+    )
+    result["job_id"] = job_id
+    return result

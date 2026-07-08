@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from email.message import EmailMessage
+import mimetypes
 from pathlib import Path
 from typing import Any
 
@@ -42,15 +43,25 @@ def attach_logo_to_message(message: EmailMessage, logo_path: Path) -> None:
         return
 
     try:
-        html_part = message.get_payload()[-1]
-        html_part.add_related(
-            logo_path.read_bytes(),
-            maintype="image",
-            subtype="png",
-            cid="<llangon-logo>",
-        )
+        html_part = next((part for part in message.walk() if part.get_content_type() == "text/html"), None)
+        if html_part is None:
+            return
+        html_part.add_related(logo_path.read_bytes(), maintype="image", subtype="png", cid="<llangon-logo>")
     except Exception:
         return
+
+
+def attach_files_to_message(message: EmailMessage, attachments: Sequence[Path] | None) -> None:
+    for attachment in attachments or []:
+        path = Path(attachment)
+        if not path.exists() or not path.is_file():
+            continue
+        guessed_type, _encoding = mimetypes.guess_type(path.name)
+        if guessed_type and "/" in guessed_type:
+            maintype, subtype = guessed_type.split("/", 1)
+        else:
+            maintype, subtype = "application", "octet-stream"
+        message.add_attachment(path.read_bytes(), maintype=maintype, subtype=subtype, filename=path.name)
 
 
 def build_notification_message(
@@ -61,6 +72,7 @@ def build_notification_message(
     text_body: str,
     html_body: str,
     logo_path: Path | None = None,
+    attachments: Sequence[Path] | None = None,
 ) -> EmailMessage:
     message = EmailMessage()
     message["From"] = smtp_from
@@ -70,6 +82,7 @@ def build_notification_message(
     message.add_alternative(html_body, subtype="html")
     if logo_path:
         attach_logo_to_message(message, logo_path)
+    attach_files_to_message(message, attachments)
     return message
 
 
@@ -81,6 +94,7 @@ def send_notification_email_with_settings(
     body: str,
     html_body: str,
     logo_path: Path | None,
+    attachments: Sequence[Path] | None = None,
     now: NowFactory,
     smtp_factory: SmtpFactory,
     smtp_ssl_factory: SmtpFactory,
@@ -106,6 +120,7 @@ def send_notification_email_with_settings(
         text_body=body or subject,
         html_body=html_body,
         logo_path=logo_path,
+        attachments=attachments,
     )
 
     try:

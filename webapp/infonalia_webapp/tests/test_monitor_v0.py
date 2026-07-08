@@ -76,26 +76,60 @@ def fetch_one(path: Path, sql: str):
         conn.close()
 
 
-def test_monitor_config_prefers_monitor_root_defaults_and_rejects_real_dropbox(monkeypatch) -> None:
+def test_monitor_config_prioritizes_roots_and_uses_llangon_dropbox_base(monkeypatch, tmp_path: Path) -> None:
+    dropbox_base = tmp_path / "Dropbox" / "00000 LLANGON"
+    legacy_root = tmp_path / "ReplicaDb"
+    explicit_root = tmp_path / "ExplicitRoot"
+    for folder in [dropbox_base, legacy_root, explicit_root]:
+        folder.mkdir(parents=True)
+
     monkeypatch.setenv("INFONALIA_MONITOR_ROOT", r"C:\ReplicaDb")
-    monkeypatch.setenv("INFONALIA_DROPBOX_ROOT", r"D:\OtraReplica")
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(dropbox_base))
+    monkeypatch.setenv("INFONALIA_DROPBOX_ROOT", str(legacy_root))
     monkeypatch.delenv("INFONALIA_MONITOR_YEAR_MIN", raising=False)
     monkeypatch.delenv("INFONALIA_MONITOR_YEAR_MAX", raising=False)
 
     config = load_monitor_config()
 
     assert str(config.root_path) == r"C:\ReplicaDb"
+    assert config.root_source == "INFONALIA_MONITOR_ROOT"
     assert config.year_min == DEFAULT_YEAR_MIN
     assert config.year_max == DEFAULT_YEAR_MAX
 
     monkeypatch.delenv("INFONALIA_MONITOR_ROOT", raising=False)
-    monkeypatch.setenv("INFONALIA_DROPBOX_ROOT", r"C:\Users\LLangon03\Dropbox\00000 LLANGON")
+    config = load_monitor_config()
+    assert config.root_path == dropbox_base
+    assert config.root_source == "LLANGON_DROPBOX_BASE_PATH"
+
+    monkeypatch.delenv("LLANGON_DROPBOX_BASE_PATH", raising=False)
+    config = load_monitor_config()
+    assert config.root_path == legacy_root
+    assert config.root_source == "INFONALIA_DROPBOX_ROOT"
+
+    monkeypatch.setenv("INFONALIA_MONITOR_ROOT", str(explicit_root))
     monkeypatch.delenv("INFONALIA_MONITOR_ALLOW_REAL_DROPBOX", raising=False)
-    with pytest.raises(MonitorConfigError):
+    assert load_monitor_config().root_path == explicit_root
+
+
+def test_monitor_config_reports_missing_llangon_dropbox_base_without_fallback(monkeypatch, tmp_path: Path) -> None:
+    missing_base = tmp_path / "missing"
+    legacy_root = tmp_path / "ReplicaDb"
+    legacy_root.mkdir()
+    monkeypatch.delenv("INFONALIA_MONITOR_ROOT", raising=False)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(missing_base))
+    monkeypatch.setenv("INFONALIA_DROPBOX_ROOT", str(legacy_root))
+
+    with pytest.raises(MonitorConfigError, match="LLANGON_DROPBOX_BASE_PATH"):
         load_monitor_config()
 
-    monkeypatch.setenv("INFONALIA_MONITOR_ALLOW_REAL_DROPBOX", "1")
-    assert "Dropbox" in str(load_monitor_config().root_path)
+
+def test_monitor_config_without_roots_does_not_fallback_to_hardcoded_replica(monkeypatch) -> None:
+    monkeypatch.delenv("INFONALIA_MONITOR_ROOT", raising=False)
+    monkeypatch.delenv("LLANGON_DROPBOX_BASE_PATH", raising=False)
+    monkeypatch.delenv("INFONALIA_DROPBOX_ROOT", raising=False)
+
+    with pytest.raises(MonitorConfigError, match="LLANGON_DROPBOX_BASE_PATH"):
+        load_monitor_config()
 
 
 def test_year_roots_only_scan_direct_valid_year_folders(tmp_path: Path) -> None:
@@ -174,7 +208,12 @@ def test_repair_routes_and_dry_run_behavior(tmp_path: Path) -> None:
 
     repaired = run_monitor("repair-routes", db_path=db_path, root=root)
     assert repaired["route_updates_count"] == 1
-    assert fetch_one(db_path, "SELECT ruta_carpeta FROM licitaciones WHERE id = 33")[0] == str(folder)
+    assert Path(fetch_one(db_path, "SELECT ruta_carpeta FROM licitaciones WHERE id = 33")[0]).parts == (
+        "2026",
+        "06 JUNIO",
+        "no",
+        "licitacion",
+    )
 
 
 def test_sync_updates_follow_cache_without_inventory_by_default(tmp_path: Path) -> None:
@@ -816,7 +855,8 @@ def test_agenda_automatic_duplicate_is_skipped_but_manual_can_send(tmp_path: Pat
     assert sent == ["first", "manual"]
 
 
-def test_run_due_automation_tasks_filters_already_executed_schedule(tmp_path: Path) -> None:
+def test_run_due_automation_tasks_filters_already_executed_schedule(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("MONITOR_AGENDA_PENDING_DAILY_TIME", "06:00")
     app = load_app_module()
     current = datetime(2026, 6, 16, 6, 0, 0)
     sent: list[str] = []

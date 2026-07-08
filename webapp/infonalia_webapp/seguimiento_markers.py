@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sqlite3
+from datetime import datetime
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -20,6 +21,7 @@ FOLLOW_MARKER_NAME = "EnSeguimiento.llangon"
 ID_MARKER_RE = re.compile(r"^([0-9]+)\.llangon$")
 DEFAULT_MONITOR_YEAR_MIN = 2000
 DEFAULT_MONITOR_YEAR_MAX = 2300
+LEGACY_REPLICA_PREFIX = re.compile(r"^[A-Za-z]:\\ReplicaDb(?:\\|/)?", re.IGNORECASE)
 
 
 def monitor_year_bounds(env: dict[str, str] | None = None) -> tuple[int, int]:
@@ -242,26 +244,188 @@ def _row_value(row: sqlite3.Row | dict[str, object], key: str) -> object:
         return ""
 
 
+def _candidate_years_for_row(row: sqlite3.Row | dict[str, object]) -> list[str]:
+    years: list[str] = []
+    for key in ("fecha_limite", "fecha_presentacion", "fecha_de_presentacion", "fecha_infonalia", "created_at"):
+        raw = clean_text(_row_value(row, key))
+        if not raw:
+            continue
+        date_text = raw.replace("Z", "+00:00")
+        parsed: datetime | None = None
+        try:
+            parsed = datetime.fromisoformat(date_text)
+        except ValueError:
+            parsed = None
+        if parsed is None:
+            token = re.split(r"\s+", raw, maxsplit=1)[0]
+            for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y"):
+                try:
+                    parsed = datetime.strptime(token, fmt)
+                    break
+                except ValueError:
+                    continue
+        if parsed is None:
+            continue
+        year = f"{parsed.year:04d}"
+        if year not in years:
+            years.append(year)
+    return years
+
+
+def _normalize_legacy_route_text(value: str) -> str:
+    text = clean_text(value).strip('"')
+    if not text:
+        return ""
+    text = LEGACY_REPLICA_PREFIX.sub("", text).strip("\\/")
+    return normalize_relative_folder_path(text)
+
+
+def _search_relative_candidates(root: Path, relative: str, row: sqlite3.Row | dict[str, object]) -> list[Path]:
+    if not relative:
+        return []
+    relative_path = Path(relative)
+    parts = relative_path.parts
+    if not parts:
+        return []
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        key = os.path.normcase(str(path.resolve(strict=False)))
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(path)
+
+    direct = root / relative_path
+    add(direct)
+
+    if not is_year_folder(parts[0]):
+        for year in _candidate_years_for_row(row):
+            add(root / year / relative_path)
+        for year_root in iter_monitor_year_roots(root):
+            add(year_root / relative_path)
+        if len(parts) == 1:
+            for year_root in iter_monitor_year_roots(root):
+                for month_dir in sorted((child for child in year_root.iterdir() if child.is_dir()), key=lambda item: item.name):
+                    add(month_dir / relative_path)
+    return candidates
+
+
+def _marker_matches_for_row(
+    row: sqlite3.Row | dict[str, object],
+    dropbox_root: Path,
+) -> list[Path]:
+    licitacion_id = int(_row_value(row, "id") or 0)
+    if licitacion_id <= 0:
+        return []
+    marker_name = f"{licitacion_id}.llangon"
+    matches: list[Path] = []
+    for year_root in iter_monitor_year_roots(dropbox_root):
+        for dirpath, dirnames, filenames in os.walk(year_root, followlinks=False):
+            folder = Path(dirpath)
+            dirnames[:] = [name for name in dirnames if not (folder / name).is_symlink()]
+            if marker_name in filenames:
+                matches.append(folder)
+    matches.sort(key=lambda item: str(item).casefold())
+    return matches
+
+
+def resolve_marker_folder_details(
+    row: sqlite3.Row | dict[str, object],
+    dropbox_root: Path | None = None,
+) -> dict[str, object]:
+    original = clean_text(_row_value(row, "ruta_carpeta")).strip('"')
+    details: dict[str, object] = {
+        "original_path": original,
+        "normalized_path": "",
+        "checked_path": "",
+        "resolved_path": "",
+        "marker_path": "",
+        "marker_match_count": 0,
+        "reason": "empty",
+        "exists": False,
+        "inside_dropbox_root": False,
+    }
+    if not original:
+        return details
+
+    root = Path(dropbox_root).resolve(strict=False) if dropbox_root else None
+    relative = _normalize_legacy_route_text(original)
+    details["normalized_path"] = relative
+
+    candidate = Path(original)
+    if candidate.is_absolute() and root is None:
+        details["checked_path"] = str(candidate)
+        details["resolved_path"] = str(candidate)
+        details["exists"] = candidate.exists() and candidate.is_dir()
+        details["reason"] = "absolute_without_root"
+        return details
+
+    if candidate.is_absolute() and root is not None:
+        resolved = candidate.resolve(strict=False)
+        if path_is_relative_to(resolved, root):
+            details["checked_path"] = str(resolved)
+            details["resolved_path"] = str(resolved)
+            details["exists"] = resolved.exists() and resolved.is_dir()
+            details["inside_dropbox_root"] = True
+            details["reason"] = "absolute_inside_dropbox" if details["exists"] else "absolute_inside_dropbox_missing"
+            return details
+
+    if root is None:
+        fallback = Path(relative) if relative else candidate
+        details["checked_path"] = str(fallback)
+        details["resolved_path"] = str(fallback)
+        details["exists"] = fallback.exists() and fallback.is_dir()
+        details["reason"] = "relative_without_root"
+        return details
+
+    for possible in _search_relative_candidates(root, relative, row):
+        details["checked_path"] = str(possible)
+        if possible.exists() and possible.is_dir():
+            details["resolved_path"] = str(possible)
+            details["exists"] = True
+            details["inside_dropbox_root"] = True
+            details["reason"] = "resolved_relative"
+            return details
+
+    marker_matches = _marker_matches_for_row(row, root)
+    details["marker_match_count"] = len(marker_matches)
+    if len(marker_matches) == 1:
+        match = marker_matches[0]
+        details["checked_path"] = str(match)
+        details["resolved_path"] = str(match)
+        details["exists"] = match.exists() and match.is_dir()
+        details["inside_dropbox_root"] = True
+        details["marker_path"] = str(match / f"{int(_row_value(row, 'id') or 0)}.llangon")
+        details["reason"] = "resolved_by_unique_marker"
+        return details
+    if len(marker_matches) > 1:
+        details["checked_path"] = str(root)
+        details["inside_dropbox_root"] = True
+        details["reason"] = "multiple_markers"
+        return details
+
+    if relative:
+        possible = root / Path(relative)
+        details["checked_path"] = str(possible)
+        details["inside_dropbox_root"] = True
+        details["reason"] = "missing_after_normalization"
+        return details
+
+    details["checked_path"] = str(root)
+    details["inside_dropbox_root"] = True
+    details["reason"] = "unresolved"
+    return details
+
+
 def resolve_marker_folder(row: sqlite3.Row | dict[str, object], dropbox_root: Path | None = None) -> Path | None:
-    ruta = clean_text(_row_value(row, "ruta_carpeta")).strip('"')
-    if not ruta:
-        return None
-    candidate = Path(ruta)
-    if candidate.is_absolute():
-        return candidate
-    if not dropbox_root:
-        return candidate
-    root = Path(dropbox_root)
-    relative = normalize_relative_folder_path(ruta)
-    direct = root / relative
-    if direct.exists():
-        return direct
-    parts = Path(relative).parts
-    if parts and not is_year_folder(parts[0]):
-        year_matches = [year_root / relative for year_root in iter_monitor_year_roots(root) if (year_root / relative).exists()]
-        if len(year_matches) == 1:
-            return year_matches[0]
-    return direct
+    details = resolve_marker_folder_details(row, dropbox_root)
+    resolved = clean_text(details.get("resolved_path"))
+    if not resolved:
+        checked = clean_text(details.get("checked_path"))
+        return Path(checked) if checked else None
+    return Path(resolved)
 
 
 def marker_status_for_folder(licitacion_id: int, folder_path: Path | str | None) -> dict[str, object]:

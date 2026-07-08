@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
+from .config import MonitorConfigError, load_monitor_config
 from .repository import (
     TASK_TYPE_EMAIL_ACTIONS_PROCESSOR,
     TASK_TYPE_FILE_INVENTORY,
@@ -31,6 +32,11 @@ from .service import (
     schedule_runs_on_date,
     scheduler_now_iso,
 )
+
+try:
+    from ..operational_settings import effective_bool, effective_int
+except ImportError:
+    from operational_settings import effective_bool, effective_int
 
 
 TaskRunner = Callable[[datetime], list[dict[str, object]]]
@@ -136,6 +142,32 @@ def env_minutes(name: str, default: int) -> int:
         return default
 
 
+def operational_minutes(key: str, default: int) -> int:
+    return effective_int(key, default, minimum=1)
+
+
+def operational_enabled(key: str) -> bool:
+    return effective_bool(key)
+
+
+def file_inventory_config_status() -> dict[str, object]:
+    try:
+        config = load_monitor_config()
+    except MonitorConfigError as exc:
+        return {
+            "root_path": "",
+            "root_source": "",
+            "config_ok": False,
+            "config_error": str(exc),
+        }
+    return {
+        "root_path": str(config.root_path),
+        "root_source": config.root_source,
+        "config_ok": config.root_path.exists() and config.root_path.is_dir(),
+        "config_error": "" if config.root_path.exists() and config.root_path.is_dir() else "La raíz de inventario no existe.",
+    }
+
+
 def _last_task_started(conn, task_type: str) -> datetime | None:
     row = conn.execute(
         """
@@ -222,19 +254,22 @@ def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: 
             ),
             (
                 TASK_TYPE_INFONALIA_MAIL_IMPORT,
-                "LLANGON_INFONALIA_IMPORT_ENABLED",
-                env_minutes("LLANGON_INFONALIA_IMPORT_POLL_MINUTES", 30),
+                "infonalia_import_enabled",
+                operational_minutes("infonalia_import_poll_minutes", 30),
             ),
             (
                 TASK_TYPE_EMAIL_ACTIONS_PROCESSOR,
-                "LLANGON_EMAIL_ACTIONS_ENABLED",
-                env_minutes("LLANGON_EMAIL_ACTIONS_POLL_MINUTES", 10),
+                "email_actions_enabled",
+                operational_minutes("email_actions_poll_minutes", 10),
             ),
         ]
         due_jobs = [
             (task_type, enabled_var, interval)
             for task_type, enabled_var, interval in jobs
-            if env_bool(enabled_var, False) and _interval_task_due(conn, task_type=task_type, current=current, interval_minutes=interval)
+            if (
+                (env_bool(enabled_var, False) if enabled_var.startswith("LLANGON_") else operational_enabled(enabled_var))
+                and _interval_task_due(conn, task_type=task_type, current=current, interval_minutes=interval)
+            )
         ]
     finally:
         conn.close()
@@ -404,13 +439,13 @@ def monitor_scheduler_status(db_path: str | Path | None = None) -> dict[str, obj
         "monitor_licitaciones_schedule_enabled": "monitor_licitaciones" in schedules,
         "monitor_licitaciones_real_enabled": env_bool("MONITOR_LICITACIONES_REAL_ENABLED", False),
         "infonalia_mail_importer": {
-            "enabled": env_bool("LLANGON_INFONALIA_IMPORT_ENABLED", False),
-            "interval_minutes": env_minutes("LLANGON_INFONALIA_IMPORT_POLL_MINUTES", 30),
+            "enabled": operational_enabled("infonalia_import_enabled"),
+            "interval_minutes": operational_minutes("infonalia_import_poll_minutes", 30),
             "last_run": None,
         },
         "email_actions_processor": {
-            "enabled": env_bool("LLANGON_EMAIL_ACTIONS_ENABLED", False),
-            "interval_minutes": env_minutes("LLANGON_EMAIL_ACTIONS_POLL_MINUTES", 10),
+            "enabled": operational_enabled("email_actions_enabled"),
+            "interval_minutes": operational_minutes("email_actions_poll_minutes", 10),
             "last_run": None,
         },
         "file_inventory": {
@@ -420,6 +455,7 @@ def monitor_scheduler_status(db_path: str | Path | None = None) -> dict[str, obj
             "max_depth": env_minutes("LLANGON_FILE_INVENTORY_MAX_DEPTH", 8),
             "reconcile_paths": env_bool("LLANGON_FILE_INVENTORY_RECONCILE_PATHS", True),
             "last_run": None,
+            **file_inventory_config_status(),
         },
         "last_automatic_run": None,
     }
@@ -615,6 +651,7 @@ def reset_test_state(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Runner independiente del scheduler de LlangonSuiteV2.")
     parser.add_argument("--once", action="store_true", help="Comprueba tareas pendientes y termina.")
+    parser.add_argument("--tick", action="store_true", help="Ejecuta el orquestador interno unico de automatizaciones.")
     parser.add_argument("--dry-run", action="store_true", help="Muestra qué ejecutaría sin enviar correos.")
     parser.add_argument("--status", action="store_true", help="Muestra estado del scheduler y trabajos de correo.")
     parser.add_argument("--list-schedule", action="store_true", help="Lista tareas activas y próxima ejecución.")
@@ -623,8 +660,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task-type", default="agenda_pendientes_diaria", help="Tipo de tarea para reset-test-state.")
     parser.add_argument("--now", help="Fecha/hora ISO simulada en Europe/Madrid si no incluye zona.")
     parser.add_argument("--db-path", default=str(DEFAULT_DB_PATH))
+    parser.add_argument("--source", default="keeper_tick")
     args = parser.parse_args(argv)
     now = parse_now(args.now)
+    if args.tick:
+        try:
+            from ..automation_orchestrator import scheduler_tick
+        except ImportError:
+            from automation_orchestrator import scheduler_tick
+        print(json.dumps(
+            scheduler_tick(db_path=args.db_path, source=args.source, current=now),
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ))
+        return 0
     if args.reset_test_state:
         print(json.dumps(
             reset_test_state(db_path=args.db_path, schedule_keys=args.schedule_key, task_type=args.task_type),

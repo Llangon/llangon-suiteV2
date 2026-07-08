@@ -15,6 +15,8 @@ POST_CASES = [
     ("POST", "/api/licitaciones/capture", "api_capture_licitacion", ()),
     ("POST", "/api/config/users", "api_create_user", ()),
     ("POST", "/api/config/test-smtp", "api_test_smtp", ()),
+    ("POST", "/api/admin/telegram/test-group", "api_test_telegram_group", ()),
+    ("POST", "/api/admin/users/manolo/telegram/test", "api_test_telegram_user", ("manolo",)),
     ("POST", "/api/storage/markers/sync", "api_storage_markers_sync", ()),
     ("POST", "/api/news", "api_create_news", ()),
     ("POST", "/api/import/msg", "api_import_msg", ()),

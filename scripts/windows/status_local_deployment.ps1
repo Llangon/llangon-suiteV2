@@ -84,7 +84,7 @@ function Test-WebHealth {
 
 function Get-WebListeners {
     try {
-        return @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+        return @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
     }
     catch {
         return @()
@@ -98,6 +98,47 @@ function Describe-Process {
         return "PID $ProcessId (proceso no encontrado)"
     }
     return "PID $ProcessId ($($Process.ProcessName))"
+}
+
+function Format-TaskScheduleSummary {
+    param([Microsoft.Management.Infrastructure.CimInstance[]]$Triggers)
+    if ($null -eq $Triggers -or $Triggers.Count -eq 0) {
+        return "sin triggers"
+    }
+
+    $Parts = @()
+    foreach ($Trigger in $Triggers) {
+        $TypeName = ""
+        if ($Trigger.PSObject.Properties.Match("CimClass").Count -gt 0) {
+            $TypeName = $Trigger.CimClass.CimClassName
+        }
+
+        $Summary = ""
+        if ($Trigger.StartBoundary) {
+            try {
+                $Start = [datetime]$Trigger.StartBoundary
+                $Summary = $Start.ToString("HH:mm")
+            }
+            catch {
+                $Summary = "$($Trigger.StartBoundary)"
+            }
+        }
+
+        if ($Summary) {
+            if ($TypeName) {
+                $Parts += "${TypeName}: ${Summary}"
+            }
+            else {
+                $Parts += $Summary
+            }
+        }
+    }
+
+    if ($Parts.Count -eq 0) {
+        return "sin configuracion horaria detectada"
+    }
+
+    return ($Parts -join " | ")
 }
 
 Write-Host "Proyecto: $ProjectRoot"
@@ -119,7 +160,12 @@ foreach ($TaskName in $TaskNames) {
     }
     else {
         $Info = Get-ScheduledTaskInfo -TaskName $TaskName
+        $ScheduleSummary = Format-TaskScheduleSummary -Triggers $Task.Triggers
         Write-Host "$TaskName : $($Task.State) | ultima ejecucion: $($Info.LastRunTime) | resultado: $($Info.LastTaskResult)"
+        Write-Host "  - Trigger: $ScheduleSummary"
+        if ($Info.NextRunTime) {
+            Write-Host "  - Siguiente ejecucion: $($Info.NextRunTime)"
+        }
     }
 }
 
@@ -191,7 +237,7 @@ if ($Listeners.Count -eq 0) {
 }
 else {
     foreach ($Listener in $Listeners) {
-        Write-Host "Puerto 127.0.0.1:$Port : LISTENING | $(Describe-Process -ProcessId $Listener.OwningProcess)"
+        Write-Host "Puerto $($Listener.LocalAddress):$Port : LISTENING | $(Describe-Process -ProcessId $Listener.OwningProcess)"
     }
 }
 

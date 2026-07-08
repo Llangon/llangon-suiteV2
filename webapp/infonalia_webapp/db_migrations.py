@@ -651,8 +651,83 @@ def _email_action_events_schema(conn: sqlite3.Connection) -> None:
     _ensure_email_action_schema(conn)
 
 
+def _email_action_events_telegram_schema(conn: sqlite3.Connection) -> None:
+    _ensure_email_action_schema(conn)
+
+
 def _infonalia_email_imports_schema(conn: sqlite3.Connection) -> None:
     _ensure_infonalia_email_import_schema(conn)
+
+
+def _infonalia_email_imports_telegram_schema(conn: sqlite3.Connection) -> None:
+    _ensure_infonalia_email_import_schema(conn)
+
+
+def _ai_notifications_pdf_delivery_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "ai_analysis_jobs") or not _table_exists(conn, "licitaciones"):
+        return
+    _ensure_ai_notifications_schema(conn)
+
+
+def _telegram_user_fields_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "usuarios"):
+        return
+    additions = {
+        "telegram_chat_id": "TEXT",
+        "telegram_notifications_enabled": "INTEGER NOT NULL DEFAULT 0",
+        "telegram_last_test_at": "TEXT",
+        "telegram_last_error": "TEXT",
+    }
+    for column, definition in additions.items():
+        if not _column_exists(conn, "usuarios", column):
+            conn.execute(f"ALTER TABLE usuarios ADD COLUMN {column} {definition}")
+
+
+def _automation_orchestrator_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS automation_tasks (
+            key TEXT PRIMARY KEY,
+            enabled INTEGER,
+            schedule_value TEXT,
+            updated_at TEXT,
+            updated_by TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS automation_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_key TEXT NOT NULL,
+            task_name TEXT NOT NULL,
+            source TEXT NOT NULL,
+            triggered_by TEXT,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            duration_seconds REAL,
+            summary TEXT,
+            error_message TEXT,
+            details_json TEXT,
+            lock_owner TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS automation_locks (
+            key TEXT PRIMARY KEY,
+            owner TEXT NOT NULL,
+            acquired_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            metadata_json TEXT
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_automation_runs_task ON automation_runs(task_key, started_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_automation_runs_status ON automation_runs(status, started_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_automation_locks_expires ON automation_locks(expires_at)")
 
 
 MIGRATIONS: tuple[Migration, ...] = (
@@ -755,6 +830,36 @@ MIGRATIONS: tuple[Migration, ...] = (
         version="0020_infonalia_email_imports",
         description="Control idempotente de importaciones de correos Infonalia",
         apply=_infonalia_email_imports_schema,
+    ),
+    Migration(
+        version="0021_download_jobs_request_metadata",
+        description="Metadatos de solicitud para jobs de descarga por email",
+        apply=_download_jobs_schema,
+    ),
+    Migration(
+        version="0022_ai_notifications_pdf_delivery",
+        description="Metadatos PDF y adjuntos para avisos de análisis IA",
+        apply=_ai_notifications_pdf_delivery_schema,
+    ),
+    Migration(
+        version="0023_telegram_user_fields",
+        description="Campos de Telegram en usuarios para avisos internos",
+        apply=_telegram_user_fields_schema,
+    ),
+    Migration(
+        version="0024_email_action_events_telegram_notifications",
+        description="Seguimiento y deduplicacion de avisos Telegram para acciones por correo",
+        apply=_email_action_events_telegram_schema,
+    ),
+    Migration(
+        version="0025_infonalia_email_imports_telegram_notifications",
+        description="Seguimiento y deduplicacion de avisos Telegram para importaciones Infonalia",
+        apply=_infonalia_email_imports_telegram_schema,
+    ),
+    Migration(
+        version="0026_automation_orchestrator",
+        description="Orquestador interno unico de automatizaciones",
+        apply=_automation_orchestrator_schema,
     ),
 )
 

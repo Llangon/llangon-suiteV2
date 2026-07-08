@@ -7,10 +7,14 @@ from typing import Any, Mapping
 
 try:
     from .normalization import clean_text
-    from .storage_paths import dropbox_relative_path, path_is_relative_to
+    from .storage_paths import (
+        dropbox_relative_path,
+        expected_dropbox_relative_folder,
+        path_is_relative_to,
+    )
 except ImportError:
     from normalization import clean_text
-    from storage_paths import dropbox_relative_path, path_is_relative_to
+    from storage_paths import dropbox_relative_path, expected_dropbox_relative_folder, path_is_relative_to
 
 
 DROPBOX_BASE_ENV = "LLANGON_DROPBOX_BASE_PATH"
@@ -152,6 +156,38 @@ def path_inside_base(path: Path | str, base_path: Path | str) -> bool:
     return path_is_relative_to(Path(path).resolve(strict=False), Path(base_path).resolve(strict=False))
 
 
+def build_expected_expediente_relative_path(licitacion: Any, folder_name: object | None = None) -> str:
+    return str(expected_dropbox_relative_folder(licitacion, folder_name))
+
+
+def resolve_expected_expediente_path(
+    licitacion: Any,
+    *,
+    folder_name: object | None = None,
+    dropbox_base: Path | None = None,
+) -> Path:
+    base = dropbox_base or validate_dropbox_base_path()
+    return resolve_path_inside_base(base, build_expected_expediente_relative_path(licitacion, folder_name))
+
+
+def _relative_year_candidate(base: Path, relative_path: str) -> Path | None:
+    parts = [part for part in relative_path.replace("\\", "/").split("/") if part]
+    if not parts:
+        return None
+    if len(parts[0]) == 4 and parts[0].isdigit():
+        return None
+    candidates: list[Path] = []
+    for year_dir in sorted(base.iterdir() if base.exists() else []):
+        if not year_dir.is_dir() or not year_dir.name.isdigit() or len(year_dir.name) != 4:
+            continue
+        candidate = year_dir / Path(*parts)
+        if candidate.exists():
+            candidates.append(candidate)
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
 def resolve_licitacion_folder(
     licitacion: Any,
     *,
@@ -212,6 +248,11 @@ def resolve_licitacion_folder(
                     base_path=base_path,
                 )
             exists = resolved.exists()
+            if not exists:
+                legacy_candidate = _relative_year_candidate(Path(base), ruta)
+                if legacy_candidate is not None:
+                    resolved = legacy_candidate
+                    exists = True
             return LicitacionFolderResolution(
                 ok=True,
                 path=str(resolved),

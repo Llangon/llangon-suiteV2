@@ -104,6 +104,7 @@ $AgendaWakeScript = Join-Path $ScriptRoot "run_agenda_wake_once.ps1"
 $AgendaWakeEnabled = Get-EnvBool "LLANGON_AGENDA_WAKE_ENABLED" $false
 $AgendaWakeAt = Get-EnvTime "LLANGON_AGENDA_WAKE_TIME" "06:00"
 $AgendaWakeWeekdaysOnly = Get-EnvBool "MONITOR_AGENDA_PENDING_DAILY_WEEKDAYS_ONLY" $true
+$BackupDailyTime = Get-Date -Date "15:15"
 
 $WebTrigger = New-ScheduledTaskTrigger -AtLogOn
 $SchedulerTrigger = New-ScheduledTaskTrigger `
@@ -111,7 +112,7 @@ $SchedulerTrigger = New-ScheduledTaskTrigger `
     -At ((Get-Date).Date.AddMinutes(5)) `
     -RepetitionInterval (New-TimeSpan -Minutes $SchedulerMinutes) `
     -RepetitionDuration (New-TimeSpan -Days 3650)
-$BackupTrigger = New-ScheduledTaskTrigger -Daily -At 03:30
+$BackupTrigger = New-ScheduledTaskTrigger -Daily -At $BackupDailyTime
 if ($AgendaWakeWeekdaysOnly) {
     $AgendaWakeTrigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At $AgendaWakeAt
 }

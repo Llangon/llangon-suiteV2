@@ -43,8 +43,14 @@ def validate_host(host: str) -> None:
     raise ValueError("Por seguridad, el servidor local debe escuchar en 127.0.0.1.")
 
 
+def local_health_host(host: str) -> str:
+    if host in {"localhost", "0.0.0.0", "::", "::0"}:
+        return "127.0.0.1"
+    return host
+
+
 def health_url(host: str, port: int) -> str:
-    target_host = "127.0.0.1" if host == "localhost" else host
+    target_host = local_health_host(host)
     return f"http://{target_host}:{port}/api/health"
 
 
@@ -58,7 +64,7 @@ def healthcheck_ok(host: str, port: int, *, timeout: float = 1.5) -> bool:
 
 def port_is_open(host: str, port: int) -> bool:
     try:
-        with socket.create_connection((host, port), timeout=1.0):
+        with socket.create_connection((local_health_host(host), port), timeout=1.0):
             return True
     except OSError:
         return False

@@ -34,10 +34,42 @@ def make_conn() -> sqlite3.Connection:
         CREATE TABLE licitaciones (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             infonalia_dia_id INTEGER,
-            estado TEXT
+            estado TEXT,
+            updated_at TEXT
+        );
+        CREATE TABLE usuarios (
+            username TEXT PRIMARY KEY,
+            role TEXT
+        );
+        CREATE TABLE licitacion_historial (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            licitacion_id INTEGER,
+            event_type TEXT,
+            old_value TEXT,
+            new_value TEXT,
+            user_id TEXT,
+            created_at TEXT
+        );
+        CREATE TABLE email_action_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT,
+            source_message_id TEXT,
+            from_email TEXT,
+            subject TEXT,
+            code TEXT,
+            action_code TEXT,
+            action_name TEXT,
+            review_id INTEGER,
+            licitacion_id INTEGER,
+            previous_status TEXT,
+            new_status TEXT,
+            result TEXT,
+            reason TEXT
         );
         """
     )
+    conn.execute("INSERT INTO usuarios (username, role) VALUES ('manolo', 'admin')")
+    conn.execute("INSERT INTO usuarios (username, role) VALUES ('nuria', 'nuria')")
     return conn
 
 
@@ -76,8 +108,8 @@ def insert_day(conn: sqlite3.Connection, **overrides: object) -> int:
 
 def insert_licitaciones(conn: sqlite3.Connection, dia_id: int, estados: list[str]) -> None:
     conn.executemany(
-        "INSERT INTO licitaciones (infonalia_dia_id, estado) VALUES (?, ?)",
-        [(dia_id, estado) for estado in estados],
+        "INSERT INTO licitaciones (infonalia_dia_id, estado, updated_at) VALUES (?, ?, ?)",
+        [(dia_id, estado, "2026-06-12T08:30:00") for estado in estados],
     )
 
 
@@ -197,6 +229,10 @@ def test_day_row_to_dict_preserves_api_payload_shape() -> None:
     assert item["id"] == dia_id
     assert item["fecha_formateada"] == "12/06/2026"
     assert item["total"] == 6
+    assert item["gestionadas_admin"] == 5
+    assert item["gestionadas_nuria"] == 3
+    assert item["avance_porcentaje"] == 83
+    assert item["estado_visual"] == "Cerrado / revisado"
     assert item["total_nuria"] == 4
     assert item["pendientes"] == 1
     assert item["descartadas_mi"] == 1
@@ -208,6 +244,8 @@ def test_day_row_to_dict_preserves_api_payload_shape() -> None:
     assert item["fecha_envio_nuria"] == "12/06/2026 09:00"
     assert item["fecha_cambio_nuria"] == "12/06/2026 10:00"
     assert item["fecha_revision"] == "12/06/2026 11:00"
+    assert item["ultima_actividad"] == "12/06/2026 11:00"
+    assert item["ultima_accion_nuria"] == ""
     assert item["nuria_pending_update"] is True
     assert item["counts"] == {
         "Importada": 1,
@@ -217,3 +255,45 @@ def test_day_row_to_dict_preserves_api_payload_shape() -> None:
         "Preparar ficha": 1,
         "Preparada": 1,
     }
+
+
+def test_day_row_to_dict_detects_reviewer_activity_without_closing_day() -> None:
+    conn = make_conn()
+    dia_id = insert_day(
+        conn,
+        enviado_nuria_at="2026-06-12T09:00:00",
+        updated_at="2026-06-12T09:00:00",
+    )
+    insert_licitaciones(conn, dia_id, ["Enviada a Nuria", "Descargar para ver", "Importada"])
+    licitaciones = conn.execute(
+        "SELECT id, estado FROM licitaciones WHERE infonalia_dia_id = ? ORDER BY id ASC",
+        (dia_id,),
+    ).fetchall()
+    conn.execute(
+        """
+        INSERT INTO email_action_events (
+            created_at, licitacion_id, review_id, action_code, action_name, previous_status, new_status, result
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "2026-06-12T10:15:00",
+            licitaciones[1]["id"],
+            dia_id,
+            "02",
+            "Descargar para ver",
+            "Enviada a Nuria",
+            "Descargar para ver",
+            "processed",
+        ),
+    )
+    row = conn.execute("SELECT * FROM infonalia_dias WHERE id = ?", (dia_id,)).fetchone()
+
+    item = day_row_to_dict(conn, row)
+
+    assert item["gestionadas_admin"] == 2
+    assert item["gestionadas_nuria"] == 1
+    assert item["pendientes"] == 1
+    assert item["estado_visual"] == "Revisado por Nuria · pendiente de cerrar"
+    assert item["ultima_accion_nuria"] == "12/06/2026 10:15"
+    assert item["ultima_actividad"] == "12/06/2026 10:15"

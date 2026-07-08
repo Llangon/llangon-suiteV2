@@ -619,6 +619,98 @@ def test_download_uses_llangon_dropbox_base_before_legacy_root(monkeypatch, tmp_
     assert Path(payload["carpeta"]).resolve() == cwd
 
 
+def test_download_with_dropbox_base_creates_year_month_folder_and_stores_relative_path(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    app = load_app_module()
+    dropbox_root = tmp_path / "00000 LLANGON"
+    dropbox_root.mkdir()
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(dropbox_root))
+
+    with temporary_download_app(app):
+        app.find_dropbox_root = lambda: dropbox_root
+        licitacion_id = insert_fake_licitacion(app)
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                UPDATE licitaciones
+                SET fecha_limite = ?, hora_limite = ?, provincia = ?, organismo = ?, objeto = ?, expediente = ?
+                WHERE id = ?
+                """,
+                (
+                    "2026-07-20",
+                    "14:00",
+                    "Alicante",
+                    "Alcaldia del Ayuntamiento de Pinoso (Alicante)",
+                    "Suministro de alimentos para el comedor de la escuela infantil municipal",
+                    "PASO202613SIM 1418652R",
+                    licitacion_id,
+                ),
+            )
+        calls = []
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            calls.append(Path(cwd))
+            Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
+            return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
+
+        handler = make_download_handler(app, payload=confirmed_download_payload(app, licitacion_id))
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        status, payload = handler.responses[-1]
+        ruta_carpeta = get_ruta_carpeta(app, licitacion_id)
+        cwd = calls[0].resolve()
+
+    assert status == HTTPStatus.OK
+    assert cwd.is_relative_to((dropbox_root / "2026" / "07 JULIO").resolve())
+    assert not (dropbox_root / "07 JULIO").exists()
+    assert Path(ruta_carpeta).parts[:2] == ("2026", "07 JULIO")
+    assert "00000 LLANGON" not in Path(ruta_carpeta).parts
+    assert Path(payload["carpeta"]).resolve() == cwd
+
+
+def test_download_missing_legacy_month_route_is_not_recreated_without_year(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    app = load_app_module()
+    dropbox_root = tmp_path / "00000 LLANGON"
+    dropbox_root.mkdir()
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(dropbox_root))
+
+    with temporary_download_app(app):
+        app.find_dropbox_root = lambda: dropbox_root
+        legacy_route = r"07 JULIO\20 JULIO 1400 ALICANTE ESCUELA INFANTIL PASO202613SIM 1418652R"
+        licitacion_id = insert_fake_licitacion(app, ruta_carpeta=legacy_route)
+        with app.db_session() as conn:
+            conn.execute(
+                "UPDATE licitaciones SET fecha_limite = ?, hora_limite = ?, provincia = ? WHERE id = ?",
+                ("2026-07-20", "14:00", "Alicante", licitacion_id),
+            )
+        calls = []
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            calls.append(Path(cwd))
+            Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
+            return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
+
+        handler = make_download_handler(app, payload=confirmed_download_payload(app, licitacion_id))
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        status, payload = handler.responses[-1]
+        ruta_carpeta = get_ruta_carpeta(app, licitacion_id)
+        cwd = calls[0].resolve()
+
+    assert status == HTTPStatus.OK
+    assert cwd == dropbox_root / "2026" / "07 JULIO" / Path(legacy_route).name
+    assert not (dropbox_root / "07 JULIO").exists()
+    assert Path(ruta_carpeta).parts[:2] == ("2026", "07 JULIO")
+    assert payload["ruta_carpeta"] == ruta_carpeta
+
+
 def test_download_route_rejects_missing_csrf_before_subprocess() -> None:
     app = load_app_module()
 

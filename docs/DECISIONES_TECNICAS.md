@@ -1058,7 +1058,7 @@ Consecuencias:
 
 Las descargas locales ya son seguras al reintentar: los descargadores omiten ficheros que existen y solo añaden novedades. Para trabajar en remoto hace falta una integración Dropbox API que replique esa política sin depender de Dropbox Desktop.
 
-Actualización operativa: durante desarrollo y pruebas, el flujo principal vuelve a ser `local` contra la replica `C:\ReplicaDb`. La API de Dropbox queda experimental y aparcada para una fase futura. Dropbox Desktop real no debe usarse para monitor, marcadores, sincronización ni inventario en desarrollo.
+Actualización operativa posterior: el flujo local real usa `LLANGON_DROPBOX_BASE_PATH` como raíz principal. Si se necesita una réplica de desarrollo, debe configurarse explícitamente con `INFONALIA_DROPBOX_ROOT` o `INFONALIA_MONITOR_ROOT`; no hay una ruta de réplica hardcodeada por defecto. La API de Dropbox queda experimental y aparcada para una fase futura.
 
 Decisión:
 - crear `storage/dropbox_client.py` como cliente HTTP aislado, sin métodos públicos de delete, overwrite ni move destructivo;
@@ -1077,13 +1077,13 @@ Decisión:
 
 Consecuencias:
 - reejecutar una descarga sobre la misma licitación es idempotente y solo añade ficheros nuevos;
-- el modo recomendado actual de desarrollo es `INFONALIA_STORAGE_BACKEND=local` con `INFONALIA_DROPBOX_ROOT=C:\ReplicaDb`;
+- el modo local recomendado usa `INFONALIA_STORAGE_BACKEND=local` y `LLANGON_DROPBOX_BASE_PATH`; `INFONALIA_DROPBOX_ROOT` queda como fallback histórico solo si se configura explícitamente;
 - Dropbox API no se prueba contra red real en esta fase;
 - si todo existía, el manifest marca `no_changes=true`;
 - los manifests Dropbox locales se guardan como `.infonalia_dropbox_manifest_*.json`;
 - en Dropbox real los manifests se suben a `_manifests/` sin sobrescribir;
 - los tokens se leen de `.env`, no se devuelven al frontend y no se guardan en SQLite;
-- `INFONALIA_DROPBOX_ROOT` conserva el sentido de raíz local de documentos: en desarrollo apunta a `C:\ReplicaDb`, en despliegue final puede apuntar a Dropbox Desktop real; la raíz remota API usa `INFONALIA_DROPBOX_API_ROOT` y el staging local API usa `.local_runtime/downloads` por defecto.
+- `LLANGON_DROPBOX_BASE_PATH` es la raíz local principal de documentos; `INFONALIA_DROPBOX_ROOT` conserva el sentido de fallback histórico para réplicas explícitas. La raíz remota API usa `INFONALIA_DROPBOX_API_ROOT` y el staging local API usa `.local_runtime/downloads` por defecto.
 
 ## ADR-054 — Bandeja operativa, resumen email e indicadores de actuaciones
 

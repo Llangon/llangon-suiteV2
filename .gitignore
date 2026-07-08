@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+.pytest_tmp/
 
 # Node y compilaciones
 node_modules/
@@ -49,12 +50,18 @@ firebase/public_firebase/.firebaserc
 .local_backups/
 .local_runtime/
 runtime/
+runtime_*/
+logs/
 *.zip
 *.7z
 *.rar
 *.xlsm
 backup*/
 backups/
+tmp/
+temp/
+htmlcov/
+.coverage
 BACKUP*/
 /_NO_SUBIR_GITHUB/
 

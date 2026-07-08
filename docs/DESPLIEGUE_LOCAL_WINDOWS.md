@@ -6,12 +6,30 @@ La aplicación sigue siendo local: escucha por defecto en `http://127.0.0.1:8787
 
 ## Objetivo
 
-- Arrancar la web privada al iniciar sesión en Windows.
-- Ejecutar el scheduler de forma independiente y sin solapes.
-- Crear una copia diaria segura de la base SQLite.
+- Mantener la web privada viva mediante un vigilante ligero.
+- Usar Windows solo como watchdog/tick/despertador.
+- Ejecutar las automatizaciones desde el scheduler interno de la Suite, no desde una tarea Windows por cada proceso.
+- Crear una copia diaria segura desde la automatización interna de backup.
 - Guardar logs en `runtime/logs/`.
 - No abrir la aplicación a `0.0.0.0`.
 - No guardar secretos ni rutas absolutas en código.
+
+## Arquitectura limpia de automatizaciones
+
+La arquitectura recomendada deja como máximo dos tareas programadas de Windows:
+
+- `LlangonSuite-KeeperTick`: al iniciar sesión y cada 5 minutos. No despierta el PC. Comprueba `/api/health`, levanta la web si está caída y llama al tick interno.
+- `LlangonSuite-WakeTick`: lunes a viernes a las 08:00 y todos los días a las 15:55. Sí puede despertar el PC. Solo asegura la web viva y llama al tick interno.
+
+Las tareas antiguas quedan consideradas legacy y deben eliminarse con `install_clean_automation_schedule.ps1`:
+
+- `LlangonSuite-Web`
+- `LlangonSuite-Scheduler`
+- `LlangonSuite-Backup`
+- `LlangonSuite-AgendaWake`
+- `LlangonSuiteV2-MonitorScheduler`
+
+El instalador limpio exporta antes esas tareas a `runtime/task_backups/AAAA-MM-DD_HHMMSS/` en XML y con resumen legible.
 
 ## Variables principales
 
@@ -38,11 +56,20 @@ LLANGON_FULL_BACKUP_INCLUDE_SECRETS=1
 LLANGON_FULL_BACKUP_INCLUDE_CODE=1
 LLANGON_FULL_BACKUP_EXCLUDE_REBUILDABLE=1
 MONITOR_SCHEDULER_POLL_MINUTES=5
-LLANGON_AGENDA_WAKE_ENABLED=0
-LLANGON_AGENDA_WAKE_TIME=06:00
-LLANGON_AGENDA_WAKE_AUTO_SLEEP=1
-LLANGON_AGENDA_WAKE_SKIP_SLEEP_IF_USER_ACTIVE=1
-LLANGON_AGENDA_WAKE_MIN_IDLE_SECONDS=120
+MONITOR_AGENDA_PENDING_DAILY_ENABLED=1
+MONITOR_AGENDA_PENDING_DAILY_TIME=08:00
+MONITOR_AGENDA_PENDING_DAILY_WEEKDAYS_ONLY=1
+MONITOR_LICITACIONES_SCHEDULE_ENABLED=0
+LLANGON_INFONALIA_IMPORT_ENABLED=1
+LLANGON_INFONALIA_IMPORT_POLL_MINUTES=30
+LLANGON_EMAIL_ACTIONS_ENABLED=1
+LLANGON_EMAIL_ACTIONS_POLL_MINUTES=10
+LLANGON_FILE_INVENTORY_ENABLED=1
+LLANGON_FILE_INVENTORY_POLL_MINUTES=240
+LLANGON_FULL_BACKUP_TIME=16:00
+LLANGON_NIGHT_SUSPEND_ENABLED=1
+LLANGON_NIGHT_SUSPEND_TIME=21:00
+LLANGON_NIGHT_SUSPEND_SKIP_IF_USER_ACTIVE=1
 ```
 
 Si `LLANGON_RUNTIME_ROOT` queda vacia, se usa:
@@ -62,44 +89,50 @@ scripts/windows/
 | Script | Uso |
 | --- | --- |
 | `start_web_production.ps1` | Arranca la web local con logs. |
-| `run_scheduler_once.ps1` | Ejecuta el scheduler una vez y termina. |
-| `run_agenda_wake_once.ps1` | Ejecuta la Agenda programada y suspende si es seguro. |
+| `run_keeper_tick.ps1` | Comprueba la web, la arranca si hace falta y ejecuta un tick interno. |
+| `run_wake_tick.ps1` | Wrapper de wake para llamar a `run_keeper_tick.ps1 -WakeTick`. |
+| `install_clean_automation_schedule.ps1` | Exporta legacy, elimina solo tareas LlangonSuite antiguas y crea KeeperTick/WakeTick. |
+| `status_clean_automation_schedule.ps1` | Muestra las tareas LlangonSuite y avisa si queda alguna legacy. |
+| `uninstall_clean_automation_schedule.ps1` | Elimina solo KeeperTick y WakeTick. |
+| `stop_web_production.ps1` | Detiene únicamente la web de Llangon Suite si identifica el proceso. |
+| `run_scheduler_once.ps1` | Scheduler heredado; no debe quedar como tarea Windows en la arquitectura limpia. |
+| `run_agenda_wake_once.ps1` | Agenda heredada; no debe quedar como tarea Windows en la arquitectura limpia. |
 | `suspend_windows.ps1` | Solicita suspension normal de Windows con comprobacion de usuario activo. |
-| `run_backup_once.ps1` | Crea copia SQLite local y, si esta activado, backup completo privado. |
-| `install_local_deployment.ps1` | Registra las tareas programadas. |
-| `status_local_deployment.ps1` | Comprueba tareas, logs y healthcheck. |
-| `uninstall_local_deployment.ps1` | Quita las tareas programadas sin borrar datos. |
+| `run_backup_once.ps1` | Backup heredado; no debe quedar como tarea Windows en la arquitectura limpia. |
+| `install_local_deployment.ps1` | Instalador legado de varias tareas. No usar para la arquitectura limpia. |
+| `status_local_deployment.ps1` | Diagnóstico legado. |
+| `uninstall_local_deployment.ps1` | Desinstalador legado. |
 | `run_powershell_hidden.vbs` | Lanzador oculto usado por las tareas para evitar ventanas de consola. |
 
 Los scripts calculan la ruta del proyecto desde su propia ubicacion. No dependen de una ruta fija tipo `C:\Users\...`.
 
 Las tareas programadas se registran mediante `wscript.exe` + `run_powershell_hidden.vbs`. Ese lanzador ejecuta PowerShell con `-NonInteractive` y `-WindowStyle Hidden`, por lo que no debe aparecer ninguna ventana fugaz al iniciar sesion ni al ejecutarse scheduler o backup.
 
-## Instalacion
+## Instalacion limpia
 
-Abrir PowerShell en la raiz del repositorio:
+Abrir PowerShell como Administrador en la raiz del repositorio:
 
 ```powershell
 cd C:\Users\LLangon03\Documents\Codex\Llangon-SuiteV2
-powershell -ExecutionPolicy Bypass -File .\scripts\windows\install_local_deployment.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\install_clean_automation_schedule.ps1
 ```
+
+Si se ejecuta sin permisos de administrador, el script intentará relanzarse elevado mediante UAC. Si no puede, no modifica tareas.
 
 Esto crea o actualiza estas tareas:
 
-- `LlangonSuite-Web`: al iniciar sesion.
-- `LlangonSuite-Scheduler`: cada pocos minutos, sin solapes.
-- `LlangonSuite-Backup`: diariamente a las 03:30.
-- `LlangonSuite-AgendaWake`: laborables a las 06:00, con despertar del equipo activado.
+- `LlangonSuite-KeeperTick`: logon + cada 5 minutos, `WakeToRun=False`.
+- `LlangonSuite-WakeTick`: laborables 08:00 + diario 15:55, `WakeToRun=True`.
 
-El instalador es idempotente: se puede ejecutar de nuevo para actualizar las tareas.
-
-`LlangonSuite-AgendaWake` queda instalada pero desactivada por defecto si `LLANGON_AGENDA_WAKE_ENABLED` no vale `1`. Esto evita que un equipo empiece a despertar y suspenderse sin activacion consciente.
+El instalador elimina solo las tareas legacy LlangonSuite listadas en la sección anterior. No toca tareas de Microsoft, HP, Adobe, MareBackup, PLUGScheduler ni otras externas.
 
 ## Comprobacion
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\windows\status_local_deployment.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\status_clean_automation_schedule.ps1
 ```
+
+El estado correcto debe mostrar solo `LlangonSuite-KeeperTick` y `LlangonSuite-WakeTick`. Si aparece una tarea legacy, puede provocar duplicidades.
 
 Healthcheck esperado:
 
@@ -124,17 +157,19 @@ En otra ventana:
 ```powershell
 Invoke-WebRequest http://127.0.0.1:8787/api/health -UseBasicParsing
 netstat -ano | findstr :8787
-powershell -ExecutionPolicy Bypass -File .\scripts\windows\status_local_deployment.ps1
 ```
 
 Debe verse:
 
 ```text
-Healthcheck web: OK
 TCP 127.0.0.1:8787 ... LISTENING
 ```
 
-Para detener una prueba manual, cerrar la ventana donde esta corriendo `start_web_production.ps1` o detener el PID que muestre `status_local_deployment.ps1`.
+Para detener una prueba manual, cerrar la ventana donde esta corriendo `start_web_production.ps1` o ejecutar:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\stop_web_production.ps1
+```
 
 ## Logs
 
@@ -188,7 +223,7 @@ Y se puede probar sin crear ZIP ni copiar secretos con:
 python -m webapp.infonalia_webapp.full_backup --once --dry-run --verbose
 ```
 
-La tarea `LlangonSuite-Backup` sigue haciendo primero la copia SQLite local. Si esa copia falla, no continúa. Si pasa correctamente, llama al backup completo. Por defecto el backup completo está desactivado; se activa con:
+La automatizacion interna `full_backup` hace primero la copia SQLite local. Si esa copia falla, no continúa. Si pasa correctamente, genera el backup completo. Por defecto el backup completo está desactivado; se activa con:
 
 ```text
 LLANGON_FULL_BACKUP_ENABLED=1
@@ -209,8 +244,8 @@ Estructura esperada:
 C:\Users\LLangon03\Dropbox\BACKUPS_LL_Suite\
   2026\
     07 JULIO\
-      2026-07-02_0330_LLANGON_SUITE_FULL_PRIVATE_BACKUP.zip
-      2026-07-02_0330_LLANGON_SUITE_FULL_PRIVATE_BACKUP_manifest.json
+      2026-07-02_1515_LLANGON_SUITE_FULL_PRIVATE_BACKUP.zip
+      2026-07-02_1515_LLANGON_SUITE_FULL_PRIVATE_BACKUP_manifest.json
 ```
 
 El ZIP incluye:
@@ -296,25 +331,25 @@ powershell -ExecutionPolicy Bypass -File .\restore_from_backup.ps1
 
 El script pregunta una carpeta destino, no sobrescribe sin confirmación, copia la Suite, advierte de que `.env` contiene secretos, crea `.venv`, instala dependencias e indica cómo reinstalar tareas Windows y comprobar `/api/health`.
 
-Comprobar estado del backup completo:
+Comprobar estado del backup completo desde la consola/API de automatizaciones de la Suite o con:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\windows\status_local_deployment.ps1
+python -m webapp.infonalia_webapp.automation_orchestrator --status
 ```
 
-El estado muestra si está activado, ruta, último ZIP, fecha, tamaño, manifest y último error registrado en el manifest si existe.
+El estado muestra si la automatizacion está activada, su proxima ejecucion, ultimos resultados y errores registrados.
 
 ## Scheduler
 
-La tarea programada llama a:
+Windows ya no ejecuta un scheduler heredado independiente. `LlangonSuite-KeeperTick` y `LlangonSuite-WakeTick` llaman al tick interno:
 
 ```powershell
-python -m webapp.infonalia_webapp.monitor.scheduler --once
+python -m webapp.infonalia_webapp.monitor.scheduler --tick
 ```
 
-Cada ejecucion termina. El propio script `run_scheduler_once.ps1` usa un bloqueo local para evitar solapes si una ejecucion anterior sigue activa.
+Cada tick termina. El script `run_keeper_tick.ps1` usa un bloqueo local para evitar solapes si una ejecucion anterior sigue activa.
 
-En esa misma pasada se ejecutan tambien las tareas de correo e inventario si estan activadas en `.env`:
+En esa misma pasada el scheduler interno decide que automatizaciones vencen y las ejecuta si estan activadas:
 
 ```text
 LLANGON_INFONALIA_IMPORT_ENABLED=1
@@ -322,7 +357,9 @@ LLANGON_INFONALIA_IMPORT_POLL_MINUTES=30
 LLANGON_EMAIL_ACTIONS_ENABLED=1
 LLANGON_EMAIL_ACTIONS_POLL_MINUTES=10
 LLANGON_FILE_INVENTORY_ENABLED=1
-LLANGON_FILE_INVENTORY_POLL_MINUTES=60
+LLANGON_FILE_INVENTORY_POLL_MINUTES=240
+LLANGON_FULL_BACKUP_TIME=16:00
+LLANGON_NIGHT_SUSPEND_TIME=21:00
 LLANGON_DROPBOX_BASE_PATH=C:\Users\LLangon03\Dropbox\00000 LLANGON
 ```
 
@@ -335,102 +372,84 @@ Las descargas locales deben crear carpetas bajo `LLANGON_DROPBOX_BASE_PATH\AÑO\
 El diagnostico local muestra tambien el estado de esos trabajos:
 
 ```powershell
-python -m webapp.infonalia_webapp.monitor.scheduler --status
+python -m webapp.infonalia_webapp.automation_orchestrator --status
 ```
 
-## Agenda Wake
+## WakeTick y suspensión nocturna
 
-`LlangonSuite-AgendaWake` es una tarea programada independiente del scheduler general. Su objetivo es despertar Windows a las 06:00, ejecutar la tarea de negocio existente `agenda_pendientes_diaria` y volver a suspender el equipo solo si termina correctamente y no hay usuario activo.
+`LlangonSuite-WakeTick` es la tarea programada con permiso para despertar el equipo. Su objetivo es asegurar que la web está viva y lanzar el tick interno en momentos clave:
 
-La tarea real de Agenda detectada en la suite es:
+- lunes a viernes a las 08:00, para ejecutar la agenda diaria si corresponde;
+- todos los días a las 15:55, para llegar despierto al backup interno de las 16:00.
+
+Las tareas de negocio reales están dentro de la Suite:
 
 ```text
 agenda_pendientes_diaria
+full_backup
+night_suspend
 ```
 
-La agenda semanal existe como compatibilidad historica, pero esta marcada como inactiva/manual. Por eso la tarea Windows de despertar se aplica a `agenda_pendientes_diaria`.
-
-Importante: `LlangonSuite-Scheduler` no suspende el equipo tras sus pasadas normales de cada pocos minutos. La suspension pertenece solo a `LlangonSuite-AgendaWake`.
-
-Para activar Agenda Wake, configurar en `webapp/infonalia_webapp/.env` o en variables del proceso antes de instalar:
+La suspension nocturna ya no depende de `LlangonSuite-AgendaWake`. La ejecuta la automatizacion interna `night_suspend` si está activada:
 
 ```text
-LLANGON_AGENDA_WAKE_ENABLED=1
-LLANGON_AGENDA_WAKE_TIME=06:00
-LLANGON_AGENDA_WAKE_AUTO_SLEEP=1
-LLANGON_AGENDA_WAKE_SKIP_SLEEP_IF_USER_ACTIVE=1
-LLANGON_AGENDA_WAKE_MIN_IDLE_SECONDS=120
+LLANGON_NIGHT_SUSPEND_ENABLED=1
+LLANGON_NIGHT_SUSPEND_TIME=21:00
+LLANGON_NIGHT_SUSPEND_SKIP_IF_USER_ACTIVE=1
 ```
 
-Despues, reinstalar tareas:
+Despues de cambiar horarios o activar/desactivar automatizaciones internas no hace falta recrear tareas Windows. Solo hay que reinstalar tareas si se modifica la propia capa Windows:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\windows\install_local_deployment.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\install_clean_automation_schedule.ps1
 ```
 
 La tarea queda configurada con `WakeToRun`, equivalente a "Activar el equipo para ejecutar esta tarea". Windows solo despertara si la BIOS/UEFI, energia y permisos de Windows permiten temporizadores de activacion.
 
-El script `run_agenda_wake_once.ps1` fuerza esa pasada a usar solo Agenda pendiente:
-
-```text
-MONITOR_AGENDA_PENDING_DAILY_ENABLED=1
-LLANGON_INFONALIA_IMPORT_ENABLED=0
-LLANGON_EMAIL_ACTIONS_ENABLED=0
-LLANGON_FILE_INVENTORY_ENABLED=0
-MONITOR_LICITACIONES_SCHEDULE_ENABLED=0
-```
-
-Asi no se mezclan importador Infonalia, procesamiento de correo, inventario ni monitor de licitaciones con esta tarea especial.
-
-Si Agenda falla, se registra el error y no se suspende el equipo. Si Agenda termina correctamente, espera unos segundos y llama a `suspend_windows.ps1`.
-
-La suspension usa PowerShell/C# con `powrprof.dll` y `SetSuspendState(false, false, false)`, que solicita suspension normal, no apagado, reinicio ni hibernacion. Antes de suspender, si `LLANGON_AGENDA_WAKE_SKIP_SLEEP_IF_USER_ACTIVE=1`, comprueba inactividad de teclado/raton mediante `GetLastInputInfo`. Si el usuario esta activo o no se puede comprobar de forma segura, escribe:
+La suspension usa `suspend_windows.ps1`, que solicita suspension normal, no apagado, reinicio ni hibernacion. Antes de suspender, si `LLANGON_NIGHT_SUSPEND_SKIP_IF_USER_ACTIVE=1`, comprueba inactividad de teclado/raton mediante `GetLastInputInfo`. Si el usuario esta activo o no se puede comprobar de forma segura, escribe:
 
 ```text
 Suspension omitida: usuario activo.
 ```
 
-o el motivo equivalente en:
+o el motivo equivalente en los logs de automatizaciones.
 
 ```text
-runtime/logs/agenda_wake.log
+runtime/logs/scheduler.log
 ```
 
 Comprobar estado:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\windows\status_local_deployment.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\status_clean_automation_schedule.ps1
 ```
 
 Debe mostrar:
 
 ```text
-LlangonSuite-AgendaWake
-Wake enabled
-Auto suspension
-runtime/logs/agenda_wake.log
+LlangonSuite-KeeperTick
+LlangonSuite-WakeTick
 ```
 
 Si Windows no despierta:
 
-- revisar que `LLANGON_AGENDA_WAKE_ENABLED=1` y se ha reinstalado la tarea;
-- revisar en Programador de tareas que `LlangonSuite-AgendaWake` no esta deshabilitada;
-- revisar que la tarea tiene `WakeToRun`;
+- revisar en Programador de tareas que `LlangonSuite-WakeTick` no esta deshabilitada;
+- revisar que `LlangonSuite-WakeTick` tiene `WakeToRun`;
 - revisar Opciones de energia > Permitir temporizadores de activacion;
 - revisar si el equipo estaba hibernado o apagado, no suspendido.
 
 Si no vuelve a suspension:
 
-- revisar `runtime/logs/agenda_wake.log`;
-- comprobar si Agenda fallo;
+- revisar `runtime/logs/scheduler.log`;
+- comprobar si `night_suspend` está desactivada;
 - comprobar si el log indica usuario activo;
-- revisar `LLANGON_AGENDA_WAKE_AUTO_SLEEP`;
-- revisar `LLANGON_AGENDA_WAKE_MIN_IDLE_SECONDS`.
+- revisar `LLANGON_NIGHT_SUSPEND_ENABLED`;
+- revisar `LLANGON_NIGHT_SUSPEND_SKIP_IF_USER_ACTIVE`.
 
 ## Desinstalacion
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\windows\uninstall_local_deployment.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\uninstall_clean_automation_schedule.ps1
 ```
 
 Esto solo elimina las tareas programadas. No borra:

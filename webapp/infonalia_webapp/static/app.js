@@ -25,6 +25,10 @@ const appState = {
   agendaType: "all",
   newsItems: [],
   monitorRuns: [],
+  automationStatus: null,
+  automationTasks: [],
+  automationRuns: [],
+  automationWindowsTasks: null,
   actuaciones: [],
   actuacionesSummary: {},
   actuacionSelectedLicitaciones: [],
@@ -40,6 +44,7 @@ const appState = {
   lastSection: "days",
   config: null,
   storage: null,
+  configTab: "general",
   expandedCards: new Set(),
   cardDetails: {},
   documentTrees: {},
@@ -116,6 +121,12 @@ const monitorTaskTypeFilter = document.getElementById("monitor-task-type-filter"
 const monitorActionResult = document.getElementById("monitor-action-result");
 const monitorSchedulerStatus = document.getElementById("monitor-scheduler-status");
 const monitorSendAgendaDailyButton = document.getElementById("monitor-send-agenda-daily");
+const automationStatusSummary = document.getElementById("automation-status-summary");
+const automationTasksBoard = document.getElementById("automation-tasks-board");
+const automationWindowsTasks = document.getElementById("automation-windows-tasks");
+const automationDiagnosticText = document.getElementById("automation-diagnostic-text");
+const automationCopyDiagnosticButton = document.getElementById("automation-copy-diagnostic");
+const automationRunTickButton = document.getElementById("automation-run-tick");
 const newsForm = document.getElementById("news-form");
 const newsResult = document.getElementById("news-result");
 const newsFormTitle = document.getElementById("news-form-title");
@@ -165,11 +176,17 @@ const refreshAiQueueButton = document.getElementById("refresh-ai-queue");
 const importer = document.getElementById("importer");
 const importForm = document.getElementById("import-form");
 const importResult = document.getElementById("import-result");
+const runInfonaliaMailImportButton = document.getElementById("run-infonalia-mail-import");
+const infonaliaMailImportResult = document.getElementById("infonalia-mail-import-result");
 const userConfigForm = document.getElementById("user-config-form");
 const usersBoard = document.getElementById("users-board");
+const userConfigResult = document.getElementById("user-config-result");
+const testUserTelegramButton = document.getElementById("test-user-telegram-button");
 const settingsForm = document.getElementById("settings-form");
 const settingsResult = document.getElementById("settings-result");
 const testSmtpButton = document.getElementById("test-smtp-button");
+const telegramStatusBoard = document.getElementById("telegram-status-board");
+const testTelegramGroupButton = document.getElementById("test-telegram-group-button");
 const storageStatusBoard = document.getElementById("storage-status-board");
 const storageResult = document.getElementById("storage-result");
 const testDropboxButton = document.getElementById("test-dropbox-button");
@@ -177,6 +194,28 @@ const dryRunDropboxButton = document.getElementById("dry-run-dropbox-button");
 const syncDropboxMarkersButton = document.getElementById("sync-dropbox-markers-button");
 const monitorDryRunButton = document.getElementById("monitor-dry-run-button");
 const monitorRepairButton = document.getElementById("monitor-repair-button");
+const configTabButtons = document.querySelectorAll("[data-config-tab]");
+const configTabPanels = document.querySelectorAll("[data-config-panel]");
+const configOverviewBoard = document.getElementById("config-overview-board");
+const smtpPasswordStatus = document.getElementById("smtp-password-status");
+const mailActionsStatusBoard = document.getElementById("mail-actions-status-board");
+const infonaliaImportStatusBoard = document.getElementById("infonalia-import-status-board");
+const aiConfigStatusBoard = document.getElementById("ai-config-status-board");
+const automationStatusBoard = document.getElementById("automation-status-board");
+const mailActionsForm = document.getElementById("mail-actions-form");
+const mailActionsResult = document.getElementById("mail-actions-result");
+const actionsImapPasswordStatus = document.getElementById("actions-imap-password-status");
+const infonaliaImportForm = document.getElementById("infonalia-import-form");
+const infonaliaImportResult = document.getElementById("infonalia-import-result");
+const aiSettingsForm = document.getElementById("ai-settings-form");
+const aiSettingsResult = document.getElementById("ai-settings-result");
+const geminiApiKeyStatus = document.getElementById("gemini-api-key-status");
+const automationSettingsForm = document.getElementById("automation-settings-form");
+const automationSettingsResult = document.getElementById("automation-settings-result");
+const inventoryStatusBoard = document.getElementById("inventory-status-board");
+const advancedStatusBoard = document.getElementById("advanced-status-board");
+const configDiagnosticsText = document.getElementById("config-diagnostics-text");
+const copyConfigDiagnosticsButton = document.getElementById("copy-config-diagnostics-button");
 const refreshMonitorRunsButton = document.getElementById("refresh-monitor-runs");
 const pageTitle = document.getElementById("page-title");
 const pageKicker = document.getElementById("page-kicker");
@@ -186,6 +225,7 @@ const mobileMenuButton = document.getElementById("mobile-menu-button");
 const mobileMenuClose = document.getElementById("mobile-menu-close");
 const sidebarOverlay = document.getElementById("sidebar-overlay");
 const mobileLogoutButton = document.getElementById("mobile-logout-button");
+const importMenuButton = document.getElementById("import-menu-button");
 
 const estadoOrden = [
   "Importada",
@@ -582,6 +622,67 @@ async function loadMe() {
 
 function csrfHeaders() {
   return appState.csrfToken ? { "X-CSRF-Token": appState.csrfToken } : {};
+}
+
+function formatImportCounters(result = {}) {
+  const counters = [
+    ["Correos vistos", result.candidates_seen],
+    ["Licitaciones detectadas", result.parsed_items],
+    ["Licitaciones importadas", result.imported],
+    ["Duplicados", result.duplicates],
+    ["Errores", result.errors],
+    ["Notificaciones enviadas", result.notified],
+  ];
+  return counters
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([label, value]) => `${label}: ${value}`)
+    .join("<br>");
+}
+
+function renderInfonaliaMailImportFeedback(message, result = {}, type = "ok") {
+  const countersHtml = formatImportCounters(result);
+  return `
+    <div>${escapeHtml(message || "")}</div>
+    ${countersHtml ? `<small>${countersHtml}</small>` : ""}
+  `;
+}
+
+async function runInfonaliaMailImportNow() {
+  if (!isAdmin() || !runInfonaliaMailImportButton || !infonaliaMailImportResult) return;
+  const originalText = runInfonaliaMailImportButton.textContent;
+  runInfonaliaMailImportButton.disabled = true;
+  runInfonaliaMailImportButton.textContent = "Importando...";
+  infonaliaMailImportResult.className = "import-result";
+  infonaliaMailImportResult.innerHTML = "";
+
+  try {
+    const response = await fetch("/api/import/infonalia-mail/run-now", {
+      method: "POST",
+      headers: csrfHeaders(),
+    });
+    const payload = await response.json().catch(() => ({}));
+    const result = payload.result || {};
+    if (!response.ok || payload.ok === false) {
+      const message = payload.message || "No se pudo importar desde Gmail. Revisa la configuración o los logs.";
+      infonaliaMailImportResult.className = "import-result error";
+      infonaliaMailImportResult.innerHTML = renderInfonaliaMailImportFeedback(message, result, "error");
+      return;
+    }
+    infonaliaMailImportResult.className = `import-result ${payload.result?.errors ? "warning" : "ok"}`;
+    infonaliaMailImportResult.innerHTML = renderInfonaliaMailImportFeedback(payload.message || "Importación completada.", result, "ok");
+    await loadDias();
+    if (appState.lastSection === "calendar") await loadCalendarItems();
+  } catch (_error) {
+    infonaliaMailImportResult.className = "import-result error";
+    infonaliaMailImportResult.innerHTML = renderInfonaliaMailImportFeedback(
+      "No se pudo importar desde Gmail. Revisa la configuración o los logs.",
+      {},
+      "error",
+    );
+  } finally {
+    runInfonaliaMailImportButton.disabled = false;
+    runInfonaliaMailImportButton.textContent = originalText;
+  }
 }
 
 function renderAiSummaryBadge(item) {
@@ -1147,32 +1248,34 @@ function diaIsCurrentlyReviewed(dia) {
 function renderDaysSummary() {
   const days = visibleDias();
   if (!isAdmin()) {
-    const total = days.reduce((sum, dia) => sum + Number(dia.total_nuria || 0), 0);
+    const total = days.reduce((sum, dia) => sum + Number(dia.total || 0), 0);
     const pendientes = days.reduce((sum, dia) => sum + Number(dia.pendientes_nuria || 0), 0);
-    const descartadas = days.reduce((sum, dia) => sum + Number(dia.descartadas_nuria || 0), 0);
+    const gestionadas = days.reduce((sum, dia) => sum + Number(dia.gestionadas_nuria || 0), 0);
     const soloDescargar = days.reduce((sum, dia) => sum + Number(dia.solo_descargar || 0), 0);
     const preparar = days.reduce((sum, dia) => sum + Number(dia.preparar_licitacion || 0), 0);
 
     daysSummary.innerHTML = [
       ["Total licitaciones", total],
       ["Pendientes de revisión", pendientes],
-      ["Descartadas", descartadas],
+      ["Gestionadas", gestionadas],
       ["Solo descargar", soloDescargar],
       ["Preparar licitación", preparar],
     ].map(renderMetric).join("");
     return;
   }
 
-  const total = days.length;
-  const pendientes = days.filter((dia) => dia.estado !== "Completado").length;
-  const enRevision = days.filter((dia) => dia.pendientes_nuria > 0 || dia.decisiones_nuria > 0).length;
-  const completados = days.filter((dia) => dia.estado === "Completado").length;
+  const totalDias = days.length;
+  const totalLicitaciones = days.reduce((sum, dia) => sum + Number(dia.total || 0), 0);
+  const pendientes = days.reduce((sum, dia) => sum + Number(dia.pendientes || 0), 0);
+  const enRevision = days.filter((dia) => String(dia.estado_visual || "").includes("pendiente de cerrar")).length;
+  const completados = days.filter((dia) => dia.estado_visual === "Cerrado / revisado").length;
 
   daysSummary.innerHTML = [
-    ["Días cargados", total],
+    ["Días abiertos", totalDias],
+    ["Licitaciones", totalLicitaciones],
     ["Pendientes", pendientes],
-    ["En revisión", enRevision],
-    ["Completados", completados],
+    ["Revisado · pendiente", enRevision],
+    ["Cerrados", completados],
   ].map(renderMetric).join("");
 }
 
@@ -1631,37 +1734,57 @@ function renderDays() {
   }
 
   daysBoard.innerHTML = days.map((dia) => {
-    const metrics = isAdmin()
+    const primaryMetrics = [
+      ["Total", dia.total],
+      ["Admin", dia.gestionadas_admin],
+      ["Nuria", dia.gestionadas_nuria],
+      ["Pendientes", dia.pendientes],
+    ];
+    const secondaryMetrics = isAdmin()
       ? [
-          ["Total", dia.total],
-          ["Pendientes", dia.pendientes],
-          ["Descartadas por mí", dia.descartadas_mi],
-          ["Pendientes de revisión", dia.pendientes_nuria],
-          ["Decisiones de revisión", dia.decisiones_nuria],
+          ["Avance", `${dia.avance_porcentaje || 0}%`],
+          ["Enviadas a Nuria", dia.pendientes_nuria],
+          ["Descartadas", dia.descartadas_nuria],
+          ["Solo descargar", dia.solo_descargar],
+          ["Preparar ficha", dia.preparar_licitacion],
         ]
       : [
-          ["Total licitaciones", dia.total_nuria],
+          ["Avance", `${dia.avance_porcentaje || 0}%`],
           ["Pendientes de revisión", dia.pendientes_nuria],
           ["Descartadas", dia.descartadas_nuria],
           ["Solo descargar", dia.solo_descargar],
-          ["Preparar licitación", dia.preparar_licitacion],
-          ["Fecha de revisión", dia.fecha_revision || "Sin revisar"],
+          ["Preparar ficha", dia.preparar_licitacion],
         ];
+    const lastActivity = dia.ultima_actividad || "Sin movimientos";
+    const lastReviewer = dia.ultima_accion_nuria || "Sin revisión";
+    const statusText = dia.estado_visual || dia.estado || "Sin estado";
 
     return `
       <article class="day-card">
-        <div class="card-head">
-          <div>
-            <p class="eyebrow">Día Infonalia</p>
-            <h2>${escapeHtml(dia.titulo)}</h2>
+        <div class="day-card-head">
+          <div class="day-card-title">
+            <p class="eyebrow">Día de Infonalia</p>
+            <h2>${escapeHtml(dia.fecha_formateada || dia.titulo)}</h2>
+            <p class="day-card-subtitle">${escapeHtml(dia.licitaciones_texto || "")}</p>
           </div>
-          <span class="badge ${badgeClass(dia.estado)}">${escapeHtml(dia.estado)}</span>
+          <span class="badge ${badgeClass(statusText)}">${escapeHtml(statusText)}</span>
         </div>
 
-        <div class="day-metrics ${isAdmin() ? "" : "day-metrics-nuria"}">
-          ${metrics.map(([label, value]) => `
+        <div class="day-metrics day-metrics-primary">
+          ${primaryMetrics.map(([label, value]) => `
             <div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value ?? "")}</strong></div>
           `).join("")}
+        </div>
+
+        <div class="day-mini-metrics">
+          ${secondaryMetrics.map(([label, value]) => `
+            <div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value ?? "")}</strong></div>
+          `).join("")}
+        </div>
+
+        <div class="day-activity-row">
+          <div><span>Última actividad</span><strong>${escapeHtml(lastActivity)}</strong></div>
+          <div><span>Última acción de Nuria</span><strong>${escapeHtml(lastReviewer)}</strong></div>
         </div>
 
         <div class="card-actions">
@@ -2727,9 +2850,142 @@ async function loadConfig() {
 }
 
 function renderConfig() {
+  renderConfigTabs();
   renderUsersConfig();
   renderSettingsConfig();
+  renderTelegramConfig();
   renderStorageConfig();
+  renderConfigOverview();
+  renderMailboxesConfig();
+  renderAiConfig();
+  renderAutomationConfig();
+  renderAdvancedConfig();
+}
+
+function renderConfigTabs() {
+  showConfigTab(appState.configTab || "general");
+}
+
+function showConfigTab(tab) {
+  appState.configTab = tab || "general";
+  configTabButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.configTab === appState.configTab);
+  });
+  configTabPanels.forEach((panel) => {
+    const active = panel.dataset.configPanel === appState.configTab;
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
+  });
+}
+
+function yesNo(value) {
+  return value ? "Sí" : "No";
+}
+
+function configStatusLabel(kind) {
+  const labels = {
+    ok: "Correcto",
+    pending: "Pendiente",
+    missing: "No configurado",
+    error: "Error",
+    disabled: "Desactivado",
+    diagnostic: "Solo diagnóstico",
+    legacy: "Fallback legado",
+  };
+  return labels[kind] || "Pendiente";
+}
+
+function configStatusTag(kind, label) {
+  return `<span class="config-status-tag ${escapeHtml(kind || "pending")}">${escapeHtml(label || configStatusLabel(kind))}</span>`;
+}
+
+function configStatusCard({ title, status, detail, help }) {
+  return `
+    <article class="config-status-card ${escapeHtml(status || "pending")}">
+      <div>
+        <strong>${escapeHtml(title)}</strong>
+        <p>${escapeHtml(detail || "")}</p>
+      </div>
+      ${configStatusTag(status)}
+      ${help ? `<small>${escapeHtml(help)}</small>` : ""}
+    </article>
+  `;
+}
+
+function renderStatusRows(board, rows) {
+  if (!board) return;
+  board.innerHTML = rows.map((row) => `
+    <div class="storage-status-row">
+      <span>${escapeHtml(row.label)}</span>
+      <strong>${escapeHtml(row.value || "No configurado")}</strong>
+    </div>
+  `).join("");
+}
+
+function renderConfigOverview() {
+  if (!configOverviewBoard) return;
+  const settings = appState.config?.settings || {};
+  const telegram = appState.config?.telegram || {};
+  const ai = appState.config?.ai || {};
+  const diagnostics = appState.config?.diagnostics || {};
+  const storage = appState.storage || {};
+  const mailboxes = diagnostics.mailboxes || {};
+  const automation = diagnostics.automation || {};
+  const smtpReady = settings.smtp_enabled === "1" && settings.smtp_host && (settings.smtp_password_set || settings.smtp_user);
+  const telegramStatus = telegram.enabled
+    ? (telegram.token_configured && telegram.group_configured ? "ok" : "pending")
+    : "disabled";
+  const storageStatus = storage.error
+    ? "error"
+    : (storage.dropbox_base?.source === "legacy" ? "legacy" : (storage.dropbox_base?.configured ? "ok" : "pending"));
+  const aiStatus = ai.provider_enabled
+    ? (ai.provider_configured ? "ok" : "pending")
+    : "disabled";
+  const autoActive = automation.scheduler_enabled || mailboxes.email_actions?.enabled || mailboxes.infonalia_import?.enabled;
+  configOverviewBoard.innerHTML = [
+    configStatusCard({
+      title: "Estado de la suite",
+      status: "ok",
+      detail: "Configuración cargada correctamente.",
+      help: "Resumen de los servicios principales de Llangón Suite.",
+    }),
+    configStatusCard({
+      title: "Modo mantenimiento",
+      status: settings.maintenance_mode === "1" ? "pending" : "ok",
+      detail: settings.maintenance_mode === "1" ? "Activo, solo administradores" : "Desactivado",
+      help: "Bloquea el uso normal mientras se realizan ajustes.",
+    }),
+    configStatusCard({
+      title: "Correo saliente",
+      status: smtpReady ? "ok" : (settings.smtp_enabled === "1" ? "pending" : "disabled"),
+      detail: settings.smtp_enabled === "1" ? (smtpReady ? "SMTP configurado" : "SMTP incompleto") : "SMTP desactivado",
+      help: "Usado para avisos de agenda, cambios de estado y comunicaciones automáticas.",
+    }),
+    configStatusCard({
+      title: "Telegram",
+      status: telegramStatus,
+      detail: telegram.status_label || "Telegram desactivado",
+      help: "Muestra si hay token y grupo configurados sin enseñar el token.",
+    }),
+    configStatusCard({
+      title: "Dropbox / almacenamiento",
+      status: storageStatus,
+      detail: storage.local_flow_label || storage.current_mode_label || "Estado no disponible",
+      help: "Carpeta local donde la suite crea o localiza expedientes descargados.",
+    }),
+    configStatusCard({
+      title: "IA documental",
+      status: aiStatus,
+      detail: ai.provider_status_label || "IA no configurada",
+      help: "Motor usado para análisis y resúmenes documentales.",
+    }),
+    configStatusCard({
+      title: "Automatismos",
+      status: autoActive ? "ok" : "disabled",
+      detail: autoActive ? "Hay automatismos activos" : "Sin automatismos activos",
+      help: "Revisiones de correo, importación automática e inventario.",
+    }),
+  ].join("");
 }
 
 function renderUsersConfig() {
@@ -2745,8 +3001,14 @@ function renderUsersConfig() {
         <strong>${escapeHtml(user.display_name || user.username)}</strong>
         <span>${escapeHtml(user.username)} · ${escapeHtml(user.role === "admin" ? "Administrador" : "Revisión")}</span>
         <span>${escapeHtml(user.email || "Sin email")}</span>
+        <span>${escapeHtml(
+          user.telegram_notifications_enabled
+            ? (user.telegram_chat_id ? "Telegram activo · Chat configurado" : "Telegram activado sin chat configurado")
+            : "Telegram desactivado"
+        )}</span>
       </div>
       <div class="card-actions">
+        <button data-test-user-telegram="${escapeHtml(user.username)}">Probar Telegram</button>
         <button data-edit-user="${escapeHtml(user.username)}">Editar</button>
         <button class="danger" data-delete-user="${escapeHtml(user.username)}">${user.active ? "Dar de baja" : "Desactivado"}</button>
       </div>
@@ -2757,6 +3019,7 @@ function renderUsersConfig() {
 function renderSettingsConfig() {
   const settings = appState.config?.settings || {};
   settingsForm.elements.maintenance_mode.checked = settings.maintenance_mode === "1";
+  settingsForm.elements.smtp_enabled.checked = settings.smtp_enabled === "1";
   settingsForm.elements.smtp_host.value = settings.smtp_host || "";
   settingsForm.elements.smtp_port.value = settings.smtp_port || "587";
   settingsForm.elements.smtp_user.value = settings.smtp_user || "";
@@ -2766,11 +3029,27 @@ function renderSettingsConfig() {
   settingsForm.elements.seguimiento_emails.value = settings.seguimiento_emails || "";
   settingsForm.elements.smtp_tls.checked = settings.smtp_tls !== "0";
   settingsForm.elements.smtp_ssl.checked = settings.smtp_ssl === "1";
+  settingsForm.elements.email_dry_run.checked = settings.email_dry_run === "1";
   settingsForm.elements.smtp_password.placeholder = settings.smtp_password_set
     ? "Contraseña guardada, dejar vacío para no cambiar"
     : "Sin contraseña guardada";
+  if (smtpPasswordStatus) {
+    smtpPasswordStatus.textContent = settings.smtp_password_set
+      ? "Contraseña SMTP configurada. No se muestra en claro; escribe una nueva solo si quieres reemplazarla."
+      : "Contraseña SMTP no configurada. Escríbela solo si vas a activar el envío real.";
+  }
   settingsForm.elements.smtp_password.value = "";
   settingsForm.elements.clear_smtp_password.checked = false;
+}
+
+function renderTelegramConfig() {
+  const telegram = appState.config?.telegram || {};
+  telegramStatusBoard.innerHTML = `
+    <div class="storage-status-row"><span>Estado</span><strong>${escapeHtml(telegram.status_label || "Telegram desactivado")}</strong></div>
+    <div class="storage-status-row"><span>Telegram activo</span><strong>${escapeHtml(telegram.enabled ? "Sí" : "No")}</strong></div>
+    <div class="storage-status-row"><span>Token configurado</span><strong>${escapeHtml(telegram.token_configured ? "Sí" : "No")}</strong></div>
+    <div class="storage-status-row"><span>Grupo configurado</span><strong>${escapeHtml(telegram.group_configured ? "Sí" : "No")}</strong></div>
+  `;
 }
 
 function storageValue(value) {
@@ -2810,11 +3089,190 @@ function renderStorageConfig() {
   `;
 }
 
+function renderMailboxesConfig() {
+  const diagnostics = appState.config?.diagnostics || {};
+  const settings = appState.config?.settings || {};
+  const mailboxes = diagnostics.mailboxes || {};
+  const actions = mailboxes.email_actions || {};
+  const importer = mailboxes.infonalia_import || {};
+  if (mailActionsForm) {
+    mailActionsForm.elements.email_actions_enabled.checked = settings.email_actions_enabled === "1";
+    mailActionsForm.elements.email_actions_poll_minutes.value = settings.email_actions_poll_minutes || actions.poll_minutes || "10";
+    mailActionsForm.elements.action_mailbox_to.value = settings.action_mailbox_to || actions.mailbox_to || "";
+    mailActionsForm.elements.action_mailbox_cc.value = settings.action_mailbox_cc || actions.mailbox_cc || "";
+    mailActionsForm.elements.action_notify_email.value = settings.action_notify_email || actions.notify_email || "";
+    mailActionsForm.elements.action_allowed_senders.value = settings.action_allowed_senders || (actions.allowed_senders === "No configurado" ? "" : actions.allowed_senders || "");
+    mailActionsForm.elements.actions_imap_host.value = settings.actions_imap_host || actions.host || "imap.gmail.com";
+    mailActionsForm.elements.actions_imap_port.value = settings.actions_imap_port || actions.port || "993";
+    mailActionsForm.elements.actions_imap_user.value = settings.actions_imap_user || "";
+    mailActionsForm.elements.actions_imap_folder.value = settings.actions_imap_folder || actions.folder || "INBOX";
+  }
+  if (actionsImapPasswordStatus) {
+    actionsImapPasswordStatus.textContent = actions.password_configured
+      ? "Contraseña IMAP configurada en entorno. No se muestra ni se edita desde la Suite."
+      : "Contraseña IMAP no configurada. Se gestiona por entorno seguro.";
+  }
+  if (infonaliaImportForm) {
+    infonaliaImportForm.elements.infonalia_import_enabled.checked = settings.infonalia_import_enabled === "1";
+    infonaliaImportForm.elements.infonalia_import_folder.value = settings.infonalia_import_folder || importer.folder || "LLANGON_INFONALIA";
+    infonaliaImportForm.elements.infonalia_import_notify_email.value = settings.infonalia_import_notify_email || importer.notify_email || "info3@llangon.com";
+    infonaliaImportForm.elements.infonalia_import_poll_minutes.value = settings.infonalia_import_poll_minutes || importer.poll_minutes || "30";
+    infonaliaImportForm.elements.infonalia_import_lookback_hours.value = settings.infonalia_import_lookback_hours || importer.lookback_hours || "48";
+    infonaliaImportForm.elements.infonalia_import_mark_read_on_success.checked = settings.infonalia_import_mark_read_on_success !== "0";
+  }
+  renderStatusRows(mailActionsStatusBoard, [
+    { label: "Estado", value: actions.enabled ? (actions.configured ? "Activo y configurado" : "Activo, configuración incompleta") : "Desactivado" },
+    { label: "Carpeta de revisión", value: actions.folder || "INBOX" },
+    { label: "Usuario del buzón", value: actions.user_configured ? "Configurado" : "No configurado" },
+    { label: "Contraseña", value: actions.password_configured ? "Configurada" : "No configurada" },
+    { label: "Remitentes autorizados", value: actions.allowed_senders || "No configurado" },
+    { label: "Correo técnico de aviso", value: actions.notify_email || "No configurado" },
+    { label: "Frecuencia", value: `${actions.poll_minutes || 10} minutos` },
+    { label: "Origen principal", value: actions.sources?.email_actions_enabled || "No informado" },
+  ]);
+  renderStatusRows(infonaliaImportStatusBoard, [
+    { label: "Estado", value: importer.enabled ? (importer.configured ? "Activo y configurado" : "Activo, configuración incompleta") : "Desactivado" },
+    { label: "Carpeta o etiqueta", value: importer.folder || "LLANGON_INFONALIA" },
+    { label: "Correo de aviso", value: importer.notify_email || "No configurado" },
+    { label: "Frecuencia", value: `${importer.poll_minutes || 30} minutos` },
+    { label: "Ventana de búsqueda", value: `${importer.lookback_hours ?? 48} horas` },
+    { label: "Marcar como leído", value: yesNo(importer.mark_read_on_success) },
+    { label: "Remitente esperado", value: importer.expected_from || "No configurado" },
+    { label: "Asunto esperado", value: importer.expected_subject || "No configurado" },
+    { label: "Origen principal", value: importer.sources?.infonalia_import_enabled || "No informado" },
+  ]);
+}
+
+function renderAiConfig() {
+  const ai = appState.config?.ai || {};
+  const settings = appState.config?.settings || {};
+  if (aiSettingsForm) {
+    aiSettingsForm.elements.ai_analysis_provider.value = settings.ai_analysis_provider || ai.analysis_provider || "gemini";
+    aiSettingsForm.elements.gemini_enabled.checked = settings.gemini_enabled === "1";
+    aiSettingsForm.elements.gemini_model.value = settings.gemini_model || ai.model || "gemini-3.5-flash";
+    aiSettingsForm.elements.gemini_max_requests_per_minute.value = settings.gemini_max_requests_per_minute || "2";
+    aiSettingsForm.elements.gemini_max_requests_per_day.value = settings.gemini_max_requests_per_day || "20";
+    aiSettingsForm.elements.gemini_max_documents_per_analysis.value = settings.gemini_max_documents_per_analysis || ai.max_documents_per_analysis || "4";
+    aiSettingsForm.elements.gemini_max_file_mb.value = settings.gemini_max_file_mb || ai.max_file_mb || "45";
+    aiSettingsForm.elements.gemini_timeout_seconds.value = settings.gemini_timeout_seconds || "120";
+    aiSettingsForm.elements.gemini_input_mode.value = settings.gemini_input_mode || ai.input_mode || "text";
+  }
+  if (geminiApiKeyStatus) {
+    geminiApiKeyStatus.textContent = ai.gemini_api_key_set
+      ? "Clave Gemini configurada en entorno. No se muestra ni se edita desde la Suite."
+      : "Clave Gemini no configurada. Se gestiona por entorno seguro.";
+  }
+  renderStatusRows(aiConfigStatusBoard, [
+    { label: "Estado", value: ai.provider_status_label || "IA desactivada" },
+    { label: "Proveedor activo", value: ai.active_provider || ai.analysis_provider || "disabled" },
+    { label: "Configuración", value: ai.provider_configured ? "Clave/configuración disponible" : "No configurada" },
+    { label: "Modelo", value: ai.model || "No configurado" },
+    { label: "Documentos máximos", value: String(ai.max_documents_per_analysis || "No configurado") },
+    { label: "Tamaño máximo por fichero", value: ai.max_file_mb ? `${ai.max_file_mb} MB` : "No configurado" },
+    { label: "Modo de entrada", value: ai.input_mode || "No configurado" },
+    { label: "Codex Local", value: ai.codex_local_enabled ? `Activo (${ai.codex_sandbox || "sandbox no informado"})` : "Desactivado" },
+    { label: "Clave Gemini", value: ai.gemini_api_key_set ? "Configurada" : "No configurada" },
+  ]);
+}
+
+function renderAutomationConfig() {
+  const diagnostics = appState.config?.diagnostics || {};
+  const settings = appState.config?.settings || {};
+  const automation = diagnostics.automation || {};
+  if (automationSettingsForm) {
+    automationSettingsForm.elements.monitor_test_email.value = settings.monitor_test_email || "";
+    automationSettingsForm.elements.monitor_agenda_pending_email_to.value = settings.monitor_agenda_pending_email_to || "";
+  }
+  renderStatusRows(automationStatusBoard, [
+    { label: "Scheduler", value: automation.scheduler_enabled ? "Activo" : "Desactivado" },
+    { label: "Zona horaria", value: automation.timezone || "Europe/Madrid" },
+    { label: "Frecuencia general", value: `${automation.poll_minutes || 5} minutos` },
+    { label: "Aviso diario de agenda", value: automation.agenda_pending_daily_enabled ? "Activo" : "Desactivado" },
+    { label: "Hora del aviso diario", value: automation.agenda_pending_daily_time || "06:00" },
+    { label: "Solo días laborables", value: yesNo(automation.agenda_pending_weekdays_only) },
+    { label: "Monitor licitaciones programado", value: automation.monitor_licitaciones_schedule_enabled ? "Activo" : "Desactivado" },
+    { label: "Monitor licitaciones real", value: automation.monitor_licitaciones_real_enabled ? "Activo" : "Desactivado" },
+    { label: "Correo pruebas monitor", value: settings.monitor_test_email || "No configurado" },
+    { label: "Correo agenda diaria", value: settings.monitor_agenda_pending_email_to || "No configurado" },
+  ]);
+  renderStatusRows(inventoryStatusBoard, [
+    { label: "Inventario interno", value: automation.file_inventory_enabled ? "Activo" : "Desactivado" },
+    { label: "Frecuencia del inventario", value: `${automation.file_inventory_poll_minutes || 60} minutos` },
+    { label: "Reconciliación de rutas", value: yesNo(automation.file_inventory_reconcile_paths) },
+  ]);
+}
+
+function buildConfigDiagnosticsText() {
+  const settings = appState.config?.settings || {};
+  const telegram = appState.config?.telegram || {};
+  const ai = appState.config?.ai || {};
+  const storage = appState.storage || {};
+  const diagnostics = appState.config?.diagnostics || {};
+  const advanced = diagnostics.advanced || {};
+  const automation = diagnostics.automation || {};
+  const mailboxes = diagnostics.mailboxes || {};
+  const pending = advanced.pending_review || {};
+  return [
+    "LLANGON SUITE - DIAGNOSTICO",
+    `Fecha: ${new Date().toLocaleString("es-ES")}`,
+    `Usuario: ${appState.user?.display_name || appState.user?.username || "No informado"}`,
+    `URL publica: ${advanced.public_site_url || "No configurada"}`,
+    `Host/Puerto: ${advanced.host || "No informado"}:${advanced.port || ""}`,
+    `Modo mantenimiento: ${settings.maintenance_mode === "1" ? "activo" : "desactivado"}`,
+    `Correo saliente: ${settings.smtp_enabled === "1" ? "activo" : "desactivado"}; contraseña ${settings.smtp_password_set ? "configurada" : "no configurada"}`,
+    `Telegram: ${telegram.status_label || "No informado"}`,
+    `Dropbox: ${storage.local_flow_label || storage.current_mode_label || storage.error || "No informado"}`,
+    `IA: ${ai.provider_status_label || "No informado"}`,
+    `Scheduler: ${automation.scheduler_enabled ? "activo" : "desactivado"}`,
+    `Acciones por correo: ${mailboxes.email_actions?.enabled ? "activas" : "desactivadas"}`,
+    `Importacion Infonalia: ${mailboxes.infonalia_import?.enabled ? "activa" : "desactivada"}`,
+    `Backup completo: ${advanced.full_backup_enabled ? "activo" : "desactivado"}; raiz ${advanced.full_backup_root_configured ? "configurada" : "no configurada"}`,
+    "Opciones pendientes de revisar:",
+    `- monitor_test_email: ${pending.monitor_test_email ? "configurado" : "no configurado"}`,
+    `- monitor_agenda_pending_email_to: ${pending.monitor_agenda_pending_email_to ? "configurado" : "no configurado"}`,
+    `- INFONALIA_PLATFORM_URL: ${pending.infonalia_platform_url ? "configurada" : "no configurada"}`,
+    `- INFONALIA_DROPBOX_ENABLED: ${pending.dropbox_api_enabled ? "activo" : "desactivado"}`,
+    `- LLANGON_REVIEW_AI_SUMMARY_BUTTON_ENABLED: ${pending.review_ai_summary_button ? "activo" : "desactivado"}`,
+    "Secretos: no incluidos.",
+  ].join("\n");
+}
+
+function renderAdvancedConfig() {
+  const diagnostics = appState.config?.diagnostics || {};
+  const advanced = diagnostics.advanced || {};
+  const pending = advanced.pending_review || {};
+  renderStatusRows(advancedStatusBoard, [
+    { label: "URL pública", value: advanced.public_site_url || "No configurada" },
+    { label: "Host / puerto", value: `${advanced.host || "No informado"}:${advanced.port || ""}` },
+    { label: "Modo almacenamiento", value: advanced.storage_backend || "local" },
+    { label: "Dropbox principal", value: advanced.dropbox_base_configured ? "Configurado" : "No configurado" },
+    { label: "Dropbox legado", value: advanced.legacy_dropbox_root_configured ? "Configurado (compatibilidad)" : "No configurado" },
+    { label: "Staging de descargas", value: advanced.download_staging_root_configured ? "Configurado" : "No configurado" },
+    { label: "Runtime local", value: advanced.runtime_root_configured ? "Configurado" : "No configurado" },
+    { label: "Backup SQLite", value: advanced.sqlite_backup_dir_configured ? `Configurado, retención ${advanced.sqlite_backup_retention || 30}` : "Ruta no configurada" },
+    { label: "Backup completo", value: advanced.full_backup_enabled ? "Activo" : "Desactivado" },
+    { label: "Raíz backup completo", value: advanced.full_backup_root_configured ? "Configurada" : "No configurada" },
+    { label: "Incluye .env en backup", value: yesNo(advanced.full_backup_include_env) },
+    { label: "Incluye secretos en backup", value: yesNo(advanced.full_backup_include_secrets) },
+    { label: "monitor_test_email", value: pending.monitor_test_email ? "Pendiente de revisar, configurado" : "Pendiente de revisar" },
+    { label: "monitor_agenda_pending_email_to", value: pending.monitor_agenda_pending_email_to ? "Pendiente de revisar, configurado" : "Pendiente de revisar" },
+    { label: "INFONALIA_PLATFORM_URL", value: pending.infonalia_platform_url ? "Pendiente de revisar, configurada" : "Pendiente de revisar" },
+    { label: "INFONALIA_DROPBOX_ENABLED", value: pending.dropbox_api_enabled ? "Experimental activo" : "Experimental desactivado" },
+    { label: "Botón resumen IA revisión", value: pending.review_ai_summary_button ? "Experimental activo" : "Experimental desactivado" },
+  ]);
+  if (configDiagnosticsText) {
+    configDiagnosticsText.value = buildConfigDiagnosticsText();
+  }
+}
+
 function resetUserForm() {
   userConfigForm.reset();
   userConfigForm.elements.editing_username.value = "";
   userConfigForm.elements.username.disabled = false;
   userConfigForm.elements.active.checked = true;
+  userConfigForm.elements.telegram_notifications_enabled.checked = false;
+  userConfigResult.className = "import-result";
+  userConfigResult.textContent = "";
 }
 
 function editUser(username) {
@@ -2825,9 +3283,13 @@ function editUser(username) {
   userConfigForm.elements.username.disabled = true;
   userConfigForm.elements.display_name.value = user.display_name || "";
   userConfigForm.elements.email.value = user.email || "";
+  userConfigForm.elements.telegram_chat_id.value = user.telegram_chat_id || "";
+  userConfigForm.elements.telegram_notifications_enabled.checked = Boolean(user.telegram_notifications_enabled);
   userConfigForm.elements.role.value = user.role || "nuria";
   userConfigForm.elements.password.value = "";
   userConfigForm.elements.active.checked = Boolean(user.active);
+  userConfigResult.className = "import-result";
+  userConfigResult.textContent = "";
 }
 
 async function saveUserConfig(event) {
@@ -2839,6 +3301,8 @@ async function saveUserConfig(event) {
     username: userConfigForm.elements.username.value.trim(),
     display_name: userConfigForm.elements.display_name.value.trim(),
     email: userConfigForm.elements.email.value.trim(),
+    telegram_chat_id: userConfigForm.elements.telegram_chat_id.value.trim(),
+    telegram_notifications_enabled: userConfigForm.elements.telegram_notifications_enabled.checked,
     role: userConfigForm.elements.role.value,
     password: userConfigForm.elements.password.value,
     active: userConfigForm.elements.active.checked,
@@ -2852,12 +3316,15 @@ async function saveUserConfig(event) {
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
-    alert(result.error || "No se pudo guardar el usuario.");
+    userConfigResult.className = "import-result error";
+    userConfigResult.textContent = result.error || "No se pudo guardar el usuario.";
     return;
   }
   appState.config = result;
   resetUserForm();
   renderConfig();
+  userConfigResult.className = "import-result ok";
+  userConfigResult.textContent = "Usuario guardado.";
 }
 
 async function deleteUserConfig(username) {
@@ -2878,6 +3345,7 @@ async function deleteUserConfig(username) {
 function settingsPayload() {
   const payload = {
     maintenance_mode: settingsForm.elements.maintenance_mode.checked ? "1" : "0",
+    smtp_enabled: settingsForm.elements.smtp_enabled.checked ? "1" : "0",
     smtp_host: settingsForm.elements.smtp_host.value.trim(),
     smtp_port: settingsForm.elements.smtp_port.value.trim() || "587",
     smtp_user: settingsForm.elements.smtp_user.value.trim(),
@@ -2887,6 +3355,7 @@ function settingsPayload() {
     seguimiento_emails: settingsForm.elements.seguimiento_emails.value.trim(),
     smtp_tls: settingsForm.elements.smtp_tls.checked ? "1" : "0",
     smtp_ssl: settingsForm.elements.smtp_ssl.checked ? "1" : "0",
+    email_dry_run: settingsForm.elements.email_dry_run.checked ? "1" : "0",
     clear_smtp_password: settingsForm.elements.clear_smtp_password.checked,
   };
   if (settingsForm.elements.smtp_password.value) {
@@ -2908,6 +3377,87 @@ async function saveSettingsPayload() {
   appState.config = result;
   renderConfig();
   return result;
+}
+
+async function savePartialSettingsPayload(payload) {
+  const response = await fetch("/api/config/settings", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(result.error || "No se pudo guardar la configuración.");
+  }
+  appState.config = result;
+  renderConfig();
+  return result;
+}
+
+function formValue(form, name) {
+  return form.elements[name]?.value?.trim() || "";
+}
+
+function mailActionsPayload() {
+  return {
+    email_actions_enabled: mailActionsForm.elements.email_actions_enabled.checked ? "1" : "0",
+    email_actions_poll_minutes: formValue(mailActionsForm, "email_actions_poll_minutes") || "10",
+    action_mailbox_to: formValue(mailActionsForm, "action_mailbox_to"),
+    action_mailbox_cc: formValue(mailActionsForm, "action_mailbox_cc"),
+    action_notify_email: formValue(mailActionsForm, "action_notify_email"),
+    action_allowed_senders: formValue(mailActionsForm, "action_allowed_senders"),
+    actions_imap_host: formValue(mailActionsForm, "actions_imap_host"),
+    actions_imap_port: formValue(mailActionsForm, "actions_imap_port") || "993",
+    actions_imap_user: formValue(mailActionsForm, "actions_imap_user"),
+    actions_imap_folder: formValue(mailActionsForm, "actions_imap_folder") || "INBOX",
+  };
+}
+
+function infonaliaImportPayload() {
+  return {
+    infonalia_import_enabled: infonaliaImportForm.elements.infonalia_import_enabled.checked ? "1" : "0",
+    infonalia_import_folder: formValue(infonaliaImportForm, "infonalia_import_folder") || "LLANGON_INFONALIA",
+    infonalia_import_notify_email: formValue(infonaliaImportForm, "infonalia_import_notify_email"),
+    infonalia_import_poll_minutes: formValue(infonaliaImportForm, "infonalia_import_poll_minutes") || "30",
+    infonalia_import_lookback_hours: formValue(infonaliaImportForm, "infonalia_import_lookback_hours") || "48",
+    infonalia_import_mark_read_on_success: infonaliaImportForm.elements.infonalia_import_mark_read_on_success.checked ? "1" : "0",
+  };
+}
+
+function aiSettingsPayload() {
+  return {
+    ai_analysis_provider: formValue(aiSettingsForm, "ai_analysis_provider") || "gemini",
+    gemini_enabled: aiSettingsForm.elements.gemini_enabled.checked ? "1" : "0",
+    gemini_model: formValue(aiSettingsForm, "gemini_model"),
+    gemini_max_requests_per_minute: formValue(aiSettingsForm, "gemini_max_requests_per_minute") || "2",
+    gemini_max_requests_per_day: formValue(aiSettingsForm, "gemini_max_requests_per_day") || "20",
+    gemini_max_documents_per_analysis: formValue(aiSettingsForm, "gemini_max_documents_per_analysis") || "4",
+    gemini_max_file_mb: formValue(aiSettingsForm, "gemini_max_file_mb") || "45",
+    gemini_timeout_seconds: formValue(aiSettingsForm, "gemini_timeout_seconds") || "120",
+    gemini_input_mode: formValue(aiSettingsForm, "gemini_input_mode") || "text",
+  };
+}
+
+function automationSettingsPayload() {
+  return {
+    monitor_test_email: formValue(automationSettingsForm, "monitor_test_email"),
+    monitor_agenda_pending_email_to: formValue(automationSettingsForm, "monitor_agenda_pending_email_to"),
+  };
+}
+
+async function saveConfigBlock(event, payloadFactory, resultElement, successMessage) {
+  event.preventDefault();
+  if (!isAdmin()) return;
+  resultElement.className = "import-result";
+  resultElement.textContent = "Guardando configuración...";
+  try {
+    await savePartialSettingsPayload(payloadFactory());
+    resultElement.className = "import-result ok";
+    resultElement.textContent = successMessage;
+  } catch (error) {
+    resultElement.className = "import-result error";
+    resultElement.textContent = error.message || "No se pudo guardar la configuración.";
+  }
 }
 
 async function saveSettingsConfig(event) {
@@ -2954,6 +3504,61 @@ async function testSmtpConfig() {
   } finally {
     testSmtpButton.disabled = false;
     testSmtpButton.textContent = originalText;
+  }
+}
+
+async function testTelegramGroupConfig() {
+  if (!isAdmin()) return;
+
+  const originalText = testTelegramGroupButton.textContent;
+  testTelegramGroupButton.disabled = true;
+  testTelegramGroupButton.textContent = "Probando...";
+  settingsResult.className = "import-result";
+  settingsResult.textContent = "Enviando prueba de Telegram al grupo...";
+  try {
+    const response = await fetch("/api/admin/telegram/test-group", { method: "POST", headers: csrfHeaders() });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      settingsResult.className = "import-result error";
+      settingsResult.textContent = result.error_message || result.error || result.message || "No se pudo enviar la prueba de Telegram.";
+      return;
+    }
+    settingsResult.className = "import-result ok";
+    settingsResult.textContent = result.message || "Mensaje de Telegram enviado correctamente.";
+  } catch (error) {
+    settingsResult.className = "import-result error";
+    settingsResult.textContent = error.message || "No se pudo completar la prueba de Telegram.";
+  } finally {
+    testTelegramGroupButton.disabled = false;
+    testTelegramGroupButton.textContent = originalText;
+  }
+}
+
+async function testTelegramForUser(username) {
+  if (!isAdmin() || !username) return;
+
+  userConfigResult.className = "import-result";
+  userConfigResult.textContent = "Enviando prueba privada de Telegram...";
+  try {
+    const response = await fetch(`/api/admin/users/${encodeURIComponent(username)}/telegram/test`, {
+      method: "POST",
+      headers: csrfHeaders(),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      userConfigResult.className = "import-result error";
+      userConfigResult.textContent = result.error_message || result.error || result.message || "No se pudo enviar la prueba privada de Telegram.";
+      return;
+    }
+    if (result.user && appState.config?.users) {
+      appState.config.users = appState.config.users.map((item) => item.username === result.user.username ? result.user : item);
+      renderUsersConfig();
+    }
+    userConfigResult.className = "import-result ok";
+    userConfigResult.textContent = result.message || "Mensaje privado de Telegram enviado correctamente.";
+  } catch (error) {
+    userConfigResult.className = "import-result error";
+    userConfigResult.textContent = error.message || "No se pudo completar la prueba privada de Telegram.";
   }
 }
 
@@ -3079,8 +3684,159 @@ function monitorIncidenceText(item) {
   return "Sin incidencias";
 }
 
+function automationStatusText(status) {
+  const labels = {
+    idle: "En espera",
+    running: "En curso",
+    skipped: "Omitida",
+    completed: "Completada",
+    failed: "Error",
+    disabled: "Desactivada",
+  };
+  return labels[status] || status || "Sin estado";
+}
+
+function renderAutomationStatusSummary(status) {
+  if (!automationStatusSummary) return;
+  const queues = status?.queues || {};
+  renderStatusRows(automationStatusSummary, [
+    { label: "Hora servidor", value: formatDateTime(status?.server_time) || status?.server_time || "-" },
+    { label: "Scheduler", value: status?.scheduler_running ? "En ejecución" : "Libre", state: status?.scheduler_running ? "pending" : "ok" },
+    { label: "Locks activos", value: String((status?.locks || []).length), state: (status?.locks || []).length ? "pending" : "ok" },
+    { label: "Descargas pendientes/en curso", value: `${queues.download_jobs?.pending || 0}/${queues.download_jobs?.running || 0}` },
+    { label: "IA pendiente/en curso", value: `${queues.ai_analysis_jobs?.pending || 0}/${queues.ai_analysis_jobs?.processing || 0}` },
+    { label: "Dropbox", value: status?.dropbox_base || "No configurado" },
+    { label: "SMTP", value: status?.smtp?.configured ? "Configurado" : "No configurado", state: status?.smtp?.configured ? "ok" : "pending" },
+    { label: "Telegram", value: status?.telegram?.enabled ? "Activo" : "Desactivado", state: status?.telegram?.enabled ? "ok" : "disabled" },
+    { label: "Infonalia IMAP", value: status?.imap?.infonalia_enabled ? "Activo" : "Desactivado", state: status?.imap?.infonalia_enabled ? "ok" : "disabled" },
+  ]);
+}
+
+function renderAutomationTasks(tasks) {
+  if (!automationTasksBoard) return;
+  if (!tasks?.length) {
+    automationTasksBoard.innerHTML = `<div class="empty">No hay automatizaciones configuradas.</div>`;
+    return;
+  }
+  automationTasksBoard.innerHTML = `
+    <div class="automation-table">
+      ${tasks.map((task) => {
+        const last = task.last_run || {};
+        const canRun = task.manual_allowed && task.enabled;
+        return `
+          <article class="automation-row">
+            <div>
+              <strong>${escapeHtml(task.name)}</strong>
+              <small>${escapeHtml(task.key)} · ${escapeHtml(task.schedule_label || "")}</small>
+              <p>${escapeHtml(task.description || "")}</p>
+            </div>
+            <div class="automation-row-meta">
+              <span class="monitor-status ${monitorStatusClass(task.status)}">${escapeHtml(automationStatusText(task.status))}</span>
+              <span>Próxima: ${escapeHtml(formatDateTime(task.next_run) || task.next_run || "-")}</span>
+              <span>Última: ${escapeHtml(formatDateTime(last.started_at) || last.started_at || "-")}</span>
+              <span>Resultado: ${escapeHtml(automationStatusText(last.status))}</span>
+            </div>
+            <div class="automation-row-actions">
+              <button type="button" class="secondary" data-automation-run="${escapeHtml(task.key)}" ${canRun ? "" : "disabled"}>Ejecutar ahora</button>
+              <button type="button" class="ghost" data-automation-toggle="${escapeHtml(task.key)}" data-enabled="${task.enabled ? "0" : "1"}">${task.enabled ? "Desactivar" : "Activar"}</button>
+            </div>
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderAutomationWindowsTasks(payload) {
+  if (!automationWindowsTasks) return;
+  const items = payload?.items || [];
+  const legacy = payload?.legacy_warnings || [];
+  if (payload?.error) {
+    automationWindowsTasks.innerHTML = `<div class="empty">No se pudo leer tareas Windows: ${escapeHtml(payload.error)}</div>`;
+    return;
+  }
+  if (!items.length) {
+    automationWindowsTasks.innerHTML = `<div class="empty">No se han detectado tareas LlangonSuite.</div>`;
+    return;
+  }
+  automationWindowsTasks.innerHTML = `
+    ${legacy.length ? `<div class="import-result warning">Existe una tarea legacy que puede provocar duplicidades.</div>` : ""}
+    <div class="automation-windows-list">
+      ${items.map((item) => `
+        <article class="history-row">
+          <strong>${escapeHtml(item.name)}</strong>
+          <small>${escapeHtml(item.state)} · WakeToRun: ${escapeHtml(String(item.wake_to_run))} · Resultado: ${escapeHtml(String(item.result ?? ""))}</small>
+          <span>Próxima: ${escapeHtml(formatDateTime(item.next_run) || item.next_run || "-")}</span>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+async function loadAutomationConsole() {
+  if (!isAdmin()) return;
+  try {
+    const [statusResponse, tasksResponse, windowsResponse, diagnosticResponse] = await Promise.all([
+      fetch("/api/admin/automation/status"),
+      fetch("/api/admin/automation/tasks"),
+      fetch("/api/admin/automation/windows-tasks"),
+      fetch("/api/admin/automation/diagnostic"),
+    ]);
+    const status = await statusResponse.json().catch(() => ({}));
+    const tasks = await tasksResponse.json().catch(() => ({}));
+    const windows = await windowsResponse.json().catch(() => ({}));
+    const diagnostic = await diagnosticResponse.json().catch(() => ({}));
+    appState.automationStatus = status;
+    appState.automationTasks = tasks.items || status.tasks || [];
+    appState.automationWindowsTasks = windows;
+    renderAutomationStatusSummary(status);
+    renderAutomationTasks(appState.automationTasks);
+    renderAutomationWindowsTasks(windows);
+    if (automationDiagnosticText) automationDiagnosticText.value = diagnostic.diagnostic || "";
+  } catch (error) {
+    if (monitorSchedulerStatus) monitorSchedulerStatus.textContent = error.message || "No se pudo cargar automatizaciones.";
+  }
+}
+
+async function runAutomationAction(url, button, successText) {
+  if (!isAdmin() || !button) return;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "Ejecutando...";
+  if (monitorActionResult) {
+    monitorActionResult.className = "import-result";
+    monitorActionResult.textContent = "Procesando automatización...";
+  }
+  try {
+    const response = await fetch(url, { method: "POST", headers: csrfHeaders() });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      if (monitorActionResult) {
+        monitorActionResult.className = "import-result error";
+        monitorActionResult.textContent = data.error || data.error_message || "No se pudo ejecutar la acción.";
+      }
+      return;
+    }
+    if (monitorActionResult) {
+      monitorActionResult.className = data.status === "skipped" ? "import-result warning" : "import-result ok";
+      monitorActionResult.textContent = data.summary || successText || "Acción completada.";
+    }
+    await loadAutomationConsole();
+    await loadMonitorRuns();
+  } catch (error) {
+    if (monitorActionResult) {
+      monitorActionResult.className = "import-result error";
+      monitorActionResult.textContent = error.message || "No se pudo ejecutar la acción.";
+    }
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
 async function loadMonitorSchedulerStatus() {
   if (!isAdmin() || !monitorSchedulerStatus) return;
+  await loadAutomationConsole();
   try {
     const response = await fetch("/api/monitor/scheduler/status");
     const data = await response.json().catch(() => ({}));
@@ -3301,6 +4057,38 @@ syncDropboxMarkersButton?.addEventListener("click", syncDropboxMarkers);
 monitorDryRunButton?.addEventListener("click", () => runMonitorMode(monitorDryRunButton, "dry-run", "Simulando monitor..."));
 monitorRepairButton?.addEventListener("click", () => runMonitorMode(monitorRepairButton, "repair-routes", "Reparando rutas..."));
 refreshMonitorRunsButton?.addEventListener("click", loadMonitorRuns);
+automationRunTickButton?.addEventListener("click", () => runAutomationAction(
+  "/api/admin/automation/tick",
+  automationRunTickButton,
+  "Tick ejecutado.",
+));
+automationCopyDiagnosticButton?.addEventListener("click", async () => {
+  const text = automationDiagnosticText?.value || "";
+  await copyTextToClipboard(text);
+  if (monitorActionResult) {
+    monitorActionResult.className = "import-result ok";
+    monitorActionResult.textContent = "Diagnóstico copiado al portapapeles.";
+  }
+});
+automationTasksBoard?.addEventListener("click", (event) => {
+  const runButton = event.target.closest("[data-automation-run]");
+  if (runButton) {
+    if (runButton.dataset.automationRun === "night_suspend") {
+      const ok = window.confirm(
+        "Vas a solicitar la suspensión del PC. La Suite comprobará antes si hay trabajos críticos o actividad.\n\n¿Quieres continuar?"
+      );
+      if (!ok) return;
+    }
+    runAutomationAction(`/api/admin/automation/tasks/${encodeURIComponent(runButton.dataset.automationRun)}/run`, runButton, "Automatización ejecutada.");
+    return;
+  }
+  const toggleButton = event.target.closest("[data-automation-toggle]");
+  if (toggleButton) {
+    const key = encodeURIComponent(toggleButton.dataset.automationToggle);
+    const action = toggleButton.dataset.enabled === "1" ? "enable" : "disable";
+    runAutomationAction(`/api/admin/automation/tasks/${key}/${action}`, toggleButton, "Automatización actualizada.");
+  }
+});
 monitorSendAgendaDailyButton?.addEventListener("click", () => sendMonitorAgendaTask(
   monitorSendAgendaDailyButton,
   "agenda_pendientes_diaria",
@@ -3475,17 +4263,18 @@ function renderLicitacionDetailView(item) {
           <p class="detail-cover-object">${escapeHtml(item.objeto || "Sin objeto informado")}</p>
           <p class="detail-cover-meta">${escapeHtml([item.organismo, item.provincia].filter(Boolean).join(" · "))}</p>
         </div>
-        <div class="detail-cover-side">
-          ${renderAiSummaryBadge(item)}
-          <span class="badge ${badgeClass(item.estado)}">${escapeHtml(estadoLabel(item.estado))}</span>
-          ${fechaLimite ? `<div class="detail-kpi"><span>Fecha límite</span><strong>${escapeHtml(fechaLimite)}</strong></div>` : ""}
-          ${item.presupuesto ? `<div class="detail-kpi"><span>Presupuesto</span><strong>${escapeHtml(formatMoney(item.presupuesto))}</strong></div>` : ""}
-          <span class="folder-status-chip ${escapeHtml(folderTone)}">Carpeta: ${escapeHtml(folderLabel)}</span>
-          ${renderDetailHeaderActions(item)}
-        </div>
-      </section>
+           <div class="detail-cover-side">
+           ${renderAiSummaryBadge(item)}
+           <span class="badge ${badgeClass(item.estado)}">${escapeHtml(estadoLabel(item.estado))}</span>
+           ${fechaLimite ? `<div class="detail-kpi"><span>Fecha límite</span><strong>${escapeHtml(fechaLimite)}</strong></div>` : ""}
+           ${item.presupuesto ? `<div class="detail-kpi"><span>Presupuesto</span><strong>${escapeHtml(formatMoney(item.presupuesto))}</strong></div>` : ""}
+           <span class="folder-status-chip ${escapeHtml(folderTone)}">Carpeta: ${escapeHtml(folderLabel)}</span>
+           </div>
+         </section>
 
-      <nav class="detail-tabs no-print" aria-label="Secciones de la ficha">
+        ${renderDetailActionBar(item)}
+
+         <nav class="detail-tabs no-print" aria-label="Secciones de la ficha">
         <button type="button" class="detail-tab-button active" data-detail-tab="resumen">Resumen</button>
         <button type="button" class="detail-tab-button" data-detail-tab="actuaciones">Actuaciones</button>
         <button type="button" class="detail-tab-button" data-detail-tab="documentos-seguimiento">Documentos y seguimiento</button>
@@ -3524,10 +4313,10 @@ function renderLicitacionDetailView(item) {
             <h3>${escapeHtml(documentCount)}</h3>
           </div>
         </div>
-        ${renderLicitacionTracking(item)}
+        ${renderDocumentosTabActions(item, folder)}
         ${renderFolderPanel(item, folder, folderLabel)}
+        ${renderLicitacionTrackingSummary(item)}
         ${item.descarga_fallida || item.download_error ? `<div class="warning-detail document-warning"><strong>Error de descarga</strong><span>${escapeHtml(item.download_error || "La última descarga falló.")}</span></div>` : ""}
-        ${renderDocumentSummary(item)}
         <div class="document-tree-panel" data-document-tree-panel="${escapeHtml(item.id)}">
           <div class="empty">Cargando árbol documental...</div>
         </div>
@@ -3560,15 +4349,22 @@ function renderLicitacionDetailView(item) {
   `;
 }
 
-function renderDetailHeaderActions(item) {
+function renderDetailActionBar(item) {
   return `
-    <div class="detail-header-actions no-print">
+    <section class="expanded-action-bar no-print">
+      <div class="detail-action-bar" role="group" aria-label="Acciones de la licitación">
       ${isAdmin() ? `<button class="download-button primary" data-download-id="${escapeHtml(item.id)}">Descargar documentación</button>` : ""}
       <button data-new-actuacion-id="${escapeHtml(item.id)}">Crear actuación</button>
       ${isAdmin() ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""}
-      ${isAdmin() ? `<button data-duplicate-id="${escapeHtml(item.id)}">Duplicar</button>` : ""}
-      ${isAdmin() ? `<button class="danger" data-delete-id="${escapeHtml(item.id)}">Borrar</button>` : ""}
-    </div>
+      <details class="detail-more-actions"${isAdmin() ? "" : ' hidden=""'}>
+        <summary>Más acciones</summary>
+        <div class="detail-more-menu">
+          ${isAdmin() ? `<button data-duplicate-id="${escapeHtml(item.id)}">Duplicar</button>` : ""}
+          ${isAdmin() ? `<button class="danger" data-delete-id="${escapeHtml(item.id)}">Borrar</button>` : ""}
+        </div>
+      </details>
+      </div>
+    </section>
   `;
 }
 
@@ -3671,8 +4467,6 @@ function renderFolderPanel(item, folder, folderLabel) {
         ${!hasFolder ? `<p>No hay carpeta documental registrada todavía.</p>` : `<code title="${escapeHtml(fullPath)}">${escapeHtml(shortPath)}</code>`}
       </div>
       <div class="folder-panel-actions">
-        ${hasFolder ? `<button type="button" data-copy-text="${escapeHtml(fullPath)}">Copiar ruta</button>` : ""}
-        ${isAdmin() ? `<button type="button" class="download-button" data-download-id="${escapeHtml(item.id)}">${hasFolder ? "Actualizar carpeta" : "Crear carpeta"}</button>` : ""}
       </div>
     </section>
   `;
@@ -3715,25 +4509,6 @@ function documentCountLabel(item) {
 
 function yesNo(value) {
   return value ? "Sí" : "No";
-}
-
-function renderDocumentSummary(item) {
-  const summary = item.document_summary || {};
-  if (!summary.total_files && !(item.documentos || []).length) return "";
-  const metrics = [
-    ["PCAP", yesNo(summary.has_pcap)],
-    ["PPT", yesNo(summary.has_ppt)],
-    ["Anuncio", yesNo(summary.has_announcement)],
-    ["Requerimientos", summary.requirement_count || 0],
-    ["Anexos", summary.annex_count || 0],
-    ["Oferta/Sobres", yesNo(summary.has_offer_documents)],
-    ["Relevantes", summary.relevant_files_count || (item.documentos || []).length || 0],
-  ];
-  return `
-    <div class="document-summary-grid">
-      ${metrics.map(([label, value]) => `<div class="document-summary-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}
-    </div>
-  `;
 }
 
 function renderLicitacionDocuments(item) {
@@ -4276,11 +5051,12 @@ function renderAiSummaryContent(licitacionId, payload) {
   const selectedDocs = payload.selected_documents || [];
   const job = payload.job || {};
   const canGenerate = Boolean(payload.puede_generar);
-  const canRetry = payload.job_status === "error" || payload.job_status === "deferred";
   const hasAnyAnalysis = Boolean(payload.has_summary || payload.job_status || payload.job);
   const reason = aiProviderErrorMessage(payload) || payload.motivo_si_no_puede_generar || job.error_message || "";
   const summaryQuality = payload.summary?.quality_status || payload.job?.summary_quality_status || "";
   const canEmailSummary = Boolean(payload.has_summary && !["empty_analysis", "low_quality_analysis", "encoding_error"].includes(summaryQuality));
+  const generateLabel = payload.has_summary ? "Regenerar resumen" : "Generar resumen";
+  const generateForce = payload.has_summary ? "1" : "0";
   const activeMessage = renderAiJobStateCard(licitacionId, job, selectedDocs);
   return `
     <div class="ai-summary-toolbar">
@@ -4288,9 +5064,8 @@ function renderAiSummaryContent(licitacionId, payload) {
       <span>${escapeHtml(selectedDocs.length ? `${selectedDocs.length} documento(s) seleccionado(s)` : "Sin documentos aptos")}</span>
       ${payload.document_hash ? `<code title="${escapeHtml(payload.document_hash)}">${escapeHtml(payload.document_hash.slice(0, 12))}</code>` : ""}
       <div class="ai-actions">
-        <button type="button" data-ai-generate="${escapeHtml(licitacionId)}" ${canGenerate && !payload.has_summary ? "" : "disabled"}>Generar análisis IA</button>
-        ${isAdmin() ? `<button type="button" data-ai-regenerate="${escapeHtml(licitacionId)}" ${canGenerate ? "" : "disabled"}>Regenerar análisis IA</button>` : ""}
-        <button type="button" data-ai-generate="${escapeHtml(licitacionId)}" ${canRetry && canGenerate ? "" : "disabled"}>Reintentar</button>
+        <button type="button" data-ai-generate="${escapeHtml(licitacionId)}" data-ai-force="${generateForce}" ${canGenerate ? "" : "disabled"}>${generateLabel}</button>
+        <button type="button" data-ai-save-pdf="${escapeHtml(licitacionId)}" ${payload.has_summary ? "" : "disabled"}>Guardar PDF en carpeta</button>
         <button type="button" data-ai-email="${escapeHtml(licitacionId)}" ${canEmailSummary ? "" : "disabled"}>Enviar por correo</button>
         ${hasAnyAnalysis ? `<button type="button" class="danger-soft" data-ai-delete="${escapeHtml(licitacionId)}">Borrar</button>` : ""}
       </div>
@@ -4632,6 +5407,32 @@ async function generateAiSummary(licitacionId, button, force = false) {
   await openAiFileSelection(licitacionId, button, force);
 }
 
+async function saveAiSummaryPdf(licitacionId, button) {
+  const originalText = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Guardando...";
+  }
+  try {
+    const response = await fetch(`/api/licitaciones/${licitacionId}/ai-summary/save-pdf`, {
+      method: "POST",
+      headers: csrfHeaders(),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      alert(result.error || "No se pudo guardar el PDF del resumen IA. Revisa la carpeta de la licitación.");
+      return;
+    }
+    await loadAiSummary(licitacionId, { silent: true });
+    alert(result.message || "PDF guardado correctamente en la carpeta de la licitación.");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
+
 async function deleteAiSummary(licitacionId) {
   const ok = confirm("Esto borrará únicamente el análisis IA guardado para esta licitación. No se borrará ningún documento de la carpeta del expediente.");
   if (!ok) return;
@@ -4703,41 +5504,26 @@ function markerStatusText(value) {
   return value ? "Existe" : "No consta";
 }
 
-function renderLicitacionMarkerActions(item, seguimiento) {
-  if (!isAdmin()) return "";
-  const id = item.id;
-  const folderExists = Boolean(seguimiento.folder_exists);
-  const idMarkerExists = Boolean(seguimiento.id_marker_exists);
-  const followMarkerExists = Boolean(seguimiento.follow_marker_exists);
-  const idFileName = `${id}.llangon`;
-  return `
-    <div class="marker-actions full-width">
-      <button type="button" data-marker-action="id" data-marker-licitacion-id="${escapeHtml(id)}" ${!folderExists || idMarkerExists ? "disabled" : ""}>
-        ${idMarkerExists ? "Ya existe" : `Crear ${escapeHtml(idFileName)}`}
-      </button>
-      <button type="button" data-marker-action="follow" data-marker-licitacion-id="${escapeHtml(id)}" ${!folderExists || followMarkerExists ? "disabled" : ""}>
-        ${followMarkerExists ? "Ya existe" : "Crear EnSeguimiento.llangon"}
-      </button>
-      <button type="button" data-open-licitacion-folder="${escapeHtml(id)}" ${!folderExists ? "disabled" : ""}>Abrir carpeta</button>
-      <small class="marker-action-result" data-marker-action-result="${escapeHtml(id)}"></small>
-    </div>
-  `;
-}
-
 function renderLicitacionTracking(item) {
   const seguimiento = item.seguimiento || {};
-  const novedades = seguimiento.novedades || [];
+  const novedades = (seguimiento.novedades || []).filter((entry) => {
+    const key = String(entry.change_type || entry.source || "").toLowerCase();
+    return ![
+      "ai_summary_deleted",
+      "ai_summary_removed",
+      "technical_log",
+      "internal_log",
+      "ia_resumen_borrado",
+      "ia_borrado_resumen",
+    ].includes(key);
+  });
   return `
     <div class="detail-grid">
       <div class="detail"><span>Estado</span>${escapeHtml(seguimiento.activo ? "En seguimiento" : "No en seguimiento")}</div>
       <div class="detail"><span>Fuente</span>${escapeHtml(seguimiento.fuente || "marcador Dropbox")}</div>
       <div class="detail"><span>Carpeta</span>${escapeHtml(seguimiento.folder_exists ? "Localizada" : "No localizada")}</div>
-      <div class="detail"><span>${escapeHtml(`${item.id}.llangon`)}</span>${escapeHtml(markerStatusText(seguimiento.id_marker_exists))}</div>
-      <div class="detail"><span>EnSeguimiento.llangon</span>${escapeHtml(markerStatusText(seguimiento.follow_marker_exists))}</div>
       <div class="detail"><span>Última sincronización</span>${escapeHtml(seguimiento.ultima_sync || seguimiento.ultimo_check || "Pendiente")}</div>
-      <div class="detail"><span>Última novedad</span>${escapeHtml(seguimiento.ultima_novedad || "Sin novedades")}</div>
       ${seguimiento.warning ? `<div class="detail full-width warning-detail"><span>Aviso</span>${escapeHtml(seguimiento.warning)}</div>` : ""}
-      ${renderLicitacionMarkerActions(item, seguimiento)}
     </div>
     ${novedades.length ? novedades.map((entry) => `
       <article class="history-row">
@@ -4746,6 +5532,37 @@ function renderLicitacionTracking(item) {
         <span>${escapeHtml(entry.summary || "")}</span>
       </article>
     `).join("") : `<div class="empty">Sin novedades registradas todavía.</div>`}
+  `;
+}
+
+function renderDocumentosTabActions(item, folder) {
+  const hasFolder = Boolean(String(folder || item.ruta_carpeta || "").trim());
+  const id = item.id;
+  const idFileName = `${id}.llangon`;
+  const seguimiento = item.seguimiento || {};
+  const idMarkerExists = Boolean(seguimiento.id_marker_exists);
+  const followMarkerExists = Boolean(seguimiento.follow_marker_exists);
+  return `
+    <section class="documentos-tab-actions no-print">
+      ${isAdmin() ? `<button class="download-button primary" data-download-id="${escapeHtml(id)}">Descargar documentación</button>` : ""}
+      ${isAdmin() ? `<button type="button" data-marker-action="id" data-marker-licitacion-id="${escapeHtml(id)}" ${!hasFolder || idMarkerExists ? "disabled" : ""}>${idMarkerExists ? "Ya existe" : `Crear ${escapeHtml(idFileName)}`}</button>` : ""}
+      ${isAdmin() ? `<button type="button" data-marker-action="follow" data-marker-licitacion-id="${escapeHtml(id)}" ${!hasFolder || followMarkerExists ? "disabled" : ""}>${followMarkerExists ? "Ya existe" : "Crear EnSeguimiento.llangon"}</button>` : ""}
+    </section>
+  `;
+}
+
+function renderLicitacionTrackingSummary(item) {
+  const seguimiento = item.seguimiento || {};
+  const hasFolder = Boolean(seguimiento.folder_exists);
+  const docs = item.documentos || [];
+  return `
+    <div class="tracking-summary-grid">
+      <div class="detail"><span>Documentos</span>${escapeHtml(`${docs.length} documento(s)`)}</div>
+      <div class="detail"><span>Carpeta</span>${escapeHtml(hasFolder ? "Válida/localizada" : "Sin localizar")}</div>
+      <div class="detail"><span>Seguimiento</span>${escapeHtml(seguimiento.activo ? "Activo" : "No activo")}</div>
+      <div class="detail"><span>Última sincronización</span>${escapeHtml(seguimiento.ultima_sync || seguimiento.ultimo_check || "Pendiente")}</div>
+    </div>
+    ${renderLicitacionTracking(item)}
   `;
 }
 
@@ -4765,7 +5582,17 @@ function renderLicitacionWorkFields(item) {
 }
 
 function renderLicitacionHistory(item) {
-  const rows = item.historial || [];
+  const rows = (item.historial || []).filter((entry) => {
+    const key = String(entry.event_type || "").toLowerCase();
+    return ![
+      "ai_summary_deleted",
+      "ai_summary_removed",
+      "technical_log",
+      "internal_log",
+      "ia_resumen_borrado",
+      "ia_borrado_resumen",
+    ].includes(key);
+  });
   if (!rows.length) return `<div class="empty">Sin histórico todavía.</div>`;
   return rows.map((entry) => `
     <article class="history-row">
@@ -5357,7 +6184,9 @@ async function deleteDia(id, title) {
   const response = await fetch(`/api/dias/${id}`, { method: "DELETE", headers: csrfHeaders() });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
-    alert(result.error || "No se pudo borrar el día Infonalia.");
+    const openActuaciones = result.blocking && result.blocking.open_actuaciones;
+    const suffix = openActuaciones ? `\n\nActuaciones abiertas vinculadas: ${openActuaciones}` : "";
+    alert(`${result.error || "No se pudo borrar el día Infonalia."}${suffix}`);
     return;
   }
 
@@ -5404,6 +6233,21 @@ document.getElementById("news-admin-button").addEventListener("click", showNewsA
 document.getElementById("monitor-button").addEventListener("click", showMonitorView);
 document.getElementById("config-button").addEventListener("click", showConfigView);
 document.getElementById("back-from-config").addEventListener("click", backFromConfig);
+configTabButtons.forEach((button) => {
+  button.addEventListener("click", () => showConfigTab(button.dataset.configTab || "general"));
+});
+copyConfigDiagnosticsButton?.addEventListener("click", async () => {
+  const text = buildConfigDiagnosticsText();
+  if (configDiagnosticsText) configDiagnosticsText.value = text;
+  try {
+    await navigator.clipboard.writeText(text);
+    settingsResult.className = "import-result ok";
+    settingsResult.textContent = "Diagnóstico copiado sin secretos.";
+  } catch (_error) {
+    settingsResult.className = "import-result warning";
+    settingsResult.textContent = "No se pudo copiar automáticamente. Puedes seleccionar el texto del diagnóstico.";
+  }
+});
 document.getElementById("back-to-days").addEventListener("click", showDaysView);
 reviewDayButton.addEventListener("click", markDayReviewed);
 sendNuriaButton.addEventListener("click", sendDayToNuria);
@@ -5443,6 +6287,11 @@ document.getElementById("cancel-editor").addEventListener("click", () => editor.
 capturePlatformButton.addEventListener("click", capturePlatformData);
 document.getElementById("import-button").addEventListener("click", () => {
   importResult.textContent = "";
+  importer.showModal();
+});
+importMenuButton?.addEventListener("click", () => {
+  importResult.textContent = "";
+  closeSidebar();
   importer.showModal();
 });
 document.getElementById("close-importer").addEventListener("click", () => importer.close());
@@ -5631,12 +6480,42 @@ newsForm.addEventListener("submit", saveNews);
 document.getElementById("reset-news-form").addEventListener("click", resetNewsForm);
 userConfigForm.addEventListener("submit", saveUserConfig);
 settingsForm.addEventListener("submit", saveSettingsConfig);
+if (mailActionsForm) {
+  mailActionsForm.addEventListener("submit", (event) => (
+    saveConfigBlock(event, mailActionsPayload, mailActionsResult, "Acciones por correo guardadas.")
+  ));
+}
+if (infonaliaImportForm) {
+  infonaliaImportForm.addEventListener("submit", (event) => (
+    saveConfigBlock(event, infonaliaImportPayload, infonaliaImportResult, "Importación automática guardada.")
+  ));
+}
+if (aiSettingsForm) {
+  aiSettingsForm.addEventListener("submit", (event) => (
+    saveConfigBlock(event, aiSettingsPayload, aiSettingsResult, "Configuración IA guardada.")
+  ));
+}
+if (automationSettingsForm) {
+  automationSettingsForm.addEventListener("submit", (event) => (
+    saveConfigBlock(event, automationSettingsPayload, automationSettingsResult, "Avisos operativos guardados.")
+  ));
+}
 testSmtpButton.addEventListener("click", testSmtpConfig);
+testTelegramGroupButton.addEventListener("click", testTelegramGroupConfig);
+testUserTelegramButton.addEventListener("click", () => {
+  const username = userConfigForm.elements.editing_username.value || userConfigForm.elements.username.value.trim();
+  testTelegramForUser(username);
+});
 testDropboxButton.addEventListener("click", testDropboxConfig);
 dryRunDropboxButton.addEventListener("click", dryRunDropboxConfig);
 document.getElementById("reset-user-form").addEventListener("click", resetUserForm);
 
 usersBoard.addEventListener("click", (event) => {
+  const testTelegramButton = event.target.closest("button[data-test-user-telegram]");
+  if (testTelegramButton) {
+    testTelegramForUser(testTelegramButton.dataset.testUserTelegram);
+    return;
+  }
   const editButton = event.target.closest("button[data-edit-user]");
   if (editButton) {
     editUser(editButton.dataset.editUser);
@@ -5784,13 +6663,17 @@ licitacionDetailContent.addEventListener("click", (event) => {
 
   const aiGenerateButton = event.target.closest("button[data-ai-generate]");
   if (aiGenerateButton) {
-    generateAiSummary(aiGenerateButton.dataset.aiGenerate, aiGenerateButton, false);
+    generateAiSummary(
+      aiGenerateButton.dataset.aiGenerate,
+      aiGenerateButton,
+      aiGenerateButton.dataset.aiForce === "1",
+    );
     return;
   }
 
-  const aiRegenerateButton = event.target.closest("button[data-ai-regenerate]");
-  if (aiRegenerateButton) {
-    generateAiSummary(aiRegenerateButton.dataset.aiRegenerate, aiRegenerateButton, true);
+  const aiSavePdfButton = event.target.closest("button[data-ai-save-pdf]");
+  if (aiSavePdfButton) {
+    saveAiSummaryPdf(aiSavePdfButton.dataset.aiSavePdf, aiSavePdfButton);
     return;
   }
 
@@ -6189,6 +7072,10 @@ importForm.addEventListener("submit", async (event) => {
     submit.disabled = false;
     submit.textContent = "Importar";
   }
+});
+
+runInfonaliaMailImportButton?.addEventListener("click", () => {
+  runInfonaliaMailImportNow();
 });
 
 loadMe().then(() => {

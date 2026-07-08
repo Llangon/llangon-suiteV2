@@ -37,10 +37,11 @@
         <button id="calendar-button" class="nav-item" data-nav-section="calendar">Agenda</button>
         <button id="actuaciones-button" class="nav-item" data-nav-section="actuaciones">Actuaciones</button>
         <button id="notifications-menu-button" class="nav-item" data-nav-section="notifications">Buzón</button>
+        <button id="import-menu-button" class="nav-item" data-admin-only hidden>Importar</button>
 
         <p class="nav-group-title" data-admin-only hidden>Administración</p>
         <button id="news-admin-button" class="nav-item" data-nav-section="news-admin" data-admin-only hidden>Noticias</button>
-        <button id="monitor-button" class="nav-item" data-nav-section="monitor" data-admin-only hidden>Monitor</button>
+        <button id="monitor-button" class="nav-item" data-nav-section="monitor" data-admin-only hidden>Automatizaciones</button>
         <button id="config-button" class="nav-item" data-nav-section="config" data-admin-only hidden>Configuración</button>
       </nav>
 
@@ -360,15 +361,59 @@
       <div class="section-head">
         <div>
           <p class="eyebrow">Administración</p>
-          <h2>Monitor</h2>
+          <h2>Automatizaciones</h2>
         </div>
         <div class="section-actions">
+          <button id="automation-run-tick" class="secondary">Ejecutar tick ahora</button>
+          <button id="automation-copy-diagnostic" class="secondary">Copiar diagnóstico</button>
           <button id="monitor-send-agenda-daily" class="secondary">Enviar correo diario de Pendientes de prueba</button>
           <button id="refresh-monitor-runs" class="ghost">Actualizar</button>
         </div>
       </div>
       <div class="import-result" id="monitor-action-result"></div>
-      <div class="monitor-scheduler-status" id="monitor-scheduler-status">Scheduler: comprobando...</div>
+      <div class="monitor-scheduler-status" id="monitor-scheduler-status">Automatizaciones: comprobando...</div>
+
+      <section class="automation-console">
+        <article class="monitor-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Estado general</p>
+              <h3>Panel de control</h3>
+            </div>
+          </div>
+          <div id="automation-status-summary" class="config-status-grid"></div>
+        </article>
+
+        <article class="monitor-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Control</p>
+              <h3>Automatizaciones internas</h3>
+            </div>
+          </div>
+          <div id="automation-tasks-board" class="automation-tasks-board"></div>
+        </article>
+
+        <article class="monitor-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Windows</p>
+              <h3>Tareas programadas detectadas</h3>
+            </div>
+          </div>
+          <div id="automation-windows-tasks" class="automation-windows-tasks"></div>
+        </article>
+
+        <article class="monitor-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Diagnóstico</p>
+              <h3>Texto para soporte</h3>
+            </div>
+          </div>
+          <textarea id="automation-diagnostic-text" class="diagnostics-text" readonly></textarea>
+        </article>
+      </section>
 
       <section class="monitor-layout">
         <div class="monitor-panel">
@@ -404,78 +449,239 @@
         <button id="back-from-config" class="ghost">Volver</button>
       </div>
 
-      <section class="config-grid">
+      <nav class="config-tabs" aria-label="Secciones de configuración">
+        <button type="button" class="active" data-config-tab="general">General</button>
+        <button type="button" data-config-tab="users">Usuarios y permisos</button>
+        <button type="button" data-config-tab="mail">Correos y notificaciones</button>
+        <button type="button" data-config-tab="mailboxes">Buzones automáticos</button>
+        <button type="button" data-config-tab="storage">Almacenamiento / Dropbox</button>
+        <button type="button" data-config-tab="ai">IA documental</button>
+        <button type="button" data-config-tab="automation">Automatismos</button>
+        <button type="button" data-config-tab="advanced">Avanzado / diagnóstico</button>
+      </nav>
+
+      <div class="import-result" id="settings-result"></div>
+
+      <section class="config-tab-panel active" id="config-tab-general" data-config-panel="general">
+        <section class="config-status-grid" id="config-overview-board"></section>
         <article class="config-panel">
           <div class="panel-head">
             <div>
-              <p class="eyebrow">Usuarios</p>
-              <h3>Alta y edición</h3>
+              <p class="eyebrow">Uso diario</p>
+              <h3>Modo mantenimiento</h3>
             </div>
           </div>
-          <form id="user-config-form" class="config-form">
-            <input type="hidden" name="editing_username">
-            <label>Usuario<input name="username" required></label>
-            <label>Nombre visible<input name="display_name" required></label>
-            <label>Email<input name="email" type="email"></label>
-            <label>Rol
-              <select name="role">
-                <option value="admin">Administrador</option>
-                <option value="nuria">Revisión</option>
-              </select>
-            </label>
-            <label>Contraseña<input name="password" type="password" autocomplete="new-password"></label>
-            <label class="check-field">
-              <input name="active" type="checkbox" checked>
-              Usuario activo
-            </label>
-            <div class="dialog-actions">
-              <button type="button" class="ghost" id="reset-user-form">Limpiar</button>
-              <button type="submit" class="primary">Guardar usuario</button>
-            </div>
-          </form>
-          <div id="users-board" class="users-board"></div>
-        </article>
-
-        <article class="config-panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Servidor</p>
-              <h3>SMTP y mantenimiento</h3>
-            </div>
+          <p class="config-help">El modo mantenimiento bloquea el uso normal de la suite mientras se realizan ajustes. Los administradores conservan el acceso.</p>
+          <label class="check-field">
+            <input name="maintenance_mode" type="checkbox" form="settings-form">
+            Modo mantenimiento, solo administradores
+          </label>
+          <div class="dialog-actions">
+            <button type="submit" class="primary" form="settings-form">Guardar estado general</button>
           </div>
-          <form id="settings-form" class="config-form">
-            <label class="check-field">
-              <input name="maintenance_mode" type="checkbox">
-              Modo mantenimiento, solo administradores
-            </label>
-            <label>Servidor SMTP<input name="smtp_host"></label>
-            <label>Puerto<input name="smtp_port" inputmode="numeric"></label>
-            <label>Usuario SMTP<input name="smtp_user"></label>
-            <label>Contraseña SMTP<input name="smtp_password" type="password" autocomplete="new-password" placeholder="Dejar vacío para no cambiar"></label>
-            <label class="check-field">
-              <input name="clear_smtp_password" type="checkbox">
-              Borrar contraseña SMTP guardada
-            </label>
-            <label>Remitente<input name="smtp_from" type="email"></label>
-            <label>Email Agenda fallback<input name="agenda_email_to" type="email"></label>
-            <label>Email aviso ficha preparada<input name="prepared_notice_email_to" type="email" placeholder="info3@llangon.com"></label>
-            <label>Emails seguimiento globales<input name="seguimiento_emails" placeholder="nuria@ejemplo.es,otro@ejemplo.es"></label>
-            <label class="check-field">
-              <input name="smtp_tls" type="checkbox" checked>
-              Usar TLS
-            </label>
-            <label class="check-field">
-              <input name="smtp_ssl" type="checkbox">
-              Usar SSL directo
-            </label>
-            <div class="dialog-actions">
-              <button type="button" class="ghost" id="test-smtp-button">Probar SMTP</button>
-              <button type="submit" class="primary">Guardar configuración</button>
-            </div>
-            <div class="import-result" id="settings-result"></div>
-          </form>
         </article>
+      </section>
 
+      <section class="config-tab-panel" id="config-tab-users" data-config-panel="users" hidden>
+        <section class="config-grid">
+          <article class="config-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Usuarios</p>
+                <h3>Alta y edición</h3>
+              </div>
+            </div>
+            <form id="user-config-form" class="config-form">
+              <input type="hidden" name="editing_username">
+              <fieldset class="config-fieldset">
+                <legend>Datos del usuario</legend>
+                <p class="config-help">El nombre visible y el email se usan en avisos internos y comunicaciones de la Suite.</p>
+                <label>Usuario<input name="username" required></label>
+                <label>Nombre visible<input name="display_name" required></label>
+                <label>Email<input name="email" type="email"></label>
+                <label>Contraseña<input name="password" type="password" autocomplete="new-password"></label>
+              </fieldset>
+              <fieldset class="config-fieldset">
+                <legend>Permisos</legend>
+                <p class="config-help">El rol administrador permite modificar configuración y ejecutar acciones técnicas. El rol revisor trabaja con licitaciones sin acceso completo a configuración crítica.</p>
+                <label>Rol
+                  <select name="role">
+                    <option value="admin">Administrador</option>
+                    <option value="nuria">Revisión</option>
+                  </select>
+                </label>
+                <label class="check-field">
+                  <input name="active" type="checkbox" checked>
+                  Usuario activo
+                </label>
+              </fieldset>
+              <fieldset class="config-fieldset">
+                <legend>Notificaciones Telegram</legend>
+                <p class="config-help">El chat de Telegram por usuario permite enviar avisos personalizados si está configurado.</p>
+                <label>Telegram Chat ID<input name="telegram_chat_id" placeholder="1648124154 o -5269010979"></label>
+                <label class="check-field">
+                  <input name="telegram_notifications_enabled" type="checkbox">
+                  Activar notificaciones Telegram para este usuario
+                </label>
+              </fieldset>
+              <div class="dialog-actions">
+                <button type="button" class="ghost" id="reset-user-form">Limpiar</button>
+                <button type="button" class="ghost" id="test-user-telegram-button">Probar Telegram usuario</button>
+                <button type="submit" class="primary">Guardar usuario</button>
+              </div>
+              <div class="import-result" id="user-config-result"></div>
+            </form>
+          </article>
+          <article class="config-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Listado</p>
+                <h3>Usuarios configurados</h3>
+              </div>
+            </div>
+            <div id="users-board" class="users-board"></div>
+          </article>
+        </section>
+      </section>
+
+      <section class="config-tab-panel" id="config-tab-mail" data-config-panel="mail" hidden>
+        <section class="config-grid">
+          <article class="config-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Correo saliente</p>
+                <h3>SMTP</h3>
+              </div>
+            </div>
+            <form id="settings-form" class="config-form">
+              <fieldset class="config-fieldset">
+                <legend>Servidor SMTP</legend>
+                <p class="config-help">Servidor SMTP usado para enviar correos automáticos desde la suite.</p>
+                <label class="check-field">
+                  <input name="smtp_enabled" type="checkbox">
+                  Activar envío SMTP
+                </label>
+                <label>Servidor SMTP<input name="smtp_host"></label>
+                <label>Puerto<input name="smtp_port" inputmode="numeric"></label>
+                <label>Usuario SMTP<input name="smtp_user"></label>
+                <label>Contraseña SMTP<input name="smtp_password" type="password" autocomplete="new-password" placeholder="Dejar vacío para no cambiar"></label>
+                <p class="config-help" id="smtp-password-status">La contraseña SMTP nunca se muestra en claro.</p>
+                <label class="check-field">
+                  <input name="clear_smtp_password" type="checkbox">
+                  Borrar contraseña SMTP guardada
+                </label>
+                <label>Remitente<input name="smtp_from" type="email"></label>
+                <label class="check-field">
+                  <input name="smtp_tls" type="checkbox" checked>
+                  Usar TLS
+                </label>
+                <label class="check-field">
+                  <input name="smtp_ssl" type="checkbox">
+                  Usar SSL directo
+                </label>
+                <label class="check-field">
+                  <input name="email_dry_run" type="checkbox">
+                  Modo pruebas de email
+                </label>
+                <p class="config-help">Modo pruebas: si está activo, la suite no debe enviar correos reales o los desvía según la lógica actual.</p>
+              </fieldset>
+              <fieldset class="config-fieldset">
+                <legend>Destinatarios de avisos</legend>
+                <p class="config-help">Correo de aviso de ficha preparada: destinatario usado cuando una licitación pasa a estado Preparada.</p>
+                <label>Email Agenda fallback<input name="agenda_email_to" type="email"></label>
+                <label>Email aviso ficha preparada<input name="prepared_notice_email_to" type="email" placeholder="info3@llangon.com"></label>
+                <label>Emails seguimiento globales<input name="seguimiento_emails" placeholder="nuria@ejemplo.es,otro@ejemplo.es"></label>
+                <p class="config-help">Correos de seguimiento: direcciones usadas para avisos internos o seguimiento automático.</p>
+              </fieldset>
+              <div class="dialog-actions">
+                <button type="button" class="ghost" id="test-smtp-button">Probar SMTP</button>
+                <button type="submit" class="primary">Guardar configuración</button>
+              </div>
+            </form>
+          </article>
+          <article class="config-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Telegram</p>
+                <h3>Estado global y pruebas</h3>
+              </div>
+            </div>
+            <p class="config-help">Telegram permite enviar avisos al grupo general y a usuarios concretos sin mostrar nunca el token del bot.</p>
+            <div id="telegram-status-board" class="storage-status-board"></div>
+            <div class="dialog-actions">
+              <button type="button" class="ghost" id="test-telegram-group-button">Probar Telegram grupo</button>
+            </div>
+          </article>
+        </section>
+      </section>
+
+      <section class="config-tab-panel" id="config-tab-mailboxes" data-config-panel="mailboxes" hidden>
+        <section class="config-grid">
+          <article class="config-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Correo entrante</p>
+                <h3>Acciones desde correo</h3>
+              </div>
+            </div>
+            <p class="config-help">Permite que la Suite lea órdenes enviadas por correo, como Descargar para ver o Preparar ficha. Si está desactivado, la Suite no procesará órdenes recibidas por correo.</p>
+            <form id="mail-actions-form" class="config-form">
+              <fieldset class="config-fieldset">
+                <legend>Acciones por correo</legend>
+                <label class="check-field"><input name="email_actions_enabled" type="checkbox"> Activar procesamiento de órdenes por correo</label>
+                <label>Frecuencia de revisión (minutos)<input name="email_actions_poll_minutes" type="number" min="1" max="1440"></label>
+                <label>Destinatario del buzón de órdenes<input name="action_mailbox_to" type="email"></label>
+                <label>Correo en copia<input name="action_mailbox_cc"></label>
+                <label>Correo técnico de avisos<input name="action_notify_email" type="email"></label>
+                <label>Remitentes autorizados<textarea name="action_allowed_senders" rows="3"></textarea></label>
+                <p class="config-help">Solo estos correos podrán enviar órdenes válidas. Separar varios por coma o salto de línea.</p>
+              </fieldset>
+              <fieldset class="config-fieldset">
+                <legend>Buzón IMAP</legend>
+                <label>Servidor IMAP<input name="actions_imap_host"></label>
+                <label>Puerto IMAP<input name="actions_imap_port" type="number" min="1" max="65535"></label>
+                <label>Usuario IMAP<input name="actions_imap_user"></label>
+                <label>Carpeta o etiqueta IMAP<input name="actions_imap_folder"></label>
+                <p class="config-help" id="actions-imap-password-status">La contraseña IMAP se gestiona por entorno y nunca se muestra.</p>
+              </fieldset>
+              <div class="dialog-actions">
+                <button type="submit" class="primary">Guardar acciones por correo</button>
+                <button type="button" class="ghost" disabled>Comprobar configuración del buzón (pendiente)</button>
+              </div>
+              <div class="import-result" id="mail-actions-result"></div>
+            </form>
+            <div id="mail-actions-status-board" class="storage-status-board"></div>
+          </article>
+          <article class="config-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Infonalia</p>
+                <h3>Importación automática</h3>
+              </div>
+            </div>
+            <p class="config-help">Permite que la Suite revise el buzón técnico e importe automáticamente el correo diario de Infonalia.</p>
+            <form id="infonalia-import-form" class="config-form">
+              <fieldset class="config-fieldset">
+                <legend>Importador Infonalia</legend>
+                <label class="check-field"><input name="infonalia_import_enabled" type="checkbox"> Activar importación automática</label>
+                <label>Carpeta o etiqueta IMAP<input name="infonalia_import_folder"></label>
+                <label>Correo de aviso<input name="infonalia_import_notify_email" type="email"></label>
+                <label>Frecuencia de revisión (minutos)<input name="infonalia_import_poll_minutes" type="number" min="1" max="1440"></label>
+                <label>Ventana de búsqueda (horas)<input name="infonalia_import_lookback_hours" type="number" min="1" max="168"></label>
+                <label class="check-field"><input name="infonalia_import_mark_read_on_success" type="checkbox"> Marcar como leído solo cuando termine importado o reconocido como duplicado</label>
+              </fieldset>
+              <div class="dialog-actions">
+                <button type="submit" class="primary">Guardar importación Infonalia</button>
+                <button type="button" class="ghost" disabled>Comprobar importación en seco (pendiente)</button>
+              </div>
+              <div class="import-result" id="infonalia-import-result"></div>
+            </form>
+            <div id="infonalia-import-status-board" class="storage-status-board"></div>
+          </article>
+        </section>
+      </section>
+
+      <section class="config-tab-panel" id="config-tab-storage" data-config-panel="storage" hidden>
         <article class="config-panel">
           <div class="panel-head">
             <div>
@@ -483,6 +689,7 @@
               <h3>Dropbox Desktop</h3>
             </div>
           </div>
+          <p class="config-help">La carpeta base de Dropbox es donde la suite crea o localiza las carpetas de licitaciones. El modo fallback o legado indica que la suite está usando una ruta alternativa o histórica.</p>
           <div id="storage-status-board" class="storage-status-board"></div>
           <div class="dialog-actions">
             <button type="button" class="primary" id="sync-dropbox-markers-button">Sincronizar marcadores Dropbox</button>
@@ -491,7 +698,106 @@
             <button type="button" class="ghost" id="test-dropbox-button">Probar API experimental</button>
             <button type="button" class="ghost" id="dry-run-dropbox-button">Simular API dry-run</button>
           </div>
+          <p class="config-help">La prueba en seco simula operaciones sin modificar archivos reales.</p>
           <div class="import-result" id="storage-result"></div>
+        </article>
+      </section>
+
+      <section class="config-tab-panel" id="config-tab-ai" data-config-panel="ai" hidden>
+        <article class="config-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">IA documental</p>
+              <h3>Estado y límites</h3>
+            </div>
+          </div>
+          <p class="config-help">La IA documental permite generar análisis o resúmenes internos de documentos de licitación. La clave de Gemini se gestiona por entorno y nunca se muestra.</p>
+          <form id="ai-settings-form" class="config-form">
+            <fieldset class="config-fieldset">
+              <legend>IA documental</legend>
+              <label>Proveedor
+                <select name="ai_analysis_provider">
+                  <option value="gemini">Gemini</option>
+                  <option value="codex_local">Codex Local</option>
+                  <option value="disabled">Desactivado</option>
+                </select>
+              </label>
+              <label class="check-field"><input name="gemini_enabled" type="checkbox"> Gemini activado</label>
+              <label>Modelo Gemini<input name="gemini_model"></label>
+              <label>Peticiones por minuto<input name="gemini_max_requests_per_minute" type="number" min="1"></label>
+              <label>Peticiones por día<input name="gemini_max_requests_per_day" type="number" min="1"></label>
+              <label>Documentos máximos por análisis<input name="gemini_max_documents_per_analysis" type="number" min="1" max="20"></label>
+              <label>Tamaño máximo por fichero (MB)<input name="gemini_max_file_mb" type="number" min="1" max="100"></label>
+              <label>Timeout (segundos)<input name="gemini_timeout_seconds" type="number" min="10" max="900"></label>
+              <label>Modo de entrada
+                <select name="gemini_input_mode">
+                  <option value="text">Texto extraído</option>
+                  <option value="pdf_inline">PDF inline</option>
+                  <option value="auto">Automático</option>
+                </select>
+              </label>
+              <p class="config-help" id="gemini-api-key-status">La clave Gemini se gestiona por entorno.</p>
+            </fieldset>
+            <div class="dialog-actions">
+              <button type="submit" class="primary">Guardar IA documental</button>
+            </div>
+            <div class="import-result" id="ai-settings-result"></div>
+          </form>
+          <div id="ai-config-status-board" class="storage-status-board"></div>
+        </article>
+      </section>
+
+      <section class="config-tab-panel" id="config-tab-automation" data-config-panel="automation" hidden>
+        <section class="config-grid">
+          <article class="config-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Automatismos</p>
+                <h3>Scheduler y agenda</h3>
+              </div>
+            </div>
+            <p class="config-help">El scheduler ejecuta tareas automáticas como revisiones de correo, agenda o monitor. Aquí solo se editan destinatarios operativos de avisos.</p>
+            <form id="automation-settings-form" class="config-form">
+              <fieldset class="config-fieldset">
+                <legend>Avisos operativos</legend>
+                <label>Correo de pruebas del monitor<input name="monitor_test_email" type="email"></label>
+                <label>Correo de agenda diaria<textarea name="monitor_agenda_pending_email_to" rows="2"></textarea></label>
+                <p class="config-help">Correo de agenda diaria: dirección que recibe el resumen diario de pendientes cuando el flujo automático está activo.</p>
+              </fieldset>
+              <div class="dialog-actions">
+                <button type="submit" class="primary">Guardar avisos</button>
+              </div>
+              <div class="import-result" id="automation-settings-result"></div>
+            </form>
+            <div id="automation-status-board" class="storage-status-board"></div>
+          </article>
+          <article class="config-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Inventario</p>
+                <h3>Revisión interna de carpetas</h3>
+              </div>
+            </div>
+            <p class="config-help">El inventario interno revisa carpetas y rutas. La reconciliación intenta corregir rutas rotas cuando encuentra carpetas reales.</p>
+            <div id="inventory-status-board" class="storage-status-board"></div>
+          </article>
+        </section>
+      </section>
+
+      <section class="config-tab-panel" id="config-tab-advanced" data-config-panel="advanced" hidden>
+        <article class="config-panel config-panel-warning">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Zona avanzada</p>
+              <h3>Diagnóstico seguro</h3>
+            </div>
+          </div>
+          <p class="config-help">Zona avanzada. Cambiar estas opciones puede afectar al funcionamiento de la suite. Algunos valores se muestran solo como diagnóstico porque dependen del equipo o de variables de entorno. Los secretos nunca se muestran en claro.</p>
+          <div id="advanced-status-board" class="storage-status-board"></div>
+          <div class="dialog-actions">
+            <button type="button" class="ghost" id="copy-config-diagnostics-button">Copiar diagnóstico para GPT/Codex</button>
+          </div>
+          <textarea id="config-diagnostics-text" class="config-diagnostics-text" readonly rows="10"></textarea>
         </article>
       </section>
     </section>
@@ -682,31 +988,55 @@
     <section id="ai-queue-content" class="ai-queue-content"></section>
   </dialog>
 
-  <dialog id="importer">
+  <dialog id="importer" class="notice-dialog import-dialog">
     <form id="import-form" method="dialog" enctype="multipart/form-data">
       <div class="dialog-head">
         <div>
           <p class="eyebrow">Importación</p>
-          <h2>Importar fichero</h2>
+          <h2>Centro de importación</h2>
         </div>
         <button type="button" class="icon-button" id="close-importer">×</button>
       </div>
 
-      <p class="muted">
-        Selecciona un fichero .msg de Infonalia o un CSV exportado desde Excel. La app elegirá automáticamente el tipo de importación.
-      </p>
+      <div class="import-layout">
+        <section class="import-card import-card-primary">
+          <div class="import-card-head">
+            <div>
+              <p class="eyebrow">Gmail / Infonalia</p>
+              <h3>Importar desde Gmail / Infonalia</h3>
+            </div>
+            <button type="button" class="primary" id="run-infonalia-mail-import">Buscar e importar ahora</button>
+          </div>
+          <p class="muted">
+            Busca correos nuevos de Infonalia en la etiqueta LLANGON_INFONALIA y los importa ahora, sin esperar al scheduler.
+          </p>
+          <div class="import-result" id="infonalia-mail-import-result"></div>
+        </section>
 
-      <label class="file-field">
-        Archivo
-        <input name="import_file" type="file" accept=".msg,.csv,application/vnd.ms-outlook,text/csv" required>
-      </label>
+        <section class="import-card">
+          <div class="import-card-head">
+            <div>
+              <p class="eyebrow">Ficheros</p>
+              <h3>Importación manual</h3>
+            </div>
+          </div>
+          <p class="muted">
+            Selecciona un fichero .msg de Infonalia o un CSV exportado desde Excel. La app elegirá automáticamente el tipo de importación.
+          </p>
 
-      <label class="check-field">
-        <input name="enrich_pdf" type="checkbox" checked>
-        Completar tipo y hora leyendo los PDF de Infonalia cuando sea posible
-      </label>
+          <label class="file-field">
+            Archivo
+            <input name="import_file" type="file" accept=".msg,.csv,application/vnd.ms-outlook,text/csv" required>
+          </label>
 
-      <div class="import-result" id="import-result"></div>
+          <label class="check-field">
+            <input name="enrich_pdf" type="checkbox" checked>
+            Completar tipo y hora leyendo los PDF de Infonalia cuando sea posible
+          </label>
+
+          <div class="import-result" id="import-result"></div>
+        </section>
+      </div>
 
       <div class="dialog-actions">
         <button type="button" class="ghost" id="cancel-importer">Cancelar</button>

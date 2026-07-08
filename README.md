@@ -81,6 +81,34 @@ LLANGON_PUBLIC_SITE_URL=https://llangon-web-publica-prueba.web.app/
 
 Para ejecutar la suite en Windows sin mantener una consola abierta, ver [docs/DESPLIEGUE_LOCAL_WINDOWS.md](docs/DESPLIEGUE_LOCAL_WINDOWS.md). Ese modo registra tareas programadas locales para web, scheduler y copias SQLite, manteniendo la web en `127.0.0.1:8787`.
 
+## Pruebas
+
+Desde la raíz del proyecto, el comando oficial de backend es:
+
+```powershell
+python -m pytest
+```
+
+La configuración de `pytest.ini` limita la recogida de pruebas a `webapp/infonalia_webapp/tests` y excluye carpetas de runtime, backups, temporales y builds. Así se evita que pytest explore datos generados o carpetas con permisos especiales.
+
+Comprobación frontend habitual:
+
+```powershell
+node --check webapp/infonalia_webapp/static/app.js
+```
+
+También puede usarse el script auxiliar:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_tests.ps1
+```
+
+## Configuración operativa desde la Suite
+
+La pantalla privada de Configuración permite editar opciones operativas de bajo riesgo desde `app_settings`, manteniendo `.env` como fallback y sin escribir secretos en disco desde la interfaz. La regla efectiva es: valor guardado en la Suite, después variable de entorno, después valor seguro por defecto.
+
+Se pueden gestionar desde la Suite opciones de buzones automáticos, importación automática de Infonalia, límites básicos de IA documental y destinatarios de avisos del monitor/agenda. Las contraseñas IMAP, claves Gemini, tokens Telegram y secretos Dropbox siguen siendo de entorno: la app solo muestra “configurado / no configurado”.
+
 ## Dropbox local sincronizado
 
 La suite puede trabajar con la carpeta local sincronizada por Dropbox Desktop. La ruta base se configura siempre por variable de entorno; no debe hardcodearse en el código ni en commits.
@@ -155,7 +183,12 @@ El resumen por email se lanza manualmente desde Agenda. Si SMTP está configurad
 ```text
 INFONALIA_SMTP_ENABLED=1
 INFONALIA_AGENDA_EMAIL_TO=usuario@ejemplo.es
+LLANGON_TELEGRAM_ENABLED=0
+LLANGON_TELEGRAM_BOT_TOKEN=
+LLANGON_TELEGRAM_GROUP_CHAT_ID=
 ```
+
+Para activar la primera fase de Telegram, configura el `chat_id` del grupo en `LLANGON_TELEGRAM_GROUP_CHAT_ID` y guarda el `telegram_chat_id` de cada usuario desde la pantalla de usuarios de la Suite; no se guarda en `.env`.
 
 `dry_run=true` queda reservado para pruebas/desarrollo del endpoint. No se guardan secretos en Git.
 

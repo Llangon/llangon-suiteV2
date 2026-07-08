@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from email.message import EmailMessage
+from http import HTTPStatus
 
 from webapp.infonalia_webapp.email_actions import (
     ACTION_DISCARD,
@@ -16,6 +17,7 @@ from webapp.infonalia_webapp.email_actions_processor import (
     process_mailbox_once,
     simulate_code_payload,
 )
+from webapp.infonalia_webapp.services.telegram_notifications import TelegramResult
 from webapp.infonalia_webapp.tests.test_delete_dia_endpoint import insert_dia, insert_licitacion
 from webapp.infonalia_webapp.tests.test_email_actions import licitacion_state, set_licitacion_state
 from webapp.infonalia_webapp.tests.test_import_endpoints import load_app_module, temporary_app_database
@@ -121,6 +123,66 @@ def download_jobs_for_licitacion(app, licitacion_id: int) -> list[dict]:
             (licitacion_id,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def email_action_events_for_licitacion(app, licitacion_id: int) -> list[dict]:
+    with app.db_session() as conn:
+        rows = conn.execute(
+            "SELECT * FROM email_action_events WHERE licitacion_id = ? ORDER BY id ASC",
+            (licitacion_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def enable_admin_telegram(app, *, username: str = "admin_test", enabled: bool = True, chat_id: str = "1648124154") -> None:
+    with app.db_session() as conn:
+        conn.execute(
+            """
+            UPDATE usuarios
+            SET telegram_chat_id = ?, telegram_notifications_enabled = ?, updated_at = '2026-07-07T09:00:00'
+            WHERE username = ?
+            """,
+            (chat_id, 1 if enabled else 0, username),
+        )
+
+
+def fake_completed_download_factory(app, *, ruta: str = "2026\\07 JULIO\\07 JULIO 1200 PRUEBA") :
+    def fake_execute_download_for_destination(
+        *,
+        licitacion_id: int,
+        row,
+        destino,
+        ruta_guardada: str,
+        download_job_id: int,
+        source_url: str,
+    ):
+        timestamp = "2026-07-07T12:00:00"
+        with app.db_session() as conn:
+            conn.execute(
+                "UPDATE licitaciones SET ruta_carpeta = ?, updated_at = ? WHERE id = ?",
+                (ruta, timestamp, licitacion_id),
+            )
+            app.finish_download_job(
+                conn,
+                download_job_id,
+                status=app.DOWNLOAD_JOB_STATUS_COMPLETED,
+                storage_backend="local",
+                storage_uri=ruta,
+                file_manifest="manifest.json",
+                timestamp=timestamp,
+            )
+        return (
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "ruta_carpeta": ruta,
+                "storage": {
+                    "job_status": app.DOWNLOAD_JOB_STATUS_COMPLETED,
+                },
+            },
+        )
+
+    return fake_execute_download_for_destination
 
 
 def test_normal_mode_searches_only_llangon_cmd_and_does_not_touch_normal_mail() -> None:
@@ -419,3 +481,472 @@ def test_prepare_email_action_does_not_duplicate_existing_pending_download_job(m
     assert len(jobs) == 1
     assert jobs[0]["status"] == "pending"
     assert worker_calls == []
+
+
+def test_download_review_email_action_still_queues_job_when_ruta_carpeta_is_informed(monkeypatch) -> None:
+    app = load_app_module()
+    worker_calls: list[int] = []
+
+    def fake_start_download_worker(*, job_id=None):
+        worker_calls.append(int(job_id))
+        return {"started": True, "pid": 4321}
+
+    monkeypatch.setattr(app, "start_download_worker", fake_start_download_worker)
+
+    with temporary_app_database(app):
+        _dia_id, licitacion_id = prepare_action(app, estado="Enviada a Nuria")
+        with app.db_session() as conn:
+            conn.execute(
+                "UPDATE licitaciones SET ruta_carpeta = ? WHERE id = ?",
+                ("2026\\07 JULIO\\03 JULIO 1400 PRUEBA EXP-EMAIL", licitacion_id),
+            )
+        code = generate_action_code(licitacion_id, ACTION_DOWNLOAD_REVIEW)
+        fake = FakeIMAP(
+            {
+                b"11": {
+                    "subject": f"LLANGON_CMD {code} - Descargar para ver",
+                    "seen": False,
+                    "raw": make_message(
+                        f"LLANGON_CMD {code} - Descargar para ver",
+                        "nuria@example.test",
+                        f"LLANGON_ACTION_CODE={code}",
+                        "<download-review-ruta>",
+                    ),
+                }
+            }
+        )
+
+        result = run_with_fake_imap(app, fake)
+        jobs = download_jobs_for_licitacion(app, licitacion_id)
+        current_state = licitacion_state(app, licitacion_id)
+
+    assert result["processed"] == 1
+    assert current_state == "Descargar para ver"
+    assert len(jobs) == 1
+    assert jobs[0]["status"] == "pending"
+    assert jobs[0]["request_source"] == "email_action"
+    assert worker_calls == [jobs[0]["id"]]
+
+
+def test_download_review_email_action_sends_admin_telegram_when_download_finishes(monkeypatch) -> None:
+    app = load_app_module()
+    worker_calls: list[int] = []
+    telegram_messages: list[str] = []
+    group_calls: list[str] = []
+
+    monkeypatch.setattr(app, "start_download_worker", lambda *, job_id=None: worker_calls.append(int(job_id)) or {"started": True, "pid": 4321})
+    monkeypatch.setattr(
+        app,
+        "send_telegram_user_message",
+        lambda user, text, env=None: telegram_messages.append(text) or TelegramResult(ok=True, status="ok", message="Enviado", telegram_message_id=51),
+    )
+    monkeypatch.setattr(
+        app,
+        "send_telegram_group_message",
+        lambda text, env=None: group_calls.append(text) or TelegramResult(ok=True, status="ok", message="Enviado", telegram_message_id=61),
+    )
+
+    with temporary_app_database(app):
+        _dia_id, licitacion_id = prepare_action(app, estado="Enviada a Nuria")
+        enable_admin_telegram(app)
+        code = generate_action_code(licitacion_id, ACTION_DOWNLOAD_REVIEW)
+        fake = FakeIMAP(
+            {
+                b"12": {
+                    "subject": f"LLANGON_CMD {code} - Descargar para ver",
+                    "seen": False,
+                    "raw": make_message(
+                        f"LLANGON_CMD {code} - Descargar para ver",
+                        "nuria@example.test",
+                        f"LLANGON_ACTION_CODE={code}",
+                        "<download-review-finish>",
+                    ),
+                }
+            }
+        )
+
+        run_with_fake_imap(app, fake)
+        jobs = download_jobs_for_licitacion(app, licitacion_id)
+        monkeypatch.setattr(app, "execute_download_for_destination", fake_completed_download_factory(app))
+        result = app.process_download_job(int(jobs[0]["id"]))
+        events = email_action_events_for_licitacion(app, licitacion_id)
+
+    assert worker_calls == [jobs[0]["id"]]
+    assert result["ok"] is True
+    assert len(telegram_messages) == 1
+    assert "Nuria ha solicitado: Descargar para ver" in telegram_messages[0]
+    assert "Expediente:" in telegram_messages[0]
+    assert "Título:" in telegram_messages[0]
+    assert "Vencimiento:" in telegram_messages[0]
+    assert "Estado actual:" in telegram_messages[0]
+    assert "Carpeta:" in telegram_messages[0]
+    assert "Ruta Dropbox:" in telegram_messages[0]
+    assert "Origen: correo de revisión Infonalia" in telegram_messages[0]
+    assert group_calls == []
+    assert events[-1]["telegram_notification_status"] == "sent_user"
+    assert events[-1]["telegram_notification_target"] == "user:admin_test"
+    assert events[-1]["telegram_notification_attempted_at"]
+
+
+def test_prepare_email_action_pending_job_notifies_when_existing_job_finishes(monkeypatch) -> None:
+    app = load_app_module()
+    telegram_messages: list[str] = []
+    worker_calls: list[int] = []
+
+    monkeypatch.setattr(app, "start_download_worker", lambda *, job_id=None: worker_calls.append(int(job_id)) or {"started": True, "pid": 4321})
+    monkeypatch.setattr(
+        app,
+        "send_telegram_user_message",
+        lambda user, text, env=None: telegram_messages.append(text) or TelegramResult(ok=True, status="ok", message="Enviado", telegram_message_id=52),
+    )
+    monkeypatch.setattr(
+        app,
+        "send_telegram_group_message",
+        lambda text, env=None: TelegramResult(ok=False, status="error", message="No", error_code="TELEGRAM_DISABLED", error_message="disabled"),
+    )
+
+    with temporary_app_database(app):
+        _dia_id, licitacion_id = prepare_action(app, estado="Descargar para ver")
+        enable_admin_telegram(app)
+        with app.db_session() as conn:
+            existing_job_id = app.create_download_job(
+                conn,
+                licitacion_id,
+                timestamp="2026-07-07T10:00:00",
+                status="pending",
+                request_source="manual_button",
+                request_action="manual_download",
+                request_message_id="",
+                requested_by="admin_test",
+            )
+        code = generate_action_code(licitacion_id, ACTION_PREPARE)
+        fake = FakeIMAP(
+            {
+                b"13": {
+                    "subject": f"LLANGON_CMD {code} - Preparar ficha",
+                    "seen": False,
+                    "raw": make_message(
+                        f"LLANGON_CMD {code} - Preparar ficha",
+                        "nuria@example.test",
+                        f"LLANGON_ACTION_CODE={code}",
+                        "<prepare-existing-job>",
+                    ),
+                }
+            }
+        )
+
+        run_with_fake_imap(app, fake)
+        monkeypatch.setattr(app, "execute_download_for_destination", fake_completed_download_factory(app))
+        result = app.process_download_job(existing_job_id)
+        jobs = download_jobs_for_licitacion(app, licitacion_id)
+        events = email_action_events_for_licitacion(app, licitacion_id)
+
+    assert result["ok"] is True
+    assert len(jobs) == 1
+    assert worker_calls == []
+    assert len(telegram_messages) == 1
+    assert "Nuria ha solicitado: Preparar ficha" in telegram_messages[0]
+    assert "Vencimiento:" in telegram_messages[0]
+    assert "Ruta Dropbox:" in telegram_messages[0]
+    assert events[-1]["telegram_notification_status"] == "sent_user"
+    assert events[-1]["telegram_notification_target"] == "user:admin_test"
+
+
+def test_email_action_telegram_falls_back_to_group_when_admin_private_chat_is_not_available(monkeypatch) -> None:
+    app = load_app_module()
+    user_calls: list[str] = []
+    group_calls: list[str] = []
+
+    monkeypatch.setattr(app, "start_download_worker", lambda *, job_id=None: {"started": True, "pid": 4321})
+    monkeypatch.setattr(
+        app,
+        "send_telegram_user_message",
+        lambda user, text, env=None: user_calls.append(str(user["username"])) or TelegramResult(
+            ok=False,
+            status="error",
+            message="No enviado",
+            error_code="TELEGRAM_USER_DISABLED",
+            error_message="disabled",
+        ),
+    )
+    monkeypatch.setattr(
+        app,
+        "send_telegram_group_message",
+        lambda text, env=None: group_calls.append(text) or TelegramResult(ok=True, status="ok", message="Enviado", telegram_message_id=62),
+    )
+
+    with temporary_app_database(app):
+        _dia_id, licitacion_id = prepare_action(app, estado="Enviada a Nuria")
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                UPDATE usuarios
+                SET telegram_chat_id = '', telegram_notifications_enabled = 0, updated_at = '2026-07-07T09:00:00'
+                WHERE username = 'admin_test'
+                """
+            )
+        code = generate_action_code(licitacion_id, ACTION_DOWNLOAD_REVIEW)
+        fake = FakeIMAP(
+            {
+                b"14": {
+                    "subject": f"LLANGON_CMD {code} - Descargar para ver",
+                    "seen": False,
+                    "raw": make_message(
+                        f"LLANGON_CMD {code} - Descargar para ver",
+                        "nuria@example.test",
+                        f"LLANGON_ACTION_CODE={code}",
+                        "<download-fallback-group>",
+                    ),
+                }
+            }
+        )
+
+        run_with_fake_imap(app, fake)
+        jobs = download_jobs_for_licitacion(app, licitacion_id)
+        monkeypatch.setattr(app, "execute_download_for_destination", fake_completed_download_factory(app))
+        app.process_download_job(int(jobs[0]["id"]))
+        events = email_action_events_for_licitacion(app, licitacion_id)
+
+    assert user_calls == ["admin_test"]
+    assert len(group_calls) == 1
+    assert events[-1]["telegram_notification_status"] == "sent_group"
+    assert events[-1]["telegram_notification_target"] == "group"
+
+
+def test_manual_download_without_email_action_events_does_not_send_telegram(monkeypatch) -> None:
+    app = load_app_module()
+    user_calls: list[str] = []
+    group_calls: list[str] = []
+
+    monkeypatch.setattr(
+        app,
+        "send_telegram_user_message",
+        lambda user, text, env=None: user_calls.append(text) or TelegramResult(ok=True, status="ok", message="Enviado", telegram_message_id=63),
+    )
+    monkeypatch.setattr(
+        app,
+        "send_telegram_group_message",
+        lambda text, env=None: group_calls.append(text) or TelegramResult(ok=True, status="ok", message="Enviado", telegram_message_id=64),
+    )
+
+    with temporary_app_database(app):
+        _dia_id, licitacion_id = prepare_action(app, estado="Descargar para ver")
+        enable_admin_telegram(app)
+        with app.db_session() as conn:
+            job_id = app.create_download_job(
+                conn,
+                licitacion_id,
+                timestamp="2026-07-07T11:00:00",
+                status="pending",
+                request_source="manual_button",
+                request_action="manual_download",
+                request_message_id="",
+                requested_by="admin_test",
+            )
+        monkeypatch.setattr(app, "execute_download_for_destination", fake_completed_download_factory(app))
+        result = app.process_download_job(job_id)
+
+    assert result["ok"] is True
+    assert user_calls == []
+    assert group_calls == []
+    assert result["payload"]["telegram_notifications"]["checked"] == 0
+
+
+def test_manual_prepare_state_without_email_event_does_not_send_telegram(monkeypatch) -> None:
+    app = load_app_module()
+    user_calls: list[str] = []
+    group_calls: list[str] = []
+
+    monkeypatch.setattr(
+        app,
+        "send_telegram_user_message",
+        lambda user, text, env=None: user_calls.append(text) or TelegramResult(ok=True, status="ok", message="Enviado", telegram_message_id=71),
+    )
+    monkeypatch.setattr(
+        app,
+        "send_telegram_group_message",
+        lambda text, env=None: group_calls.append(text) or TelegramResult(ok=True, status="ok", message="Enviado", telegram_message_id=72),
+    )
+
+    with temporary_app_database(app):
+        _dia_id, licitacion_id = prepare_action(app, estado="Importada")
+        enable_admin_telegram(app)
+        with app.db_session() as conn:
+            conn.execute(
+                "UPDATE licitaciones SET estado = ?, updated_at = '2026-07-07T12:15:00' WHERE id = ?",
+                ("Preparar ficha", licitacion_id),
+            )
+        result = app.notify_pending_email_action_telegram_events(licitacion_id=licitacion_id)
+
+    assert result["checked"] == 0
+    assert user_calls == []
+    assert group_calls == []
+
+
+def test_email_action_telegram_failure_does_not_break_download_and_marks_event_failed(monkeypatch) -> None:
+    app = load_app_module()
+    user_calls: list[str] = []
+    group_calls: list[str] = []
+
+    monkeypatch.setattr(app, "start_download_worker", lambda *, job_id=None: {"started": True, "pid": 4321})
+    monkeypatch.setattr(
+        app,
+        "send_telegram_user_message",
+        lambda user, text, env=None: user_calls.append(str(user["username"])) or TelegramResult(
+            ok=False,
+            status="error",
+            message="No enviado",
+            error_code="TELEGRAM_USER_DISABLED",
+            error_message="disabled",
+        ),
+    )
+    monkeypatch.setattr(
+        app,
+        "send_telegram_group_message",
+        lambda text, env=None: group_calls.append(text) or TelegramResult(
+            ok=False,
+            status="error",
+            message="No enviado",
+            error_code="TELEGRAM_DISABLED",
+            error_message="disabled",
+        ),
+    )
+
+    with temporary_app_database(app):
+        _dia_id, licitacion_id = prepare_action(app, estado="Enviada a Nuria")
+        enable_admin_telegram(app)
+        code = generate_action_code(licitacion_id, ACTION_DOWNLOAD_REVIEW)
+        fake = FakeIMAP(
+            {
+                b"15": {
+                    "subject": f"LLANGON_CMD {code} - Descargar para ver",
+                    "seen": False,
+                    "raw": make_message(
+                        f"LLANGON_CMD {code} - Descargar para ver",
+                        "nuria@example.test",
+                        f"LLANGON_ACTION_CODE={code}",
+                        "<download-telegram-failure>",
+                    ),
+                }
+            }
+        )
+
+        run_with_fake_imap(app, fake)
+        jobs = download_jobs_for_licitacion(app, licitacion_id)
+        monkeypatch.setattr(app, "execute_download_for_destination", fake_completed_download_factory(app))
+        result = app.process_download_job(int(jobs[0]["id"]))
+        events = email_action_events_for_licitacion(app, licitacion_id)
+
+    assert result["ok"] is True
+    assert user_calls == ["admin_test"]
+    assert len(group_calls) == 1
+    assert result["payload"]["telegram_notifications"]["failed"] == 1
+    assert events[-1]["telegram_notification_status"] == "failed"
+    assert "group:TELEGRAM_DISABLED" in events[-1]["telegram_notification_error"]
+
+
+def test_reprocessing_same_email_action_job_does_not_duplicate_telegram_notice(monkeypatch) -> None:
+    app = load_app_module()
+    telegram_messages: list[str] = []
+
+    monkeypatch.setattr(app, "start_download_worker", lambda *, job_id=None: {"started": True, "pid": 4321})
+    monkeypatch.setattr(
+        app,
+        "send_telegram_user_message",
+        lambda user, text, env=None: telegram_messages.append(text) or TelegramResult(ok=True, status="ok", message="Enviado", telegram_message_id=81),
+    )
+    monkeypatch.setattr(
+        app,
+        "send_telegram_group_message",
+        lambda text, env=None: TelegramResult(ok=False, status="error", message="No", error_code="TELEGRAM_DISABLED", error_message="disabled"),
+    )
+
+    with temporary_app_database(app):
+        _dia_id, licitacion_id = prepare_action(app, estado="Enviada a Nuria")
+        enable_admin_telegram(app)
+        code = generate_action_code(licitacion_id, ACTION_DOWNLOAD_REVIEW)
+        fake = FakeIMAP(
+            {
+                b"16": {
+                    "subject": f"LLANGON_CMD {code} - Descargar para ver",
+                    "seen": False,
+                    "raw": make_message(
+                        f"LLANGON_CMD {code} - Descargar para ver",
+                        "nuria@example.test",
+                        f"LLANGON_ACTION_CODE={code}",
+                        "<download-dedupe>",
+                    ),
+                }
+            }
+        )
+
+        run_with_fake_imap(app, fake)
+        jobs = download_jobs_for_licitacion(app, licitacion_id)
+        monkeypatch.setattr(app, "execute_download_for_destination", fake_completed_download_factory(app))
+        first = app.process_download_job(int(jobs[0]["id"]))
+        second = app.notify_pending_email_action_telegram_events(
+            licitacion_id=licitacion_id,
+            download_job_id=int(jobs[0]["id"]),
+        )
+
+    assert first["ok"] is True
+    assert len(telegram_messages) == 1
+    assert first["payload"]["telegram_notifications"]["sent"] == 1
+    assert second["checked"] == 0
+    assert second["sent"] == 0
+
+
+def test_email_action_telegram_message_handles_missing_optional_fields(monkeypatch) -> None:
+    app = load_app_module()
+    telegram_messages: list[str] = []
+
+    monkeypatch.setattr(app, "start_download_worker", lambda *, job_id=None: {"started": True, "pid": 4321})
+    monkeypatch.setattr(
+        app,
+        "send_telegram_user_message",
+        lambda user, text, env=None: telegram_messages.append(text) or TelegramResult(ok=True, status="ok", message="Enviado", telegram_message_id=91),
+    )
+    monkeypatch.setattr(
+        app,
+        "send_telegram_group_message",
+        lambda text, env=None: TelegramResult(ok=False, status="error", message="No", error_code="TELEGRAM_DISABLED", error_message="disabled"),
+    )
+
+    with temporary_app_database(app):
+        _dia_id, licitacion_id = prepare_action(app, estado="Enviada a Nuria")
+        enable_admin_telegram(app)
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                UPDATE licitaciones
+                SET objeto = '', fecha_limite = NULL, hora_limite = '', ruta_carpeta = ''
+                WHERE id = ?
+                """,
+                (licitacion_id,),
+            )
+        code = generate_action_code(licitacion_id, ACTION_DOWNLOAD_REVIEW)
+        fake = FakeIMAP(
+            {
+                b"17": {
+                    "subject": f"LLANGON_CMD {code} - Descargar para ver",
+                    "seen": False,
+                    "raw": make_message(
+                        f"LLANGON_CMD {code} - Descargar para ver",
+                        "nuria@example.test",
+                        f"LLANGON_ACTION_CODE={code}",
+                        "<download-missing-fields>",
+                    ),
+                }
+            }
+        )
+
+        run_with_fake_imap(app, fake)
+        jobs = download_jobs_for_licitacion(app, licitacion_id)
+        monkeypatch.setattr(app, "execute_download_for_destination", fake_completed_download_factory(app, ruta=""))
+        app.process_download_job(int(jobs[0]["id"]))
+
+    assert len(telegram_messages) == 1
+    assert "Título: Sin descripción" in telegram_messages[0]
+    assert "Vencimiento: No consta" in telegram_messages[0]
+    assert "Carpeta: no consta" in telegram_messages[0]
+    assert "Ruta Dropbox: no consta" in telegram_messages[0]

@@ -4,6 +4,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 try:
     from .folder_names import (
@@ -168,18 +169,38 @@ def get_nombre_mes(mes_numero: int) -> str:
     return ""
 
 
+def _parse_folder_date(value: object) -> datetime | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        pass
+    date_text = re.split(r"\s+", text, maxsplit=1)[0]
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y"):
+        try:
+            return datetime.strptime(date_text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def folder_date_for_row(row: Any) -> datetime:
+    for key in ("fecha_limite", "fecha_presentacion", "fecha_de_presentacion", "fecha_infonalia", "created_at", "imported_at"):
+        parsed = _parse_folder_date(row_get(row, key))
+        if parsed is not None:
+            return parsed
+    return datetime.now(ZoneInfo("Europe/Madrid"))
+
+
 def default_dropbox_folder(row: Any, dropbox_root: Path) -> Path:
     expediente = expediente_folder_text(row_get(row, "expediente"))
     provincia = folder_text(row_get(row, "provincia"))
     descriptor = folder_descriptor(row)
-    fecha_limite = clean_text(row_get(row, "fecha_limite"))
+    fecha = folder_date_for_row(row)
     hora = parse_time_value(row_get(row, "hora_limite")).replace(":", "")
-
-    try:
-        fecha = datetime.strptime(fecha_limite, "%Y-%m-%d")
-    except ValueError:
-        label = safe_folder_name(f"{provincia} {descriptor} {expediente}".strip())
-        return dropbox_root / "Descargas Infonalia" / label
 
     mes_nombre = get_nombre_mes(fecha.month)
     carpeta_mes = f"{fecha.month:02d} {mes_nombre}"
@@ -195,13 +216,37 @@ def default_dropbox_folder(row: Any, dropbox_root: Path) -> Path:
     return dropbox_root / f"{fecha.year:04d}" / carpeta_mes / carpeta_final
 
 
+def _path_starts_with_year(path: Path) -> bool:
+    parts = path.parts
+    return bool(parts and re.fullmatch(r"\d{4}", parts[0]))
+
+
+def _path_starts_with_month_folder(path: Path) -> bool:
+    parts = path.parts
+    return bool(parts and re.fullmatch(r"\d{2}\s+[A-ZÁÉÍÓÚÜÑ]+", parts[0].upper()))
+
+
+def expected_dropbox_relative_folder(row: Any, folder_name: object | None = None) -> Path:
+    default_folder = default_dropbox_folder(row, Path("__dropbox_root__"))
+    year_month = Path(*default_folder.parts[1:-1])
+    leaf = safe_folder_name(clean_text(folder_name)) if folder_name is not None else default_folder.name
+    return year_month / leaf
+
+
 def resolve_destination_folder(row: Any, *, download_root: Path, dropbox_root: Path | None = None) -> Path:
     ruta = clean_text(row["ruta_carpeta"])
 
     if ruta:
         relative = dropbox_relative_path(ruta, dropbox_root)
         if relative and dropbox_root:
-            return dropbox_root / relative
+            relative_path = Path(relative)
+            resolved = dropbox_root / relative_path
+            if resolved.exists() or _path_starts_with_year(relative_path):
+                return resolved
+            if _path_starts_with_month_folder(relative_path):
+                expected = expected_dropbox_relative_folder(row, relative_path.name)
+                return dropbox_root / expected
+            return default_dropbox_folder(row, dropbox_root)
 
         candidate = Path(ruta)
         if candidate.is_absolute():

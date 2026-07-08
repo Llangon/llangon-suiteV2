@@ -2371,7 +2371,7 @@ Relación con Bandeja Hoy:
 
 La integración Dropbox API queda conectada al flujo de descargas sin sustituir los descargadores existentes:
 
-Nota de estado: para desarrollo y pruebas, el flujo principal es `local` contra la replica `C:\ReplicaDb`. Dropbox API queda como experimental y desactivado por defecto. Dropbox Desktop real no debe usarse para pruebas de monitor, marcadores, sincronizacion ni inventario.
+Nota de estado actualizada: el flujo local usa `LLANGON_DROPBOX_BASE_PATH` como raíz principal. Dropbox API queda como experimental y desactivado por defecto. Si se necesita una réplica de desarrollo, debe configurarse explícitamente con `INFONALIA_DROPBOX_ROOT` o `INFONALIA_MONITOR_ROOT`; no hay una ruta de réplica hardcodeada por defecto.
 
 1. `POST /api/licitaciones/{id}/descargar` mantiene la ejecución local del descargador.
 2. Si el backend es `dropbox`, el descargador escribe en `INFONALIA_DOWNLOAD_STAGING_ROOT` y no en Dropbox Desktop.
@@ -2390,12 +2390,12 @@ Nota de estado: para desarrollo y pruebas, el flujo principal es `local` contra 
 
 Configuración:
 
-- Flujo recomendado de desarrollo: `INFONALIA_STORAGE_BACKEND=local` y `INFONALIA_DROPBOX_ROOT=C:\ReplicaDb`.
+- Flujo local recomendado: `INFONALIA_STORAGE_BACKEND=local` y `LLANGON_DROPBOX_BASE_PATH` configurada. `INFONALIA_DROPBOX_ROOT` queda como fallback histórico solo si se configura explícitamente.
 - Dropbox API está desactivado por defecto y queda aparcado.
 - El staging local para Dropbox API usa `INFONALIA_DOWNLOAD_STAGING_ROOT=.local_runtime/downloads`.
 - El dry-run está activo por defecto: `INFONALIA_DROPBOX_DRY_RUN=1`.
 - La raíz remota se configura con `INFONALIA_DROPBOX_API_ROOT=/LlangonSuite`.
-- `INFONALIA_DROPBOX_ROOT` representa la raiz local de documentos: en desarrollo es `C:\ReplicaDb`; solo en despliegue final puede volver a apuntar a Dropbox Desktop real.
+- `LLANGON_DROPBOX_BASE_PATH` representa la raíz local principal de documentos. `INFONALIA_DROPBOX_ROOT` solo representa una raíz local alternativa/fallback configurada explícitamente.
 - Las credenciales se leen de `.env` y no se guardan en SQLite.
 
 Endpoints operativos:

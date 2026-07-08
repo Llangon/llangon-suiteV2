@@ -15,6 +15,7 @@ def test_mail_scheduler_jobs_stay_disabled_by_default(monkeypatch) -> None:
     app = load_app_module()
     monkeypatch.setenv("LLANGON_INFONALIA_IMPORT_ENABLED", "0")
     monkeypatch.setenv("LLANGON_EMAIL_ACTIONS_ENABLED", "0")
+    monkeypatch.setenv("LLANGON_FILE_INVENTORY_ENABLED", "0")
     with temporary_app_database(app) as db_path:
         reports = scheduler.run_once(db_path=db_path, current=datetime(2026, 6, 5, 12, 0), dry_run=True)
 
@@ -141,3 +142,39 @@ def test_file_inventory_scheduler_runs_when_enabled(monkeypatch) -> None:
     assert status["file_inventory"]["last_run"]["inventory_files_count"] == 7
     assert status["file_inventory"]["last_run"]["route_updates_count"] == 2
     assert status["file_inventory"]["last_run"]["conflicts_count"] == 1
+
+
+def test_scheduler_records_inventory_config_error_without_blocking_mail_import(monkeypatch, tmp_path) -> None:
+    app = load_app_module()
+    missing_root = tmp_path / "missing-dropbox"
+    monkeypatch.setenv("LLANGON_FILE_INVENTORY_ENABLED", "1")
+    monkeypatch.setenv("LLANGON_FILE_INVENTORY_POLL_MINUTES", "60")
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(missing_root))
+    monkeypatch.delenv("INFONALIA_MONITOR_ROOT", raising=False)
+    monkeypatch.delenv("INFONALIA_DROPBOX_ROOT", raising=False)
+    monkeypatch.setenv("LLANGON_INFONALIA_IMPORT_ENABLED", "1")
+    monkeypatch.setenv("LLANGON_EMAIL_ACTIONS_ENABLED", "0")
+
+    def fake_importer(**_kwargs):
+        return {
+            "enabled": True,
+            "mode": "infonalia_import",
+            "imported": 1,
+            "duplicates": 0,
+            "notified": 0,
+            "errors": 0,
+        }
+
+    monkeypatch.setattr("webapp.infonalia_webapp.infonalia_mail_importer.process_mailbox_once", fake_importer)
+
+    with temporary_app_database(app) as db_path:
+        reports = scheduler.run_once(db_path=db_path, current=datetime(2026, 6, 5, 12, 0), dry_run=True)
+        status = scheduler.monitor_scheduler_status(db_path)
+
+    by_type = {report["task_type"]: report for report in reports if report.get("task_type")}
+    assert by_type[TASK_TYPE_FILE_INVENTORY]["errors"] == 1
+    assert "LLANGON_DROPBOX_BASE_PATH" in by_type[TASK_TYPE_FILE_INVENTORY]["error_message"]
+    assert by_type[TASK_TYPE_INFONALIA_MAIL_IMPORT]["imported"] == 1
+    assert status["file_inventory"]["config_ok"] is False
+    assert "LLANGON_DROPBOX_BASE_PATH" in status["file_inventory"]["config_error"]
+    assert status["file_inventory"]["last_run"]["status"] == "failed"

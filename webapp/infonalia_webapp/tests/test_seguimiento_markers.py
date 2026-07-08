@@ -16,6 +16,7 @@ from webapp.infonalia_webapp.seguimiento_markers import (
     monitor_year_bounds,
     open_licitacion_folder,
     resolve_marker_folder,
+    resolve_marker_folder_details,
     scan_follow_markers,
     sync_marker_paths,
 )
@@ -212,6 +213,55 @@ def test_marker_status_resolves_legacy_relative_path_inside_year_root(tmp_path: 
     assert status["folder_exists"] is True
     assert status["activo"] is True
     assert status["follow_marker_exists"] is True
+
+
+def test_resolve_marker_folder_maps_legacy_replicadb_absolute_path_to_dropbox_root(tmp_path: Path) -> None:
+    root = tmp_path / "Dropbox"
+    folder = root / "2026" / "06 JUNIO" / "licitacion X"
+    folder.mkdir(parents=True)
+    row = {"id": 33, "ruta_carpeta": r"C:\ReplicaDb\2026\06 JUNIO\licitacion X"}
+
+    details = resolve_marker_folder_details(row, root)
+    resolved = resolve_marker_folder(row, root)
+
+    assert resolved == folder
+    assert details["normalized_path"] == r"2026\06 JUNIO\licitacion X"
+    assert details["checked_path"] == str(folder)
+    assert details["reason"] == "resolved_relative"
+
+
+def test_resolve_marker_folder_uses_year_from_fecha_limite_for_bare_folder_name(tmp_path: Path) -> None:
+    root = tmp_path / "Dropbox"
+    folder = root / "2026" / "07 JULIO" / "16 JULIO 1400 MURCIA"
+    folder.mkdir(parents=True)
+    row = {
+        "id": 33,
+        "ruta_carpeta": "16 JULIO 1400 MURCIA",
+        "fecha_limite": "2026-07-16",
+    }
+
+    details = resolve_marker_folder_details(row, root)
+    resolved = resolve_marker_folder(row, root)
+
+    assert resolved == folder
+    assert details["reason"] == "resolved_relative"
+    assert details["checked_path"] == str(folder)
+
+
+def test_resolve_marker_folder_can_fall_back_to_unique_marker_when_route_is_irregular(tmp_path: Path) -> None:
+    root = tmp_path / "Dropbox"
+    folder = root / "2026" / "07 JULIO" / "16 JULIO 1400 MURCIA"
+    folder.mkdir(parents=True)
+    (folder / "33.llangon").write_text("", encoding="utf-8")
+    row = {"id": 33, "ruta_carpeta": "07 JULIO 2359 MURCIA..."}
+
+    details = resolve_marker_folder_details(row, root)
+    resolved = resolve_marker_folder(row, root)
+
+    assert resolved == folder
+    assert details["reason"] == "resolved_by_unique_marker"
+    assert details["marker_match_count"] == 1
+    assert details["marker_path"].endswith(r"33.llangon")
 
 
 def test_create_marker_helpers_create_exact_files_and_do_not_overwrite(tmp_path: Path) -> None:

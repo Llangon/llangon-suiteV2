@@ -966,6 +966,26 @@ def test_document_selector_resolves_relative_dropbox_folder_without_inventory(
     assert any("RESOLUCION" in item["name"] for item in diagnostics["discarded_documents"])
 
 
+def test_document_selector_resolves_legacy_month_route_inside_year_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = tmp_path / "Dropbox" / "00000 LLANGON"
+    folder = base / "2026" / "07 JULIO" / "02 JULIO 2359 JAEN MARTOS 20264096"
+    folder.mkdir(parents=True)
+    _write_pdf(folder / "DOC20260615135002PCAP.pdf")
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(base))
+
+    result = inspect_document_selection(
+        {"ruta_carpeta": r"07 JULIO\02 JULIO 2359 JAEN MARTOS 20264096"},
+        max_documents=4,
+        max_file_mb=45,
+    )
+
+    assert result["diagnostics"]["resolved_path"] == str(folder)
+    assert result["diagnostics"]["resolved_exists"] is True
+    assert [item["name"] for item in result["selected_documents"]] == ["DOC20260615135002PCAP.pdf"]
+
+
 def test_document_selector_can_fallback_to_admin_pdf_without_core_priority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1740,8 +1760,31 @@ def test_ai_summary_email_with_mock_smtp_sends_html(tmp_path: Path, monkeypatch:
     app = load_app_module()
     calls: list[dict[str, object]] = []
 
-    def fake_send_pending(conn, job_id, **kwargs):
-        calls.append({"job_id": job_id, **kwargs})
+    def fake_generate_pdf_and_email(conn, *, licitacion_id, recipients, requested_by, now, subject_override="", **kwargs):
+        summary_row = conn.execute(
+            "SELECT created_from_job_id FROM ai_summaries WHERE licitacion_id = ? ORDER BY id DESC LIMIT 1",
+            (licitacion_id,),
+        ).fetchone()
+        job_id = int(summary_row["created_from_job_id"])
+        create_job_notifications(
+            conn,
+            job_id=job_id,
+            licitacion_id=licitacion_id,
+            requested_by=requested_by,
+            recipients=recipients,
+            created_at=now(),
+            manual=True,
+        )
+        calls.append(
+            {
+                "job_id": job_id,
+                "licitacion_id": licitacion_id,
+                "recipients": list(recipients),
+                "requested_by": requested_by,
+                "subject_override": subject_override,
+                **kwargs,
+            }
+        )
         conn.execute(
             """
             UPDATE ai_analysis_notifications
@@ -1750,9 +1793,9 @@ def test_ai_summary_email_with_mock_smtp_sends_html(tmp_path: Path, monkeypatch:
             """,
             (job_id,),
         )
-        return {"sent": 2, "error": 0}
+        return {"sent": 2, "error": 0, "job_id": job_id, "pdf_path": str(tmp_path / "docs" / "Resumen IA - EXP-API.pdf"), "pdf_warning": "", "pdf_error": ""}
 
-    monkeypatch.setattr(app, "send_pending_job_notifications", fake_send_pending)
+    monkeypatch.setattr(app, "generate_ai_summary_pdf_and_email", fake_generate_pdf_and_email)
     with temporary_app_database(app):
         folder = tmp_path / "docs"
         folder.mkdir()
@@ -1805,9 +1848,11 @@ def test_ai_summary_email_with_mock_smtp_sends_html(tmp_path: Path, monkeypatch:
         assert payload["notification_status"]["sent_count"] == 2
         assert calls
         assert calls[0]["subject_override"] == "Análisis"
+        assert calls[0]["pdf_output_root"] == app.DATA_ROOT / "runtime" / "ai_summary_pdfs"
 
 
 def test_ai_pending_notifications_send_summary_email_without_raw_json_or_paths(tmp_path: Path) -> None:
+    os.environ["LLANGON_DROPBOX_BASE_PATH"] = str(tmp_path)
     conn = _conn()
     _write_pdf(tmp_path / "PCAP.pdf")
     _insert_licitacion(conn, tmp_path)
@@ -1884,22 +1929,32 @@ def test_ai_pending_notifications_send_summary_email_without_raw_json_or_paths(t
         conn,
         job_id,
         now=lambda: "2026-01-01T10:05:00",
+        pdf_output_root=tmp_path / "runtime",
         smtp_factory=FakeSMTP,
         smtp_ssl_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no ssl")),
     )
 
-    assert result == {"sent": 1, "error": 0}
+    assert result["sent"] == 1
+    assert result["error"] == 0
+    assert result["pdf_error"] == ""
+    assert Path(result["pdf_path"]).is_file()
     assert sent_messages
     message = sent_messages[0]
     text_body = message.get_body(preferencelist=("plain",)).get_content()
     html_body = message.get_body(preferencelist=("html",)).get_content()
-    assert "Análisis IA disponible" in html_body
+    assert "Resumen IA adjunto" in html_body
     assert "garant" in text_body
     assert '"resumen_ejecutivo"' not in text_body + html_body
     assert str(tmp_path) not in text_body + html_body
-    status = notification_status_payload(
-        conn.execute("SELECT * FROM ai_analysis_notifications WHERE job_id = ?", (job_id,)).fetchall()
-    )
+    attachments = list(message.iter_attachments())
+    assert len(attachments) == 1
+    assert attachments[0].get_filename().endswith(".pdf")
+    notification_rows = conn.execute("SELECT * FROM ai_analysis_notifications WHERE job_id = ?", (job_id,)).fetchall()
+    assert notification_rows[0]["pdf_path"]
+    assert notification_rows[0]["pdf_generated_at"]
+    assert notification_rows[0]["pdf_attached"] == 1
+    assert notification_rows[0]["pdf_error"] == ""
+    status = notification_status_payload(notification_rows)
     assert status["state"] == "sent"
 
 

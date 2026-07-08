@@ -82,6 +82,12 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
         "0018_email_action_codes",
         "0019_email_action_events",
         "0020_infonalia_email_imports",
+        "0021_download_jobs_request_metadata",
+        "0022_ai_notifications_pdf_delivery",
+        "0023_telegram_user_fields",
+        "0024_email_action_events_telegram_notifications",
+        "0025_infonalia_email_imports_telegram_notifications",
+        "0026_automation_orchestrator",
     ]
     assert table_exists(conn, MIGRATIONS_TABLE)
     rows = conn.execute(
@@ -188,6 +194,36 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
             "Control idempotente de importaciones de correos Infonalia",
             "2026-06-12T10:00:00",
         ),
+        (
+            "0021_download_jobs_request_metadata",
+            "Metadatos de solicitud para jobs de descarga por email",
+            "2026-06-12T10:00:00",
+        ),
+        (
+            "0022_ai_notifications_pdf_delivery",
+            "Metadatos PDF y adjuntos para avisos de análisis IA",
+            "2026-06-12T10:00:00",
+        ),
+        (
+            "0023_telegram_user_fields",
+            "Campos de Telegram en usuarios para avisos internos",
+            "2026-06-12T10:00:00",
+        ),
+        (
+            "0024_email_action_events_telegram_notifications",
+            "Seguimiento y deduplicacion de avisos Telegram para acciones por correo",
+            "2026-06-12T10:00:00",
+        ),
+        (
+            "0025_infonalia_email_imports_telegram_notifications",
+            "Seguimiento y deduplicacion de avisos Telegram para importaciones Infonalia",
+            "2026-06-12T10:00:00",
+        ),
+        (
+            "0026_automation_orchestrator",
+            "Orquestador interno unico de automatizaciones",
+            "2026-06-12T10:00:00",
+        ),
     ]
     assert table_exists(conn, "download_jobs")
     assert table_exists(conn, "import_runs")
@@ -263,6 +299,12 @@ def test_run_migrations_is_idempotent() -> None:
         "0018_email_action_codes",
         "0019_email_action_events",
         "0020_infonalia_email_imports",
+        "0021_download_jobs_request_metadata",
+        "0022_ai_notifications_pdf_delivery",
+        "0023_telegram_user_fields",
+        "0024_email_action_events_telegram_notifications",
+        "0025_infonalia_email_imports_telegram_notifications",
+        "0026_automation_orchestrator",
     ]
     assert run_migrations(conn, now=lambda: "2026-06-12T10:05:00") == []
 
@@ -288,6 +330,12 @@ def test_run_migrations_is_idempotent() -> None:
         ("0018_email_action_codes", "2026-06-12T10:00:00"),
         ("0019_email_action_events", "2026-06-12T10:00:00"),
         ("0020_infonalia_email_imports", "2026-06-12T10:00:00"),
+        ("0021_download_jobs_request_metadata", "2026-06-12T10:00:00"),
+        ("0022_ai_notifications_pdf_delivery", "2026-06-12T10:00:00"),
+        ("0023_telegram_user_fields", "2026-06-12T10:00:00"),
+        ("0024_email_action_events_telegram_notifications", "2026-06-12T10:00:00"),
+        ("0025_infonalia_email_imports_telegram_notifications", "2026-06-12T10:00:00"),
+        ("0026_automation_orchestrator", "2026-06-12T10:00:00"),
     ]
 
 
@@ -380,6 +428,10 @@ def test_ai_notifications_migration_schema_is_idempotent() -> None:
         "error_message": "TEXT",
         "attempts": "INTEGER",
         "manual": "INTEGER",
+        "pdf_path": "TEXT",
+        "pdf_generated_at": "TEXT",
+        "pdf_attached": "INTEGER",
+        "pdf_error": "TEXT",
     }
     indexes = {
         row[1]
@@ -391,6 +443,51 @@ def test_ai_notifications_migration_schema_is_idempotent() -> None:
         "idx_ai_notifications_licitacion",
         "idx_ai_notifications_status",
     } <= indexes
+
+
+def test_ai_notifications_pdf_delivery_migration_updates_existing_notification_schema() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        f"""
+        CREATE TABLE {MIGRATIONS_TABLE} (
+            version TEXT PRIMARY KEY,
+            description TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    old_migrations = [migration for migration in MIGRATIONS if migration.version != "0022_ai_notifications_pdf_delivery"]
+    conn.executemany(
+        f"INSERT INTO {MIGRATIONS_TABLE} (version, description, applied_at) VALUES (?, ?, ?)",
+        [(migration.version, migration.description, "2026-06-12T10:00:00") for migration in old_migrations],
+    )
+    conn.execute("CREATE TABLE licitaciones (id INTEGER PRIMARY KEY, expediente TEXT NOT NULL)")
+    conn.execute("INSERT INTO licitaciones (id, expediente) VALUES (1, 'OLD-AI')")
+    conn.execute("CREATE TABLE ai_analysis_jobs (id INTEGER PRIMARY KEY, licitacion_id INTEGER NOT NULL)")
+    conn.execute(
+        """
+        CREATE TABLE ai_analysis_notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL,
+            licitacion_id INTEGER NOT NULL,
+            requested_by TEXT,
+            recipient_email TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            sent_at TEXT,
+            error_message TEXT,
+            attempts INTEGER DEFAULT 0,
+            manual INTEGER DEFAULT 0
+        )
+        """
+    )
+
+    assert run_migrations(conn, now=lambda: "2026-06-12T10:20:00") == ["0022_ai_notifications_pdf_delivery"]
+
+    columns_after = {row[1] for row in conn.execute("PRAGMA table_info(ai_analysis_notifications)").fetchall()}
+    assert {"pdf_path", "pdf_generated_at", "pdf_attached", "pdf_error"} <= columns_after
+    assert "0022_ai_notifications_pdf_delivery" in applied_migration_versions(conn)
 
 
 def test_validate_migrations_rejects_duplicate_versions() -> None:
@@ -452,6 +549,271 @@ def test_download_jobs_migration_schema_is_idempotent() -> None:
         "idx_download_jobs_status",
         "idx_download_jobs_created",
     } <= indexes
+
+
+def test_download_jobs_request_metadata_migration_updates_existing_schema() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        f"""
+        CREATE TABLE {MIGRATIONS_TABLE} (
+            version TEXT PRIMARY KEY,
+            description TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    old_migrations = [migration for migration in MIGRATIONS if migration.version not in {"0021_download_jobs_request_metadata"}]
+    conn.executemany(
+        f"INSERT INTO {MIGRATIONS_TABLE} (version, description, applied_at) VALUES (?, ?, ?)",
+        [(migration.version, migration.description, "2026-06-12T10:00:00") for migration in old_migrations],
+    )
+    conn.execute(
+        """
+        CREATE TABLE download_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            licitacion_id INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            storage_backend TEXT,
+            storage_uri TEXT,
+            file_manifest TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO download_jobs (
+            id, licitacion_id, status, created_at, updated_at
+        )
+        VALUES (1, 42, 'running', '2026-06-12T10:00:00', '2026-06-12T10:00:00')
+        """
+    )
+
+    columns_before = {row[1] for row in conn.execute("PRAGMA table_info(download_jobs)").fetchall()}
+    assert "request_source" not in columns_before
+
+    applied = run_migrations(conn, now=lambda: "2026-06-12T10:15:00")
+    assert applied == ["0021_download_jobs_request_metadata"]
+
+    columns_after = {row[1] for row in conn.execute("PRAGMA table_info(download_jobs)").fetchall()}
+    assert {"request_source", "request_action", "request_message_id", "requested_by"} <= columns_after
+    row = conn.execute("SELECT * FROM download_jobs WHERE id = 1").fetchone()
+    assert row["licitacion_id"] == 42
+    assert row["status"] == "running"
+    assert "0021_download_jobs_request_metadata" in applied_migration_versions(conn)
+
+
+def test_telegram_user_fields_migration_updates_existing_usuarios_table() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        f"""
+        CREATE TABLE {MIGRATIONS_TABLE} (
+            version TEXT PRIMARY KEY,
+            description TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    old_migrations = [migration for migration in MIGRATIONS if migration.version != "0023_telegram_user_fields"]
+    conn.executemany(
+        f"INSERT INTO {MIGRATIONS_TABLE} (version, description, applied_at) VALUES (?, ?, ?)",
+        [(migration.version, migration.description, "2026-06-12T10:00:00") for migration in old_migrations],
+    )
+    conn.execute(
+        """
+        CREATE TABLE usuarios (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            email TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO usuarios (
+            username, password_hash, role, display_name, email, active, created_at, updated_at
+        )
+        VALUES ('manolo', 'hash', 'admin', 'Manolo', 'manolo@example.test', 1, '2026-06-12T10:00:00', '2026-06-12T10:00:00')
+        """
+    )
+
+    applied = run_migrations(conn, now=lambda: "2026-06-12T10:20:00")
+
+    assert applied == ["0023_telegram_user_fields"]
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(usuarios)").fetchall()}
+    assert {
+        "telegram_chat_id",
+        "telegram_notifications_enabled",
+        "telegram_last_test_at",
+        "telegram_last_error",
+    } <= columns
+    row = conn.execute("SELECT * FROM usuarios WHERE username = 'manolo'").fetchone()
+    assert row["display_name"] == "Manolo"
+    assert row["telegram_chat_id"] is None
+    assert row["telegram_notifications_enabled"] == 0
+    assert "0023_telegram_user_fields" in applied_migration_versions(conn)
+
+
+def test_email_action_events_telegram_notifications_migration_updates_existing_table() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        f"""
+        CREATE TABLE {MIGRATIONS_TABLE} (
+            version TEXT PRIMARY KEY,
+            description TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    old_migrations = [
+        migration
+        for migration in MIGRATIONS
+        if migration.version != "0024_email_action_events_telegram_notifications"
+    ]
+    conn.executemany(
+        f"INSERT INTO {MIGRATIONS_TABLE} (version, description, applied_at) VALUES (?, ?, ?)",
+        [(migration.version, migration.description, "2026-06-12T10:00:00") for migration in old_migrations],
+    )
+    conn.execute(
+        """
+        CREATE TABLE email_action_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            source_message_id TEXT,
+            from_email TEXT,
+            subject TEXT,
+            code TEXT,
+            action_code TEXT,
+            action_name TEXT,
+            review_id INTEGER,
+            licitacion_id INTEGER,
+            previous_status TEXT,
+            new_status TEXT,
+            result TEXT NOT NULL,
+            reason TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO email_action_events (
+            id, created_at, source_message_id, from_email, subject, code,
+            action_code, action_name, review_id, licitacion_id,
+            previous_status, new_status, result, reason
+        )
+        VALUES (
+            1, '2026-06-12T10:00:00', '<msg>', 'nuria@example.test', 'LLANGON_CMD ...',
+            '00000000102', '02', 'Descargar para ver', 4, 42,
+            'Enviada a Nuria', 'Descargar para ver', 'processed', 'ok'
+        )
+        """
+    )
+
+    applied = run_migrations(conn, now=lambda: "2026-06-12T10:25:00")
+
+    assert applied == ["0024_email_action_events_telegram_notifications"]
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(email_action_events)").fetchall()}
+    assert {
+        "telegram_notification_status",
+        "telegram_notification_attempted_at",
+        "telegram_notification_target",
+        "telegram_notification_error",
+        "telegram_notification_message_id",
+    } <= columns
+    row = conn.execute("SELECT * FROM email_action_events WHERE id = 1").fetchone()
+    assert row["action_name"] == "Descargar para ver"
+    assert row["telegram_notification_status"] is None
+    assert row["telegram_notification_attempted_at"] is None
+    assert "0024_email_action_events_telegram_notifications" in applied_migration_versions(conn)
+
+
+def test_infonalia_email_imports_telegram_notifications_migration_updates_existing_table() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        f"""
+        CREATE TABLE {MIGRATIONS_TABLE} (
+            version TEXT PRIMARY KEY,
+            description TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    old_migrations = [
+        migration
+        for migration in MIGRATIONS
+        if migration.version != "0025_infonalia_email_imports_telegram_notifications"
+    ]
+    conn.executemany(
+        f"INSERT INTO {MIGRATIONS_TABLE} (version, description, applied_at) VALUES (?, ?, ?)",
+        [(migration.version, migration.description, "2026-06-12T10:00:00") for migration in old_migrations],
+    )
+    conn.execute(
+        """
+        CREATE TABLE infonalia_email_imports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            processed_at TEXT,
+            mailbox_user TEXT,
+            imap_uid TEXT,
+            message_id TEXT,
+            from_email TEXT,
+            subject TEXT,
+            received_at TEXT,
+            body_hash TEXT,
+            status TEXT NOT NULL,
+            infonalia_dia_id INTEGER,
+            imported_count INTEGER NOT NULL DEFAULT 0,
+            skipped_duplicate_count INTEGER NOT NULL DEFAULT 0,
+            error_message TEXT,
+            notification_sent_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO infonalia_email_imports (
+            id, created_at, processed_at, mailbox_user, imap_uid, message_id,
+            from_email, subject, received_at, body_hash, status,
+            infonalia_dia_id, imported_count, skipped_duplicate_count,
+            error_message, notification_sent_at
+        )
+        VALUES (
+            1, '2026-06-12T10:00:00', '2026-06-12T10:01:00', 'info3.llangon@gmail.com',
+            '101', '<msg>', 'envios@infonalia.net', 'LICITACIONES - Envío de Novedades - 149022',
+            '2026-06-12T09:59:00', 'hash', 'imported', 4, 2, 0, '', '2026-06-12T10:02:00'
+        )
+        """
+    )
+
+    applied = run_migrations(conn, now=lambda: "2026-06-12T10:30:00")
+
+    assert applied == ["0025_infonalia_email_imports_telegram_notifications"]
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(infonalia_email_imports)").fetchall()}
+    assert {
+        "telegram_notification_attempted_at",
+        "telegram_notification_status",
+        "telegram_notification_target",
+        "telegram_notification_error",
+        "telegram_notification_message_id",
+    } <= columns
+    row = conn.execute("SELECT * FROM infonalia_email_imports WHERE id = 1").fetchone()
+    assert row["message_id"] == "<msg>"
+    assert row["telegram_notification_status"] is None
+    assert row["telegram_notification_attempted_at"] is None
+    assert "0025_infonalia_email_imports_telegram_notifications" in applied_migration_versions(conn)
 
 
 def test_import_history_migration_schema_is_idempotent() -> None:

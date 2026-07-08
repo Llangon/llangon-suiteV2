@@ -207,8 +207,9 @@ def test_dropbox_marker_followup_ui_has_admin_only_safe_marker_controls() -> Non
     assert "data-marker-action" in script
     assert "data-open-licitacion-folder" in script
     assert "${renderLicitacionTracking(item)}" in script
-    assert "renderLicitacionMarkerActions(item, seguimiento)" in script
-    assert 'if (!isAdmin()) return "";' in script
+    assert "renderDocumentosTabActions(item, folder)" in script
+    assert '${isAdmin() ? `<button type="button" data-marker-action="id"' in script
+    assert '${isAdmin() ? `<button type="button" data-marker-action="follow"' in script
     assert "EnSeguimiento.llangon" in script
     assert "data-toggle-follow" not in script
     assert "data-delete-follow" not in script
@@ -255,8 +256,8 @@ def test_licitacion_cards_and_detail_keep_hotfix_ux_noise_out() -> None:
     assert "renderDocumentTreePayload" in script
     assert "/document-tree" in script
     assert "renderFolderPanel" in documents_render
-    assert "renderDocumentSummary(item)" in documents_render
-    assert "renderLicitacionTracking(item)" in documents_render
+    assert "renderDocumentosTabActions(item, folder)" in documents_render
+    assert "renderLicitacionTrackingSummary(item)" in documents_render
     assert "renderLicitacionHistory(item)" in documents_render
     assert 'renderCommentsWidget("licitacion", item.id, item.comments_summary, { full: true })' in comments_render
     assert "renderLicitacionWorkFields" not in detail_render
@@ -403,6 +404,47 @@ def test_monitor_history_ui_is_admin_only_and_inventory_ui_is_hidden() -> None:
     assert "monitorInventoryButton" not in script
     assert "Ficheros inventariados" not in script
     assert "Sin documentación inventariada" not in script
+
+
+def test_config_phase1_tabs_are_structured_and_safe_for_admin_diagnostics() -> None:
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_ROOT / "styles.css").read_text(encoding="utf-8")
+
+    expected_tabs = {
+        "general": "General",
+        "users": "Usuarios y permisos",
+        "mail": "Correos y notificaciones",
+        "mailboxes": "Buzones automáticos",
+        "storage": "Almacenamiento / Dropbox",
+        "ai": "IA documental",
+        "automation": "Automatismos",
+        "advanced": "Avanzado / diagnóstico",
+    }
+
+    assert 'id="config-button" class="nav-item" data-nav-section="config" data-admin-only hidden' in html
+    assert 'id="config-section" hidden' in html
+    for tab_id, label in expected_tabs.items():
+        assert f'data-config-tab="{tab_id}"' in html
+        assert f'data-config-panel="{tab_id}"' in html
+        assert label in html
+
+    assert "Zona avanzada" in html
+    assert "Los secretos nunca se muestran en claro." in html
+    assert 'id="copy-config-diagnostics-button"' in html
+    assert 'id="config-diagnostics-text"' in html
+    assert "function renderConfigTabs" in script
+    assert "function showConfigTab" in script
+    assert "Secretos: no incluidos." in script
+    assert "GEMINI_API_KEY" not in script
+    assert "LLANGON_TELEGRAM_BOT_TOKEN" not in script
+    assert "INFONALIA_DROPBOX_APP_SECRET" not in script
+    assert "INFONALIA_DROPBOX_REFRESH_TOKEN" not in script
+    assert "LLANGON_ACTIONS_IMAP_PASSWORD" not in script
+    assert "INFONALIA_SMTP_PASSWORD" not in script
+    assert ".config-tabs" in styles
+    assert "overflow-x: auto;" in styles
+    assert ".config-tabs button.active" in styles
 
 
 def test_new_licitacion_platform_capture_ui_exists_and_preserves_manual_values() -> None:

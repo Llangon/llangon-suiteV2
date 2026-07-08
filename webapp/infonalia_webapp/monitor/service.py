@@ -47,6 +47,7 @@ try:
     from ..agenda.service import active_date_label, agenda_week_bounds, build_agenda_events, build_agenda_response
     from ..environment import load_env_file
     from ..normalization import clean_text
+    from ..storage_paths import folder_path_for_storage
 except ImportError:
     from agenda.email_summary import (
         build_pending_tasks_email_payload,
@@ -59,6 +60,7 @@ except ImportError:
     from agenda.service import active_date_label, agenda_week_bounds, build_agenda_events, build_agenda_response
     from environment import load_env_file
     from normalization import clean_text
+    from storage_paths import folder_path_for_storage
 
 
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -510,6 +512,9 @@ def run_monitor(
 
     try:
         config = load_monitor_config(root)
+        effective_folder_normalizer = normalize_folder_path or (
+            lambda path: folder_path_for_storage(path, config.root_path)
+        )
         db_file = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
         conn = connect_db(db_file, read_only=False)
         ensure_monitor_schema(conn)
@@ -578,7 +583,7 @@ def run_monitor(
                 effective_dry_run,
                 timestamp,
                 warnings,
-                normalize_folder_path=normalize_folder_path,
+                normalize_folder_path=effective_folder_normalizer,
             )
             report["route_updates"] = route_updates
             report["route_updates_count"] = len(route_updates)
@@ -634,7 +639,7 @@ def run_monitor(
             ]
 
         report["warnings"] = [issue.to_dict() for issue in dedupe_issues(warnings)]
-        report["folders_broken_count"] = len(report["conflicts"]) + len(report["warnings"])
+        report["folders_broken_count"] = len(report["conflicts"])
         report["finished_at"] = now_iso()
         report["status"] = "completed_with_errors" if report["folders_broken_count"] else "completed"
         finish_monitor_run(conn, run_id, report)

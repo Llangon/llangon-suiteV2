@@ -837,7 +837,9 @@ def test_delete_dia_with_open_actuacion_is_blocked() -> None:
         dispatch(handler, "DELETE")
 
         assert handler.responses[-1][0] == HTTPStatus.CONFLICT
-        assert handler.responses[-1][1]["error"] == "No se puede borrar el día porque contiene licitaciones con actuaciones abiertas."
+        assert handler.responses[-1][1]["ok"] is False
+        assert handler.responses[-1][1]["error"] == "No se puede borrar el Día Infonalia porque existen actuaciones abiertas vinculadas."
+        assert handler.responses[-1][1]["blocking"]["open_actuaciones"] == 1
         assert count_rows(app, "infonalia_dias") == 1
         assert count_rows(app, "licitaciones") == 1
 
