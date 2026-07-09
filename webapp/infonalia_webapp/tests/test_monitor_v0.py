@@ -13,6 +13,7 @@ from webapp.infonalia_webapp.agenda.email_summary import (
     build_operational_email_text,
     build_pending_tasks_email_payload,
 )
+from webapp.infonalia_webapp.clientes_envios import create_cliente, create_cliente_envio
 from webapp.infonalia_webapp.monitor.cli import main as monitor_cli_main
 from webapp.infonalia_webapp.monitor.config import (
     DEFAULT_YEAR_MAX,
@@ -37,6 +38,7 @@ from webapp.infonalia_webapp.tests.test_import_endpoints import (
     make_handler,
     temporary_app_database,
 )
+from webapp.infonalia_webapp.tests.test_delete_dia_endpoint import insert_dia, insert_licitacion
 
 
 def make_db(path: Path, rows: list[tuple[int, str]] | None = None) -> None:
@@ -741,6 +743,136 @@ def test_agenda_email_hides_internal_numeric_expediente(tmp_path: Path) -> None:
     assert "Expediente: 3" not in sent[0][3]
     assert "Fecha/hora final" not in sent[0][3]
     assert "Vence: 18/06/2026 14:00" in sent[0][3]
+
+
+def test_agenda_daily_task_includes_cliente_envios_sections_in_monitor_email(monkeypatch, tmp_path: Path) -> None:
+    app = load_app_module()
+    sent: list[tuple[str, str, str, str]] = []
+    current = datetime(2026, 7, 9, 6, 0, 0)
+    base = tmp_path / "Dropbox" / "00000 LLANGON"
+    base.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(base))
+    monkeypatch.delenv("INFONALIA_DROPBOX_ROOT", raising=False)
+
+    def create_folder(folder_name: str, file_name: str) -> str:
+        folder = base / "2026" / "07 JULIO" / folder_name
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / file_name).write_bytes(b"contenido")
+        return str(folder.relative_to(base))
+
+    with temporary_app_database(app):
+        dia_id = insert_dia(app)
+        licitacion_id = insert_licitacion(app, dia_id, "MON-ENV-001")
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                UPDATE licitaciones
+                SET objeto = ?, organismo = ?, enlace_perfil = ?, estado = ?, fecha_limite = ?, hora_limite = ?
+                WHERE id = ?
+                """,
+                (
+                    "Servicio de soporte documental",
+                    "Ayuntamiento de Prueba",
+                    "https://perfil.example.test/mon-env-001",
+                    "Preparar ficha",
+                    "2026-07-09",
+                    "12:00",
+                    licitacion_id,
+                ),
+            )
+            ready_client = create_cliente(
+                conn,
+                {"razon_social": "Astur Santina", "nombre_comercial": "Astur Santina", "email_principal": "ready@example.test"},
+                user_id="admin_test",
+                timestamp="2026-07-09T05:00:00",
+            )
+            generated_client = create_cliente(
+                conn,
+                {"razon_social": "Cliente Generado", "nombre_comercial": "Cliente Generado", "email_principal": "generated@example.test"},
+                user_id="admin_test",
+                timestamp="2026-07-09T05:00:00",
+            )
+            incident_client = create_cliente(
+                conn,
+                {"razon_social": "Cliente Incidencia", "nombre_comercial": "Cliente Incidencia", "email_principal": "incident@example.test"},
+                user_id="admin_test",
+                timestamp="2026-07-09T05:00:00",
+            )
+            create_cliente_envio(
+                conn,
+                {
+                    "cliente_id": ready_client["id"],
+                    "licitacion_id": licitacion_id,
+                    "tipo_envio": "ficha_inicial",
+                    "estado": "listo_para_preparar_correo",
+                    "carpeta_dropbox": create_folder("Astur Santina", "ready.pdf"),
+                    "adjuntos": ["ready.pdf"],
+                },
+                user_id="admin_test",
+                timestamp="2026-07-09T05:15:00",
+            )
+            generated = create_cliente_envio(
+                conn,
+                {
+                    "cliente_id": generated_client["id"],
+                    "licitacion_id": licitacion_id,
+                    "tipo_envio": "documentacion_revision",
+                    "estado": "correo_outlook_generado",
+                    "carpeta_dropbox": create_folder("Cliente Generado", "generated.pdf"),
+                    "adjuntos": ["generated.pdf"],
+                },
+                user_id="admin_test",
+                timestamp="2026-07-09T05:20:00",
+            )
+            incident = create_cliente_envio(
+                conn,
+                {
+                    "cliente_id": incident_client["id"],
+                    "licitacion_id": licitacion_id,
+                    "tipo_envio": "subsanacion",
+                    "estado": "incidencia",
+                    "carpeta_dropbox": create_folder("Cliente Incidencia", "incident.pdf"),
+                    "adjuntos": ["incident.pdf"],
+                },
+                user_id="admin_test",
+                timestamp="2026-07-09T05:25:00",
+            )
+            conn.execute(
+                """
+                UPDATE cliente_envios
+                SET correo_generado_path = ?, correo_generado_formato = ?, correo_generado_at = ?
+                WHERE id = ?
+                """,
+                (
+                    str(base / "2026" / "07 JULIO" / "Cliente Generado" / "Correos preparados" / "generado.msg"),
+                    "msg",
+                    "2026-07-09T05:30:00",
+                    generated["id"],
+                ),
+            )
+            conn.execute(
+                "UPDATE cliente_envios SET incidencia_detalle = ? WHERE id = ?",
+                ("Falta revisar la última versión.", incident["id"]),
+            )
+
+        report = run_automation_task(
+            "agenda_diaria",
+            dry_run=False,
+            db_path=app.DB_PATH,
+            recipient="monitor-test@example.test",
+            email_sender=lambda to, subject, body, html: sent.append((to, subject, body, html)) or ("2026-07-09T06:01:00", None),
+            current=current,
+        )
+
+    assert report["emails_sent_count"] == 1
+    assert report["processed_items_count"] == 4
+    assert sent[0][1] == "Agenda Llangón jueves 09-07-2026"
+    assert "ENVÍOS LISTOS PARA PREPARAR CORREO" in sent[0][2]
+    assert "CORREOS OUTLOOK GENERADOS PENDIENTES DE MARCAR COMO ENVIADOS" in sent[0][2]
+    assert "ENVÍOS CON INCIDENCIA" in sent[0][2]
+    assert "Astur Santina" in sent[0][2]
+    assert "Cliente Generado" in sent[0][3]
+    assert "Cliente Incidencia" in sent[0][3]
 
 
 def test_agenda_daily_task_without_due_items_registers_no_email(tmp_path: Path) -> None:

@@ -199,6 +199,102 @@ def test_individual_action_accepts_repeated_changes_while_review_is_open() -> No
         assert events_count == 4
 
 
+def test_same_email_message_action_is_ignored_when_already_processed() -> None:
+    app = load_app_module()
+    with temporary_app_database(app):
+        dia_id = insert_dia(app)
+        licitacion_id = insert_licitacion(app, dia_id, "EXP-DEDUPE-MSG")
+        set_licitacion_state(app, licitacion_id, "Enviada a Nuria")
+        code = generate_action_code(licitacion_id, ACTION_DISCARD)
+        with app.db_session() as conn:
+            rows = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchall()
+            ensure_review_action_codes(conn, review_id=dia_id, licitaciones=rows, timestamp="2026-06-26T14:00:00")
+            first = process_email_action(
+                conn,
+                code=code,
+                sender_email="nuria@example.test",
+                source_message_id="<same-message>",
+                timestamp="2026-06-26T14:05:00",
+                allowed_senders=["nuria@example.test"],
+            )
+            second = process_email_action(
+                conn,
+                code=code,
+                sender_email="nuria@example.test",
+                source_message_id="<same-message>",
+                timestamp="2026-06-26T14:10:00",
+                allowed_senders=["nuria@example.test"],
+            )
+            events = conn.execute(
+                "SELECT result, reason FROM email_action_events WHERE licitacion_id = ? ORDER BY id ASC",
+                (licitacion_id,),
+            ).fetchall()
+
+        assert first["status"] == "processed"
+        assert second["status"] == "ignored"
+        assert second["error_code"] == "DUPLICATE_EMAIL_ACTION"
+        assert licitacion_state(app, licitacion_id) == "Descartada"
+        assert [event["result"] for event in events] == ["processed", "ignored"]
+        assert "ya fue procesado" in events[-1]["reason"]
+
+
+def test_same_email_message_action_is_ignored_via_action_code_marker_even_without_processed_event() -> None:
+    app = load_app_module()
+    with temporary_app_database(app):
+        dia_id = insert_dia(app)
+        licitacion_id = insert_licitacion(app, dia_id, "EXP-DEDUPE-CODE")
+        set_licitacion_state(app, licitacion_id, "Enviada a Nuria")
+        code = generate_action_code(licitacion_id, ACTION_DOWNLOAD_REVIEW)
+        with app.db_session() as conn:
+            rows = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchall()
+            ensure_review_action_codes(conn, review_id=dia_id, licitaciones=rows, timestamp="2026-06-26T14:00:00")
+            first = process_email_action(
+                conn,
+                code=code,
+                sender_email="nuria@example.test",
+                source_message_id="<same-message-code>",
+                timestamp="2026-06-26T14:05:00",
+                allowed_senders=["nuria@example.test"],
+            )
+            conn.execute(
+                """
+                DELETE FROM email_action_events
+                WHERE licitacion_id = ?
+                  AND code = ?
+                  AND source_message_id = ?
+                  AND result = 'processed'
+                """,
+                (licitacion_id, code, "<same-message-code>"),
+            )
+            second = process_email_action(
+                conn,
+                code=code,
+                sender_email="nuria@example.test",
+                source_message_id="<same-message-code>",
+                timestamp="2026-06-26T14:10:00",
+                allowed_senders=["nuria@example.test"],
+            )
+            action_row = conn.execute(
+                "SELECT status, source_message_id, result_message FROM email_action_codes WHERE code = ?",
+                (code,),
+            ).fetchone()
+            events = conn.execute(
+                "SELECT result, reason FROM email_action_events WHERE licitacion_id = ? ORDER BY id ASC",
+                (licitacion_id,),
+            ).fetchall()
+
+        assert first["status"] == "processed"
+        assert second["status"] == "ignored"
+        assert second["error_code"] == "DUPLICATE_EMAIL_ACTION"
+        assert second["duplicate_source"] == "action_code"
+        assert licitacion_state(app, licitacion_id) == "Descargar para ver"
+        assert action_row["status"] == "processed"
+        assert action_row["source_message_id"] == "<same-message-code>"
+        assert "Acción Descargar para ver aplicada" in (action_row["result_message"] or "")
+        assert [event["result"] for event in events] == ["ignored"]
+        assert "ya fue procesado" in events[-1]["reason"]
+
+
 def test_review_action_marks_day_and_auto_discards_only_pending_same_review() -> None:
     app = load_app_module()
     confirmations: list[tuple[str, str, str]] = []

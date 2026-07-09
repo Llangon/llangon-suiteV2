@@ -5,10 +5,10 @@ from datetime import datetime
 from email.message import EmailMessage
 
 try:
-    from .actuaciones import actuacion_to_dict, summarize_actuaciones
+    from .actuaciones import ACTUACION_ESTADOS_ABIERTOS, actuacion_to_dict, summarize_actuaciones
     from .notification_delivery import build_notification_message, send_notification_email_with_settings
 except ImportError:
-    from actuaciones import actuacion_to_dict, summarize_actuaciones
+    from actuaciones import ACTUACION_ESTADOS_ABIERTOS, actuacion_to_dict, summarize_actuaciones
     from notification_delivery import build_notification_message, send_notification_email_with_settings
 
 
@@ -42,8 +42,9 @@ def linked_licitaciones(conn, actuacion_id: int) -> list[dict]:
 
 def reminder_rows(conn, *, now: datetime | None = None) -> list[dict]:
     current = now or datetime.now()
+    placeholders = ",".join("?" for _ in ACTUACION_ESTADOS_ABIERTOS)
     rows = conn.execute(
-        """
+        f"""
         SELECT a.*,
                (
                    SELECT COUNT(*)
@@ -52,11 +53,12 @@ def reminder_rows(conn, *, now: datetime | None = None) -> list[dict]:
                ) AS licitaciones_count
         FROM actuaciones a
         WHERE a.recordatorio_email = 1
-          AND a.estado IN ('pendiente', 'en_curso', 'respondida')
+          AND LOWER(a.estado) IN ({placeholders})
         ORDER BY CASE WHEN a.deadline_at IS NULL OR a.deadline_at = '' THEN 1 ELSE 0 END ASC,
                  a.deadline_at ASC,
                  a.id DESC
-        """
+        """,
+        sorted(ACTUACION_ESTADOS_ABIERTOS),
     ).fetchall()
     items = []
     for row in rows:

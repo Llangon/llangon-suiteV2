@@ -199,8 +199,9 @@ def updated_user_payload(data: Mapping[str, object], row: Mapping[str, object], 
     role = clean_text(data.get("role", row["role"])) or clean_text(row["role"])
     if role not in USER_ROLES:
         raise ValueError("Rol no valido.")
-    existing_telegram_chat_id = clean_text(row.get("telegram_chat_id", ""))
-    existing_telegram_enabled = bool(row.get("telegram_notifications_enabled", 0))
+    row_keys = set(row.keys()) if hasattr(row, "keys") else set(row)
+    existing_telegram_chat_id = clean_text(row["telegram_chat_id"]) if "telegram_chat_id" in row_keys else ""
+    existing_telegram_enabled = bool(row["telegram_notifications_enabled"]) if "telegram_notifications_enabled" in row_keys else False
 
     return {
         "role": role,

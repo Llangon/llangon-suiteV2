@@ -2,7 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ProjectRoot = Resolve-Path (Join-Path $ScriptRoot "..\..")
+$ProjectRoot = (Resolve-Path (Join-Path $ScriptRoot "..\..")).Path
 $RuntimeRoot = Join-Path $ProjectRoot "runtime"
 $LogDir = Join-Path $RuntimeRoot "logs"
 $PidPath = Join-Path $RuntimeRoot "web.pid"
@@ -233,7 +233,12 @@ else {
 Write-Host ""
 $Listeners = @(Get-WebListeners)
 if ($Listeners.Count -eq 0) {
-    Write-Host "Puerto 127.0.0.1:$Port : sin LISTENING"
+    if ((Test-WebHealth).Ok) {
+        Write-Host "Puerto ${HostAddress}:$Port : healthcheck OK; LISTENING no visible por Get-NetTCPConnection"
+    }
+    else {
+        Write-Host "Puerto ${HostAddress}:$Port : sin LISTENING"
+    }
 }
 else {
     foreach ($Listener in $Listeners) {

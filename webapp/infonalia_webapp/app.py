@@ -59,24 +59,30 @@ except ImportError:
 try:
     from .actuaciones import (
         ACTUACION_ESTADOS,
+        ACTUACION_ESTADO_ORDEN,
         ACTUACION_ESTADOS_ABIERTOS,
         ACTUACION_ESTADOS_CERRADOS,
         ACTUACION_TIPOS,
         actuacion_payload,
         actuacion_to_dict,
         clean_value as clean_actuacion_value,
+        estado_db_values,
+        normalize_actuacion_estado,
         summarize_actuaciones,
         visual_state as actuacion_visual_state,
     )
 except ImportError:
     from actuaciones import (
         ACTUACION_ESTADOS,
+        ACTUACION_ESTADO_ORDEN,
         ACTUACION_ESTADOS_ABIERTOS,
         ACTUACION_ESTADOS_CERRADOS,
         ACTUACION_TIPOS,
         actuacion_payload,
         actuacion_to_dict,
         clean_value as clean_actuacion_value,
+        estado_db_values,
+        normalize_actuacion_estado,
         summarize_actuaciones,
         visual_state as actuacion_visual_state,
     )
@@ -332,6 +338,43 @@ except ImportError:
         resolve_licitacion_folder,
         stored_folder_path_for_base,
         validate_dropbox_base_path,
+    )
+
+try:
+    from .clientes_envios import (
+        CLIENTE_ENVIO_ESTADOS,
+        CLIENTE_ENVIO_TIPOS,
+        create_cliente,
+        create_cliente_envio,
+        generate_cliente_envio_draft,
+        get_cliente,
+        get_cliente_envio,
+        list_clientes,
+        list_cliente_envios,
+        list_dropbox_folder_files,
+        mark_cliente_envio_sent,
+        open_cliente_envio_draft,
+        open_cliente_envio_folder,
+        update_cliente,
+        update_cliente_envio,
+    )
+except ImportError:
+    from clientes_envios import (
+        CLIENTE_ENVIO_ESTADOS,
+        CLIENTE_ENVIO_TIPOS,
+        create_cliente,
+        create_cliente_envio,
+        generate_cliente_envio_draft,
+        get_cliente,
+        get_cliente_envio,
+        list_clientes,
+        list_cliente_envios,
+        list_dropbox_folder_files,
+        mark_cliente_envio_sent,
+        open_cliente_envio_draft,
+        open_cliente_envio_folder,
+        update_cliente,
+        update_cliente_envio,
     )
 
 try:
@@ -1251,7 +1294,7 @@ def open_actuaciones_count(conn: sqlite3.Connection, licitacion_ids: list[int]) 
         FROM actuaciones a
         JOIN actuacion_licitaciones al ON al.actuacion_id = a.id
         WHERE al.licitacion_id IN ({placeholders})
-          AND a.estado IN ({estado_placeholders})
+          AND LOWER(a.estado) IN ({estado_placeholders})
         """,
         [*licitacion_ids, *sorted(ACTUACION_ESTADOS_ABIERTOS)],
     ).fetchone()
@@ -2013,7 +2056,7 @@ def parse_msg_body(body: str, fecha_infonalia: str, enrich_pdf: bool = True) -> 
                 data["expediente"] = extraer_despues_de_dos_puntos(line)
             elif lower.startswith("organismo"):
                 data["organismo"] = extraer_despues_de_dos_puntos(line)
-            elif "resumen del objeto" in lower:
+            elif "resumen del objeto" in lower or "objeto del contrato" in lower or lower in {"objeto", "objeto:"} or lower.startswith("objeto:"):
                 data["objeto"] = extraer_despues_de_dos_puntos(line)
             elif "provincia" in lower:
                 data["provincia"] = extraer_despues_de_dos_puntos(line)
@@ -3439,6 +3482,28 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_recent_comments(parsed.query)
         elif path == "/api/comments":
             self.api_list_comments(parsed.query)
+        elif path == "/api/clientes":
+            self.api_list_clientes(parsed.query)
+        elif path.startswith("/api/clientes/") and path.endswith("/envios"):
+            cliente_id = path.removeprefix("/api/clientes/").removesuffix("/envios").strip("/")
+            if not cliente_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_list_cliente_envios(parsed.query, cliente_id=int(cliente_id))
+        elif path.startswith("/api/clientes/"):
+            cliente_id = path.removeprefix("/api/clientes/").strip("/")
+            if not cliente_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_get_cliente(int(cliente_id))
+        elif path == "/api/cliente-envios":
+            self.api_list_cliente_envios(parsed.query)
+        elif path.startswith("/api/cliente-envios/"):
+            envio_id = path.removeprefix("/api/cliente-envios/").strip("/")
+            if not envio_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_get_cliente_envio(int(envio_id))
         elif path == "/api/licitaciones/search":
             self.api_search_licitaciones(parsed.query)
         elif path == "/api/licitaciones":
@@ -3467,6 +3532,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_get_licitacion_actuaciones(int(licitacion_id))
+        elif path.startswith("/api/licitaciones/") and path.endswith("/cliente-envios"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/cliente-envios").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_list_cliente_envios(parsed.query, licitacion_id=int(licitacion_id))
         elif path.startswith("/api/licitaciones/"):
             licitacion_id = path.removeprefix("/api/licitaciones/").strip("/")
             if not licitacion_id.isdigit():
@@ -3477,6 +3548,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_list_actuaciones(parsed.query)
         elif path == "/api/actuaciones/resumen":
             self.api_actuaciones_resumen()
+        elif path.startswith("/api/actuaciones/") and path.endswith("/cliente-envios"):
+            actuacion_id = path.removeprefix("/api/actuaciones/").removesuffix("/cliente-envios").strip("/")
+            if not actuacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_list_cliente_envios(parsed.query, actuacion_id=int(actuacion_id))
         elif path.startswith("/api/actuaciones/"):
             actuacion_id = path.removeprefix("/api/actuaciones/").strip("/")
             if not actuacion_id.isdigit():
@@ -3571,6 +3648,10 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_create_user()
         elif path == "/api/config/test-smtp":
             self.api_test_smtp()
+        elif path == "/api/clientes":
+            self.api_create_cliente()
+        elif path == "/api/cliente-envios/folder-files":
+            self.api_cliente_envio_folder_files()
         elif path == "/api/admin/telegram/test-group":
             self.api_test_telegram_group()
         elif path.startswith("/api/admin/users/") and path.endswith("/telegram/test"):
@@ -3725,12 +3806,48 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_create_actuacion(int(licitacion_id))
+        elif path.startswith("/api/licitaciones/") and path.endswith("/cliente-envios"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/cliente-envios").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_create_cliente_envio(default_licitacion_id=int(licitacion_id))
+        elif path.startswith("/api/actuaciones/") and path.endswith("/cliente-envios"):
+            actuacion_id = path.removeprefix("/api/actuaciones/").removesuffix("/cliente-envios").strip("/")
+            if not actuacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_create_cliente_envio(default_actuacion_id=int(actuacion_id))
         elif path.startswith("/api/actuaciones/") and path.endswith("/historial"):
             actuacion_id = path.removeprefix("/api/actuaciones/").removesuffix("/historial").strip("/")
             if not actuacion_id.isdigit():
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_add_actuacion_historial(int(actuacion_id))
+        elif path.startswith("/api/cliente-envios/") and path.endswith("/generate-draft"):
+            envio_id = path.removeprefix("/api/cliente-envios/").removesuffix("/generate-draft").strip("/")
+            if not envio_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_generate_cliente_envio_draft(int(envio_id))
+        elif path.startswith("/api/cliente-envios/") and path.endswith("/mark-sent"):
+            envio_id = path.removeprefix("/api/cliente-envios/").removesuffix("/mark-sent").strip("/")
+            if not envio_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_mark_cliente_envio_sent(int(envio_id))
+        elif path.startswith("/api/cliente-envios/") and path.endswith("/open-folder"):
+            envio_id = path.removeprefix("/api/cliente-envios/").removesuffix("/open-folder").strip("/")
+            if not envio_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_open_cliente_envio_folder(int(envio_id))
+        elif path.startswith("/api/cliente-envios/") and path.endswith("/open-draft"):
+            envio_id = path.removeprefix("/api/cliente-envios/").removesuffix("/open-draft").strip("/")
+            if not envio_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_open_cliente_envio_draft(int(envio_id))
         elif path.startswith("/api/actuaciones/") and path.endswith("/duplicar"):
             actuacion_id = path.removeprefix("/api/actuaciones/").removesuffix("/duplicar").strip("/")
             if not actuacion_id.isdigit():
@@ -3780,6 +3897,18 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_update_comment(int(comment_id))
+        elif path.startswith("/api/clientes/"):
+            cliente_id = path.removeprefix("/api/clientes/").strip("/")
+            if not cliente_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_update_cliente(int(cliente_id))
+        elif path.startswith("/api/cliente-envios/"):
+            envio_id = path.removeprefix("/api/cliente-envios/").strip("/")
+            if not envio_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_update_cliente_envio(int(envio_id))
         elif path.startswith("/api/agenda/eventos/"):
             evento_id = path.removeprefix("/api/agenda/eventos/").strip("/")
             if not evento_id.isdigit():
@@ -3903,6 +4032,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "/api/licitaciones",
                 "/api/licitaciones/capture",
                 "/api/actuaciones",
+                "/api/clientes",
+                "/api/cliente-envios",
+                "/api/cliente-envios/folder-files",
                 "/api/agenda/email-summary",
                 "/api/agenda/eventos",
                 "/api/config/users",
@@ -3952,6 +4084,16 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 or path.endswith("/ia-preview/email")
                 or path.endswith("/prepared-notice/email")
                 or path.endswith("/actuaciones")
+                or path.endswith("/cliente-envios")
+            ):
+                return True
+            if path.startswith("/api/actuaciones/") and path.endswith("/cliente-envios"):
+                return True
+            if path.startswith("/api/cliente-envios/") and (
+                path.endswith("/generate-draft")
+                or path.endswith("/mark-sent")
+                or path.endswith("/open-folder")
+                or path.endswith("/open-draft")
             ):
                 return True
             if path == "/api/ai/jobs/mark-stale":
@@ -3979,6 +4121,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if method == "PATCH":
             return (
                 path.startswith("/api/comments/")
+                or path.startswith("/api/clientes/")
+                or path.startswith("/api/cliente-envios/")
                 or path.startswith("/api/agenda/eventos/")
                 or path.startswith("/api/actuaciones/")
                 or path.startswith("/api/licitaciones/")
@@ -4853,6 +4997,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 """
             ).fetchall()
             items = [dia_to_dict(conn, row) for row in rows]
+            comments = comments_summary_for_entities(conn, [("infonalia_dia", int(item["id"])) for item in items])
+            for item in items:
+                item["comments_summary"] = comments.get(
+                    ("infonalia_dia", int(item["id"])),
+                    {"count": 0, "latest": None, "pinned_count": 0},
+                )
         if user.get("role") == "nuria":
             items = [
                 item for item in items
@@ -4875,7 +5025,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         self.send_json(response)
 
     def api_agenda_pending_tasks(self, query: str) -> None:
-        if not self.require_admin():
+        user = self.current_user() or {}
+        if user.get("role") not in {"admin", "nuria"}:
+            self.send_json({"error": "No tienes permiso para esta accion."}, HTTPStatus.FORBIDDEN)
             return
         params = parse_qs(query)
         search = clean_text(params.get("q", [""])[0])
@@ -4883,6 +5035,215 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             response = build_pending_tasks_response(conn, query=search)
             apply_comments_metadata(conn, response.get("items") or [])
         self.send_json(response)
+
+    def api_list_clientes(self, query: str) -> None:
+        params = parse_qs(query)
+        search = clean_text(params.get("q", [""])[0])
+        with db_session() as conn:
+            items = list_clientes(conn, search=search)
+        self.send_json({"items": items})
+
+    def api_get_cliente(self, cliente_id: int) -> None:
+        with db_session() as conn:
+            item = get_cliente(conn, cliente_id)
+        if not item:
+            self.send_json({"error": "Cliente no encontrado"}, HTTPStatus.NOT_FOUND)
+            return
+        self.send_json({"item": item})
+
+    def api_create_cliente(self) -> None:
+        if not self.require_admin():
+            return
+        user = self.current_user() or {}
+        try:
+            data = self.read_json()
+        except (ValueError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        with db_session() as conn:
+            try:
+                item = create_cliente(conn, data, user_id=user.get("username"), timestamp=now_iso())
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+        self.send_json({"ok": True, "item": item}, HTTPStatus.CREATED)
+
+    def api_update_cliente(self, cliente_id: int) -> None:
+        if not self.require_admin():
+            return
+        user = self.current_user() or {}
+        try:
+            data = self.read_json()
+        except (ValueError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        with db_session() as conn:
+            try:
+                item = update_cliente(conn, cliente_id, data, user_id=user.get("username"), timestamp=now_iso())
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+        self.send_json({"ok": True, "item": item})
+
+    def api_list_cliente_envios(
+        self,
+        query: str,
+        *,
+        cliente_id: int | None = None,
+        licitacion_id: int | None = None,
+        actuacion_id: int | None = None,
+    ) -> None:
+        params = parse_qs(query)
+        state = clean_text(params.get("estado", [""])[0])
+        search = clean_text(params.get("q", [""])[0])
+        with db_session() as conn:
+            items = list_cliente_envios(
+                conn,
+                cliente_id=cliente_id,
+                licitacion_id=licitacion_id,
+                actuacion_id=actuacion_id,
+                state=state,
+                search=search,
+            )
+        self.send_json(
+            {
+                "items": items,
+                "state_options": CLIENTE_ENVIO_ESTADOS,
+                "type_options": CLIENTE_ENVIO_TIPOS,
+            }
+        )
+
+    def api_get_cliente_envio(self, envio_id: int) -> None:
+        with db_session() as conn:
+            item = get_cliente_envio(conn, envio_id, include_available_files=True)
+        if not item:
+            self.send_json({"error": "Envio no encontrado"}, HTTPStatus.NOT_FOUND)
+            return
+        self.send_json({"item": item})
+
+    def api_cliente_envio_folder_files(self) -> None:
+        try:
+            data = self.read_json()
+        except (ValueError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            payload = list_dropbox_folder_files(data.get("carpeta_dropbox"))
+        except (ValueError, DropboxPathError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(payload)
+
+    def api_create_cliente_envio(
+        self,
+        *,
+        default_licitacion_id: int | None = None,
+        default_actuacion_id: int | None = None,
+    ) -> None:
+        if not self.require_admin():
+            return
+        user = self.current_user() or {}
+        try:
+            data = self.read_json()
+        except (ValueError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        with db_session() as conn:
+            try:
+                item = create_cliente_envio(
+                    conn,
+                    data,
+                    user_id=user.get("username"),
+                    timestamp=now_iso(),
+                    default_licitacion_id=default_licitacion_id,
+                    default_actuacion_id=default_actuacion_id,
+                )
+            except (ValueError, DropboxPathError) as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+        self.send_json({"ok": True, "item": item}, HTTPStatus.CREATED)
+
+    def api_update_cliente_envio(self, envio_id: int) -> None:
+        if not self.require_admin():
+            return
+        user = self.current_user() or {}
+        try:
+            data = self.read_json()
+        except (ValueError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        with db_session() as conn:
+            try:
+                item = update_cliente_envio(conn, envio_id, data, user_id=user.get("username"), timestamp=now_iso())
+            except (ValueError, DropboxPathError) as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+        self.send_json({"ok": True, "item": item})
+
+    def api_generate_cliente_envio_draft(self, envio_id: int) -> None:
+        user = self.current_user() or {}
+        if user.get("role") not in {"admin", "nuria"}:
+            self.send_json({"error": "No autorizado"}, HTTPStatus.UNAUTHORIZED)
+            return
+        try:
+            data = self.read_json()
+        except (ValueError, json.JSONDecodeError):
+            data = {}
+        with db_session() as conn:
+            try:
+                item = generate_cliente_envio_draft(
+                    conn,
+                    envio_id,
+                    user_id=user.get("username"),
+                    timestamp=now_iso(),
+                    overrides=data,
+                    opener=getattr(os, "startfile", None),
+                )
+            except (ValueError, DropboxPathError) as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+        self.send_json({"ok": True, "item": item})
+
+    def api_mark_cliente_envio_sent(self, envio_id: int) -> None:
+        user = self.current_user() or {}
+        if user.get("role") not in {"admin", "nuria"}:
+            self.send_json({"error": "No autorizado"}, HTTPStatus.UNAUTHORIZED)
+            return
+        with db_session() as conn:
+            try:
+                item = mark_cliente_envio_sent(conn, envio_id, user_id=user.get("username"), timestamp=now_iso())
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+        self.send_json({"ok": True, "item": item})
+
+    def api_open_cliente_envio_folder(self, envio_id: int) -> None:
+        user = self.current_user() or {}
+        if user.get("role") not in {"admin", "nuria"}:
+            self.send_json({"error": "No autorizado"}, HTTPStatus.UNAUTHORIZED)
+            return
+        with db_session() as conn:
+            try:
+                result = open_cliente_envio_folder(conn, envio_id, opener=getattr(os, "startfile", None))
+            except (ValueError, DropboxPathError) as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+        status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
+        self.send_json(result, status)
+
+    def api_open_cliente_envio_draft(self, envio_id: int) -> None:
+        user = self.current_user() or {}
+        if user.get("role") not in {"admin", "nuria"}:
+            self.send_json({"error": "No autorizado"}, HTTPStatus.UNAUTHORIZED)
+            return
+        with db_session() as conn:
+            try:
+                result = open_cliente_envio_draft(conn, envio_id, opener=getattr(os, "startfile", None))
+            except (ValueError, DropboxPathError) as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+        status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
+        self.send_json(result, status)
 
     def api_agenda_workbench(self) -> None:
         with db_session() as conn:
@@ -5320,6 +5681,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     "actuaciones_vencidas": int(indicators.get("actuaciones_vencidas") or 0),
                     "actuaciones_sin_fecha": int(indicators.get("actuaciones_sin_fecha") or 0),
                     "proxima_actuacion_at": indicators.get("proxima_actuacion_at") or "",
+                    "cliente_envios": list_cliente_envios(conn, licitacion_id=licitacion_id),
                 }
             )
             item = build_licitacion_center_detail(conn, item, actuaciones=actuaciones)
@@ -5463,7 +5825,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         where: list[str] = []
         values: list[object] = []
         licitacion_id = clean_text(params.get("licitacion_id", [""])[0])
-        estado = clean_text(params.get("estado", [""])[0]).lower()
+        estado = normalize_actuacion_estado(params.get("estado", [""])[0], default="")
 
         if licitacion_id.isdigit():
             where.append(
@@ -5485,12 +5847,15 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 )
                 """
             )
-        if estado in ACTUACION_ESTADOS:
-            where.append("a.estado = ?")
-            values.append(estado)
+        if estado:
+            estado_values = sorted(estado_db_values(estado))
+            if estado_values:
+                placeholders = ",".join("?" for _ in estado_values)
+                where.append(f"LOWER(a.estado) IN ({placeholders})")
+                values.extend(estado_values)
         if clean_text(params.get("abiertas", [""])[0]) == "1":
             placeholders = ",".join("?" for _ in ACTUACION_ESTADOS_ABIERTOS)
-            where.append(f"a.estado IN ({placeholders})")
+            where.append(f"LOWER(a.estado) IN ({placeholders})")
             values.extend(sorted(ACTUACION_ESTADOS_ABIERTOS))
 
         current = datetime.now()
@@ -5514,7 +5879,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "items": items,
                 "summary": summarize_actuaciones(rows, now=current),
                 "tipos": sorted(ACTUACION_TIPOS),
-                "estados": sorted(ACTUACION_ESTADOS),
+                "estados": ACTUACION_ESTADO_ORDEN,
             }
         )
 
@@ -5523,7 +5888,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         placeholders = ",".join("?" for _ in ACTUACION_ESTADOS_ABIERTOS)
         with db_session() as conn:
             rows = conn.execute(
-                actuaciones_select_sql([f"a.estado IN ({placeholders})"]),
+                actuaciones_select_sql([f"LOWER(a.estado) IN ({placeholders})"]),
                 sorted(ACTUACION_ESTADOS_ABIERTOS),
             ).fetchall()
         self.send_json(summarize_actuaciones(rows, now=current))
@@ -5535,6 +5900,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Actuacion no encontrada"}, HTTPStatus.NOT_FOUND)
                 return
             item = actuacion_response(conn, row, include_historial=True)
+            item["cliente_envios"] = list_cliente_envios(conn, actuacion_id=actuacion_id)
             item["source_type"] = "actuacion"
             item["source_id"] = int(item["id"])
             apply_comments_metadata(conn, [item])
@@ -5694,7 +6060,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         self.send_json({"ok": True, "item": item})
 
     def api_close_actuacion(self, actuacion_id: int) -> None:
-        self.api_set_actuacion_closed_state(actuacion_id, "cerrada")
+        self.api_set_actuacion_closed_state(actuacion_id, "enviado")
 
     def api_cancel_actuacion(self, actuacion_id: int) -> None:
         self.api_set_actuacion_closed_state(actuacion_id, "cancelada")
@@ -5720,8 +6086,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 conn,
                 actuacion_id,
                 user_id=username,
-                event_type="cierre" if estado == "cerrada" else "cancelacion",
-                comentario="Actuacion cerrada" if estado == "cerrada" else "Actuacion cancelada",
+                event_type="cierre" if estado == "enviado" else "cancelacion",
+                comentario="Actuacion enviada" if estado == "enviado" else "Actuacion cancelada",
                 old_value=row["estado"],
                 new_value=estado,
                 timestamp=timestamp,
@@ -5791,7 +6157,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Actuacion no encontrada"}, HTTPStatus.NOT_FOUND)
                 return
             licitacion_ids = current_actuacion_licitacion_ids(conn, actuacion_id)
-            estado = row["estado"] if row["estado"] in ACTUACION_ESTADOS_ABIERTOS else "pendiente"
+            estado = normalize_actuacion_estado(row["estado"], default="pendiente")
+            if estado not in {"pendiente", "en_preparacion", "preparado"}:
+                estado = "pendiente"
             payload = {
                 "tipo": row["tipo"],
                 "titulo": f"{row['titulo']} (copia)",
@@ -6159,6 +6527,14 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 """,
                 (timestamp, timestamp, dia_id),
             )
+            create_system_comment(
+                conn,
+                entity_type="infonalia_dia",
+                entity_id=dia_id,
+                body=f"Día enviado a Nuria por {clean_text(user.get('display_name')) or clean_text(user.get('username')) or 'administrador'}.",
+                metadata={"event": "send_to_nuria"},
+                timestamp=timestamp,
+            )
             asunto = f"Infonalia del día {format_date_es(day['fecha'])}"
             intro = (
                 f"{user.get('display_name', 'Administrador')} ha dejado disponible el día {day['titulo']} para su revisión."
@@ -6245,6 +6621,14 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 """,
                 (timestamp, timestamp, dia_id),
             )
+            create_system_comment(
+                conn,
+                entity_type="infonalia_dia",
+                entity_id=dia_id,
+                body=f"Día marcado como revisado por {clean_text(user.get('display_name')) or clean_text(user.get('username')) or 'usuario'}.",
+                metadata={"event": "mark_reviewed"},
+                timestamp=timestamp,
+            )
             if user.get("role") == "nuria":
                 counts_rows = conn.execute(
                     """
@@ -6292,6 +6676,14 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             conn.execute(
                 "UPDATE infonalia_dias SET reviewed_at = NULL, updated_at = ? WHERE id = ?",
                 (timestamp, dia_id),
+            )
+            create_system_comment(
+                conn,
+                entity_type="infonalia_dia",
+                entity_id=dia_id,
+                body=f"Día reabierto por {clean_text((self.current_user() or {}).get('display_name')) or 'administrador'}.",
+                metadata={"event": "unmark_reviewed"},
+                timestamp=timestamp,
             )
             refresh_dia_estado(conn, dia_id)
             row = conn.execute("SELECT * FROM infonalia_dias WHERE id = ?", (dia_id,)).fetchone()
@@ -7189,6 +7581,13 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     "email_action_codes",
                     "review_id = ?",
                     [dia_id],
+                )
+                deleted_counts["day_comments_deleted"] = sqlite_update_if_table(
+                    conn,
+                    "comments",
+                    "is_deleted = 1, deleted_at = ?, updated_at = ?",
+                    "entity_type = 'infonalia_dia' AND entity_id = ?",
+                    [now_iso(), now_iso(), dia_id],
                 )
                 deleted_counts["infonalia_email_imports_unlinked"] = sqlite_update_if_table(
                     conn,

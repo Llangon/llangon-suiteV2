@@ -581,6 +581,12 @@ textarea {
   justify-content: space-between;
 }
 
+.day-card-head .badge {
+  max-width: min(360px, 45vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .day-card-title {
   min-width: 0;
 }
@@ -723,6 +729,7 @@ textarea {
 }
 
 .badge.Pendiente,
+.badge.En-preparacion,
 .badge.Pendiente-Nuria,
 .badge.Importada,
 .badge.Importado,
@@ -735,6 +742,12 @@ textarea {
   background: var(--blue-soft);
   border-color: #9cc7e8;
   color: var(--blue);
+}
+
+.badge.En-preparacion {
+  background: var(--yellow-soft);
+  border-color: #efcf78;
+  color: var(--yellow);
 }
 
 .badge.Hacer,
@@ -785,6 +798,31 @@ textarea {
   background: var(--green-soft);
   border-color: #a9d9bd;
   color: var(--green);
+}
+
+.badge.Pendiente-de-revision {
+  background: var(--yellow-soft);
+  border-color: #efcf78;
+  color: var(--yellow);
+}
+
+.badge.En-revision-por-administrador,
+.badge.Revisado-por-administrador-pendiente-de-Nuria {
+  background: var(--blue-soft);
+  border-color: #9cc7e8;
+  color: var(--blue);
+}
+
+.badge.Cerrado {
+  background: var(--green-soft);
+  border-color: #a9d9bd;
+  color: var(--green);
+}
+
+.badge.Con-incidencias {
+  background: var(--red-soft);
+  border-color: #efb0b0;
+  color: var(--red);
 }
 
 .ai-summary-badge {
@@ -873,6 +911,77 @@ textarea {
   display: grid;
   gap: 10px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.day-review-lines {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+  padding-top: 12px;
+}
+
+.day-review-lines p {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.day-review-lines span {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.day-history-box {
+  background: #fbfcfe;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.day-history-title {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+
+.day-history-box ul {
+  display: grid;
+  gap: 7px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.day-history-box li {
+  display: grid;
+  gap: 2px;
+  line-height: 1.35;
+}
+
+.day-history-box li span {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.day-history-box li small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.day-history-box .empty-history {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.day-card-actions {
+  align-items: center;
+  justify-content: flex-start;
 }
 
 .card-actions {
@@ -3073,6 +3182,71 @@ textarea {
   margin-top: 16px;
 }
 
+.clients-grid {
+  align-items: start;
+}
+
+.selected-row {
+  background: var(--green-soft);
+  border-color: #a9d9bd;
+  box-shadow: inset 0 0 0 1px #d6ebd8;
+}
+
+.selector-item-check {
+  align-items: center;
+  background: #ffffff;
+}
+
+.selector-item-check input {
+  margin-top: 0;
+}
+
+.selector-item-check strong {
+  overflow-wrap: anywhere;
+}
+
+.cliente-envios-list {
+  display: grid;
+  gap: 10px;
+}
+
+.cliente-envio-card {
+  align-items: start;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 12px;
+}
+
+.cliente-envio-card > div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.cliente-envio-card strong,
+.cliente-envio-card span {
+  display: block;
+}
+
+.cliente-envio-card span {
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.cliente-envio-card .card-actions {
+  align-self: start;
+  justify-content: flex-end;
+}
+
+.cliente-envios-history-panel {
+  margin-bottom: 16px;
+}
+
 .monitor-scheduler-status {
   color: var(--muted);
   font-size: 13px;
@@ -3921,6 +4095,10 @@ dialog::backdrop {
     flex-direction: column;
   }
 
+  .day-card-head .badge {
+    max-width: 100%;
+  }
+
   .card-layout,
   .expanded-grid,
   .preview-grid {
@@ -3938,6 +4116,14 @@ dialog::backdrop {
   .user-row {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .cliente-envio-card {
+    grid-template-columns: 1fr;
+  }
+
+  .cliente-envio-card .card-actions {
+    justify-content: flex-start;
   }
 
   .card-flags {

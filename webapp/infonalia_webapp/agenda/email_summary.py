@@ -34,6 +34,12 @@ TYPE_STYLES = {
         "background": "#eff6ff",
         "border": "#bfdbfe",
     },
+    "cliente_envio": {
+        "label": "Envío cliente",
+        "color": "#0f766e",
+        "background": "#ecfeff",
+        "border": "#99f6e4",
+    },
     "vencido": {
         "label": "Vencido",
         "color": "#344054",
@@ -43,6 +49,11 @@ TYPE_STYLES = {
 }
 
 STATE_STYLES = {
+    "en preparación": {"color": "#175cd3", "background": "#eff8ff", "border": "#b2ddff"},
+    "listo para preparar correo": {"color": "#155eef", "background": "#eef4ff", "border": "#c7d7fe"},
+    "correo outlook generado": {"color": "#067647", "background": "#ecfdf3", "border": "#abefc6"},
+    "incidencia / error": {"color": "#b42318", "background": "#fef3f2", "border": "#fecdca"},
+    "cancelado / no procede": {"color": "#344054", "background": "#f8fafc", "border": "#d0d5dd"},
     "preparada": {"color": "#067647", "background": "#ecfdf3", "border": "#abefc6"},
     "preparado": {"color": "#067647", "background": "#ecfdf3", "border": "#abefc6"},
     "pendiente": {"color": "#b54708", "background": "#fff7ed", "border": "#fed7aa"},
@@ -245,6 +256,7 @@ def build_pending_tasks_email_payload(
 ) -> dict[str, object]:
     reference = local_email_reference(current)
     items = [item for item in pending_response.get("items") or [] if isinstance(item, dict)]
+    panels = [panel for panel in pending_response.get("panels") or [] if isinstance(panel, dict)]
     today = reference.date()
     counts = {
         "total": len(items),
@@ -254,9 +266,30 @@ def build_pending_tasks_email_payload(
         "no_date": sum(1 for item in items if _item_date_value(item) is None),
     }
     counts["upcoming"] = max(0, counts["total"] - counts["overdue"] - counts["today"] - counts["no_date"])
-    sections = _pending_sections(items, current=reference)
+    if panels:
+        regular_items = []
+        shipment_sections = []
+        for panel in panels:
+            panel_items = [item for item in panel.get("items") or [] if isinstance(item, dict)]
+            if clean_text(panel.get("key")) == "regular":
+                regular_items = panel_items
+            elif panel_items:
+                shipment_sections.append({"title": panel.get("title") or "Envíos", "items": panel_items})
+        sections = _pending_sections(regular_items or items, current=reference)
+        sections.extend(shipment_sections)
+    else:
+        sections = _pending_sections(items, current=reference)
     counts["next_7_days"] = sum(len(section["items"]) for section in sections if section["title"] == "PRÓXIMOS 7 DÍAS")
     counts["later"] = sum(len(section["items"]) for section in sections if section["title"] == "PRÓXIMAMENTE")
+    counts["client_shipments_ready"] = sum(
+        1 for item in items if clean_text(item.get("state_value")) == "listo_para_preparar_correo"
+    )
+    counts["client_shipments_generated"] = sum(
+        1 for item in items if clean_text(item.get("state_value")) == "correo_outlook_generado"
+    )
+    counts["client_shipments_incidents"] = sum(
+        1 for item in items if clean_text(item.get("state_value")) == "incidencia"
+    )
     return {
         "active_date_label": format_date_es(today.isoformat()),
         "heading": "Pendientes de Agenda",

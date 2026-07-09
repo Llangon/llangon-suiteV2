@@ -211,6 +211,43 @@ def test_updated_user_payload_preserves_current_defaults() -> None:
     }
 
 
+def test_updated_user_payload_accepts_sqlite_row_with_telegram_fields() -> None:
+    conn = make_conn()
+    conn.execute(
+        """
+        INSERT INTO usuarios (
+            username, password_hash, role, display_name, email,
+            telegram_chat_id, telegram_notifications_enabled,
+            active, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "admin",
+            "hash",
+            "admin",
+            "Admin Actual",
+            "old@example.test",
+            "1648124154",
+            1,
+            1,
+            "created",
+            "updated",
+        ),
+    )
+    row = conn.execute("SELECT * FROM usuarios WHERE username = ?", ("admin",)).fetchone()
+
+    payload = updated_user_payload(
+        {"display_name": "Admin Ajustado", "telegram_notifications_enabled": False},
+        row,
+        username="admin",
+    )
+
+    assert payload["display_name"] == "Admin Ajustado"
+    assert payload["telegram_chat_id"] == "1648124154"
+    assert payload["telegram_notifications_enabled"] == 0
+
+
 def test_updated_user_payload_rejects_invalid_role() -> None:
     try:
         updated_user_payload({"role": "editor"}, {"role": "admin", "display_name": "Admin", "email": "", "active": 1}, username="admin")

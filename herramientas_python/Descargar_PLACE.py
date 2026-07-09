@@ -15,7 +15,7 @@ EXTENSIONES_VALIDAS = {
     ".xls", ".xlsx", ".xlsm",
     ".doc", ".docx",
     ".ppt", ".pptx",
-    ".zip", ".rtf",
+    ".zip", ".rar", ".rtf",
 }
 
 MIME_A_EXTENSION = {
@@ -29,6 +29,9 @@ MIME_A_EXTENSION = {
     "application/vnd.ms-powerpoint": ".ppt",
     "application/zip": ".zip",
     "application/x-zip-compressed": ".zip",
+    "application/vnd.rar": ".rar",
+    "application/x-rar": ".rar",
+    "application/x-rar-compressed": ".rar",
     "application/rtf": ".rtf",
     "text/rtf": ".rtf",
     "text/html": ".html",
@@ -99,6 +102,9 @@ def extension_desde_contenido(contenido):
             pass
         return ".zip"
 
+    if contenido.startswith((b"Rar!\x1a\x07\x00", b"Rar!\x1a\x07\x01\x00")):
+        return ".rar"
+
     if inicio_lower.startswith(b"<!doctype html") or b"<html" in inicio_lower:
         return ".html"
 
@@ -129,6 +135,8 @@ def extension_desde_content_type(content_type):
         return ".doc"
     if "pdf" in ct:
         return ".pdf"
+    if "rar" in ct:
+        return ".rar"
     if "html" in ct:
         return ".html"
     if ct.endswith("/xml") or ct in {"text/xml", "application/xml"}:

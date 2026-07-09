@@ -649,6 +649,30 @@ def _insert_email_action_event(
     )
 
 
+def _processed_email_action_event(
+    conn: sqlite3.Connection,
+    *,
+    code: str,
+    source_message_id: str,
+) -> sqlite3.Row | None:
+    message_id = clean_text(source_message_id)
+    if not message_id:
+        return None
+    ensure_email_action_schema(conn)
+    return conn.execute(
+        """
+        SELECT *
+        FROM email_action_events
+        WHERE code = ?
+          AND source_message_id = ?
+          AND result = 'processed'
+        ORDER BY id ASC
+        LIMIT 1
+        """,
+        (clean_text(code), message_id),
+    ).fetchone()
+
+
 def check_action_code(
     conn: sqlite3.Connection,
     *,
@@ -758,6 +782,22 @@ def _mark_action(
         """,
         (status, timestamp, clean_text(sender_email), clean_text(source_message_id), result_message, error_message, row_id),
     )
+
+
+def _same_message_already_processed(
+    conn: sqlite3.Connection,
+    *,
+    code_row: sqlite3.Row | None,
+    source_message_id: str,
+) -> bool:
+    if not code_row:
+        return False
+    if clean_text(code_row["status"]).lower() != "processed":
+        return False
+    current_message_id = clean_text(source_message_id)
+    if not current_message_id:
+        return False
+    return clean_text(code_row["source_message_id"]) == current_message_id
 
 
 def _request_automatic_download_after_email_action(
@@ -1143,6 +1183,7 @@ def process_email_action(
     action_code = clean_text(parsed.get("action_code"))
     action = ACTION_DEFINITIONS.get(action_code)
     entity_id = int(parsed.get("entity_id") or 0)
+    code_row = action_code_row(conn, normalized_code)
 
     def audit_blocked(*, result: str, reason: str, review_id: int | None = None, licitacion_id: int | None = None, previous_status: str = "", new_status: str = "") -> None:
         if dry_run:
@@ -1184,6 +1225,62 @@ def process_email_action(
         error = "Remitente no autorizado."
         audit_blocked(result="error", reason=error)
         return {"status": "error", "error_code": "UNAUTHORIZED_SENDER", "message": error}
+
+    if _same_message_already_processed(conn, code_row=code_row, source_message_id=source_message_id):
+        message = "Orden duplicada ignorada: este correo ya fue procesado."
+        duplicate_state = ""
+        review_id = None
+        licitacion_id = None
+        if code_row:
+            review_id = int(code_row["review_id"] or 0) or None
+            licitacion_id = int(code_row["licitacion_id"] or 0) or None
+        if licitacion_id:
+            licitacion = conn.execute("SELECT estado FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+            if licitacion:
+                duplicate_state = clean_text(licitacion["estado"])
+        audit_blocked(
+            result="ignored",
+            reason=message,
+            review_id=review_id,
+            licitacion_id=licitacion_id,
+            previous_status=duplicate_state,
+            new_status=duplicate_state,
+        )
+        return {
+            "status": "ignored",
+            "error_code": "DUPLICATE_EMAIL_ACTION",
+            "message": message,
+            "licitacion_id": licitacion_id,
+            "review_id": review_id,
+            "duplicate_source": "action_code",
+        }
+
+    duplicate_event = _processed_email_action_event(
+        conn,
+        code=normalized_code,
+        source_message_id=source_message_id,
+    )
+    if duplicate_event:
+        message = "Orden duplicada ignorada: este correo ya fue procesado."
+        review_id = int(duplicate_event["review_id"] or 0) or None
+        licitacion_id = int(duplicate_event["licitacion_id"] or 0) or None
+        previous_status = clean_text(duplicate_event["new_status"] or duplicate_event["previous_status"])
+        audit_blocked(
+            result="ignored",
+            reason=message,
+            review_id=review_id,
+            licitacion_id=licitacion_id,
+            previous_status=previous_status,
+            new_status=previous_status,
+        )
+        return {
+            "status": "ignored",
+            "error_code": "DUPLICATE_EMAIL_ACTION",
+            "message": message,
+            "duplicate_event_id": int(duplicate_event["id"]),
+            "licitacion_id": licitacion_id,
+            "review_id": review_id,
+        }
 
     check = check_action_code(
         conn,
@@ -1248,7 +1345,7 @@ def process_email_action(
             "message": "Dry-run: la acción se validó, pero no se ha ejecutado.",
         }
     if action_code == ACTION_REVIEWED:
-        return _process_review_action(
+        result = _process_review_action(
             conn,
             code=normalized_code,
             review_id=entity_id,
@@ -1258,8 +1355,19 @@ def process_email_action(
             timestamp=processed_at,
             confirmation_sender=confirmation_sender,
         )
+        if result.get("status") == "processed" and code_row:
+            _mark_action(
+                conn,
+                int(code_row["id"]),
+                status="processed",
+                timestamp=processed_at,
+                sender_email=sender_email,
+                source_message_id=source_message_id,
+                result_message=clean_text(result.get("message")),
+            )
+        return result
     if action_code in ACTION_DEFINITIONS:
-        return _process_individual_action(
+        result = _process_individual_action(
             conn,
             code=normalized_code,
             action_code=action_code,
@@ -1269,6 +1377,17 @@ def process_email_action(
             subject=subject,
             timestamp=processed_at,
         )
+        if result.get("status") == "processed" and code_row:
+            _mark_action(
+                conn,
+                int(code_row["id"]),
+                status="processed",
+                timestamp=processed_at,
+                sender_email=sender_email,
+                source_message_id=source_message_id,
+                result_message=clean_text(result.get("message")),
+            )
+        return result
     message = "Acción no reconocida."
     audit_blocked(result="error", reason=message)
     return {"status": "error", "error_code": "UNKNOWN_ACTION", "message": message}

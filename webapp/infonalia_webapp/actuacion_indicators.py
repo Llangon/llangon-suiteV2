@@ -191,7 +191,7 @@ def list_licitacion_actuaciones(
         JOIN actuacion_licitaciones al ON al.actuacion_id = a.id
         WHERE al.licitacion_id = ?
         ORDER BY
-            CASE WHEN a.estado IN ('pendiente', 'en_curso', 'respondida') THEN 0 ELSE 1 END ASC,
+            CASE WHEN LOWER(a.estado) IN ('pendiente', 'en_curso', 'en_preparacion', 'preparado', 'preparada') THEN 0 ELSE 1 END ASC,
             CASE WHEN a.deadline_at IS NULL OR a.deadline_at = '' THEN 1 ELSE 0 END ASC,
             a.deadline_at ASC,
             a.id DESC

@@ -232,7 +232,7 @@ def test_day_row_to_dict_preserves_api_payload_shape() -> None:
     assert item["gestionadas_admin"] == 5
     assert item["gestionadas_nuria"] == 3
     assert item["avance_porcentaje"] == 83
-    assert item["estado_visual"] == "Cerrado / revisado"
+    assert item["estado_visual"] == "Cerrado"
     assert item["total_nuria"] == 4
     assert item["pendientes"] == 1
     assert item["descartadas_mi"] == 1
@@ -244,6 +244,8 @@ def test_day_row_to_dict_preserves_api_payload_shape() -> None:
     assert item["fecha_envio_nuria"] == "12/06/2026 09:00"
     assert item["fecha_cambio_nuria"] == "12/06/2026 10:00"
     assert item["fecha_revision"] == "12/06/2026 11:00"
+    assert item["ultima_revision_admin"] == "12/06/2026 09:00"
+    assert item["ultima_revision_nuria"] == ""
     assert item["ultima_actividad"] == "12/06/2026 11:00"
     assert item["ultima_accion_nuria"] == ""
     assert item["nuria_pending_update"] is True
@@ -296,4 +298,5 @@ def test_day_row_to_dict_detects_reviewer_activity_without_closing_day() -> None
     assert item["pendientes"] == 1
     assert item["estado_visual"] == "Revisado por Nuria · pendiente de cerrar"
     assert item["ultima_accion_nuria"] == "12/06/2026 10:15"
+    assert item["ultima_revision_nuria"] == "12/06/2026 10:15"
     assert item["ultima_actividad"] == "12/06/2026 10:15"

@@ -28,6 +28,10 @@ Llangon-SuiteV2/
 - `docs/`: documentación operativa vigente.
 - `documentos_contexto/`: antecedentes históricos claramente marcados.
 
+Documentación operativa destacada:
+
+- [docs/CLIENTES_Y_ENVIOS_CLIENTES.md](docs/CLIENTES_Y_ENVIOS_CLIENTES.md): módulo de clientes, envíos documentales y correos Outlook preparados.
+
 ## Trabajo desde varios equipos
 
 En GitHub Desktop:

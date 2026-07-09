@@ -124,10 +124,18 @@ try {
     }
 
     Write-KeeperLog "Ejecutando tick interno del scheduler."
-    & $Python -m webapp.infonalia_webapp.monitor.scheduler --tick --source $Source 2>&1 | ForEach-Object {
-        $_ | Out-File -LiteralPath $LogPath -Append -Encoding utf8
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $TickOutput = & $Python -m webapp.infonalia_webapp.monitor.scheduler --tick --source $Source 2>&1
+        $ExitCode = $LASTEXITCODE
     }
-    $ExitCode = $LASTEXITCODE
+    finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+    foreach ($Line in $TickOutput) {
+        "$Line" | Out-File -LiteralPath $LogPath -Append -Encoding utf8
+    }
     if ($null -eq $ExitCode) {
         $ExitCode = 0
     }

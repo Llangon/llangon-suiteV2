@@ -15,6 +15,8 @@ POST_CASES = [
     ("POST", "/api/licitaciones/capture", "api_capture_licitacion", ()),
     ("POST", "/api/config/users", "api_create_user", ()),
     ("POST", "/api/config/test-smtp", "api_test_smtp", ()),
+    ("POST", "/api/clientes", "api_create_cliente", ()),
+    ("POST", "/api/cliente-envios/folder-files", "api_cliente_envio_folder_files", ()),
     ("POST", "/api/admin/telegram/test-group", "api_test_telegram_group", ()),
     ("POST", "/api/admin/users/manolo/telegram/test", "api_test_telegram_user", ("manolo",)),
     ("POST", "/api/storage/markers/sync", "api_storage_markers_sync", ()),
@@ -37,11 +39,17 @@ POST_CASES = [
     ("POST", "/api/actuaciones/3/cancelar", "api_cancel_actuacion", (3,)),
     ("POST", "/api/actuaciones/3/historial", "api_add_actuacion_historial", (3,)),
     ("POST", "/api/actuaciones/3/duplicar", "api_duplicate_actuacion", (3,)),
+    ("POST", "/api/cliente-envios/4/generate-draft", "api_generate_cliente_envio_draft", (4,)),
+    ("POST", "/api/cliente-envios/4/mark-sent", "api_mark_cliente_envio_sent", (4,)),
+    ("POST", "/api/cliente-envios/4/open-folder", "api_open_cliente_envio_folder", (4,)),
+    ("POST", "/api/cliente-envios/4/open-draft", "api_open_cliente_envio_draft", (4,)),
     ("POST", "/api/agenda/eventos/4/cerrar", "api_set_agenda_evento_estado", (4, "cerrado")),
     ("POST", "/api/agenda/eventos/4/cancelar", "api_set_agenda_evento_estado", (4, "cancelado")),
 ]
 
 PATCH_CASES = [
+    ("PATCH", "/api/clientes/7", "api_update_cliente", (7,)),
+    ("PATCH", "/api/cliente-envios/4", "api_update_cliente_envio", (4,)),
     ("PATCH", "/api/agenda/eventos/4", "api_update_agenda_evento", (4,)),
     ("PATCH", "/api/actuaciones/3", "api_update_actuacion", (3,)),
     ("PATCH", "/api/licitaciones/9", "api_update_licitacion", (9,)),

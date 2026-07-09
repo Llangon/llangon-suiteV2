@@ -5,6 +5,7 @@ import unicodedata
 from datetime import datetime
 
 try:
+    from ..clientes_envios import CLIENTE_ENVIO_PANEL_TITLES, CLIENTE_ENVIO_PENDIENTES_AGENDA, list_cliente_envios
     from ..licitacion_states import (
         ESTADO_DESCARGAR_PARA_VER,
         ESTADO_PREPARADA,
@@ -18,6 +19,7 @@ try:
         agenda_parse_datetime,
     )
 except ImportError:
+    from clientes_envios import CLIENTE_ENVIO_PANEL_TITLES, CLIENTE_ENVIO_PENDIENTES_AGENDA, list_cliente_envios
     from licitacion_states import (
         ESTADO_DESCARGAR_PARA_VER,
         ESTADO_PREPARADA,
@@ -40,6 +42,7 @@ PENDING_LICITACION_STATES = {
 
 TASK_STATE_OPTIONS = [
     {"value": "pendiente", "label": "Pendiente"},
+    {"value": "en_preparacion", "label": "En preparación"},
     {"value": "preparado", "label": "Preparado"},
     {"value": "enviado", "label": "Enviado"},
     {"value": "cancelado", "label": "Cancelado"},
@@ -56,6 +59,7 @@ def task_state_label(value: object) -> str:
     return {
         "pendiente": "Pendiente",
         "encurso": "Pendiente",
+        "enpreparacion": "En preparación",
         "preparado": "Preparado",
         "preparada": "Preparado",
         "respondida": "Enviado",
@@ -69,13 +73,14 @@ def task_state_label(value: object) -> str:
 
 
 def is_pending_task_state(value: object) -> bool:
-    return task_state_label(value) in {"Pendiente", "Preparado"}
+    return task_state_label(value) in {"Pendiente", "En preparación", "Preparado"}
 
 
 def task_state_value(value: object) -> str:
     label = task_state_label(value)
     return {
         "Pendiente": "pendiente",
+        "En preparación": "en_preparacion",
         "Preparado": "preparado",
         "Enviado": "enviado",
         "Cancelado": "cancelado",
@@ -133,6 +138,8 @@ def _matches_query(item: dict[str, object], query: str) -> bool:
         item.get("state"),
         item.get("expediente"),
         item.get("provincia"),
+        item.get("cliente_nombre"),
+        item.get("destinatario_email"),
     ]
     for licitacion in item.get("linked_licitaciones") or []:
         values.extend(
@@ -140,6 +147,15 @@ def _matches_query(item: dict[str, object], query: str) -> bool:
             for key in ("expediente", "organismo", "objeto", "plataforma", "provincia", "estado")
         )
     return any(q in clean_text(value).lower() for value in values)
+
+
+def _cliente_envio_panel_key(state_value: object) -> str:
+    state = clean_text(state_value)
+    if state == "listo_para_preparar_correo":
+        return "ready"
+    if state == "correo_outlook_generado":
+        return "generated"
+    return "incidents"
 
 
 def _licitacion_tasks(conn: sqlite3.Connection, *, current: datetime) -> list[dict[str, object]]:
@@ -215,7 +231,7 @@ def _actuacion_tasks(conn: sqlite3.Connection, *, current: datetime) -> list[dic
     items = []
     for row in rows:
         state = task_state_label(row["estado"])
-        if state not in {"Pendiente", "Preparado"}:
+        if state not in {"Pendiente", "En preparación", "Preparado"}:
             continue
         linked = _actuacion_licitaciones(conn, int(row["id"]))
         event_dt = agenda_parse_datetime(row["deadline_at"])
@@ -249,7 +265,7 @@ def _internal_event_tasks(conn: sqlite3.Connection, *, current: datetime) -> lis
     items = []
     for row in rows:
         state = task_state_label(row["estado"])
-        if state not in {"Pendiente", "Preparado"}:
+        if state not in {"Pendiente", "En preparación", "Preparado"}:
             continue
         event_dt = agenda_parse_datetime(row["starts_at"])
         items.append({
@@ -270,6 +286,80 @@ def _internal_event_tasks(conn: sqlite3.Connection, *, current: datetime) -> lis
     return items
 
 
+def _cliente_envio_tasks(conn: sqlite3.Connection, *, current: datetime) -> list[dict[str, object]]:
+    items = []
+    for envio in list_cliente_envios(conn):
+        state_value = clean_text(envio.get("estado"))
+        if state_value not in CLIENTE_ENVIO_PENDIENTES_AGENDA:
+            continue
+        event_reference = (
+            envio.get("correo_generado_at")
+            or envio.get("updated_at")
+            or envio.get("created_at")
+            or ""
+        )
+        event_dt = agenda_parse_datetime(event_reference)
+        linked = [{
+            "id": envio.get("licitacion_id") or 0,
+            "expediente": envio.get("licitacion_expediente") or "",
+            "organismo": envio.get("licitacion_organismo") or "",
+            "objeto": envio.get("licitacion_objeto") or "",
+            "estado": envio.get("estado_label") or "",
+            "enlace_perfil": envio.get("licitacion_enlace_perfil") or "",
+        }]
+        items.append({
+            "id": f"cliente_envio:{envio['id']}",
+            "type": "cliente_envio",
+            "source_type": "cliente_envio",
+            "source_id": int(envio["id"]),
+            "title": f"{envio.get('cliente_nombre') or 'Cliente'} · {envio.get('tipo_envio_label') or 'Envío'}",
+            "subtitle": envio.get("asunto") or envio.get("licitacion_objeto") or envio.get("actuacion_titulo") or "Envío a cliente",
+            "description": envio.get("licitacion_expediente") or envio.get("destinatario_email") or "",
+            "status": envio.get("estado_label") or "",
+            "state": envio.get("estado_label") or "",
+            "state_value": state_value,
+            "raw_state": envio.get("estado") or "",
+            "cliente_nombre": envio.get("cliente_nombre") or "",
+            "destinatario_email": envio.get("destinatario_email") or "",
+            "expediente": envio.get("licitacion_expediente") or "",
+            "objeto": envio.get("licitacion_objeto") or "",
+            "tipo": envio.get("tipo_envio_label") or "",
+            "ruta_carpeta": envio.get("carpeta_dropbox") or "",
+            "correo_generado_path": envio.get("correo_generado_path") or "",
+            "correo_generado_formato": envio.get("correo_generado_formato") or "",
+            "incidencia_detalle": envio.get("incidencia_detalle") or "",
+            "linked_licitaciones": linked,
+            "pending_panel": _cliente_envio_panel_key(state_value),
+            "state_options": TASK_STATE_OPTIONS,
+            **_event_parts(event_dt, current=current),
+        })
+    return items
+
+
+def _pending_panels(items: list[dict[str, object]]) -> list[dict[str, object]]:
+    regular_items = [item for item in items if item.get("source_type") != "cliente_envio"]
+    panel_items = {
+        "regular": regular_items,
+        "ready": [item for item in items if item.get("pending_panel") == "ready"],
+        "generated": [item for item in items if item.get("pending_panel") == "generated"],
+        "incidents": [item for item in items if item.get("pending_panel") == "incidents"],
+    }
+    order = ["regular", "ready", "generated", "incidents"]
+    panels: list[dict[str, object]] = []
+    for key in order:
+        current_items = sorted(panel_items[key], key=_task_sort_key)
+        if not current_items:
+            continue
+        panels.append(
+            {
+                "key": key,
+                "title": CLIENTE_ENVIO_PANEL_TITLES.get(key, "Pendientes"),
+                "items": current_items,
+            }
+        )
+    return panels
+
+
 def build_pending_tasks_response(
     conn: sqlite3.Connection,
     *,
@@ -281,6 +371,7 @@ def build_pending_tasks_response(
         *_licitacion_tasks(conn, current=current_dt),
         *_actuacion_tasks(conn, current=current_dt),
         *_internal_event_tasks(conn, current=current_dt),
+        *_cliente_envio_tasks(conn, current=current_dt),
     ]
     filtered = [item for item in items if _matches_query(item, query)]
     ordered = sorted(filtered, key=_task_sort_key)
@@ -288,4 +379,5 @@ def build_pending_tasks_response(
         "ok": True,
         "items": ordered,
         "groups": _groups(ordered),
+        "panels": _pending_panels(ordered),
     }

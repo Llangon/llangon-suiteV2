@@ -2,13 +2,13 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ProjectRoot = Resolve-Path (Join-Path $ScriptRoot "..\..")
+$ProjectRoot = (Resolve-Path (Join-Path $ScriptRoot "..\..")).Path
 $RuntimeRoot = Join-Path $ProjectRoot "runtime"
 $LogDir = Join-Path $RuntimeRoot "logs"
 $PidPath = Join-Path $RuntimeRoot "web.pid"
 $EnvPath = Join-Path $ProjectRoot "webapp\infonalia_webapp\.env"
 $StatusScript = Join-Path $ScriptRoot "status_local_deployment.ps1"
-$TaskName = "LlangonSuite-Web"
+$StartScript = Join-Path $ScriptRoot "start_web_production.ps1"
 $Port = 8787
 
 if (Test-Path -LiteralPath $EnvPath) {
@@ -64,13 +64,48 @@ function Describe-Process {
     return "PID $ProcessId ($($Process.ProcessName))"
 }
 
+function Test-IsLlangonWebProcess {
+    param(
+        [int]$ProcessId,
+        [switch]$TrustedSource
+    )
+    if ($TrustedSource) {
+        return $true
+    }
+    $Cim = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
+    $CommandLine = if ($Cim) { [string]$Cim.CommandLine } else { "" }
+    return (
+        $CommandLine -like "*Llangon-SuiteV2*" -or
+        $CommandLine -like "*webapp.infonalia_webapp.serve*" -or
+        $CommandLine -like "*start_web_production.ps1*"
+    )
+}
+
+function Stop-LlangonWebProcess {
+    param(
+        [int]$ProcessId,
+        [switch]$TrustedSource
+    )
+    $Process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if ($null -eq $Process) {
+        return $false
+    }
+    if (-not (Test-IsLlangonWebProcess -ProcessId $ProcessId -TrustedSource:$TrustedSource)) {
+        Write-Host "No se detiene $(Describe-Process -ProcessId $ProcessId): no parece web de Llangon Suite."
+        return $false
+    }
+    Write-Host "Deteniendo proceso web: $(Describe-Process -ProcessId $ProcessId)"
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    return $true
+}
+
 function Stop-ListenerProcesses {
     $Listeners = @(Get-WebListeners)
     if ($Listeners.Count -eq 0) {
-        return $false
+        return @()
     }
 
-    $StoppedAny = $false
+    $StoppedPids = New-Object System.Collections.Generic.List[int]
     $Pids = @($Listeners | Select-Object -ExpandProperty OwningProcess -Unique)
     foreach ($ProcessId in $Pids) {
         if (-not $ProcessId) {
@@ -80,14 +115,17 @@ function Stop-ListenerProcesses {
         if ($null -eq $Process) {
             continue
         }
-        Write-Host "Deteniendo proceso web en puerto ${Port}: $(Describe-Process -ProcessId $ProcessId)"
-        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
-        $StoppedAny = $true
+        if (Stop-LlangonWebProcess -ProcessId $ProcessId) {
+            [void]$StoppedPids.Add($ProcessId)
+        }
     }
-    return $StoppedAny
+    return @($StoppedPids | Select-Object -Unique)
 }
 
 function Stop-RecordedPid {
+    param(
+        [int[]]$AlreadyStoppedPids = @()
+    )
     if (-not (Test-Path -LiteralPath $PidPath)) {
         return $false
     }
@@ -99,13 +137,14 @@ function Stop-RecordedPid {
     if (-not [int]::TryParse($RecordedPid, [ref]$ParsedPid)) {
         return $false
     }
+    if ($AlreadyStoppedPids -contains $ParsedPid) {
+        return $true
+    }
     $Process = Get-Process -Id $ParsedPid -ErrorAction SilentlyContinue
     if ($null -eq $Process) {
         return $false
     }
-    Write-Host "Deteniendo PID registrado: $(Describe-Process -ProcessId $ParsedPid)"
-    Stop-Process -Id $ParsedPid -Force -ErrorAction SilentlyContinue
-    return $true
+    return Stop-LlangonWebProcess -ProcessId $ParsedPid -TrustedSource
 }
 
 function Wait-UntilStopped {
@@ -136,26 +175,19 @@ Write-Host "Proyecto: $ProjectRoot"
 Write-Host "URL:      $HealthUrl"
 
 Write-Step "[1/3] Deteniendo web actual si existe..."
-$Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 $StoppedSomething = $false
+$StoppedPids = @(Stop-ListenerProcesses)
 
-if ($null -ne $Task -and $Task.State -eq "Running") {
-    Write-Host "Deteniendo tarea programada $TaskName..."
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    $StoppedSomething = $true
-    Start-Sleep -Seconds 3
-}
-
-if (Stop-ListenerProcesses) {
+if ($StoppedPids.Count -gt 0) {
     $StoppedSomething = $true
 }
 
-if (Stop-RecordedPid) {
+if (Stop-RecordedPid -AlreadyStoppedPids $StoppedPids) {
     $StoppedSomething = $true
 }
 
 if (-not $StoppedSomething) {
-    Write-Host "No habia proceso web activo ni tarea $TaskName en ejecucion."
+    Write-Host "No habia proceso web activo."
 }
 
 if (-not (Wait-UntilStopped -TimeoutSeconds 20)) {
@@ -167,16 +199,17 @@ if (-not (Wait-UntilStopped -TimeoutSeconds 20)) {
     exit 2
 }
 
-Write-Step "[2/3] Arrancando tarea programada $TaskName..."
-$Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-if ($null -eq $Task) {
-    Write-Host "ERROR: la tarea $TaskName no esta instalada."
-    Write-Host "Ejecuta scripts\windows\install_local_deployment.ps1 para reinstalar las tareas."
+Write-Step "[2/3] Arrancando web en segundo plano..."
+if (-not (Test-Path -LiteralPath $StartScript)) {
+    Write-Host "ERROR: no se encuentra start_web_production.ps1."
     exit 3
 }
 
-Start-ScheduledTask -TaskName $TaskName
-Write-Host "Tarea iniciada. Esperando healthcheck..."
+Start-Process powershell.exe `
+    -ArgumentList @("-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $StartScript) `
+    -WindowStyle Hidden `
+    -WorkingDirectory $ProjectRoot | Out-Null
+Write-Host "Proceso iniciado. Esperando healthcheck..."
 
 if (-not (Wait-UntilHealthy -TimeoutSeconds 45)) {
     Write-Host "ERROR: la web no respondio al healthcheck tras el reinicio."

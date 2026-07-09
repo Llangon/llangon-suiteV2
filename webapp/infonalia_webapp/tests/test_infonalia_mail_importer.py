@@ -56,8 +56,8 @@ Nº Expediente:<br>
 2026/C004/000002<br>
 Organismo:<br>
 JUNTA DE GOBIERNO DEL AYUNTAMIENTO DE NEDA (A CORUÑA)<br>
-Resumen del Objeto:<br>
-XXXVI Edición de la Fiesta del Pan de Neda, 2026<br>
+    Objeto del contrato:<br>
+    XXXVI Edición de la Fiesta del Pan de Neda, 2026<br>
 Provincia de Ejecución:<br>
 A Coruña<br>
 Presupuesto:<br>
@@ -73,8 +73,38 @@ Plataforma de Contratación del Estado<br>
 del día<br>
 02/07/26<br>
 ______________________________________________________________________________________________________________________<br>
-</body></html>
-"""
+    </body></html>
+    """
+
+
+def sample_html_object_with_provincial_body() -> str:
+    return """
+    <html><body>
+    Ref. Infonalia:<br>
+    2026098881<br>
+    Nº Expediente:<br>
+    335/26<br>
+    Organismo:<br>
+    PRESIDENCIA DE LA DIPUTACIÓN DE BADAJOZ<br>
+    Resumen del Objeto:<br>
+    Productos de alimentación (huevos, lácteos y derivados) necesarios para la preparar el menú diario de las personas residentes en la residencia universitaria Hernán Cortés, ubicada en la ciudad de Badajoz y dependiente de la Diputación Provincial de Badajoz<br>
+    Provincia de Ejecución:<br>
+    Badajoz<br>
+    Presupuesto:<br>
+    24.316,64 € Importe sin impuestos<br>
+    Plazo Presentación: Hasta el próximo día<br>
+    24/07/26<br>
+    Ver el texto íntegro del anuncio:<br>
+    www.infonalia.es/licitaciones0726/2026098881.pdf<br>
+    Perfil del Contratante (Pliegos):<br>
+    contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&idEvl=jKRCWNAq8eAXhk1FZxEyvw%3D%3D<br>
+    Información extraída del<br>
+    Plataforma de Contratación del Estado<br>
+    del día<br>
+    09/07/26<br>
+    ______________________________________________________________________________________________________________________<br>
+    </body></html>
+    """
 
 
 def make_infonalia_message(*, sender: str = EXPECTED_FROM, subject: str = EXPECTED_SUBJECT, plain: str | None = None, html: str | None = None, message_id: str = "<msg-1@example.test>") -> bytes:
@@ -227,11 +257,27 @@ def test_parser_accepts_html_values_split_across_lines() -> None:
     assert parsed["items"][0]["ref_infonalia"] == "2026095120"
     assert parsed["items"][0]["expediente"] == "2026/C004/000002"
     assert parsed["items"][0]["organismo"] == "JUNTA DE GOBIERNO DEL AYUNTAMIENTO DE NEDA (A CORUÑA)"
+    assert parsed["items"][0]["resumen_objeto"] == "XXXVI Edición de la Fiesta del Pan de Neda, 2026"
     assert parsed["items"][0]["provincia_ejecucion"] == "A Coruña"
     assert parsed["items"][0]["presupuesto"] == 22975.21
     assert parsed["items"][0]["plazo_presentacion_fecha"] == "2026-07-16"
     assert parsed["items"][0]["url_anuncio_infonalia"] == "https://www.infonalia.es/licitaciones0726/2026095120.pdf"
     assert "contrataciondelestado.es" in parsed["items"][0]["url_perfil_contratante"]
+
+
+def test_parser_does_not_confuse_provincial_inside_object_with_province_label() -> None:
+    raw = make_infonalia_message(
+        plain="",
+        html=sample_html_object_with_provincial_body(),
+        message_id="<html-provincial@example.test>",
+    )
+
+    parsed = parse_infonalia_email(raw)
+
+    assert len(parsed["items"]) == 1
+    assert parsed["items"][0]["expediente"] == "335/26"
+    assert "Diputación Provincial de Badajoz" in parsed["items"][0]["resumen_objeto"]
+    assert parsed["items"][0]["provincia_ejecucion"] == "Badajoz"
 
 
 def test_candidate_validation_uses_real_sender_and_subject_with_optional_forwarder() -> None:

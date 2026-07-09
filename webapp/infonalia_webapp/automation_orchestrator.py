@@ -63,6 +63,9 @@ PROJECT_ROOT = APP_ROOT.parents[1]
 DEFAULT_DB_PATH = APP_ROOT / "data" / "infonalia.db"
 DEFAULT_TZ = "Europe/Madrid"
 GLOBAL_LOCK_KEY = "scheduler:global"
+GLOBAL_LOCK_TTL_MINUTES = 15
+DEFAULT_TASK_LOCK_TTL_MINUTES = 60
+CRITICAL_TASK_LOCK_TTL_MINUTES = 180
 STATUS_RUNNING = "running"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
@@ -421,6 +424,10 @@ def acquire_lock(
     expires = (now + timedelta(minutes=ttl_minutes)).replace(microsecond=0).isoformat()
     conn.execute("BEGIN IMMEDIATE")
     existing = conn.execute("SELECT * FROM automation_locks WHERE key = ?", (key,)).fetchone()
+    if existing and key == GLOBAL_LOCK_KEY:
+        acquired_at = parse_iso(existing["acquired_at"])
+        if acquired_at and now - acquired_at >= timedelta(minutes=GLOBAL_LOCK_TTL_MINUTES):
+            existing = None
     if existing and clean_text(existing["expires_at"]) > stamp:
         conn.commit()
         return False, dict(existing)
@@ -676,7 +683,7 @@ def run_task(
     ensure_automation_schema(conn)
     owner = lock_owner(source)
     task_lock = f"task:{definition.key}"
-    ttl = 180 if definition.prevents_suspend else 60
+    ttl = CRITICAL_TASK_LOCK_TTL_MINUTES if definition.prevents_suspend else DEFAULT_TASK_LOCK_TTL_MINUTES
     acquired, existing = acquire_lock(conn, task_lock, owner, ttl_minutes=ttl, metadata={"task": definition.key, "source": source}, current=current)
     if not acquired:
         return {"task_key": definition.key, "status": STATUS_SKIPPED, "summary": "Omitida: ya está en ejecución.", "lock": existing}
@@ -712,7 +719,14 @@ def scheduler_tick(
     ensure_monitor_schema(conn)
     ensure_automation_schema(conn)
     owner = lock_owner(source)
-    acquired, existing = acquire_lock(conn, GLOBAL_LOCK_KEY, owner, ttl_minutes=180, metadata={"source": source}, current=current)
+    acquired, existing = acquire_lock(
+        conn,
+        GLOBAL_LOCK_KEY,
+        owner,
+        ttl_minutes=GLOBAL_LOCK_TTL_MINUTES,
+        metadata={"source": source},
+        current=current,
+    )
     if not acquired:
         conn.close()
         return {"ok": True, "status": STATUS_SKIPPED, "message": "skipped: already running", "lock": existing}

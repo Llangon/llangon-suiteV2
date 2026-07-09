@@ -16,6 +16,7 @@ const appState = {
   currentDayNuriaTotal: null,
   calendarItems: [],
   agendaGroups: {},
+  agendaPanels: [],
   agendaSummary: {},
   agendaWorkbench: null,
   agendaWorkbenchSelectedKey: "",
@@ -34,6 +35,10 @@ const appState = {
   actuacionSelectedLicitaciones: [],
   actuacionSelectorResults: [],
   actuacionSelectorDraft: new Map(),
+  clientes: [],
+  clienteDetail: null,
+  clienteFolderFiles: null,
+  clienteEnvioDetail: null,
   calendarDate: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
   calendarSelectedDate: "",
   nuriaDaysView: "pending",
@@ -64,6 +69,7 @@ const daysSection = document.getElementById("days-section");
 const licitacionesSection = document.getElementById("licitaciones-section");
 const calendarSection = document.getElementById("calendar-section");
 const actuacionesSection = document.getElementById("actuaciones-section");
+const clientsSection = document.getElementById("clients-section");
 const notificationsSection = document.getElementById("notifications-section");
 const newsAdminSection = document.getElementById("news-admin-section");
 const monitorSection = document.getElementById("monitor-section");
@@ -113,6 +119,33 @@ const licitacionSelectorDialog = document.getElementById("licitacion-selector-di
 const licitacionSelectorForm = document.getElementById("licitacion-selector-form");
 const licitacionSelectorSearch = document.getElementById("licitacion-selector-search");
 const licitacionSelectorResults = document.getElementById("licitacion-selector-results");
+const clientsBoard = document.getElementById("clients-board");
+const clientHistoryBoard = document.getElementById("client-history-board");
+const clientHistoryTitle = document.getElementById("client-history-title");
+const clientSearch = document.getElementById("clients-search");
+const clientForm = document.getElementById("client-form");
+const clientFormTitle = document.getElementById("client-form-title");
+const clientFormResult = document.getElementById("client-form-result");
+const clienteEnvioDialog = document.getElementById("cliente-envio-dialog");
+const clienteEnvioForm = document.getElementById("cliente-envio-form");
+const clienteEnvioFormTitle = document.getElementById("cliente-envio-form-title");
+const clienteEnvioContext = document.getElementById("cliente-envio-context");
+const clienteEnvioFiles = document.getElementById("cliente-envio-files");
+const clienteEnvioFolderStatus = document.getElementById("cliente-envio-folder-status");
+const clienteEnvioResult = document.getElementById("cliente-envio-result");
+const clienteEnvioDraftDialog = document.getElementById("cliente-envio-draft-dialog");
+const clienteEnvioDraftForm = document.getElementById("cliente-envio-draft-form");
+const clienteEnvioDraftTitle = document.getElementById("cliente-envio-draft-title");
+const clienteEnvioDraftContext = document.getElementById("cliente-envio-draft-context");
+const clienteEnvioDraftTo = document.getElementById("cliente-envio-draft-to");
+const clienteEnvioDraftSubject = document.getElementById("cliente-envio-draft-subject");
+const clienteEnvioDraftFolder = document.getElementById("cliente-envio-draft-folder");
+const clienteEnvioDraftBody = document.getElementById("cliente-envio-draft-body");
+const clienteEnvioDraftFiles = document.getElementById("cliente-envio-draft-files");
+const clienteEnvioDraftResult = document.getElementById("cliente-envio-draft-result");
+const clienteEnvioOpenDraftButton = document.getElementById("cliente-envio-open-draft-button");
+const clienteEnvioOpenFolderButton = document.getElementById("cliente-envio-open-folder-button");
+const clienteEnvioMarkSentButton = document.getElementById("cliente-envio-mark-sent-button");
 const notificationsBoard = document.getElementById("notifications-board");
 const newsAdminBoard = document.getElementById("news-admin-board");
 const monitorRunsBoard = document.getElementById("monitor-runs-board");
@@ -320,6 +353,7 @@ const actuacionTipoLabels = {
 const actuacionEstadoLabels = {
   pendiente: "Pendiente",
   en_curso: "Pendiente",
+  en_preparacion: "En preparación",
   preparado: "Preparado",
   preparada: "Preparado",
   respondida: "Enviado",
@@ -343,21 +377,27 @@ const actuacionVisualLabels = {
   cancelado: "Cancelado",
   cancelada: "Cancelado",
   pendiente: "Pendiente",
+  en_preparacion: "En preparación",
   preparado: "Preparado",
 };
 const agendaTypeLabels = {
   actuacion: "Actuación",
+  cliente_envio: "Envío a cliente",
   licitacion: "Licitación",
   interno: "Interno",
   vencido: "Vencido",
   sin_fecha: "Sin fecha",
 };
-const agendaColorTypes = new Set(["actuacion", "licitacion", "interno", "vencido"]);
+const agendaColorTypes = new Set(["actuacion", "cliente_envio", "licitacion", "interno", "vencido"]);
 const agendaStatusLabels = {
   pendiente: "Pendiente",
   en_curso: "Pendiente",
+  en_preparacion: "En preparación",
   preparado: "Preparado",
   preparada: "Preparado",
+  listo_para_preparar_correo: "Listo para preparar correo",
+  correo_outlook_generado: "Correo Outlook generado",
+  incidencia: "Incidencia / Error",
   respondida: "Enviado",
   cerrado: "Enviado",
   cerrada: "Enviado",
@@ -366,11 +406,40 @@ const agendaStatusLabels = {
   cancelado: "Cancelado",
   cancelada: "Cancelado",
 };
-const taskStateOptions = [
+const actuacionStateOptions = [
   { value: "pendiente", label: "Pendiente" },
+  { value: "en_preparacion", label: "En preparación" },
   { value: "preparado", label: "Preparado" },
   { value: "enviado", label: "Enviado" },
   { value: "cancelado", label: "Cancelado" },
+];
+const taskStateOptions = [
+  { value: "pendiente", label: "Pendiente" },
+  { value: "en_preparacion", label: "En preparación" },
+  { value: "preparado", label: "Preparado" },
+  { value: "enviado", label: "Enviado" },
+  { value: "cancelado", label: "Cancelado" },
+];
+const clienteEnvioStateOptions = [
+  { value: "en_preparacion", label: "En preparación" },
+  { value: "listo_para_preparar_correo", label: "Listo para preparar correo" },
+  { value: "correo_outlook_generado", label: "Correo Outlook generado" },
+  { value: "enviado", label: "Enviado" },
+  { value: "incidencia", label: "Incidencia / Error" },
+  { value: "cancelado", label: "Cancelado / No procede" },
+];
+const clienteEnvioTypeOptions = [
+  { value: "ficha_inicial", label: "Ficha inicial / resumen de licitación" },
+  { value: "plantilla_oferta", label: "Plantilla de oferta" },
+  { value: "documentacion_revision", label: "Documentación para revisión" },
+  { value: "documentacion_firma", label: "Documentación para firma" },
+  { value: "requerimiento", label: "Requerimiento" },
+  { value: "subsanacion", label: "Subsanación" },
+  { value: "aclaracion", label: "Aclaración" },
+  { value: "documentacion_adicional", label: "Documentación adicional" },
+  { value: "contrato_encargo", label: "Contrato / encargo" },
+  { value: "recordatorio", label: "Recordatorio" },
+  { value: "otro", label: "Otro" },
 ];
 const editorFields = [
   "id",
@@ -573,6 +642,20 @@ function normalizedTaskStateValue(value) {
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "");
+  if (["enpreparacion"].includes(key)) return "en_preparacion";
+  if (["preparado", "preparada"].includes(key)) return "preparado";
+  if (["respondida", "cerrado", "cerrada", "enviado", "enviada"].includes(key)) return "enviado";
+  if (["cancelado", "cancelada"].includes(key)) return "cancelado";
+  return "pendiente";
+}
+
+function normalizedActuacionStateValue(value) {
+  const key = String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+  if (["enpreparacion"].includes(key)) return "en_preparacion";
   if (["preparado", "preparada"].includes(key)) return "preparado";
   if (["respondida", "cerrado", "cerrada", "enviado", "enviada"].includes(key)) return "enviado";
   if (["cancelado", "cancelada"].includes(key)) return "cancelado";
@@ -693,6 +776,7 @@ function renderAiSummaryBadge(item) {
 function commentEntityTypeForAgenda(item) {
   if (item?.source_type === "licitacion") return "licitacion";
   if (item?.source_type === "actuacion") return "actuacion";
+  if (item?.source_type === "cliente_envio") return "";
   return "agenda_evento";
 }
 
@@ -717,6 +801,7 @@ function renderCommentLatest(summary) {
 function renderCommentsWidget(entityType, entityId, summary = {}, options = {}) {
   if (!entityType || !entityId) return "";
   const full = Boolean(options.full);
+  const hideReply = Boolean(options.hideReply);
   const threadHidden = full ? "" : "hidden";
   const toggleText = full ? "Actualizar comentarios" : "Ver comentarios";
   return `
@@ -729,7 +814,7 @@ function renderCommentsWidget(entityType, entityId, summary = {}, options = {}) 
           ${escapeHtml(commentCountText(summary?.count || 0))}
         </button>
         ${renderCommentLatest(summary)}
-        <button type="button" class="ghost comments-reply" data-comments-toggle>${escapeHtml(toggleText)}</button>
+        ${hideReply ? "" : `<button type="button" class="ghost comments-reply" data-comments-toggle>${escapeHtml(toggleText)}</button>`}
       </div>
       <div class="comments-thread" data-comments-thread ${threadHidden}>
         <div class="comments-list" data-comments-list>
@@ -1017,6 +1102,7 @@ function showDaysView() {
   licitacionesSection.hidden = true;
   calendarSection.hidden = true;
   actuacionesSection.hidden = true;
+  clientsSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
@@ -1039,6 +1125,7 @@ function showLicitacionesView({ diaId = "", title = "Centro de licitaciones", vi
   licitacionesSection.classList.toggle("has-day-context", Boolean(diaId));
   calendarSection.hidden = true;
   actuacionesSection.hidden = true;
+  clientsSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
@@ -1059,6 +1146,7 @@ function showCalendarView() {
   licitacionesSection.hidden = true;
   calendarSection.hidden = false;
   actuacionesSection.hidden = true;
+  clientsSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
@@ -1110,11 +1198,29 @@ function showActuacionesView() {
   licitacionesSection.hidden = true;
   calendarSection.hidden = true;
   actuacionesSection.hidden = false;
+  clientsSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
   configSection.hidden = true;
   loadActuaciones();
+}
+
+function showClientsView() {
+  if (!isAdmin()) return;
+  appState.lastSection = "clients";
+  setActiveNav("clients");
+  setPageHeader("Clientes", "Clientes y envíos a clientes");
+  daysSection.hidden = true;
+  licitacionesSection.hidden = true;
+  calendarSection.hidden = true;
+  actuacionesSection.hidden = true;
+  clientsSection.hidden = false;
+  notificationsSection.hidden = true;
+  newsAdminSection.hidden = true;
+  monitorSection.hidden = true;
+  configSection.hidden = true;
+  loadClientes();
 }
 
 function showNotificationsView() {
@@ -1124,6 +1230,7 @@ function showNotificationsView() {
   licitacionesSection.hidden = true;
   calendarSection.hidden = true;
   actuacionesSection.hidden = true;
+  clientsSection.hidden = true;
   notificationsSection.hidden = false;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
@@ -1140,6 +1247,7 @@ function showNewsAdminView() {
   licitacionesSection.hidden = true;
   calendarSection.hidden = true;
   actuacionesSection.hidden = true;
+  clientsSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = false;
   monitorSection.hidden = true;
@@ -1156,6 +1264,7 @@ function showMonitorView() {
   licitacionesSection.hidden = true;
   calendarSection.hidden = true;
   actuacionesSection.hidden = true;
+  clientsSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = false;
@@ -1172,6 +1281,7 @@ function showConfigView() {
   licitacionesSection.hidden = true;
   calendarSection.hidden = true;
   actuacionesSection.hidden = true;
+  clientsSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
@@ -1186,6 +1296,10 @@ function backFromNotifications() {
   }
   if (appState.lastSection === "calendar") {
     showCalendarView();
+    return;
+  }
+  if (appState.lastSection === "clients") {
+    showClientsView();
     return;
   }
   if (appState.lastSection === "monitor") {
@@ -1247,34 +1361,13 @@ function diaIsCurrentlyReviewed(dia) {
 
 function renderDaysSummary() {
   const days = visibleDias();
-  if (!isAdmin()) {
-    const total = days.reduce((sum, dia) => sum + Number(dia.total || 0), 0);
-    const pendientes = days.reduce((sum, dia) => sum + Number(dia.pendientes_nuria || 0), 0);
-    const gestionadas = days.reduce((sum, dia) => sum + Number(dia.gestionadas_nuria || 0), 0);
-    const soloDescargar = days.reduce((sum, dia) => sum + Number(dia.solo_descargar || 0), 0);
-    const preparar = days.reduce((sum, dia) => sum + Number(dia.preparar_licitacion || 0), 0);
-
-    daysSummary.innerHTML = [
-      ["Total licitaciones", total],
-      ["Pendientes de revisión", pendientes],
-      ["Gestionadas", gestionadas],
-      ["Solo descargar", soloDescargar],
-      ["Preparar licitación", preparar],
-    ].map(renderMetric).join("");
-    return;
-  }
-
-  const totalDias = days.length;
-  const totalLicitaciones = days.reduce((sum, dia) => sum + Number(dia.total || 0), 0);
-  const pendientes = days.reduce((sum, dia) => sum + Number(dia.pendientes || 0), 0);
-  const enRevision = days.filter((dia) => String(dia.estado_visual || "").includes("pendiente de cerrar")).length;
-  const completados = days.filter((dia) => dia.estado_visual === "Cerrado / revisado").length;
+  const pendientes = days.filter((dia) => ["Pendiente de revisión", "En revisión por administrador", "Revisado por administrador · pendiente de Nuria"].includes(dia.estado_visual)).length;
+  const enRevision = days.filter((dia) => dia.estado_visual === "Revisado por Nuria · pendiente de cerrar").length;
+  const completados = days.filter((dia) => dia.estado_visual === "Cerrado").length;
 
   daysSummary.innerHTML = [
-    ["Días abiertos", totalDias],
-    ["Licitaciones", totalLicitaciones],
-    ["Pendientes", pendientes],
-    ["Revisado · pendiente", enRevision],
+    ["Días pendientes", pendientes],
+    ["Revisados pendientes de cerrar", enRevision],
     ["Cerrados", completados],
   ].map(renderMetric).join("");
 }
@@ -1289,13 +1382,11 @@ function actuacionLabel(map, value) {
 
 function actuacionesQueryParams() {
   const params = new URLSearchParams();
-  const filter = actuacionesFilter.value || "abiertas";
-  if (filter === "abiertas") params.set("abiertas", "1");
-  if (filter === "vencidas") params.set("vencidas", "1");
-  if (filter === "hoy") params.set("hoy", "1");
-  if (filter === "semana") params.set("semana", "1");
-  if (filter === "sin_licitacion") params.set("sin_licitacion", "1");
-  if (filter === "cerradas") params.set("estado", "cerrada");
+  const filter = actuacionesFilter.value || "abiertos";
+  if (filter === "abiertos") params.set("abiertas", "1");
+  if (["pendiente", "en_preparacion", "preparado", "enviado", "cancelado"].includes(filter)) {
+    params.set("estado", filter);
+  }
   return params;
 }
 
@@ -1352,7 +1443,8 @@ function linkedLicitacionesCountText(licitaciones = []) {
 function renderActuacionCard(item) {
   const deadline = item.deadline_at ? item.deadline_at.replace("T", " ") : "Sin fecha";
   const linked = item.licitaciones || [];
-  const canClose = ["pendiente", "en_curso", "preparado", "preparada"].includes(item.estado);
+  const canClose = ["pendiente", "en_preparacion", "preparado"].includes(normalizedActuacionStateValue(item.estado));
+  const createEnvioButton = renderCreateClienteEnvioButton({ actuacionId: item.id });
   return `
     <article class="card compact-card actuacion-card">
       <div class="card-content">
@@ -1376,6 +1468,7 @@ function renderActuacionCard(item) {
         ${renderCommentsWidget("actuacion", item.id, item.comments_summary)}
         <div class="card-actions">
           <button data-edit-actuacion="${escapeHtml(item.id)}">Editar</button>
+          ${createEnvioButton}
           <button data-duplicate-actuacion="${escapeHtml(item.id)}">Duplicar actuación</button>
           ${canClose ? `<button data-close-actuacion="${escapeHtml(item.id)}">Cerrar</button>` : ""}
           ${canClose ? `<button class="danger" data-cancel-actuacion="${escapeHtml(item.id)}">Cancelar</button>` : ""}
@@ -1486,8 +1579,23 @@ function renderActuacionHistory(entries = [], item = null) {
       ${entry.old_value || entry.new_value ? `<small>${escapeHtml(entry.old_value || "vacío")} -> ${escapeHtml(entry.new_value || "vacío")}</small>` : ""}
     </article>
   `).join("") : `<div class="empty">Sin movimientos registrados.</div>`;
+  const envios = item?.cliente_envios || [];
+  const enviosHtml = item ? `
+    <section class="history-panel cliente-envios-history-panel">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">Envíos a clientes</p>
+          <h3>${escapeHtml(envios.length ? `${envios.length} envío(s) vinculados` : "Sin envíos vinculados")}</h3>
+        </div>
+        ${renderCreateClienteEnvioButton({ actuacionId: item.id })}
+      </div>
+      ${renderClienteEnviosList(envios, {
+        emptyText: "Todavía no hay envíos creados desde esta actuación.",
+      })}
+    </section>
+  ` : "";
   const commentsHtml = item?.id ? renderCommentsWidget("actuacion", item.id, item.comments_summary, { full: true }) : "";
-  actuacionHistory.innerHTML = `${historyHtml}${commentsHtml}`;
+  actuacionHistory.innerHTML = `${enviosHtml}${historyHtml}${commentsHtml}`;
   hydrateFullCommentWidgets(actuacionHistoryPanel);
 }
 
@@ -1520,7 +1628,7 @@ async function editActuacion(id) {
   actuacionForm.elements.descripcion.value = item.descripcion || "";
   actuacionForm.elements.deadline_at.value = toDatetimeLocal(item.deadline_at || "");
   showDateWarning(actuacionDateWarning, actuacionForm.elements.deadline_at.value);
-  actuacionForm.elements.estado.value = normalizedTaskStateValue(item.estado || "pendiente");
+  actuacionForm.elements.estado.value = normalizedActuacionStateValue(item.estado || "pendiente");
   actuacionForm.elements.recordatorio_email.checked = Boolean(item.recordatorio_email);
   setSelectedActuacionLicitaciones(item.licitaciones || []);
   renderActuacionHistory(item.historial || [], item);
@@ -1663,6 +1771,7 @@ async function setAgendaEventoEstado(id, action) {
 async function updatePendingTaskState(token, stateValue) {
   const [sourceType, sourceId] = String(token || "").split(":");
   if (!sourceType || !sourceId) return;
+  if (sourceType === "cliente_envio") return;
   const endpoint = {
     licitacion: `/api/licitaciones/${sourceId}`,
     actuacion: `/api/actuaciones/${sourceId}`,
@@ -1709,6 +1818,10 @@ async function sendAgendaEmailSummary() {
 function openAgendaOrigin(token) {
   const [sourceType, sourceId] = String(token || "").split(":");
   if (!sourceType || !sourceId) return;
+  if (sourceType === "cliente_envio") {
+    openClienteEnvioDraftDialog(sourceId);
+    return;
+  }
   if (sourceType === "licitacion") {
     openLicitacionDetail(sourceId);
     return;
@@ -1734,61 +1847,43 @@ function renderDays() {
   }
 
   daysBoard.innerHTML = days.map((dia) => {
-    const primaryMetrics = [
-      ["Total", dia.total],
-      ["Admin", dia.gestionadas_admin],
-      ["Nuria", dia.gestionadas_nuria],
-      ["Pendientes", dia.pendientes],
-    ];
-    const secondaryMetrics = isAdmin()
-      ? [
-          ["Avance", `${dia.avance_porcentaje || 0}%`],
-          ["Enviadas a Nuria", dia.pendientes_nuria],
-          ["Descartadas", dia.descartadas_nuria],
-          ["Solo descargar", dia.solo_descargar],
-          ["Preparar ficha", dia.preparar_licitacion],
-        ]
-      : [
-          ["Avance", `${dia.avance_porcentaje || 0}%`],
-          ["Pendientes de revisión", dia.pendientes_nuria],
-          ["Descartadas", dia.descartadas_nuria],
-          ["Solo descargar", dia.solo_descargar],
-          ["Preparar ficha", dia.preparar_licitacion],
-        ];
-    const lastActivity = dia.ultima_actividad || "Sin movimientos";
-    const lastReviewer = dia.ultima_accion_nuria || "Sin revisión";
     const statusText = dia.estado_visual || dia.estado || "Sin estado";
+    const adminReview = dia.ultima_revision_admin || "Sin revisión";
+    const nuriaReview = dia.ultima_revision_nuria || "Sin revisión";
+    const historyItems = (dia.historial_resumen || []).slice(0, 3);
+    const historyHtml = historyItems.length
+      ? historyItems.map((entry) => `
+          <li>
+            <span>${escapeHtml(entry.body || "Movimiento registrado")}</span>
+            ${entry.created_at ? `<small>${escapeHtml(entry.created_at)}</small>` : ""}
+          </li>
+        `).join("")
+      : `<li class="empty-history">Sin movimientos recientes.</li>`;
 
     return `
       <article class="day-card">
         <div class="day-card-head">
           <div class="day-card-title">
-            <p class="eyebrow">Día de Infonalia</p>
-            <h2>${escapeHtml(dia.fecha_formateada || dia.titulo)}</h2>
-            <p class="day-card-subtitle">${escapeHtml(dia.licitaciones_texto || "")}</p>
+            <h2>Infonalia del día ${escapeHtml(dia.fecha_formateada || dia.fecha || dia.titulo)}</h2>
+            <p class="day-card-subtitle">${escapeHtml(dia.licitaciones_texto || `${dia.total || 0} licitaciones`)}</p>
           </div>
           <span class="badge ${badgeClass(statusText)}">${escapeHtml(statusText)}</span>
         </div>
 
-        <div class="day-metrics day-metrics-primary">
-          ${primaryMetrics.map(([label, value]) => `
-            <div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value ?? "")}</strong></div>
-          `).join("")}
+        <div class="day-review-lines">
+          <p><span>Última revisión del administrador:</span> <strong>${escapeHtml(adminReview)}</strong></p>
+          <p><span>Última revisión de Nuria:</span> <strong>${escapeHtml(nuriaReview)}</strong></p>
         </div>
 
-        <div class="day-mini-metrics">
-          ${secondaryMetrics.map(([label, value]) => `
-            <div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value ?? "")}</strong></div>
-          `).join("")}
+        <div class="day-history-box">
+          <div class="day-history-title">Comentarios e histórico</div>
+          <ul>${historyHtml}</ul>
+          ${renderCommentsWidget("infonalia_dia", dia.id, dia.comments_summary, { hideReply: true })}
         </div>
 
-        <div class="day-activity-row">
-          <div><span>Última actividad</span><strong>${escapeHtml(lastActivity)}</strong></div>
-          <div><span>Última acción de Nuria</span><strong>${escapeHtml(lastReviewer)}</strong></div>
-        </div>
-
-        <div class="card-actions">
-          <button class="primary" data-open-dia="${escapeHtml(dia.id)}" data-title="${escapeHtml(dia.titulo)}">Abrir revisión</button>
+        <div class="card-actions day-card-actions">
+          <button class="primary" data-open-dia="${escapeHtml(dia.id)}" data-title="${escapeHtml(dia.titulo)}">Abrir día</button>
+          <button class="ghost" data-day-comments="${escapeHtml(dia.id)}">Ver comentarios</button>
           ${isAdmin() ? `<button class="danger" data-delete-dia="${escapeHtml(dia.id)}" data-title="${escapeHtml(dia.titulo)}">Borrar día</button>` : ""}
         </div>
       </article>
@@ -2040,6 +2135,7 @@ async function loadCalendarItems() {
     const data = await response.json();
     appState.calendarItems = data.items || [];
     appState.agendaGroups = data.groups || {};
+    appState.agendaPanels = data.panels || [];
     appState.agendaSummary = {};
     appState.agendaWorkbench = null;
     renderCalendarStateFilter();
@@ -2066,6 +2162,7 @@ async function loadCalendarItems() {
   const data = await response.json();
   appState.calendarItems = data.events || [];
   appState.agendaGroups = data.groups || {};
+  appState.agendaPanels = [];
   appState.agendaSummary = data.summary || {};
   appState.agendaActiveDateLabel = data.active_date_label || "";
   appState.agendaIsToday = Boolean(data.is_today);
@@ -2168,6 +2265,9 @@ function agendaLinkedText(item) {
 }
 
 function agendaOpenLabel(item) {
+  if (item.source_type === "cliente_envio") {
+    return item.state_value === "correo_outlook_generado" ? "Revisar correo" : "Preparar correo";
+  }
   if (item.source_type === "actuacion") return "Abrir actuación";
   if (item.source_type === "licitacion") return "Abrir licitación";
   return "Abrir evento";
@@ -2178,17 +2278,22 @@ function isPendingAgendaView() {
 }
 
 function pendingStateOptions(item) {
+  if (item.source_type === "cliente_envio") return [];
   if (item.state_options && item.state_options.length) return item.state_options;
   if (item.source_type === "licitacion") return estadoOrden.map((estado) => ({ value: estado, label: estadoLabel(estado) }));
+  if (item.source_type === "actuacion") return actuacionStateOptions;
   return taskStateOptions;
 }
 
 function renderPendingStateControl(item) {
   if (!isPendingAgendaView()) return "";
+  if (item.source_type === "cliente_envio") return "";
   const token = `${item.source_type}:${item.source_id}`;
   const value = item.source_type === "licitacion"
     ? (item.state_value || item.status || item.state || "")
-    : normalizedTaskStateValue(item.state_value || item.raw_state || item.status || item.state);
+    : (item.source_type === "actuacion"
+      ? normalizedActuacionStateValue(item.state_value || item.raw_state || item.status || item.state)
+      : normalizedTaskStateValue(item.state_value || item.raw_state || item.status || item.state));
   return `
     <label class="agenda-state-control">
       <span>Estado</span>
@@ -2204,6 +2309,20 @@ function renderPendingStateControl(item) {
 function renderAgendaActions(item) {
   const token = `${item.source_type}:${item.source_id}`;
   const actions = [`<button type="button" data-agenda-open="${escapeHtml(token)}">${escapeHtml(agendaOpenLabel(item))}</button>`];
+  if (item.source_type === "cliente_envio") {
+    const envio = {
+      estado: item.state_value || item.raw_state || "",
+      correo_generado_path: item.correo_generado_path || "",
+    };
+    actions.push(`<button type="button" data-open-cliente-envio-folder="${escapeHtml(item.source_id)}">Abrir carpeta</button>`);
+    if (envio.correo_generado_path) {
+      actions.push(`<button type="button" data-open-cliente-envio-draft-file="${escapeHtml(item.source_id)}">Abrir correo preparado</button>`);
+    }
+    if (clienteEnvioCanMarkSent(envio)) {
+      actions.push(`<button type="button" data-mark-cliente-envio-sent="${escapeHtml(item.source_id)}">Marcar como enviado</button>`);
+    }
+    return `<div class="links">${actions.join("")}</div>`;
+  }
   if (item.source_type === "licitacion") {
     actions.push(`<button type="button" data-new-actuacion-id="${escapeHtml(item.source_id)}">Nueva actuación</button>`);
   }
@@ -2456,6 +2575,19 @@ function renderAgendaDay(items, selectedKey) {
 }
 
 function renderAgendaPending(items) {
+  const panels = appState.agendaPanels || [];
+  if (panels.length) {
+    const blocks = panels.map((panel) => (
+      renderAgendaGroup(
+        panel.items?.length ? `${panel.title} (${panel.items.length})` : panel.title,
+        panel.items || []
+      )
+    ));
+    calendarRadar.innerHTML = renderAgendaListPanel("Tareas pendientes", "Lista de trabajo", blocks.join(""));
+    calendarBoard.innerHTML = "";
+    calendarDayPanel.innerHTML = "";
+    return;
+  }
   const groups = appState.agendaGroups || {};
   const blocks = [
     renderAgendaGroup("Vencidos", groups.overdue || items.filter((item) => item.is_overdue)),
@@ -2560,12 +2692,6 @@ function renderPendingTaskCard(item, colorClass) {
     item.date ? formatDate(item.date) : "Sin fecha",
     agendaEventTime(item),
   ].filter(Boolean).join(" ");
-  const sideActions = [
-    `<button type="button" data-agenda-open="${escapeHtml(token)}">Abrir</button>`,
-  ];
-  if (item.source_type === "actuacion") {
-    sideActions.push(`<button type="button" data-agenda-duplicate="${escapeHtml(item.source_id)}">Duplicar actuación</button>`);
-  }
   const commentEntityType = commentEntityTypeForAgenda(item);
   return `
     <article class="card compact-card agenda-card pending-task-card ${colorClass}" data-calendar-date="${escapeHtml(item.date || "sin-fecha")}">
@@ -2593,8 +2719,7 @@ function renderPendingTaskCard(item, colorClass) {
         </div>
 
         <div class="card-side-actions">
-          ${sideActions.join("")}
-          ${renderPendingStateControl(item)}
+          ${renderAgendaActions(item)}
           <span class="card-side-id">ID ${escapeHtml(item.source_id)}</span>
         </div>
       </div>
@@ -2695,6 +2820,644 @@ function populateNotificationUsers(users) {
     `),
   ].join("");
   notificationDestination.value = current;
+}
+
+function formatBytes(value) {
+  const size = Number(value || 0);
+  if (!size) return "0 B";
+  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  if (size >= 1024) return `${Math.round(size / 1024)} KB`;
+  return `${size} B`;
+}
+
+function clienteName(item) {
+  return item?.display_name || item?.nombre_comercial || item?.razon_social || "Cliente sin nombre";
+}
+
+function shortDropboxPath(value) {
+  return compactFolderDisplayPath(String(value || "").replaceAll("/", "\\"));
+}
+
+function setInlineResult(element, message = "", type = "") {
+  if (!element) return;
+  element.className = `import-result ${type}`.trim();
+  element.textContent = message;
+}
+
+function selectedClienteEnvioPaths(container) {
+  return [...(container?.querySelectorAll("input[data-relative-path]:checked") || [])]
+    .map((input) => input.dataset.relativePath || "")
+    .filter(Boolean);
+}
+
+function renderClienteEnvioFileOptions(files, selectedPaths = []) {
+  const selected = new Set((selectedPaths || []).map((value) => String(value || "").replaceAll("/", "\\")));
+  if (!files?.length) {
+    return `<div class="empty">No hay archivos válidos en la carpeta indicada.</div>`;
+  }
+  return files.map((file) => {
+    const relative = String(file.relative_path || "");
+    const checked = selected.has(relative.replaceAll("/", "\\"));
+    return `
+      <label class="selector-item selector-item-check">
+        <input type="checkbox" data-relative-path="${escapeHtml(relative)}" ${checked ? "checked" : ""}>
+        <div>
+          <strong>${escapeHtml(relative)}</strong>
+          <small>${escapeHtml(formatBytes(file.size_bytes))}${file.modified_at ? ` · ${escapeHtml(formatDateTime(file.modified_at))}` : ""}</small>
+        </div>
+      </label>
+    `;
+  }).join("");
+}
+
+function clienteEnvioCanPrepare(envio) {
+  return ["listo_para_preparar_correo", "correo_outlook_generado", "incidencia"].includes(envio?.estado || "");
+}
+
+function clienteEnvioCanMarkSent(envio) {
+  return envio?.estado === "correo_outlook_generado";
+}
+
+function renderClienteEnvioActions(envio, { includeEdit = true } = {}) {
+  const actions = [];
+  if (clienteEnvioCanPrepare(envio)) {
+    actions.push(
+      `<button type="button" data-open-cliente-envio-draft="${escapeHtml(envio.id)}">${escapeHtml(envio.estado === "correo_outlook_generado" ? "Regenerar correo" : "Preparar correo")}</button>`
+    );
+  }
+  actions.push(`<button type="button" data-open-cliente-envio-folder="${escapeHtml(envio.id)}">Abrir carpeta</button>`);
+  if (envio.correo_generado_path) {
+    actions.push(`<button type="button" data-open-cliente-envio-draft-file="${escapeHtml(envio.id)}">Abrir correo preparado</button>`);
+  }
+  if (clienteEnvioCanMarkSent(envio)) {
+    actions.push(`<button type="button" data-mark-cliente-envio-sent="${escapeHtml(envio.id)}">Marcar como enviado</button>`);
+  }
+  if (includeEdit && isAdmin()) {
+    actions.push(`<button type="button" data-edit-cliente-envio="${escapeHtml(envio.id)}">Editar envío</button>`);
+  }
+  return actions.join("");
+}
+
+function renderClienteEnvioCard(envio, { showClient = true, includeEdit = true } = {}) {
+  const metaLines = [
+    envio.licitacion_expediente ? `Expediente: ${envio.licitacion_expediente}` : "",
+    envio.actuacion_titulo ? `Actuación: ${envio.actuacion_titulo}` : "",
+    envio.destinatario_email ? `Para: ${envio.destinatario_email}` : "",
+    envio.carpeta_dropbox ? `Carpeta: ${shortDropboxPath(envio.carpeta_dropbox) || envio.carpeta_dropbox}` : "",
+  ].filter(Boolean);
+  return `
+    <article class="cliente-envio-card">
+      <div>
+        <strong>${escapeHtml(showClient ? `${envio.cliente_nombre} · ${envio.tipo_envio_label}` : (envio.tipo_envio_label || "Envío"))}</strong>
+        <span>${escapeHtml(envio.estado_label || envio.estado || "")}</span>
+        ${metaLines.map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
+        <span>${escapeHtml(`${envio.attachment_count || 0} adjunto(s) · ${formatBytes(envio.attachments_size_total)}`)}</span>
+        ${envio.correo_generado_at ? `<span>Correo generado: ${escapeHtml(formatDateTime(envio.correo_generado_at))}</span>` : ""}
+        ${envio.enviado_at ? `<span>Enviado: ${escapeHtml(formatDateTime(envio.enviado_at))}</span>` : ""}
+        ${envio.incidencia_detalle ? `<span>${escapeHtml(envio.incidencia_detalle)}</span>` : ""}
+      </div>
+      <div class="card-actions">
+        ${envio.licitacion_id ? `<button type="button" data-open-licitacion-detail="${escapeHtml(envio.licitacion_id)}">Abrir licitación</button>` : ""}
+        ${envio.actuacion_id ? `<button type="button" data-edit-actuacion="${escapeHtml(envio.actuacion_id)}">Abrir actuación</button>` : ""}
+        ${renderClienteEnvioActions(envio, { includeEdit })}
+      </div>
+    </article>
+  `;
+}
+
+function renderCreateClienteEnvioButton({ licitacionId = "", actuacionId = "", label = "" } = {}) {
+  if (!isAdmin()) return "";
+  if (actuacionId) {
+    return `<button type="button" data-new-cliente-envio-actuacion="${escapeHtml(actuacionId)}">${escapeHtml(label || "Crear envío de esta actuación")}</button>`;
+  }
+  if (licitacionId) {
+    return `<button type="button" data-new-cliente-envio-licitacion="${escapeHtml(licitacionId)}">${escapeHtml(label || "Crear envío a cliente")}</button>`;
+  }
+  return "";
+}
+
+function renderClienteEnviosList(envios = [], { showClient = true, includeEdit = true, emptyText = "Sin envíos registrados." } = {}) {
+  if (!envios.length) {
+    return `<div class="empty">${escapeHtml(emptyText)}</div>`;
+  }
+  return `
+    <div class="cliente-envios-list">
+      ${envios.map((envio) => renderClienteEnvioCard(envio, { showClient, includeEdit })).join("")}
+    </div>
+  `;
+}
+
+function renderClientHistoryBoard() {
+  const detail = appState.clienteDetail;
+  if (!detail) {
+    clientHistoryTitle.textContent = "Envíos del cliente";
+    clientHistoryBoard.innerHTML = `<div class="empty">Selecciona un cliente para ver su historial básico.</div>`;
+    return;
+  }
+  clientHistoryTitle.textContent = `Envíos de ${clienteName(detail)}`;
+  const envios = detail.envios || [];
+  clientHistoryBoard.innerHTML = renderClienteEnviosList(envios, {
+    showClient: false,
+    emptyText: "Este cliente todavía no tiene envíos registrados.",
+  });
+}
+
+function resetClientForm() {
+  if (!clientForm) return;
+  clientForm.reset();
+  clientForm.elements.id.value = "";
+  clientForm.elements.pais.value = "España";
+  clientFormTitle.textContent = "Nuevo cliente";
+  appState.clienteDetail = null;
+  setInlineResult(clientFormResult, "");
+  renderClientHistoryBoard();
+  renderClientsBoard();
+}
+
+function fillClientForm(item) {
+  if (!clientForm || !item) return;
+  clientForm.reset();
+  clientForm.elements.id.value = item.id || "";
+  [
+    "razon_social",
+    "nombre_comercial",
+    "nif_cif",
+    "domicilio_fiscal",
+    "codigo_postal",
+    "municipio",
+    "provincia",
+    "pais",
+    "telefono_principal",
+    "email_principal",
+    "email_alternativo",
+    "persona_contacto_operativa",
+    "observaciones_internas",
+    "representante_nombre",
+    "representante_nif",
+    "representante_cargo",
+    "representante_email",
+    "representante_telefono",
+    "condiciones_particulares",
+    "tipo_cliente",
+    "forma_facturacion",
+    "plantilla_contractual",
+  ].forEach((field) => {
+    if (clientForm.elements[field]) clientForm.elements[field].value = item[field] || "";
+  });
+  clientFormTitle.textContent = `Editar ${clienteName(item)}`;
+}
+
+function renderClientsBoard() {
+  const clients = appState.clientes || [];
+  const selectedId = String(appState.clienteDetail?.id || "");
+  if (!clients.length) {
+    clientsBoard.innerHTML = `<div class="empty">Todavía no hay clientes dados de alta.</div>`;
+    return;
+  }
+  clientsBoard.innerHTML = clients.map((client) => `
+    <article class="user-row ${String(client.id) === selectedId ? "selected-row" : ""}">
+      <div>
+        <strong>${escapeHtml(clienteName(client))}</strong>
+        <span>${escapeHtml(client.razon_social || "")}</span>
+        <span>${escapeHtml(client.nif_cif || "Sin NIF/CIF")}</span>
+        <span>${escapeHtml(client.email_principal || client.email_alternativo || "Sin email")}</span>
+      </div>
+      <div class="card-actions">
+        <button type="button" data-edit-client="${escapeHtml(client.id)}">Editar</button>
+      </div>
+    </article>
+  `).join("");
+}
+
+async function loadClientDetail(clientId) {
+  const response = await fetch(`/api/clientes/${clientId}`);
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    setInlineResult(clientFormResult, result.error || "No se pudo cargar el cliente.", "error");
+    return;
+  }
+  appState.clienteDetail = result.item;
+  fillClientForm(result.item);
+  renderClientsBoard();
+  renderClientHistoryBoard();
+}
+
+async function loadClientes() {
+  const params = new URLSearchParams();
+  const q = clientSearch?.value.trim() || "";
+  if (q) params.set("q", q);
+  const response = await fetch(`/api/clientes?${params.toString()}`);
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    clientsBoard.innerHTML = `<div class="empty">No se pudieron cargar los clientes.</div>`;
+    return;
+  }
+  const selectedId = String(appState.clienteDetail?.id || "");
+  appState.clientes = result.items || [];
+  renderClientsBoard();
+  if (selectedId && appState.clientes.some((item) => String(item.id) === selectedId)) {
+    await loadClientDetail(selectedId);
+  } else {
+    renderClientHistoryBoard();
+  }
+}
+
+async function saveClient(event) {
+  event.preventDefault();
+  const id = clientForm.elements.id.value;
+  const payload = Object.fromEntries(new FormData(clientForm).entries());
+  const response = await fetch(id ? `/api/clientes/${id}` : "/api/clientes", {
+    method: id ? "PATCH" : "POST",
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    setInlineResult(clientFormResult, result.error || "No se pudo guardar el cliente.", "error");
+    return;
+  }
+  setInlineResult(clientFormResult, "Cliente guardado correctamente.", "ok");
+  await loadClientes();
+  if (result.item?.id) await loadClientDetail(result.item.id);
+}
+
+function clienteOptionText(item) {
+  const name = clienteName(item);
+  const nif = item.nif_cif ? ` · ${item.nif_cif}` : "";
+  return `${name}${nif}`;
+}
+
+function populateSelectOptions(select, items, valueKey, labelKey, selectedValue = "") {
+  if (!select) return;
+  select.innerHTML = items.map((item) => (
+    `<option value="${escapeHtml(item[valueKey])}" ${String(item[valueKey]) === String(selectedValue) ? "selected" : ""}>${escapeHtml(item[labelKey])}</option>`
+  )).join("");
+}
+
+function resetClienteEnvioForm() {
+  if (!clienteEnvioForm) return;
+  clienteEnvioForm.reset();
+  clienteEnvioForm.elements.id.value = "";
+  clienteEnvioForm.elements.context_kind.value = "";
+  clienteEnvioForm.elements.context_id.value = "";
+  clienteEnvioForm.elements.actuacion_id.value = "";
+  clienteEnvioFormTitle.textContent = "Nuevo envío a cliente";
+  clienteEnvioContext.innerHTML = "<strong>Sin contexto</strong><span>Selecciona la licitación o actuación desde la que se crea el envío.</span>";
+  clienteEnvioFolderStatus.textContent = "Indica una carpeta de Dropbox y carga los archivos disponibles.";
+  clienteEnvioFiles.innerHTML = `<div class="empty">Sin carpeta cargada todavía.</div>`;
+  setInlineResult(clienteEnvioResult, "");
+}
+
+function populateClienteEnvioClientOptions(selectedValue = "") {
+  const select = clienteEnvioForm?.elements?.cliente_id;
+  if (!select) return;
+  select.innerHTML = [
+    `<option value="">Selecciona cliente</option>`,
+    ...(appState.clientes || []).map((item) => (
+      `<option value="${escapeHtml(item.id)}" ${String(item.id) === String(selectedValue) ? "selected" : ""}>${escapeHtml(clienteOptionText(item))}</option>`
+    )),
+  ].join("");
+}
+
+function populateClienteEnvioTypeOptions(selectedValue = "ficha_inicial") {
+  populateSelectOptions(clienteEnvioForm?.elements?.tipo_envio, clienteEnvioTypeOptions, "value", "label", selectedValue);
+}
+
+function populateClienteEnvioStateOptions(selectedValue = "en_preparacion") {
+  populateSelectOptions(clienteEnvioForm?.elements?.estado, clienteEnvioStateOptions, "value", "label", selectedValue);
+}
+
+function populateClienteEnvioLicitacionOptions(options, selectedValue = "", { hidden = false } = {}) {
+  const field = document.getElementById("cliente-envio-licitacion-field");
+  const select = clienteEnvioForm?.elements?.licitacion_id;
+  if (!field || !select) return;
+  field.hidden = hidden;
+  select.innerHTML = (options || []).map((item) => (
+    `<option value="${escapeHtml(item.id)}" ${String(item.id) === String(selectedValue) ? "selected" : ""}>${escapeHtml(item.expediente || item.organismo || `Licitación ${item.id}`)}</option>`
+  )).join("");
+}
+
+async function ensureClientsLoaded() {
+  if ((appState.clientes || []).length) return;
+  await loadClientes();
+}
+
+async function loadClienteEnvioFolderFiles(folderValue, selectedPaths = []) {
+  if (!folderValue) {
+    clienteEnvioFolderStatus.textContent = "Indica una carpeta de Dropbox y carga los archivos disponibles.";
+    clienteEnvioFiles.innerHTML = `<div class="empty">Sin carpeta cargada todavía.</div>`;
+    return;
+  }
+  clienteEnvioFolderStatus.textContent = "Leyendo carpeta...";
+  const response = await fetch("/api/cliente-envios/folder-files", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
+    body: JSON.stringify({ carpeta_dropbox: folderValue }),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    clienteEnvioFolderStatus.textContent = result.error || "No se pudo leer la carpeta.";
+    clienteEnvioFiles.innerHTML = `<div class="empty">No se pudieron cargar archivos.</div>`;
+    return;
+  }
+  appState.clienteFolderFiles = result;
+  clienteEnvioFolderStatus.textContent = `${result.total_files || 0} archivo(s) válidos en ${result.folder_storage_path || result.folder_path || "la carpeta seleccionada"}.`;
+  clienteEnvioFiles.innerHTML = renderClienteEnvioFileOptions(result.files || [], selectedPaths);
+}
+
+async function openClienteEnvioDialog({ licitacionId = "", actuacionId = "", envioId = "", clienteId = "" } = {}) {
+  if (!isAdmin()) return;
+  await ensureClientsLoaded();
+  resetClienteEnvioForm();
+  populateClienteEnvioClientOptions(clienteId);
+  populateClienteEnvioTypeOptions();
+  populateClienteEnvioStateOptions();
+  if (envioId) {
+    const response = await fetch(`/api/cliente-envios/${envioId}`);
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setInlineResult(clienteEnvioResult, result.error || "No se pudo cargar el envío.", "error");
+      return;
+    }
+    const item = result.item;
+    appState.clienteEnvioDetail = item;
+    clienteEnvioForm.elements.id.value = item.id || "";
+    clienteEnvioForm.elements.context_kind.value = item.actuacion_id ? "actuacion" : "licitacion";
+    clienteEnvioForm.elements.context_id.value = item.actuacion_id || item.licitacion_id || "";
+    clienteEnvioForm.elements.actuacion_id.value = item.actuacion_id || "";
+    clienteEnvioFormTitle.textContent = `Editar envío · ${item.cliente_nombre || "Cliente"}`;
+    clienteEnvioContext.innerHTML = `<strong>${escapeHtml(item.licitacion_expediente || "Licitación")}</strong><span>${escapeHtml(item.actuacion_titulo || item.licitacion_objeto || "")}</span>`;
+    populateClienteEnvioClientOptions(item.cliente_id);
+    populateClienteEnvioTypeOptions(item.tipo_envio);
+    populateClienteEnvioStateOptions(item.estado);
+    populateClienteEnvioLicitacionOptions([{ id: item.licitacion_id, expediente: item.licitacion_expediente }], item.licitacion_id, { hidden: true });
+    clienteEnvioForm.elements.carpeta_dropbox.value = item.carpeta_dropbox || "";
+    clienteEnvioForm.elements.destinatario_email.value = item.destinatario_email || "";
+    clienteEnvioForm.elements.asunto.value = item.asunto || "";
+    clienteEnvioForm.elements.cuerpo.value = item.cuerpo || "";
+    clienteEnvioForm.elements.observaciones_internas.value = item.observaciones_internas || "";
+    const selectedPaths = (item.attachments || []).map((attachment) => attachment.relative_path);
+    const filesPayload = item.folder_files || {};
+    clienteEnvioFolderStatus.textContent = filesPayload.error
+      ? filesPayload.error
+      : `${(filesPayload.files || []).length} archivo(s) disponibles en ${filesPayload.folder_storage_path || item.carpeta_dropbox || ""}.`;
+    clienteEnvioFiles.innerHTML = renderClienteEnvioFileOptions(filesPayload.files || [], selectedPaths);
+    clienteEnvioDialog.showModal();
+    return;
+  }
+
+  if (licitacionId) {
+    const cached = appState.cardDetails[licitacionId]?.item;
+    const licitacion = cached || { id: licitacionId, expediente: `Licitación ${licitacionId}`, objeto: "" };
+    clienteEnvioForm.elements.context_kind.value = "licitacion";
+    clienteEnvioForm.elements.context_id.value = licitacionId;
+    clienteEnvioContext.innerHTML = `<strong>${escapeHtml(licitacion.expediente || `Licitación ${licitacionId}`)}</strong><span>${escapeHtml(licitacion.objeto || licitacion.organismo || "")}</span>`;
+    populateClienteEnvioLicitacionOptions([{ id: licitacionId, expediente: licitacion.expediente }], licitacionId, { hidden: true });
+  } else if (actuacionId) {
+    const response = await fetch(`/api/actuaciones/${actuacionId}`);
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setInlineResult(clienteEnvioResult, result.error || "No se pudo cargar la actuación.", "error");
+      return;
+    }
+    const actuacion = result.item;
+    clienteEnvioForm.elements.context_kind.value = "actuacion";
+    clienteEnvioForm.elements.context_id.value = actuacionId;
+    clienteEnvioForm.elements.actuacion_id.value = actuacionId;
+    clienteEnvioContext.innerHTML = `<strong>${escapeHtml(actuacion.titulo || "Actuación")}</strong><span>${escapeHtml(actuacion.descripcion || "")}</span>`;
+    const licitaciones = (actuacion.licitaciones || []).map((item) => ({ id: item.id, expediente: item.expediente, organismo: item.organismo }));
+    const selectedLicitacionId = licitaciones[0]?.id || "";
+    populateClienteEnvioLicitacionOptions(licitaciones, selectedLicitacionId, { hidden: licitaciones.length <= 1 });
+  }
+  clienteEnvioDialog.showModal();
+}
+
+async function saveClienteEnvio(event) {
+  event.preventDefault();
+  const envioId = clienteEnvioForm.elements.id.value;
+  const contextKind = clienteEnvioForm.elements.context_kind.value;
+  const contextId = clienteEnvioForm.elements.context_id.value;
+  const payload = {
+    cliente_id: Number(clienteEnvioForm.elements.cliente_id.value || 0),
+    licitacion_id: Number(clienteEnvioForm.elements.licitacion_id.value || 0),
+    actuacion_id: Number(clienteEnvioForm.elements.actuacion_id.value || 0) || null,
+    tipo_envio: clienteEnvioForm.elements.tipo_envio.value,
+    estado: clienteEnvioForm.elements.estado.value,
+    carpeta_dropbox: clienteEnvioForm.elements.carpeta_dropbox.value.trim(),
+    adjuntos: selectedClienteEnvioPaths(clienteEnvioFiles),
+    destinatario_email: clienteEnvioForm.elements.destinatario_email.value.trim(),
+    asunto: clienteEnvioForm.elements.asunto.value.trim(),
+    cuerpo: clienteEnvioForm.elements.cuerpo.value,
+    observaciones_internas: clienteEnvioForm.elements.observaciones_internas.value,
+  };
+  let endpoint = "";
+  let method = "POST";
+  if (envioId) {
+    endpoint = `/api/cliente-envios/${envioId}`;
+    method = "PATCH";
+  } else if (contextKind === "actuacion") {
+    endpoint = `/api/actuaciones/${contextId}/cliente-envios`;
+  } else {
+    endpoint = `/api/licitaciones/${payload.licitacion_id || contextId}/cliente-envios`;
+  }
+  const response = await fetch(endpoint, {
+    method,
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    setInlineResult(clienteEnvioResult, result.error || "No se pudo guardar el envío.", "error");
+    return;
+  }
+  setInlineResult(clienteEnvioResult, "Envío guardado correctamente.", "ok");
+  await afterClienteEnvioMutation(result.item);
+  clienteEnvioDialog.close();
+}
+
+async function afterClienteEnvioMutation(item) {
+  if (!item) return;
+  if (appState.lastSection === "calendar" && appState.agendaView === "pending") {
+    await loadCalendarItems();
+  }
+  if (appState.lastSection === "clients") {
+    await loadClientes();
+    if (item.cliente_id) await loadClientDetail(item.cliente_id);
+  }
+  if (item.licitacion_id && licitacionDetailDialog.open) {
+    await refreshLicitacionDetail(item.licitacion_id);
+    const detail = appState.cardDetails[item.licitacion_id]?.item;
+    if (detail) {
+      licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
+      hydrateFullCommentWidgets(licitacionDetailContent);
+      activateDetailTabByName("envios-clientes");
+    }
+  }
+  if (item.actuacion_id && actuacionDialog.open && String(actuacionForm.elements.id.value) === String(item.actuacion_id)) {
+    await editActuacion(item.actuacion_id);
+  }
+}
+
+function activateDetailTabByName(tabName) {
+  const button = licitacionDetailContent.querySelector(`button[data-detail-tab="${tabName}"]`);
+  if (button) activateDetailTab(button);
+}
+
+function renderDraftAttachmentOptions(detail) {
+  const files = detail?.folder_files?.files || [];
+  const selected = (detail?.attachments || []).map((item) => item.relative_path);
+  return renderClienteEnvioFileOptions(files, selected);
+}
+
+async function openClienteEnvioDraftDialog(envioId) {
+  const response = await fetch(`/api/cliente-envios/${envioId}`);
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(result.error || "No se pudo cargar el envío.");
+    return;
+  }
+  const item = result.item;
+  appState.clienteEnvioDetail = item;
+  clienteEnvioDraftForm.elements.envio_id.value = item.id || "";
+  clienteEnvioDraftTitle.textContent = `${item.cliente_nombre || "Cliente"} · ${item.tipo_envio_label || "Correo"}`;
+  clienteEnvioDraftContext.innerHTML = `<strong>${escapeHtml(item.licitacion_expediente || "Licitación")}</strong><span>${escapeHtml(item.actuacion_titulo || item.licitacion_objeto || "")}</span>`;
+  clienteEnvioDraftTo.value = item.destinatario_email || item.draft_suggestion?.to || "";
+  clienteEnvioDraftSubject.value = item.asunto || item.draft_suggestion?.subject || "";
+  clienteEnvioDraftBody.value = item.cuerpo || item.draft_suggestion?.body || "";
+  clienteEnvioDraftFolder.value = item.carpeta_dropbox || "";
+  clienteEnvioDraftFiles.innerHTML = renderDraftAttachmentOptions(item);
+  clienteEnvioOpenDraftButton.disabled = !item.correo_generado_path;
+  clienteEnvioMarkSentButton.disabled = !clienteEnvioCanMarkSent(item);
+  setInlineResult(clienteEnvioDraftResult, item.correo_generado_warning || "", item.correo_generado_warning ? "warning" : "");
+  clienteEnvioDraftDialog.showModal();
+}
+
+async function generateClienteEnvioDraft(event) {
+  event.preventDefault();
+  const envioId = clienteEnvioDraftForm.elements.envio_id.value;
+  const payload = {
+    destinatario_email: clienteEnvioDraftTo.value.trim(),
+    asunto: clienteEnvioDraftSubject.value.trim(),
+    cuerpo: clienteEnvioDraftBody.value,
+    adjuntos: selectedClienteEnvioPaths(clienteEnvioDraftFiles),
+  };
+  const response = await fetch(`/api/cliente-envios/${envioId}/generate-draft`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    setInlineResult(clienteEnvioDraftResult, result.error || "No se pudo generar el correo.", "error");
+    return;
+  }
+  const detail = result.item;
+  setInlineResult(
+    clienteEnvioDraftResult,
+    detail?.draft_generation?.warning || detail?.draft_generation?.message || "Correo preparado correctamente.",
+    detail?.draft_generation?.warning ? "warning" : "ok",
+  );
+  await afterClienteEnvioMutation(detail);
+  await openClienteEnvioDraftDialog(envioId);
+}
+
+async function openClienteEnvioFolderAction(envioId) {
+  const response = await fetch(`/api/cliente-envios/${envioId}/open-folder`, { method: "POST", headers: csrfHeaders() });
+  const result = await response.json().catch(() => ({}));
+  const message = result.message || result.error || "No se pudo abrir la carpeta.";
+  if (clienteEnvioDraftDialog.open) {
+    setInlineResult(clienteEnvioDraftResult, message, response.ok ? "ok" : "error");
+  } else if (!response.ok) {
+    alert(message);
+  }
+}
+
+async function openClienteEnvioDraftFileAction(envioId) {
+  const response = await fetch(`/api/cliente-envios/${envioId}/open-draft`, { method: "POST", headers: csrfHeaders() });
+  const result = await response.json().catch(() => ({}));
+  const message = result.message || result.error || "No se pudo abrir el correo preparado.";
+  if (clienteEnvioDraftDialog.open) {
+    setInlineResult(clienteEnvioDraftResult, message, response.ok ? "ok" : "error");
+  } else if (!response.ok) {
+    alert(message);
+  }
+}
+
+async function markClienteEnvioAsSent(envioId) {
+  const response = await fetch(`/api/cliente-envios/${envioId}/mark-sent`, { method: "POST", headers: csrfHeaders() });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    setInlineResult(clienteEnvioDraftResult, result.error || "No se pudo marcar como enviado.", "error");
+    return;
+  }
+  setInlineResult(clienteEnvioDraftResult, "Envío marcado como enviado.", "ok");
+  await afterClienteEnvioMutation(result.item);
+  await openClienteEnvioDraftDialog(envioId);
+}
+
+async function openLicitacionEnviosTab(licitacionId) {
+  if (!licitacionId) return;
+  await openLicitacionDetail(licitacionId);
+  activateDetailTabByName("envios-clientes");
+}
+
+async function handleClienteEnvioUiAction(target) {
+  const editClientButton = target.closest("button[data-edit-client]");
+  if (editClientButton) {
+    showClientsView();
+    await loadClientDetail(editClientButton.dataset.editClient);
+    return true;
+  }
+
+  const openLicitacionEnviosButton = target.closest("button[data-open-licitacion-envios]");
+  if (openLicitacionEnviosButton) {
+    await openLicitacionEnviosTab(openLicitacionEnviosButton.dataset.openLicitacionEnvios);
+    return true;
+  }
+
+  const newClienteEnvioLicitacionButton = target.closest("button[data-new-cliente-envio-licitacion]");
+  if (newClienteEnvioLicitacionButton) {
+    await openClienteEnvioDialog({ licitacionId: newClienteEnvioLicitacionButton.dataset.newClienteEnvioLicitacion });
+    return true;
+  }
+
+  const newClienteEnvioActuacionButton = target.closest("button[data-new-cliente-envio-actuacion]");
+  if (newClienteEnvioActuacionButton) {
+    await openClienteEnvioDialog({ actuacionId: newClienteEnvioActuacionButton.dataset.newClienteEnvioActuacion });
+    return true;
+  }
+
+  const editClienteEnvioButton = target.closest("button[data-edit-cliente-envio]");
+  if (editClienteEnvioButton) {
+    await openClienteEnvioDialog({ envioId: editClienteEnvioButton.dataset.editClienteEnvio });
+    return true;
+  }
+
+  const openClienteEnvioDraftButton = target.closest("button[data-open-cliente-envio-draft]");
+  if (openClienteEnvioDraftButton) {
+    await openClienteEnvioDraftDialog(openClienteEnvioDraftButton.dataset.openClienteEnvioDraft);
+    return true;
+  }
+
+  const openClienteEnvioFolderButton = target.closest("button[data-open-cliente-envio-folder]");
+  if (openClienteEnvioFolderButton) {
+    await openClienteEnvioFolderAction(openClienteEnvioFolderButton.dataset.openClienteEnvioFolder);
+    return true;
+  }
+
+  const openClienteEnvioDraftFileButton = target.closest("button[data-open-cliente-envio-draft-file]");
+  if (openClienteEnvioDraftFileButton) {
+    await openClienteEnvioDraftFileAction(openClienteEnvioDraftFileButton.dataset.openClienteEnvioDraftFile);
+    return true;
+  }
+
+  const markClienteEnvioSentButton = target.closest("button[data-mark-cliente-envio-sent]");
+  if (markClienteEnvioSentButton) {
+    await markClienteEnvioAsSent(markClienteEnvioSentButton.dataset.markClienteEnvioSent);
+    return true;
+  }
+
+  return false;
 }
 
 function toDatetimeLocal(value) {
@@ -3295,6 +4058,11 @@ function editUser(username) {
 async function saveUserConfig(event) {
   event.preventDefault();
   if (!isAdmin()) return;
+  if (!userConfigForm.reportValidity()) {
+    userConfigResult.className = "import-result error";
+    userConfigResult.textContent = "Revisa los campos obligatorios antes de guardar.";
+    return;
+  }
 
   const editing = userConfigForm.elements.editing_username.value;
   const payload = {
@@ -3308,23 +4076,28 @@ async function saveUserConfig(event) {
     active: userConfigForm.elements.active.checked,
   };
   if (editing && !payload.password) delete payload.password;
-
-  const response = await fetch(editing ? `/api/config/users/${encodeURIComponent(editing)}` : "/api/config/users", {
-    method: editing ? "PATCH" : "POST",
-    headers: { "Content-Type": "application/json", ...csrfHeaders() },
-    body: JSON.stringify(payload),
-  });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) {
+  try {
+    const response = await fetch(editing ? `/api/config/users/${encodeURIComponent(editing)}` : "/api/config/users", {
+      method: editing ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json", ...csrfHeaders() },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      userConfigResult.className = "import-result error";
+      userConfigResult.textContent = result.error || "No se pudieron guardar los cambios del usuario.";
+      return;
+    }
+    appState.config = result;
+    resetUserForm();
+    renderConfig();
+    userConfigResult.className = "import-result ok";
+    userConfigResult.textContent = "Cambios guardados correctamente.";
+  } catch (error) {
+    console.error("Error guardando usuario", error);
     userConfigResult.className = "import-result error";
-    userConfigResult.textContent = result.error || "No se pudo guardar el usuario.";
-    return;
+    userConfigResult.textContent = "No se ha podido conectar con la Suite para guardar los cambios.";
   }
-  appState.config = result;
-  resetUserForm();
-  renderConfig();
-  userConfigResult.className = "import-result ok";
-  userConfigResult.textContent = "Usuario guardado.";
 }
 
 async function deleteUserConfig(username) {
@@ -4174,6 +4947,7 @@ function renderCard(item, options = {}) {
           <button data-open-licitacion-detail="${escapeHtml(item.id)}">Abrir</button>
           ${showEditButton ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""}
           ${showNewActuacionButton ? `<button data-new-actuacion-id="${escapeHtml(item.id)}">Crear nueva actuación</button>` : ""}
+          <button data-open-licitacion-envios="${escapeHtml(item.id)}">Envíos a clientes</button>
           ${sideActionsExtra}
           <span class="card-side-id">ID ${escapeHtml(item.id)}</span>
         </div>
@@ -4238,6 +5012,7 @@ function renderExpandedCard(item, detail) {
 
 function renderLicitacionDetailView(item) {
   const actuaciones = item.actuaciones || [];
+  const clienteEnvios = item.cliente_envios || [];
   const folder = folderDisplayPath(item);
   const folderLabel = folderStatusLabel(item);
   const profile = normalizeUrl(item.enlace_perfil);
@@ -4274,9 +5049,10 @@ function renderLicitacionDetailView(item) {
 
         ${renderDetailActionBar(item)}
 
-         <nav class="detail-tabs no-print" aria-label="Secciones de la ficha">
+      <nav class="detail-tabs no-print" aria-label="Secciones de la ficha">
         <button type="button" class="detail-tab-button active" data-detail-tab="resumen">Resumen</button>
         <button type="button" class="detail-tab-button" data-detail-tab="actuaciones">Actuaciones</button>
+        <button type="button" class="detail-tab-button" data-detail-tab="envios-clientes">Envíos a clientes</button>
         <button type="button" class="detail-tab-button" data-detail-tab="documentos-seguimiento">Documentos y seguimiento</button>
         <button type="button" class="detail-tab-button" data-detail-tab="comentarios">Comentarios</button>
         <button type="button" class="detail-tab-button" data-detail-tab="ai">Análisis IA</button>
@@ -4304,6 +5080,19 @@ function renderLicitacionDetailView(item) {
           </div>
         </div>
         ${actuaciones.length ? renderLinkedActuaciones(actuaciones) : `<div class="empty">No hay actuaciones ni hitos vinculados a esta licitación.</div>`}
+      </section>
+
+      <section class="detail-tab-panel" data-detail-tab-panel="envios-clientes">
+        <div class="detail-panel-head">
+          <div>
+            <p class="eyebrow">Clientes / Outlook</p>
+            <h3>${escapeHtml(clienteEnvios.length ? `${clienteEnvios.length} envío(s) registrados` : "Sin envíos a clientes")}</h3>
+          </div>
+          ${renderCreateClienteEnvioButton({ licitacionId: item.id })}
+        </div>
+        ${renderClienteEnviosList(clienteEnvios, {
+          emptyText: "Todavía no hay envíos creados para esta licitación.",
+        })}
       </section>
 
       <section class="detail-tab-panel" data-detail-tab-panel="documentos-seguimiento">
@@ -4355,10 +5144,12 @@ function renderDetailActionBar(item) {
       <div class="detail-action-bar" role="group" aria-label="Acciones de la licitación">
       ${isAdmin() ? `<button class="download-button primary" data-download-id="${escapeHtml(item.id)}">Descargar documentación</button>` : ""}
       <button data-new-actuacion-id="${escapeHtml(item.id)}">Crear actuación</button>
+      <button data-open-licitacion-envios="${escapeHtml(item.id)}">Envíos a clientes</button>
       ${isAdmin() ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""}
       <details class="detail-more-actions"${isAdmin() ? "" : ' hidden=""'}>
         <summary>Más acciones</summary>
         <div class="detail-more-menu">
+          ${renderCreateClienteEnvioButton({ licitacionId: item.id })}
           ${isAdmin() ? `<button data-duplicate-id="${escapeHtml(item.id)}">Duplicar</button>` : ""}
           ${isAdmin() ? `<button class="danger" data-delete-id="${escapeHtml(item.id)}">Borrar</button>` : ""}
         </div>
@@ -4480,6 +5271,7 @@ function renderLicitacionMainActions(item) {
         ${item.revisada ? "Marcar no revisada" : "Marcar revisada"}
       </button>
       <button data-new-actuacion-id="${escapeHtml(item.id)}">Nueva actuación</button>
+      <button data-open-licitacion-envios="${escapeHtml(item.id)}">Envíos a clientes</button>
       <button data-set-internal-state="${escapeHtml(item.id)}" data-internal-state="Descartada">Descartar</button>
     </div>
   `;
@@ -5617,6 +6409,7 @@ function renderLinkedActuaciones(items) {
           </div>
           <div class="links">
             <button data-edit-actuacion="${escapeHtml(actuacion.id)}">Abrir actuación</button>
+            ${renderCreateClienteEnvioButton({ actuacionId: actuacion.id, label: "Crear envío" })}
           </div>
         </article>
       `).join("")}
@@ -6224,6 +7017,7 @@ document.getElementById("days-button").addEventListener("click", showDaysView);
 document.getElementById("list-button").addEventListener("click", () => showLicitacionesView({ view: "live" }));
 document.getElementById("calendar-button").addEventListener("click", showCalendarView);
 document.getElementById("actuaciones-button").addEventListener("click", showActuacionesView);
+document.getElementById("clients-button")?.addEventListener("click", showClientsView);
 logoutButton?.addEventListener("click", logout);
 aiQueueButton?.addEventListener("click", openAiQueueDialog);
 document.getElementById("notifications-button").addEventListener("click", showNotificationsView);
@@ -6386,7 +7180,7 @@ agendaWorkbench.addEventListener("click", (event) => {
   }
   const actuacionesButton = event.target.closest("button[data-workbench-actuaciones]");
   if (actuacionesButton) {
-    actuacionesFilter.value = "abiertas";
+    actuacionesFilter.value = "abiertos";
     showActuacionesView();
     return;
   }
@@ -6439,6 +7233,32 @@ notificationDestination.addEventListener("change", loadNotifications);
 notificationEmailState.addEventListener("change", loadNotifications);
 actuacionesFilter.addEventListener("change", loadActuaciones);
 document.getElementById("new-actuacion-button").addEventListener("click", () => openActuacionDialog());
+document.getElementById("refresh-clients-button")?.addEventListener("click", loadClientes);
+document.getElementById("new-client-button")?.addEventListener("click", resetClientForm);
+document.getElementById("reset-client-form")?.addEventListener("click", resetClientForm);
+clientSearch?.addEventListener("input", debounce(loadClientes, 250));
+clientForm?.addEventListener("submit", saveClient);
+document.getElementById("close-cliente-envio-dialog")?.addEventListener("click", () => clienteEnvioDialog.close());
+document.getElementById("cancel-cliente-envio-dialog")?.addEventListener("click", () => clienteEnvioDialog.close());
+document.getElementById("cliente-envio-load-folder")?.addEventListener("click", () => (
+  loadClienteEnvioFolderFiles(clienteEnvioForm?.elements?.carpeta_dropbox?.value.trim(), selectedClienteEnvioPaths(clienteEnvioFiles))
+));
+clienteEnvioForm?.addEventListener("submit", saveClienteEnvio);
+document.getElementById("close-cliente-envio-draft-dialog")?.addEventListener("click", () => clienteEnvioDraftDialog.close());
+document.getElementById("cancel-cliente-envio-draft-dialog")?.addEventListener("click", () => clienteEnvioDraftDialog.close());
+clienteEnvioDraftForm?.addEventListener("submit", generateClienteEnvioDraft);
+clienteEnvioOpenFolderButton?.addEventListener("click", () => {
+  const envioId = clienteEnvioDraftForm?.elements?.envio_id?.value;
+  if (envioId) openClienteEnvioFolderAction(envioId);
+});
+clienteEnvioOpenDraftButton?.addEventListener("click", () => {
+  const envioId = clienteEnvioDraftForm?.elements?.envio_id?.value;
+  if (envioId) openClienteEnvioDraftFileAction(envioId);
+});
+clienteEnvioMarkSentButton?.addEventListener("click", () => {
+  const envioId = clienteEnvioDraftForm?.elements?.envio_id?.value;
+  if (envioId) markClienteEnvioAsSent(envioId);
+});
 document.getElementById("close-actuacion-dialog").addEventListener("click", () => actuacionDialog.close());
 document.getElementById("cancel-actuacion-dialog").addEventListener("click", () => actuacionDialog.close());
 document.getElementById("open-licitacion-selector").addEventListener("click", openLicitacionSelector);
@@ -6573,7 +7393,8 @@ function filterDocumentCards(button) {
   });
 }
 
-licitacionDetailContent.addEventListener("click", (event) => {
+licitacionDetailContent.addEventListener("click", async (event) => {
+  if (await handleClienteEnvioUiAction(event.target)) return;
   const tabButton = event.target.closest("button[data-detail-tab]");
   if (tabButton) {
     activateDetailTab(tabButton);
@@ -6709,6 +7530,14 @@ licitacionDetailContent.addEventListener("click", (event) => {
 });
 
 daysBoard.addEventListener("click", (event) => {
+  const commentsButton = event.target.closest("button[data-day-comments]");
+  if (commentsButton) {
+    const card = commentsButton.closest(".day-card");
+    const toggle = card?.querySelector("[data-comments-toggle]");
+    if (toggle) toggle.click();
+    return;
+  }
+
   const deleteButton = event.target.closest("button[data-delete-dia]");
   if (deleteButton) {
     deleteDia(deleteButton.dataset.deleteDia, deleteButton.dataset.title);
@@ -6720,7 +7549,8 @@ daysBoard.addEventListener("click", (event) => {
   showLicitacionesView({ diaId: button.dataset.openDia, title: button.dataset.title });
 });
 
-board.addEventListener("click", (event) => {
+board.addEventListener("click", async (event) => {
+  if (await handleClienteEnvioUiAction(event.target)) return;
   const documentFilterButton = event.target.closest("button[data-document-filter]");
   if (documentFilterButton) {
     filterDocumentCards(documentFilterButton);
@@ -6840,7 +7670,8 @@ board.addEventListener("click", (event) => {
   updateEstado(button.dataset.id, button.dataset.estado);
 });
 
-actuacionesBoard.addEventListener("click", (event) => {
+actuacionesBoard.addEventListener("click", async (event) => {
+  if (await handleClienteEnvioUiAction(event.target)) return;
   const editButton = event.target.closest("button[data-edit-actuacion]");
   if (editButton) {
     editActuacion(editButton.dataset.editActuacion);
@@ -6876,7 +7707,8 @@ calendarBoard.addEventListener("click", (event) => {
   loadCalendarItems();
 });
 
-calendarRadar.addEventListener("click", (event) => {
+calendarRadar.addEventListener("click", async (event) => {
+  if (await handleClienteEnvioUiAction(event.target)) return;
   const openDetailButton = event.target.closest("button[data-open-licitacion-detail]");
   if (openDetailButton) {
     openLicitacionDetail(openDetailButton.dataset.openLicitacionDetail);
@@ -6932,7 +7764,8 @@ calendarRadar.addEventListener("change", (event) => {
   updatePendingTaskState(stateSelect.dataset.pendingState, stateSelect.value);
 });
 
-calendarDayPanel.addEventListener("click", (event) => {
+calendarDayPanel.addEventListener("click", async (event) => {
+  if (await handleClienteEnvioUiAction(event.target)) return;
   const openDetailButton = event.target.closest("button[data-open-licitacion-detail]");
   if (openDetailButton) {
     openLicitacionDetail(openDetailButton.dataset.openLicitacionDetail);
@@ -6978,6 +7811,14 @@ calendarDayPanel.addEventListener("change", (event) => {
   const stateSelect = event.target.closest("select[data-pending-state]");
   if (!stateSelect) return;
   updatePendingTaskState(stateSelect.dataset.pendingState, stateSelect.value);
+});
+
+clientsBoard?.addEventListener("click", async (event) => {
+  if (await handleClienteEnvioUiAction(event.target)) return;
+});
+
+clientHistoryBoard?.addEventListener("click", async (event) => {
+  if (await handleClienteEnvioUiAction(event.target)) return;
 });
 
 form.addEventListener("submit", async (event) => {

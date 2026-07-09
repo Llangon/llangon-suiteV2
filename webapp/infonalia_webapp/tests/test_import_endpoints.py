@@ -224,7 +224,7 @@ def test_msg_import_content_records_import_history_with_fake_msg(monkeypatch) ->
         Perfil del contratante: https://example.test/perfil
         Expediente: MSG-001
         Organismo: Organismo MSG
-        Resumen del objeto: Servicio MSG ficticio
+        Objeto del contrato: Servicio MSG ficticio
         Provincia: Madrid
         Plazo presentacion: 30/06/2026
         Presupuesto: 1234,56

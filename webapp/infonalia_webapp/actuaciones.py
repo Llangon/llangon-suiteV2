@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
+import unicodedata
 
 
 ACTUACION_TIPOS = {
@@ -24,13 +25,59 @@ ACTUACION_TIPOS = {
     "otro",
 }
 
-ACTUACION_ESTADOS_ABIERTOS = {"pendiente", "en_curso", "preparado", "preparada"}
-ACTUACION_ESTADOS_CERRADOS = {"respondida", "cerrada", "enviado", "enviada", "cancelado", "cancelada"}
-ACTUACION_ESTADOS = ACTUACION_ESTADOS_ABIERTOS | ACTUACION_ESTADOS_CERRADOS
+ACTUACION_ESTADO_ORDEN = ["pendiente", "en_preparacion", "preparado", "enviado", "cancelado"]
+ACTUACION_ESTADO_ALIAS_MAP = {
+    "pendiente": "pendiente",
+    "encurso": "pendiente",
+    "enpreparacion": "en_preparacion",
+    "preparado": "preparado",
+    "preparada": "preparado",
+    "respondida": "enviado",
+    "cerrado": "enviado",
+    "cerrada": "enviado",
+    "enviado": "enviado",
+    "enviada": "enviado",
+    "cancelado": "cancelado",
+    "cancelada": "cancelado",
+}
+ACTUACION_ESTADO_GRUPOS = {
+    "pendiente": {"pendiente", "en_curso", "en curso"},
+    "en_preparacion": {"en_preparacion", "en preparacion", "en preparación"},
+    "preparado": {"preparado", "preparada"},
+    "enviado": {"respondida", "cerrado", "cerrada", "enviado", "enviada"},
+    "cancelado": {"cancelado", "cancelada"},
+}
+ACTUACION_ESTADOS_ABIERTOS = set().union(
+    ACTUACION_ESTADO_GRUPOS["pendiente"],
+    ACTUACION_ESTADO_GRUPOS["en_preparacion"],
+    ACTUACION_ESTADO_GRUPOS["preparado"],
+)
+ACTUACION_ESTADOS_CERRADOS = set().union(
+    ACTUACION_ESTADO_GRUPOS["enviado"],
+    ACTUACION_ESTADO_GRUPOS["cancelado"],
+)
+ACTUACION_ESTADOS = set().union(*ACTUACION_ESTADO_GRUPOS.values())
 
 
 def clean_value(value: object) -> str:
     return str(value or "").strip()
+
+
+def estado_key(value: object) -> str:
+    text = unicodedata.normalize("NFKD", clean_value(value).lower())
+    text = "".join(character for character in text if not unicodedata.combining(character))
+    return "".join(character for character in text if character.isalnum())
+
+
+def normalize_actuacion_estado(value: object, default: str = "pendiente") -> str:
+    return ACTUACION_ESTADO_ALIAS_MAP.get(estado_key(value), default)
+
+
+def estado_db_values(value: object) -> set[str]:
+    normalized = normalize_actuacion_estado(value, default="")
+    if not normalized:
+        return set()
+    return set(ACTUACION_ESTADO_GRUPOS.get(normalized, {normalized}))
 
 
 def bool_int(value: object, default: bool = True) -> int:
@@ -73,15 +120,15 @@ def parse_datetime(value: object) -> datetime | None:
 
 
 def is_open_estado(estado: object) -> bool:
-    return clean_value(estado).lower() in ACTUACION_ESTADOS_ABIERTOS
+    return normalize_actuacion_estado(estado, default="") in {"pendiente", "en_preparacion", "preparado"}
 
 
 def visual_state(row: Any, *, now: datetime | None = None) -> str:
     current = now or datetime.now()
-    estado = clean_value(row["estado"]).lower()
+    estado = normalize_actuacion_estado(row["estado"], default="pendiente")
     deadline = parse_datetime(row["deadline_at"])
     closed_at = parse_datetime(row["closed_at"])
-    if estado == "cerrada" and deadline and closed_at and closed_at > deadline:
+    if estado == "enviado" and deadline and closed_at and closed_at > deadline:
         return "cerrada_fuera_de_plazo"
     if estado in ACTUACION_ESTADOS_CERRADOS:
         return estado
@@ -114,14 +161,14 @@ def actuacion_payload(
     if not partial or "descripcion" in data:
         payload["descripcion"] = clean_value(data.get("descripcion"))
     if not partial or "estado" in data:
-        payload["estado"] = normalize_choice(data.get("estado"), ACTUACION_ESTADOS, "pendiente")
+        payload["estado"] = normalize_actuacion_estado(data.get("estado"), default="pendiente")
     if not partial or "deadline_at" in data:
         payload["deadline_at"] = normalize_deadline(data.get("deadline_at"))
     if not partial or "recordatorio_email" in data:
         payload["recordatorio_email"] = bool_int(data.get("recordatorio_email"), default=True)
     if not partial or "origen" in data:
         payload["origen"] = clean_value(data.get("origen")) or "manual"
-    estado = clean_value(payload.get("estado", existing["estado"] if existing else "pendiente")).lower()
+    estado = normalize_actuacion_estado(payload.get("estado", existing["estado"] if existing else "pendiente"))
     if estado in ACTUACION_ESTADOS_CERRADOS and existing and not existing["closed_at"]:
         timestamp = now()
         payload["closed_at"] = timestamp
@@ -145,7 +192,7 @@ def actuacion_to_dict(
         "tipo": row["tipo"],
         "titulo": row["titulo"],
         "descripcion": row["descripcion"] or "",
-        "estado": row["estado"],
+        "estado": normalize_actuacion_estado(row["estado"], default="pendiente"),
         "estado_visual": visual_state(row, now=now),
         "deadline_at": row["deadline_at"] or "",
         "recordatorio_email": bool(row["recordatorio_email"]),

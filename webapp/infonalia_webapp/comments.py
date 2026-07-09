@@ -12,7 +12,7 @@ except ImportError:
     from normalization import clean_text
 
 
-COMMENT_ENTITY_TYPES = {"licitacion", "actuacion", "agenda_evento"}
+COMMENT_ENTITY_TYPES = {"licitacion", "actuacion", "agenda_evento", "infonalia_dia"}
 COMMENT_VISIBILITIES = {"internal", "team"}
 MAX_COMMENT_BODY_LENGTH = 5000
 
@@ -106,6 +106,7 @@ def validate_comment_entity(conn: sqlite3.Connection, entity_type: str, entity_i
         "licitacion": "licitaciones",
         "actuacion": "actuaciones",
         "agenda_evento": "agenda_eventos",
+        "infonalia_dia": "infonalia_dias",
     }
     table = table_by_type[entity_type]
     if not _table_exists(conn, table):

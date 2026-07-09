@@ -177,7 +177,7 @@ def test_update_licitaciones_and_detail_history() -> None:
             app,
             "PATCH",
             f"/api/actuaciones/{item['id']}",
-            {"licitacion_ids": [licitacion_b], "estado": "en_curso"},
+            {"licitacion_ids": [licitacion_b], "estado": "en_preparacion"},
         )
         dispatch(patch, "PATCH")
         assert patch.responses[-1][0] == HTTPStatus.OK
@@ -193,11 +193,59 @@ def test_update_licitaciones_and_detail_history() -> None:
 
         detail = detail_actuacion(app, item["id"])
         assert [linked["id"] for linked in detail["licitaciones"]] == [licitacion_b]
+        assert detail["estado"] == "en_preparacion"
         event_types = [entry["event_type"] for entry in detail["historial"]]
         assert "creacion" in event_types
         assert "licitaciones" in event_types
         assert "estado" in event_types
         assert "comentario" in event_types
+
+
+def test_actuaciones_estado_filters_support_new_state_and_legacy_values() -> None:
+    app = load_app_module()
+    with temporary_app_database(app):
+        create_actuacion(app, None, titulo="Pendiente", estado="pendiente")
+        create_actuacion(app, None, titulo="Preparación", estado="en_preparacion")
+        create_actuacion(app, None, titulo="Legacy en curso", estado="en_curso")
+        create_actuacion(app, None, titulo="Preparado", estado="preparado")
+        create_actuacion(app, None, titulo="Enviado", estado="cerrada")
+        create_actuacion(app, None, titulo="Cancelado", estado="cancelada")
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                INSERT INTO actuaciones (
+                    tipo, titulo, descripcion, deadline_at, recordatorio_email, estado, origen,
+                    created_by, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "seguimiento",
+                    "Legacy con espacio",
+                    "",
+                    "",
+                    0,
+                    "en preparación",
+                    "legacy",
+                    "admin_test",
+                    "2026-07-09T10:00:00",
+                    "2026-07-09T10:00:00",
+                ),
+            )
+
+        abiertos = {item["titulo"] for item in list_actuaciones(app, "?abiertas=1")}
+        pendientes = {item["titulo"] for item in list_actuaciones(app, "?estado=pendiente")}
+        en_preparacion = {item["titulo"] for item in list_actuaciones(app, "?estado=en_preparacion")}
+        preparados = {item["titulo"] for item in list_actuaciones(app, "?estado=preparado")}
+        enviados = {item["titulo"] for item in list_actuaciones(app, "?estado=enviado")}
+        cancelados = {item["titulo"] for item in list_actuaciones(app, "?estado=cancelado")}
+
+    assert abiertos == {"Pendiente", "Preparación", "Legacy en curso", "Preparado", "Legacy con espacio"}
+    assert pendientes == {"Pendiente", "Legacy en curso"}
+    assert en_preparacion == {"Preparación", "Legacy con espacio"}
+    assert preparados == {"Preparado"}
+    assert enviados == {"Enviado"}
+    assert cancelados == {"Cancelado"}
 
 
 def test_duplicate_actuacion_copies_main_fields_and_links_without_old_history() -> None:
@@ -770,13 +818,43 @@ def test_close_and_cancel_actuacion() -> None:
 
         close = make_handler(app, "POST", f"/api/actuaciones/{item['id']}/cerrar", {})
         dispatch(close, "POST")
-        assert close.responses[-1][1]["item"]["estado"] == "cerrada"
+        assert close.responses[-1][1]["item"]["estado"] == "enviado"
         assert close.responses[-1][1]["item"]["closed_at"]
 
         second = create_actuacion(app, None, titulo="Cancelar")
         cancel = make_handler(app, "POST", f"/api/actuaciones/{second['id']}/cancelar", {})
         dispatch(cancel, "POST")
-        assert cancel.responses[-1][1]["item"]["estado"] == "cancelada"
+        assert cancel.responses[-1][1]["item"]["estado"] == "cancelado"
+
+
+def test_update_user_endpoint_saves_changes() -> None:
+    app = load_app_module()
+    with temporary_app_database(app):
+        with app.db_session() as conn:
+            admin_username = conn.execute(
+                "SELECT username FROM usuarios WHERE role = 'admin' ORDER BY username ASC LIMIT 1"
+            ).fetchone()["username"]
+
+        handler = make_handler(
+            app,
+            "PATCH",
+            f"/api/config/users/{admin_username}",
+            {
+                "display_name": "Manolo Ajustado",
+                "email": "manolo.ajustado@example.test",
+                "role": "admin",
+                "active": True,
+            },
+        )
+        dispatch(handler, "PATCH")
+
+        assert handler.responses[-1][0] == HTTPStatus.OK
+        users = {
+            item["username"]: item
+            for item in handler.responses[-1][1]["users"]
+        }
+        assert users[admin_username]["display_name"] == "Manolo Ajustado"
+        assert users[admin_username]["email"] == "manolo.ajustado@example.test"
 
 
 def test_licitaciones_search_for_selector() -> None:
@@ -858,7 +936,7 @@ def test_delete_licitacion_with_closed_actuacion_only_unlinks_relation() -> None
         assert count_rows(app, "licitaciones") == 0
         assert count_rows(app, "actuaciones") == 1
         assert count_rows(app, "actuacion_licitaciones") == 0
-        assert detail_actuacion(app, item["id"])["estado"] == "cerrada"
+        assert detail_actuacion(app, item["id"])["estado"] == "enviado"
         assert foreign_key_check_rows(app) == []
 
 

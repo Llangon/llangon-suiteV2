@@ -100,6 +100,30 @@ def test_scheduler_tick_skips_when_global_lock_is_active(tmp_path, monkeypatch) 
     assert "already running" in result["message"]
 
 
+def test_scheduler_tick_ignores_stale_legacy_global_lock(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(orchestrator, "ensure_monitor_schema", lambda _conn: None)
+    monkeypatch.setattr(orchestrator, "AUTOMATIONS", tuple())
+    db_path = tmp_path / "suite.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    orchestrator.ensure_automation_schema(conn)
+    locked, lock = orchestrator.acquire_lock(
+        conn,
+        orchestrator.GLOBAL_LOCK_KEY,
+        "old-owner",
+        ttl_minutes=180,
+        current=datetime(2026, 7, 8, 13, 10),
+    )
+    assert locked is True
+    assert str(lock["expires_at"]).startswith("2026-07-08T16:10:00")
+    conn.close()
+
+    result = orchestrator.scheduler_tick(db_path=db_path, current=datetime(2026, 7, 8, 13, 26))
+
+    assert result["status"] == orchestrator.STATUS_COMPLETED
+    assert result["due_count"] == 0
+
+
 def test_night_suspend_skips_when_download_jobs_are_pending() -> None:
     conn = memory_db()
     conn.execute("CREATE TABLE download_jobs (id INTEGER PRIMARY KEY, status TEXT)")

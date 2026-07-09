@@ -5,8 +5,11 @@ import json
 import sys
 from datetime import datetime, timedelta
 from http import HTTPStatus
+from pathlib import Path
 
+from webapp.infonalia_webapp.clientes_envios import create_cliente, create_cliente_envio
 from webapp.infonalia_webapp.agenda.email_summary import (
+    build_pending_tasks_email_payload,
     build_operational_email_html,
     build_operational_email_text,
 )
@@ -22,6 +25,9 @@ from webapp.infonalia_webapp.tests.test_import_endpoints import (
     load_app_module,
     temporary_app_database,
 )
+
+
+CLIENTE_ENVIO_TEST_TIMESTAMP = "2026-07-09T10:00:00"
 
 
 def teardown_function() -> None:
@@ -55,6 +61,13 @@ def create_internal_event(app, **overrides: object) -> dict:
     dispatch(handler, "POST")
     assert handler.responses[-1][0] == HTTPStatus.CREATED
     return handler.responses[-1][1]["item"]
+
+
+def make_cliente_envio_dropbox_folder(base: Path, *, folder_name: str, file_name: str = "ficha.pdf") -> str:
+    folder = base / "2026" / "07 JULIO" / folder_name
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / file_name).write_bytes(b"contenido")
+    return str(folder.relative_to(base))
 
 
 def set_licitacion_deadline(app, licitacion_id: int, *, fecha: str, hora: str = "12:00", estado: str = "Preparar ficha") -> None:
@@ -203,18 +216,20 @@ def test_agenda_licitaciones_follow_official_visible_states() -> None:
 def test_pending_task_state_normalization() -> None:
     assert task_state_label("pendiente") == "Pendiente"
     assert task_state_label("en_curso") == "Pendiente"
+    assert task_state_label("en_preparacion") == "En preparación"
     assert task_state_label("preparada") == "Preparado"
     assert task_state_label("respondida") == "Enviado"
     assert task_state_label("cerrada") == "Enviado"
     assert task_state_label("enviada") == "Enviado"
     assert task_state_label("cancelada") == "Cancelado"
     assert is_pending_task_state("pendiente") is True
+    assert is_pending_task_state("en_preparacion") is True
     assert is_pending_task_state("preparado") is True
     assert is_pending_task_state("enviado") is False
     assert is_pending_task_state("cancelado") is False
 
 
-def test_pending_tasks_endpoint_filters_items_and_requires_admin() -> None:
+def test_pending_tasks_endpoint_filters_items_and_allows_nuria() -> None:
     app = load_app_module()
     current = datetime(2026, 6, 14, 12, 0, 0)
     visible_licitaciones = {
@@ -243,7 +258,7 @@ def test_pending_tasks_endpoint_filters_items_and_requires_admin() -> None:
         create_internal_event(app, titulo="PT interno cancelado", estado="cancelado", starts_at="2026-06-14T18:00:00")
 
         status, payload = pending_tasks(app)
-        nuria_status, _nuria_payload = pending_tasks(app, username="reviewer_test", role="nuria")
+        nuria_status, nuria_payload = pending_tasks(app, username="reviewer_test", role="nuria")
         with app.db_session() as conn:
             direct = build_pending_tasks_response(conn, current=current)
 
@@ -272,9 +287,139 @@ def test_pending_tasks_endpoint_filters_items_and_requires_admin() -> None:
     assert "PT interno preparado" in titles_found
     for title in [*hidden_licitaciones, "PT actuación enviada", "PT actuación cancelada", "PT interno enviado", "PT interno cancelado"]:
         assert title not in titles_found
-    assert nuria_status == HTTPStatus.FORBIDDEN
+    assert nuria_status == HTTPStatus.OK
+    assert titles(nuria_payload["items"]) == titles_found
     direct_titles = [item["title"] for item in direct["items"]]
     assert direct_titles.index("PT-LIC-DESCARGAR") < direct_titles.index("PT actuación preparada")
+
+
+def test_pending_tasks_endpoint_includes_cliente_envio_panels_and_email_sections(monkeypatch, tmp_path: Path) -> None:
+    app = load_app_module()
+    current = datetime(2026, 7, 9, 9, 0, 0)
+    base = tmp_path / "Dropbox" / "00000 LLANGON"
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(base))
+    monkeypatch.delenv("INFONALIA_DROPBOX_ROOT", raising=False)
+    ready_folder = make_cliente_envio_dropbox_folder(base, folder_name="Astur Santina", file_name="ready.pdf")
+    generated_folder = make_cliente_envio_dropbox_folder(base, folder_name="Cliente Generado", file_name="generated.pdf")
+    incident_folder = make_cliente_envio_dropbox_folder(base, folder_name="Cliente Incidencia", file_name="incident.pdf")
+
+    with temporary_app_database(app):
+        dia_id = insert_dia(app)
+        licitacion_id = insert_licitacion(app, dia_id, "ENV-PEND-001")
+        create_actuacion(app, None, titulo="Pendiente general", estado="pendiente", deadline_at="2026-07-09T10:00:00")
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                UPDATE licitaciones
+                SET objeto = ?, organismo = ?, enlace_perfil = ?
+                WHERE id = ?
+                """,
+                ("Servicio para cliente", "Ayuntamiento de Prueba", "https://perfil.example.test/env-pend-001", licitacion_id),
+            )
+            ready_client = create_cliente(
+                conn,
+                {"razon_social": "Astur Santina", "nombre_comercial": "Astur Santina", "email_principal": "ready@example.test"},
+                user_id="admin_test",
+                timestamp=CLIENTE_ENVIO_TEST_TIMESTAMP,
+            )
+            generated_client = create_cliente(
+                conn,
+                {"razon_social": "Cliente Generado", "nombre_comercial": "Cliente Generado", "email_principal": "generated@example.test"},
+                user_id="admin_test",
+                timestamp=CLIENTE_ENVIO_TEST_TIMESTAMP,
+            )
+            incident_client = create_cliente(
+                conn,
+                {"razon_social": "Cliente Incidencia", "nombre_comercial": "Cliente Incidencia", "email_principal": "incident@example.test"},
+                user_id="admin_test",
+                timestamp=CLIENTE_ENVIO_TEST_TIMESTAMP,
+            )
+            ready_envio = create_cliente_envio(
+                conn,
+                {
+                    "cliente_id": ready_client["id"],
+                    "licitacion_id": licitacion_id,
+                    "tipo_envio": "ficha_inicial",
+                    "estado": "listo_para_preparar_correo",
+                    "carpeta_dropbox": ready_folder,
+                    "adjuntos": ["ready.pdf"],
+                },
+                user_id="admin_test",
+                timestamp=CLIENTE_ENVIO_TEST_TIMESTAMP,
+            )
+            generated_envio = create_cliente_envio(
+                conn,
+                {
+                    "cliente_id": generated_client["id"],
+                    "licitacion_id": licitacion_id,
+                    "tipo_envio": "documentacion_revision",
+                    "estado": "correo_outlook_generado",
+                    "carpeta_dropbox": generated_folder,
+                    "adjuntos": ["generated.pdf"],
+                },
+                user_id="admin_test",
+                timestamp=CLIENTE_ENVIO_TEST_TIMESTAMP,
+            )
+            incident_envio = create_cliente_envio(
+                conn,
+                {
+                    "cliente_id": incident_client["id"],
+                    "licitacion_id": licitacion_id,
+                    "tipo_envio": "subsanacion",
+                    "estado": "incidencia",
+                    "carpeta_dropbox": incident_folder,
+                    "adjuntos": ["incident.pdf"],
+                },
+                user_id="admin_test",
+                timestamp=CLIENTE_ENVIO_TEST_TIMESTAMP,
+            )
+            conn.execute(
+                """
+                UPDATE cliente_envios
+                SET correo_generado_path = ?, correo_generado_formato = ?, correo_generado_at = ?
+                WHERE id = ?
+                """,
+                (
+                    str(base / "2026" / "07 JULIO" / "Cliente Generado" / "Correos preparados" / "generado.msg"),
+                    "msg",
+                    "2026-07-09T08:45:00",
+                    generated_envio["id"],
+                ),
+            )
+            conn.execute(
+                "UPDATE cliente_envios SET incidencia_detalle = ? WHERE id = ?",
+                ("Falta firma del cliente.", incident_envio["id"]),
+            )
+
+        status, payload = pending_tasks(app)
+        nuria_status, nuria_payload = pending_tasks(app, username="reviewer_test", role="nuria")
+        email_payload = build_pending_tasks_email_payload(payload, current=current)
+        text_body = build_operational_email_text(email_payload)
+        html_body = build_operational_email_html(email_payload, generated_at="2026-07-09T09:01:00")
+
+    assert status == HTTPStatus.OK
+    assert nuria_status == HTTPStatus.OK
+    assert [item["id"] for item in nuria_payload["items"]] == [item["id"] for item in payload["items"]]
+    assert ready_envio["id"] in {item["source_id"] for item in payload["items"] if item["source_type"] == "cliente_envio"}
+    panel_map = {panel["key"]: panel for panel in payload["panels"]}
+    assert [panel["key"] for panel in payload["panels"]] == ["regular", "ready", "generated", "incidents"]
+    assert any("Astur Santina" in item["title"] for item in panel_map["ready"]["items"])
+    assert any("Cliente Generado" in item["title"] for item in panel_map["generated"]["items"])
+    assert any("Cliente Incidencia" in item["title"] for item in panel_map["incidents"]["items"])
+    section_titles = [section["title"] for section in email_payload["sections"]]
+    assert "HOY" in section_titles
+    assert "Envíos listos para preparar correo" in section_titles
+    assert "Correos Outlook generados pendientes de marcar como enviados" in section_titles
+    assert "Envíos con incidencia" in section_titles
+    assert email_payload["counts"]["client_shipments_ready"] == 1
+    assert email_payload["counts"]["client_shipments_generated"] == 1
+    assert email_payload["counts"]["client_shipments_incidents"] == 1
+    assert "ENVÍOS LISTOS PARA PREPARAR CORREO" in text_body
+    assert "CORREOS OUTLOOK GENERADOS PENDIENTES DE MARCAR COMO ENVIADOS" in text_body
+    assert "ENVÍOS CON INCIDENCIA" in text_body
+    assert "Astur Santina" in html_body
+    assert "Cliente Generado" in html_body
+    assert "Cliente Incidencia" in html_body
 
 
 def test_pending_task_quick_state_updates_remove_closed_items() -> None:

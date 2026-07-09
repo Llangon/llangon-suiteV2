@@ -40,6 +40,7 @@
         <button id="import-menu-button" class="nav-item" data-admin-only hidden>Importar</button>
 
         <p class="nav-group-title" data-admin-only hidden>Administración</p>
+        <button id="clients-button" class="nav-item" data-nav-section="clients" data-admin-only hidden>Clientes</button>
         <button id="news-admin-button" class="nav-item" data-nav-section="news-admin" data-admin-only hidden>Noticias</button>
         <button id="monitor-button" class="nav-item" data-nav-section="monitor" data-admin-only hidden>Automatizaciones</button>
         <button id="config-button" class="nav-item" data-nav-section="config" data-admin-only hidden>Configuración</button>
@@ -249,17 +250,107 @@
         <label>
           Vista
           <select id="actuaciones-filter">
-            <option value="abiertas">Abiertas</option>
-            <option value="vencidas">Vencidas</option>
-            <option value="hoy">Hoy</option>
-            <option value="semana">Esta semana</option>
-            <option value="sin_licitacion">Sin licitación</option>
-            <option value="cerradas">Cerradas</option>
+            <option value="abiertos">Abiertos</option>
+            <option value="pendiente">Pendiente</option>
+            <option value="en_preparacion">En preparación</option>
+            <option value="preparado">Preparado</option>
+            <option value="enviado">Enviado</option>
+            <option value="cancelado">Cancelado</option>
+            <option value="todos">Todos</option>
           </select>
         </label>
       </section>
       <section class="summary" id="actuaciones-summary"></section>
       <section class="board" id="actuaciones-board"></section>
+    </section>
+
+    <section id="clients-section" hidden>
+      <div class="section-head">
+        <div class="section-title-block">
+          <p class="eyebrow">Clientes y envíos</p>
+          <h2>Clientes</h2>
+        </div>
+        <div class="section-actions">
+          <button id="refresh-clients-button" class="ghost">Actualizar</button>
+          <button id="new-client-button" class="primary">Nuevo cliente</button>
+        </div>
+      </div>
+
+      <section class="toolbar">
+        <label>
+          Buscar
+          <input id="clients-search" placeholder="Razón social, nombre comercial, NIF, email...">
+        </label>
+      </section>
+
+      <section class="config-grid clients-grid">
+        <article class="config-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Ficha fiscal</p>
+              <h3 id="client-form-title">Nuevo cliente</h3>
+            </div>
+          </div>
+          <form id="client-form" class="config-form">
+            <input type="hidden" name="id">
+            <fieldset class="config-fieldset">
+              <legend>Datos fiscales y operativos</legend>
+              <label>Razón social<input name="razon_social" required></label>
+              <label>Nombre comercial<input name="nombre_comercial"></label>
+              <label>NIF/CIF<input name="nif_cif"></label>
+              <label>Domicilio fiscal<input name="domicilio_fiscal"></label>
+              <label>Código postal<input name="codigo_postal"></label>
+              <label>Municipio<input name="municipio"></label>
+              <label>Provincia<input name="provincia"></label>
+              <label>País<input name="pais" value="España"></label>
+              <label>Teléfono principal<input name="telefono_principal"></label>
+              <label>Email principal<input name="email_principal" type="email"></label>
+              <label>Email alternativo<input name="email_alternativo" type="email"></label>
+              <label>Persona de contacto operativa<input name="persona_contacto_operativa"></label>
+              <label>Observaciones internas<textarea name="observaciones_internas" rows="3"></textarea></label>
+            </fieldset>
+            <fieldset class="config-fieldset">
+              <legend>Representante legal</legend>
+              <label>Nombre completo<input name="representante_nombre"></label>
+              <label>DNI/NIF<input name="representante_nif"></label>
+              <label>Cargo<input name="representante_cargo"></label>
+              <label>Email<input name="representante_email" type="email"></label>
+              <label>Teléfono<input name="representante_telefono"></label>
+            </fieldset>
+            <fieldset class="config-fieldset">
+              <legend>Otros datos</legend>
+              <label>Condiciones particulares<textarea name="condiciones_particulares" rows="2"></textarea></label>
+              <label>Tipo de cliente<input name="tipo_cliente"></label>
+              <label>Forma de facturación<input name="forma_facturacion"></label>
+              <label>Plantilla contractual aplicable<input name="plantilla_contractual"></label>
+            </fieldset>
+            <div class="dialog-actions">
+              <button type="button" class="ghost" id="reset-client-form">Limpiar</button>
+              <button type="submit" class="primary">Guardar cliente</button>
+            </div>
+            <div class="import-result" id="client-form-result"></div>
+          </form>
+        </article>
+
+        <article class="config-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Listado</p>
+              <h3>Clientes dados de alta</h3>
+            </div>
+          </div>
+          <div id="clients-board" class="users-board"></div>
+          <section class="history-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Historial simple</p>
+                <h3 id="client-history-title">Envíos del cliente</h3>
+              </div>
+            </div>
+            <div id="client-history-board" class="users-board"></div>
+          </section>
+        </article>
+      </section>
     </section>
 
     <section id="notifications-section" hidden>
@@ -1090,6 +1181,7 @@
         <label>Estado
           <select name="estado">
             <option value="pendiente">Pendiente</option>
+            <option value="en_preparacion">En preparación</option>
             <option value="preparado">Preparado</option>
             <option value="enviado">Enviado</option>
             <option value="cancelado">Cancelado</option>
@@ -1155,6 +1247,7 @@
         <label>Estado
           <select name="estado">
             <option value="pendiente">Pendiente</option>
+            <option value="en_preparacion">En preparación</option>
             <option value="preparado">Preparado</option>
             <option value="enviado">Enviado</option>
             <option value="cancelado">Cancelado</option>
@@ -1166,6 +1259,105 @@
         <button type="button" class="ghost" id="cancel-agenda-event-dialog">Cancelar</button>
         <button type="submit" class="primary">Guardar evento</button>
       </div>
+    </form>
+  </dialog>
+
+  <dialog id="cliente-envio-dialog" class="notice-dialog wide-dialog">
+    <form id="cliente-envio-form" method="dialog">
+      <input type="hidden" name="id">
+      <input type="hidden" name="context_kind">
+      <input type="hidden" name="context_id">
+      <input type="hidden" name="actuacion_id">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">Envíos a clientes</p>
+          <h2 id="cliente-envio-form-title">Nuevo envío a cliente</h2>
+        </div>
+        <button type="button" class="icon-button" id="close-cliente-envio-dialog">×</button>
+      </div>
+      <div id="cliente-envio-context" class="storage-status-row"></div>
+      <div class="config-form">
+        <label id="cliente-envio-licitacion-field">Licitación
+          <select name="licitacion_id"></select>
+        </label>
+        <label>Cliente
+          <select name="cliente_id" required></select>
+        </label>
+        <label>Tipo de envío
+          <select name="tipo_envio" required></select>
+        </label>
+        <label>Estado
+          <select name="estado" required></select>
+        </label>
+        <label>Carpeta Dropbox
+          <input name="carpeta_dropbox" placeholder="2026\\07 JULIO\\...">
+        </label>
+        <div class="dialog-actions inline-actions">
+          <button type="button" class="ghost" id="cliente-envio-load-folder">Leer carpeta y adjuntos</button>
+        </div>
+        <section class="config-fieldset">
+          <legend>Adjuntos del envío</legend>
+          <div id="cliente-envio-folder-status" class="config-help">Indica una carpeta de Dropbox y carga los archivos disponibles.</div>
+          <div id="cliente-envio-files" class="selector-results"></div>
+        </section>
+        <label>Destinatario
+          <input name="destinatario_email" type="email">
+        </label>
+        <label>Asunto
+          <input name="asunto">
+        </label>
+        <label>Cuerpo del correo
+          <textarea name="cuerpo" rows="8"></textarea>
+        </label>
+        <label>Observaciones internas
+          <textarea name="observaciones_internas" rows="3"></textarea>
+        </label>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="cancel-cliente-envio-dialog">Cancelar</button>
+        <button type="submit" class="primary">Guardar envío</button>
+      </div>
+      <div class="import-result" id="cliente-envio-result"></div>
+    </form>
+  </dialog>
+
+  <dialog id="cliente-envio-draft-dialog" class="notice-dialog wide-dialog">
+    <form id="cliente-envio-draft-form" method="dialog">
+      <input type="hidden" name="envio_id">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">Preparar correo Outlook</p>
+          <h2 id="cliente-envio-draft-title">Correo a cliente</h2>
+        </div>
+        <button type="button" class="icon-button" id="close-cliente-envio-draft-dialog">×</button>
+      </div>
+      <div id="cliente-envio-draft-context" class="storage-status-row"></div>
+      <div class="notice-preview">
+        <label>Destinatario
+          <input id="cliente-envio-draft-to" name="destinatario_email" type="email">
+        </label>
+        <label>Asunto
+          <input id="cliente-envio-draft-subject" name="asunto">
+        </label>
+        <label>Carpeta asignada
+          <input id="cliente-envio-draft-folder" readonly>
+        </label>
+        <label>Texto del correo
+          <textarea id="cliente-envio-draft-body" name="cuerpo" rows="10"></textarea>
+        </label>
+      </div>
+      <section class="config-fieldset">
+        <legend>Adjuntos disponibles</legend>
+        <div id="cliente-envio-draft-files" class="selector-results"></div>
+      </section>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="cliente-envio-open-folder-button">Abrir carpeta</button>
+        <button type="button" class="ghost" id="cliente-envio-open-draft-button">Abrir correo preparado</button>
+        <button type="button" class="secondary" id="cliente-envio-mark-sent-button">Marcar como enviado</button>
+        <button type="button" class="ghost" id="cancel-cliente-envio-draft-dialog">Cancelar</button>
+        <button type="submit" class="primary" id="cliente-envio-generate-button">Generar correo Outlook</button>
+      </div>
+      <div class="import-result" id="cliente-envio-draft-result"></div>
     </form>
   </dialog>
 

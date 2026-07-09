@@ -106,6 +106,7 @@ def _base_activity(licitacion_rows: list[Any]) -> dict[int, dict[str, object]]:
             "admin": normalize_licitacion_estado(row["estado"]) != ESTADO_IMPORTADA,
             "reviewer": normalize_licitacion_estado(row["estado"]) in REVIEWER_STATE_FALLBACKS,
             "last_activity_at": clean_text(row_value(row, "updated_at")),
+            "last_admin_at": "",
             "last_reviewer_at": "",
         }
         for row in licitacion_rows
@@ -143,6 +144,7 @@ def _apply_history_activity(conn: Any, activity: dict[int, dict[str, object]], l
             current["last_reviewer_at"] = _max_timestamp(current.get("last_reviewer_at"), created_at)
         elif actor == "admin":
             current["admin"] = True
+            current["last_admin_at"] = _max_timestamp(current.get("last_admin_at"), created_at)
 
 
 def _apply_email_activity(conn: Any, activity: dict[int, dict[str, object]], licitacion_ids: list[int]) -> None:
@@ -189,19 +191,79 @@ def _day_visual_state(
     total: int,
     pendientes: int,
     pendientes_nuria: int,
-    reviewer_managed: int,
+    admin_managed: int,
+    reviewer_reviewed: bool,
 ) -> str:
     reviewed_at = clean_text(row_value(row, "reviewed_at"))
     sent_at = clean_text(row_value(row, "enviado_nuria_at"))
+    estado = clean_text(row_value(row, "estado")).lower()
     if reviewed_at:
-        return "Cerrado / revisado"
-    if reviewer_managed > 0:
+        return "Cerrado"
+    if "error" in estado or "incidencia" in estado:
+        return "Con incidencias"
+    if reviewer_reviewed:
         return "Revisado por Nuria · pendiente de cerrar"
     if sent_at or pendientes_nuria > 0:
-        return "Enviado a Nuria"
+        return "Revisado por administrador · pendiente de Nuria"
+    if admin_managed > 0 and pendientes > 0:
+        return "En revisión por administrador"
     if total == 0 or pendientes > 0:
-        return "Abierto / pendiente de gestión"
-    return "Abierto / pendiente de gestión"
+        return "Pendiente de revisión"
+    return "En revisión por administrador"
+
+
+def _day_history_preview(conn: Any, dia_id: int, *, limit: int = 3) -> list[dict[str, str]]:
+    events: list[dict[str, str]] = []
+    if table_exists(conn, "licitacion_historial"):
+        try:
+            rows = conn.execute(
+                """
+                SELECT h.created_at, h.user_id, h.event_type, h.new_value, l.expediente
+                FROM licitacion_historial h
+                JOIN licitaciones l ON l.id = h.licitacion_id
+                WHERE l.infonalia_dia_id = ?
+                ORDER BY h.created_at DESC, h.id DESC
+                LIMIT ?
+                """,
+                (dia_id, limit),
+            ).fetchall()
+            for row in rows:
+                expediente = clean_text(row_value(row, "expediente")) or "sin expediente"
+                user_id = clean_text(row_value(row, "user_id")) or "Sistema"
+                new_value = clean_text(row_value(row, "new_value"))
+                event_type = clean_text(row_value(row, "event_type")) or "actualizó"
+                action = f"{user_id} {event_type} {expediente}"
+                if new_value:
+                    action = f"{action} a {new_value}"
+                events.append({"created_at": _format_timestamp(row_value(row, "created_at")), "body": action})
+        except Exception:
+            pass
+    if len(events) < limit and table_exists(conn, "email_action_events"):
+        try:
+            rows = conn.execute(
+                """
+                SELECT e.created_at, e.action_name, l.expediente
+                FROM email_action_events e
+                JOIN licitaciones l ON l.id = e.licitacion_id
+                WHERE e.review_id = ?
+                  AND COALESCE(e.result, '') = 'processed'
+                ORDER BY e.created_at DESC, e.id DESC
+                LIMIT ?
+                """,
+                (dia_id, limit - len(events)),
+            ).fetchall()
+            for row in rows:
+                expediente = clean_text(row_value(row, "expediente")) or "sin expediente"
+                action = clean_text(row_value(row, "action_name")) or "acción"
+                events.append(
+                    {
+                        "created_at": _format_timestamp(row_value(row, "created_at")),
+                        "body": f"Nuria solicitó {action} en {expediente}",
+                    }
+                )
+        except Exception:
+            pass
+    return events[:limit]
 
 
 def get_or_create_day(conn: Any, fecha_infonalia: str, *, now: TimestampFactory) -> int:
@@ -328,13 +390,18 @@ def day_row_to_dict(conn: Any, row: Any) -> dict[str, object]:
         row_value(row, "reviewed_at"),
         *(item.get("last_activity_at") for item in activity.values()),
     )
+    last_admin_at = _max_timestamp(
+        row_value(row, "enviado_nuria_at"),
+        *(item.get("last_admin_at") for item in activity.values()),
+    )
     last_reviewer_at = _max_timestamp(*(item.get("last_reviewer_at") for item in activity.values()))
     estado_visual = _day_visual_state(
         row,
         total=total,
         pendientes=counts.get(ESTADO_IMPORTADA, 0),
         pendientes_nuria=counts.get(ESTADO_ENVIADA_NURIA, 0),
-        reviewer_managed=reviewer_managed,
+        admin_managed=admin_managed,
+        reviewer_reviewed=bool(last_reviewer_at),
     )
     return {
         "id": row["id"],
@@ -366,8 +433,13 @@ def day_row_to_dict(conn: Any, row: Any) -> dict[str, object]:
         "fecha_revision": format_datetime_es(row_value(row, "reviewed_at")) if row_has_key(row, "reviewed_at") else "",
         "ultima_actividad_at": last_activity_at,
         "ultima_actividad": _format_timestamp(last_activity_at),
+        "ultima_revision_admin_at": last_admin_at,
+        "ultima_revision_admin": _format_timestamp(last_admin_at),
         "ultima_accion_nuria_at": last_reviewer_at,
         "ultima_accion_nuria": _format_timestamp(last_reviewer_at),
+        "ultima_revision_nuria_at": last_reviewer_at,
+        "ultima_revision_nuria": _format_timestamp(last_reviewer_at),
+        "historial_resumen": _day_history_preview(conn, int(row["id"])),
         "counts": counts,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],

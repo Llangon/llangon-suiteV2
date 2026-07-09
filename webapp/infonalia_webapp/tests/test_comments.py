@@ -24,9 +24,11 @@ def make_conn() -> sqlite3.Connection:
     conn.execute("CREATE TABLE licitaciones (id INTEGER PRIMARY KEY, expediente TEXT)")
     conn.execute("CREATE TABLE actuaciones (id INTEGER PRIMARY KEY, titulo TEXT)")
     conn.execute("CREATE TABLE agenda_eventos (id INTEGER PRIMARY KEY, titulo TEXT)")
+    conn.execute("CREATE TABLE infonalia_dias (id INTEGER PRIMARY KEY, titulo TEXT)")
     conn.execute("INSERT INTO licitaciones (id, expediente) VALUES (1, 'EXP-1')")
     conn.execute("INSERT INTO actuaciones (id, titulo) VALUES (1, 'Actuacion')")
     conn.execute("INSERT INTO agenda_eventos (id, titulo) VALUES (1, 'Evento')")
+    conn.execute("INSERT INTO infonalia_dias (id, titulo) VALUES (1, 'Infonalia 08/07/2026')")
     ensure_comments_schema(conn)
     return conn
 
@@ -67,6 +69,24 @@ def test_create_list_edit_delete_comment_with_logical_delete() -> None:
     assert deleted["is_deleted"] is True
     assert deleted["body"] == "Comentario eliminado."
     assert list_comments(conn, entity_type="licitacion", entity_id=1, include_deleted=False) == []
+
+
+def test_comments_can_target_infonalia_day() -> None:
+    conn = make_conn()
+    user = {"username": "manolo", "display_name": "Manolo", "role": "admin"}
+
+    created = create_comment(
+        conn,
+        entity_type="infonalia_dia",
+        entity_id=1,
+        body="Día revisado internamente.",
+        user=user,
+        timestamp="2026-07-08T13:13:00",
+    )
+    summary = comments_summary_for_entities(conn, [("infonalia_dia", 1)])
+
+    assert created["body"] == "Día revisado internamente."
+    assert summary[("infonalia_dia", 1)]["count"] == 1
 
 
 def test_comments_validate_empty_body_and_entity_type() -> None:

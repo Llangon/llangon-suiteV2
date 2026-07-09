@@ -528,6 +528,50 @@ def test_download_review_email_action_still_queues_job_when_ruta_carpeta_is_info
     assert worker_calls == [jobs[0]["id"]]
 
 
+def test_reprocessing_same_unread_email_action_does_not_queue_duplicate_download(monkeypatch) -> None:
+    app = load_app_module()
+    worker_calls: list[int] = []
+
+    def fake_start_download_worker(*, job_id=None):
+        worker_calls.append(int(job_id))
+        return {"started": True, "pid": 4321}
+
+    monkeypatch.setattr(app, "start_download_worker", fake_start_download_worker)
+
+    with temporary_app_database(app):
+        _dia_id, licitacion_id = prepare_action(app, estado="Enviada a Nuria")
+        code = generate_action_code(licitacion_id, ACTION_DOWNLOAD_REVIEW)
+        fake = FakeIMAP(
+            {
+                b"12": {
+                    "subject": f"LLANGON_CMD {code} - Descargar para ver",
+                    "seen": False,
+                    "raw": make_message(
+                        f"LLANGON_CMD {code} - Descargar para ver",
+                        "nuria@example.test",
+                        f"LLANGON_ACTION_CODE={code}",
+                        "<same-download-message>",
+                    ),
+                }
+            }
+        )
+
+        first = run_with_fake_imap(app, fake)
+        fake.messages[b"12"]["seen"] = False
+        second = run_with_fake_imap(app, fake)
+        jobs = download_jobs_for_licitacion(app, licitacion_id)
+        events = email_action_events_for_licitacion(app, licitacion_id)
+
+    assert first["processed"] == 1
+    assert second["processed"] == 0
+    assert second["total_duplicate_codes"] == 1
+    assert second["ignored_by_reason"]["DUPLICATE_EMAIL_ACTION"] == 1
+    assert fake.messages[b"12"]["seen"] is True
+    assert len(jobs) == 1
+    assert worker_calls == [jobs[0]["id"]]
+    assert [event["result"] for event in events] == ["processed", "ignored"]
+
+
 def test_download_review_email_action_sends_admin_telegram_when_download_finishes(monkeypatch) -> None:
     app = load_app_module()
     worker_calls: list[int] = []

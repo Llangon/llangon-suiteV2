@@ -56,6 +56,11 @@ try:
 except ImportError:
     from infonalia_mail_importer import ensure_infonalia_email_import_schema as _ensure_infonalia_email_import_schema
 
+try:
+    from .clientes_envios import ensure_client_shipments_schema as _ensure_client_shipments_schema
+except ImportError:
+    from clientes_envios import ensure_client_shipments_schema as _ensure_client_shipments_schema
+
 
 MIGRATIONS_TABLE = "schema_migrations"
 
@@ -730,6 +735,10 @@ def _automation_orchestrator_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_automation_locks_expires ON automation_locks(expires_at)")
 
 
+def _client_shipments_schema(conn: sqlite3.Connection) -> None:
+    _ensure_client_shipments_schema(conn)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version="0001_baseline_schema",
@@ -860,6 +869,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version="0026_automation_orchestrator",
         description="Orquestador interno unico de automatizaciones",
         apply=_automation_orchestrator_schema,
+    ),
+    Migration(
+        version="0027_clientes_envios",
+        description="Modulo base de clientes y envios documentales",
+        apply=_client_shipments_schema,
     ),
 )
 

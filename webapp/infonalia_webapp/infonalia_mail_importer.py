@@ -207,6 +207,18 @@ def after_colon(line: str) -> str:
     return clean_text(match.group(1) if match else value)
 
 
+def is_object_field(line_lower: str) -> bool:
+    normalized = clean_text(line_lower).lower()
+    if "resumen del objeto" in normalized or "objeto del contrato" in normalized:
+        return True
+    return normalized in {"objeto", "objeto:"} or normalized.startswith("objeto:")
+
+
+def is_province_field(line_lower: str) -> bool:
+    normalized = clean_text(line_lower).lower()
+    return bool(re.match(r"^provincia(?:\s+de\s+ejecuci[oó]n)?\s*:?", normalized))
+
+
 def normalize_url(value: object) -> str:
     text = clean_text(value).strip("<>")
     if not text:
@@ -282,9 +294,9 @@ def parse_licitacion_blocks(text: str) -> list[dict[str, object]]:
                 target_field, value = "expediente", after_colon(line)
             elif lower.startswith("organismo"):
                 target_field, value = "organismo", after_colon(line)
-            elif "resumen del objeto" in lower:
+            elif is_object_field(lower):
                 target_field, value = "resumen_objeto", after_colon(line)
-            elif "provincia" in lower:
+            elif is_province_field(lower):
                 target_field, value = "provincia_ejecucion", after_colon(line)
             elif lower.startswith("presupuesto"):
                 target_field, value = "presupuesto", after_colon(line)
