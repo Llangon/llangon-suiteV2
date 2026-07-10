@@ -30,7 +30,6 @@ def test_dangerous_checkpoint_doc_requires_verification_and_local_commit() -> No
         "python -m pytest -q",
         "node --check webapp/infonalia_webapp/static/app.js",
         "node --check webapp/infonalia_webapp/static/login.js",
-        "node --check webapp/infonalia_webapp/static/public.js",
         "node --check firebase/public_firebase/static/public.js",
         "git diff --check",
     ):
@@ -83,10 +82,9 @@ def test_markdown_news_precheck_documents_current_news_flow() -> None:
         "slug",
         "content",
         "featured_image",
-        "api_public_news()",
         "api_create_news()",
         "api_update_news()",
-        "GET /api/public/noticias",
+        "GET /api/news",
         "POST /api/news",
         "PATCH /api/news/{id}",
         "DELETE /api/news/{id}",
@@ -106,8 +104,6 @@ def test_markdown_news_precheck_keeps_implementation_out_of_scope() -> None:
         "No se anade parser Markdown",
         "No se anade sanitizador",
         "No se cambia SQLite",
-        "No se cambia `api_public_news()`",
-        "No se cambia `public.js`",
         "No se cambia Firebase",
     ):
         assert item in text
@@ -164,7 +160,6 @@ def test_csrf_global_precheck_documents_current_surface() -> None:
         "POST /api/licitaciones",
         "PATCH /api/config/settings",
         "DELETE /api/news/{id}",
-        "GET /api/public/noticias",
         "403 Forbidden",
         "404 Not Found",
     ):

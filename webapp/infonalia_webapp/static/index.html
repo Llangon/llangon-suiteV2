@@ -31,17 +31,23 @@
       </div>
 
       <nav class="sidebar-nav" aria-label="Navegación principal">
-        <p class="nav-group-title">Trabajo diario</p>
-        <button id="days-button" class="nav-item" data-nav-section="days">Días Infonalia</button>
-        <button id="list-button" class="nav-item" data-nav-section="licitaciones">Centro de licitaciones</button>
         <button id="calendar-button" class="nav-item" data-nav-section="calendar">Agenda</button>
+
+        <p class="nav-group-title">Licitaciones</p>
+        <button id="days-button" class="nav-item" data-nav-section="days">Infonalia</button>
+        <button id="list-button" class="nav-item" data-nav-section="licitaciones">Centro de licitaciones</button>
         <button id="actuaciones-button" class="nav-item" data-nav-section="actuaciones">Actuaciones</button>
+
+        <p class="nav-group-title" data-admin-only hidden>Clientes</p>
+        <button id="clients-button" class="nav-item" data-nav-section="clients" data-admin-only hidden>Clientes</button>
+        <button id="cliente-envios-button" class="nav-item" data-nav-section="cliente-envios" data-admin-only hidden>Envíos de documentación</button>
+
+        <p class="nav-group-title">IA y comunicaciones</p>
+        <button id="ai-queue-menu-button" class="nav-item" type="button">Cola IA</button>
         <button id="notifications-menu-button" class="nav-item" data-nav-section="notifications">Buzón</button>
-        <button id="import-menu-button" class="nav-item" data-admin-only hidden>Importar</button>
+        <button id="news-admin-button" class="nav-item" data-nav-section="news-admin" data-admin-only hidden>Noticias</button>
 
         <p class="nav-group-title" data-admin-only hidden>Administración</p>
-        <button id="clients-button" class="nav-item" data-nav-section="clients" data-admin-only hidden>Clientes</button>
-        <button id="news-admin-button" class="nav-item" data-nav-section="news-admin" data-admin-only hidden>Noticias</button>
         <button id="monitor-button" class="nav-item" data-nav-section="monitor" data-admin-only hidden>Automatizaciones</button>
         <button id="config-button" class="nav-item" data-nav-section="config" data-admin-only hidden>Configuración</button>
       </nav>
@@ -63,13 +69,21 @@
             Cola IA <span id="ai-queue-badge" class="topbar-badge" hidden>0</span>
           </button>
           <button id="notifications-button" class="secondary" data-nav-section="notifications">Buzón</button>
-          <button id="import-button" class="primary" data-admin-only hidden>Importar</button>
-          <button id="new-button" class="secondary" data-admin-only hidden>Nueva licitación</button>
         </div>
       </header>
 
       <main class="shell">
     <section id="days-section">
+      <div class="section-head">
+        <div class="section-title-block">
+          <p class="eyebrow">Infonalia</p>
+          <h2>Días Infonalia</h2>
+        </div>
+        <div class="section-actions" data-admin-only hidden>
+          <button id="import-button" class="primary">Importar</button>
+          <button id="new-button" class="secondary">Nueva licitación</button>
+        </div>
+      </div>
       <section id="nuria-days-tabs" class="segmented" hidden>
         <button type="button" data-nuria-days-view="pending" class="active">Pendientes de revisión</button>
         <button type="button" data-nuria-days-view="reviewed">Revisados</button>
@@ -119,6 +133,14 @@
           Estado
           <select id="state-filter">
             <option>Todos</option>
+          </select>
+        </label>
+        <label>
+          Tipo publicación
+          <select id="publication-type-filter">
+            <option value="licitacion">Licitaciones</option>
+            <option value="anuncio_previo">Anuncios previos</option>
+            <option value="all">Todas</option>
           </select>
         </label>
         <label hidden>
@@ -353,6 +375,34 @@
       </section>
     </section>
 
+    <section id="cliente-envios-section" hidden>
+      <div class="section-head">
+        <div class="section-title-block">
+          <p class="eyebrow">Clientes</p>
+          <h2>Envíos de documentación</h2>
+        </div>
+        <div class="section-actions">
+          <button id="refresh-cliente-envios-button" class="ghost">Actualizar</button>
+        </div>
+      </div>
+
+      <section class="toolbar">
+        <label>
+          Buscar
+          <input id="cliente-envios-search" placeholder="Cliente, expediente, asunto, email...">
+        </label>
+        <label>
+          Estado
+          <select id="cliente-envios-state-filter">
+            <option value="">Todos</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="summary" id="cliente-envios-summary"></section>
+      <section class="board cliente-envios-screen-board" id="cliente-envios-board"></section>
+    </section>
+
     <section id="notifications-section" hidden>
       <div class="section-head">
         <div>
@@ -537,7 +587,10 @@
           <p class="eyebrow">Administración</p>
           <h2>Configuración</h2>
         </div>
-        <button id="back-from-config" class="ghost">Volver</button>
+        <div class="section-actions">
+          <button id="config-help-open" class="secondary" type="button">Manual de configuración</button>
+          <button id="back-from-config" class="ghost">Volver</button>
+        </div>
       </div>
 
       <nav class="config-tabs" aria-label="Secciones de configuración">
@@ -679,9 +732,9 @@
               <fieldset class="config-fieldset">
                 <legend>Destinatarios de avisos</legend>
                 <p class="config-help">Correo de aviso de ficha preparada: destinatario usado cuando una licitación pasa a estado Preparada.</p>
-                <label>Email Agenda fallback<input name="agenda_email_to" type="email"></label>
+                <label>Email de respaldo de agenda<input name="agenda_email_to" type="email"></label>
                 <label>Email aviso ficha preparada<input name="prepared_notice_email_to" type="email" placeholder="info3@llangon.com"></label>
-                <label>Emails seguimiento globales<input name="seguimiento_emails" placeholder="nuria@ejemplo.es,otro@ejemplo.es"></label>
+                <label>Emails de seguimiento internos<input name="seguimiento_emails" placeholder="nuria@ejemplo.es,otro@ejemplo.es"></label>
                 <p class="config-help">Correos de seguimiento: direcciones usadas para avisos internos o seguimiento automático.</p>
               </fieldset>
               <div class="dialog-actions">
@@ -737,7 +790,6 @@
               </fieldset>
               <div class="dialog-actions">
                 <button type="submit" class="primary">Guardar acciones por correo</button>
-                <button type="button" class="ghost" disabled>Comprobar configuración del buzón (pendiente)</button>
               </div>
               <div class="import-result" id="mail-actions-result"></div>
             </form>
@@ -763,7 +815,6 @@
               </fieldset>
               <div class="dialog-actions">
                 <button type="submit" class="primary">Guardar importación Infonalia</button>
-                <button type="button" class="ghost" disabled>Comprobar importación en seco (pendiente)</button>
               </div>
               <div class="import-result" id="infonalia-import-result"></div>
             </form>
@@ -892,6 +943,20 @@
         </article>
       </section>
     </section>
+
+  <dialog id="config-help-dialog" class="wide-dialog config-help-dialog">
+    <div class="dialog-head">
+      <div>
+        <p class="eyebrow">Ayuda</p>
+        <h2>Manual de configuración</h2>
+      </div>
+      <button type="button" class="icon-button" id="close-config-help-dialog">×</button>
+    </div>
+    <div class="config-help-manual" id="config-help-manual-content"></div>
+    <div class="dialog-actions">
+      <button type="button" class="primary" id="close-config-help-dialog-footer">Cerrar</button>
+    </div>
+  </dialog>
       </main>
     </div>
   </div>
@@ -918,6 +983,12 @@
             <option value="Preparar ficha">Preparar ficha</option>
             <option value="Preparada">Preparada</option>
             <option value="Oferta enviada">Oferta enviada</option>
+          </select>
+        </label>
+        <label>Tipo publicación
+          <select name="tipo_publicacion">
+            <option value="licitacion">Licitación</option>
+            <option value="anuncio_previo">Anuncio previo</option>
           </select>
         </label>
         <label>Objeto<textarea name="objeto" rows="3"></textarea></label>
@@ -1136,8 +1207,8 @@
     </form>
   </dialog>
 
-  <dialog id="actuacion-dialog">
-    <form id="actuacion-form" method="dialog">
+  <dialog id="actuacion-dialog" class="wide-dialog actuacion-dialog">
+    <form id="actuacion-form" class="actuacion-form-layout" method="dialog">
       <input type="hidden" name="id">
       <div class="dialog-head">
         <div>
@@ -1146,15 +1217,18 @@
         </div>
         <button type="button" class="icon-button" id="close-actuacion-dialog">×</button>
       </div>
-      <section class="linked-picker">
-        <div>
-          <p class="eyebrow">Licitaciones vinculadas</p>
-          <strong id="actuacion-licitaciones-summary">Sin licitaciones vinculadas</strong>
+      <section class="actuacion-link-panel">
+        <div class="linked-picker actuacion-linked-picker">
+          <div>
+            <p class="eyebrow">Licitaciones vinculadas</p>
+            <strong id="actuacion-licitaciones-summary">Sin licitaciones vinculadas</strong>
+          </div>
+          <button type="button" id="open-licitacion-selector">Seleccionar licitaciones</button>
         </div>
-        <button type="button" id="open-licitacion-selector">Seleccionar licitaciones</button>
+        <section id="actuacion-selected-licitaciones" class="linked-list actuacion-linked-list"></section>
       </section>
-      <section id="actuacion-selected-licitaciones" class="linked-list"></section>
-      <div class="form-grid">
+      <div class="form-grid actuacion-form-grid">
+        <label class="full-field">Título<input name="titulo" required></label>
         <label>Tipo
           <select name="tipo">
             <option value="requerimiento">Requerimiento</option>
@@ -1175,9 +1249,6 @@
             <option value="otro">Otro</option>
           </select>
         </label>
-        <label>Título<input name="titulo" required></label>
-        <label>Fecha/hora límite<input name="deadline_at" type="datetime-local"></label>
-        <p class="form-warning" id="actuacion-date-warning" hidden></p>
         <label>Estado
           <select name="estado">
             <option value="pendiente">Pendiente</option>
@@ -1187,13 +1258,15 @@
             <option value="cancelado">Cancelado</option>
           </select>
         </label>
-        <label class="check-field">
+        <label class="actuacion-deadline-field">Fecha/hora límite<input name="deadline_at" type="datetime-local"></label>
+        <p class="form-warning" id="actuacion-date-warning" hidden></p>
+        <label class="check-field actuacion-reminder-field">
           <input name="recordatorio_email" type="checkbox" checked>
           Aviso por email
         </label>
         <label class="full-field">Descripción<textarea name="descripcion" rows="3"></textarea></label>
       </div>
-      <section class="history-panel" id="actuacion-history-panel" hidden>
+      <section class="history-panel actuacion-history-panel" id="actuacion-history-panel" hidden>
         <div class="dialog-head slim">
           <div>
             <p class="eyebrow">Histórico</p>

@@ -36,7 +36,6 @@ Funciones backend:
 - `normalize_news_status()`;
 - `news_to_dict()`;
 - `require_news_manager()`;
-- `api_public_news()`;
 - `api_list_news()`;
 - `read_news_payload()`;
 - `api_create_news()`;
@@ -45,12 +44,10 @@ Funciones backend:
 
 Endpoints:
 
-- `GET /api/public/noticias`;
 - `GET /api/news`;
 - `POST /api/news`;
 - `PATCH /api/news/{id}`;
 - `DELETE /api/news/{id}`;
-- rutas publicas `/noticias` y `/noticias/{slug}`.
 
 Frontend privado:
 
@@ -64,8 +61,7 @@ Frontend privado:
 
 Frontend publico:
 
-- `public.js`;
-- `fetch("/api/public/noticias")`;
+- `firebase/public_firebase/static/public.js`;
 - `newsCards()`;
 - `newsDetailPage()`;
 - `escapeHtml()`;
@@ -74,8 +70,7 @@ Frontend publico:
 Firebase:
 
 - `firebase/public_firebase/static/public.js`;
-- intenta cargar `/api/public/noticias` en el mismo origen;
-- si no hay API, usa placeholders locales.
+- usa placeholders locales hasta definir una estrategia de datos publica separada de la app privada.
 
 Contratos futuros existentes:
 
@@ -87,11 +82,10 @@ Contratos futuros existentes:
 - El contenido actual debe seguir tratandose como texto plano hasta que exista render Markdown seguro.
 - No debe permitirse HTML libre.
 - `POST /api/news`, `PATCH /api/news/{id}` y `DELETE /api/news/{id}` deben seguir protegidos por CSRF.
-- `GET /api/public/noticias` debe seguir siendo publico y de solo lectura.
 - `slug` debe seguir siendo unico.
 - `published` sin fecha debe seguir asignando `published_at`.
 - La web publica debe seguir escapando `title`, `excerpt`, `category` y `content`.
-- Firebase no debe romperse si no existe API en su origen.
+- Firebase no debe depender de la app privada para poder renderizarse.
 - La futura transicion debe conservar compatibilidad con el campo `content` o definir migracion explicita.
 
 ## Riesgos antes de Markdown
@@ -102,7 +96,7 @@ Contratos futuros existentes:
 - Imagenes externas pueden introducir tracking o contenido no deseado.
 - Cambiar `content` a `content_markdown` requiere migracion SQLite.
 - Publicar HTML renderizado cacheado requeriria decidir si se guarda en SQLite.
-- Firebase necesita una estrategia de datos: API publica, JSON exportado, Cloud Function o publicacion estatica.
+- Firebase necesita una estrategia de datos separada de la app privada: JSON exportado, Cloud Function o publicacion estatica.
 
 ## Estrategia recomendada antes de implementar
 
@@ -136,8 +130,6 @@ Orden seguro:
 - No se anade parser Markdown.
 - No se anade sanitizador.
 - No se cambia SQLite.
-- No se cambia `api_public_news()`.
 - No se cambia `api_create_news()`.
 - No se cambia `api_update_news()`.
-- No se cambia `public.js`.
 - No se cambia Firebase.

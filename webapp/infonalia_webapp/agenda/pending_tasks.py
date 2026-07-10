@@ -167,6 +167,7 @@ def _licitacion_tasks(conn: sqlite3.Connection, *, current: datetime) -> list[di
             estado, provincia, plataforma, enlace_perfil, enlace_infonalia, ruta_carpeta
         FROM licitaciones
         WHERE estado IN ({placeholders})
+          AND COALESCE(tipo_publicacion, 'licitacion') = 'licitacion'
         """,
         sorted(PENDING_LICITACION_STATES),
     ).fetchall()

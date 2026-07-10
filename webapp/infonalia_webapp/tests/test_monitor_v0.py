@@ -617,14 +617,14 @@ def test_pending_agenda_email_groups_cards_links_and_visual_state(monkeypatch) -
     html = build_operational_email_html(payload, generated_at="2026-06-18T06:01:00")
 
     assert [section["title"] for section in payload["sections"]] == [
-        "HOY",
-        "PRÓXIMOS 7 DÍAS",
-        "PRÓXIMAMENTE",
+        "Hoy",
+        "Próximos 7 días",
+        "Más adelante",
     ]
-    assert text.index("HOY") < text.index("PRÓXIMOS 7 DÍAS") < text.index("PRÓXIMAMENTE")
-    assert "VIERNES 19/06/2026" in text
-    assert "SÁBADO 20/06/2026" in text
-    assert "MARTES 30/06/2026" in text
+    assert text.index("Hoy") < text.index("Próximos 7 días") < text.index("Más adelante")
+    assert "Viernes 19/06/2026" in text
+    assert "Sábado 20/06/2026" in text
+    assert "Martes 30/06/2026" in text
     assert "URGENTE" not in text
     assert "ESTA SEMANA" not in text
     assert "Licitaciones:" not in text
@@ -638,12 +638,18 @@ def test_pending_agenda_email_groups_cards_links_and_visual_state(monkeypatch) -
     assert "perfil-no-valido" not in html
     assert "Fecha/hora final" not in html
     assert "Vence: 18/06/2026 14:00" in html
+    assert "Vence hoy" in html
+    assert "Falta 1 día" in html
+    assert "Faltan 2 días" in html
+    assert "Faltan 12 días" in html
+    assert "Total pendientes" not in html
     assert "#fef3f2" in html
     assert "#fff7ed" in html
     assert "#eff8ff" in html
     assert "#ecfdf3" in html
-    assert "max-width:96px" in html
-    assert "padding:12px 20px" in html
+    assert 'width="220"' in html
+    assert "max-width:220px" in html
+    assert "padding:8px 14px" in html
 
 
 def test_pending_agenda_email_omits_profile_link_without_valid_url() -> None:
@@ -867,9 +873,9 @@ def test_agenda_daily_task_includes_cliente_envios_sections_in_monitor_email(mon
     assert report["emails_sent_count"] == 1
     assert report["processed_items_count"] == 4
     assert sent[0][1] == "Agenda Llangón jueves 09-07-2026"
-    assert "ENVÍOS LISTOS PARA PREPARAR CORREO" in sent[0][2]
-    assert "CORREOS OUTLOOK GENERADOS PENDIENTES DE MARCAR COMO ENVIADOS" in sent[0][2]
-    assert "ENVÍOS CON INCIDENCIA" in sent[0][2]
+    assert "Envíos listos para preparar correo" in sent[0][2]
+    assert "Correos Outlook generados pendientes de marcar como enviados" in sent[0][2]
+    assert "Envíos con incidencia" in sent[0][2]
     assert "Astur Santina" in sent[0][2]
     assert "Cliente Generado" in sent[0][3]
     assert "Cliente Incidencia" in sent[0][3]

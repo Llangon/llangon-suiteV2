@@ -48,6 +48,7 @@ def new_licitaciones_items(conn: sqlite3.Connection, *, limit: int = 20) -> list
         SELECT id, expediente, objeto, organismo, estado, fecha_limite, hora_limite
         FROM licitaciones
         WHERE estado = 'Importada'
+          AND COALESCE(tipo_publicacion, 'licitacion') = 'licitacion'
         ORDER BY created_at DESC, id DESC
         LIMIT ?
         """,

@@ -6,7 +6,6 @@ from urllib.parse import urlsplit
 
 
 CSRF_EXEMPT_PATHS = frozenset({"/login"})
-CSRF_EXEMPT_PREFIXES = ("/api/public/",)
 MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
@@ -40,4 +39,4 @@ def is_csrf_required(method: str, path: str, authenticated: bool = True) -> bool
     normalized_path = normalize_path_for_csrf(path)
     if normalized_path in CSRF_EXEMPT_PATHS:
         return False
-    return not normalized_path.startswith(CSRF_EXEMPT_PREFIXES)
+    return True

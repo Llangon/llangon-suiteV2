@@ -47,6 +47,31 @@ Perfil del Contratante (Pliegos): https://www.juntadeandalucia.es/perfil/2
 """
 
 
+def sample_previous_notice_body() -> str:
+    return """
+Ref. Infonalia: INF-PREV-001
+Nº Expediente: ANUNCIO PREVIO EXP-001
+Organismo: AYUNTAMIENTO DE PRUEBA
+Resumen del Objeto: Anuncio previo del servicio de mantenimiento municipal.
+Provincia de Ejecución: Madrid
+Presupuesto:
+Plazo Presentación:
+Ver el texto íntegro del anuncio: https://infonalia.example/anuncio-previo/1
+Perfil del Contratante (Pliegos): https://contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&idEvl=prev
+Información extraída de plataforma: PLACE 05/06/2026 12:33
+________________________________________
+Ref. Infonalia: INF-SIN-FECHA
+Nº Expediente: EXP-SIN-FECHA
+Organismo: AYUNTAMIENTO DE PRUEBA
+Resumen del Objeto: Servicio pendiente de fecha en el aviso.
+Provincia de Ejecución: Sevilla
+Presupuesto:
+Plazo Presentación:
+Ver el texto íntegro del anuncio: https://infonalia.example/anuncio/normal-sin-fecha
+Perfil del Contratante (Pliegos): https://contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&idEvl=normal
+"""
+
+
 def sample_html_split_body() -> str:
     return """
 <html><body>
@@ -329,6 +354,37 @@ def test_import_from_parsed_email_is_idempotent_and_notifies_once() -> None:
     assert licitaciones == 2
     assert imports == 2
     assert len(sent) == 1
+
+
+def test_import_marks_previous_notice_only_when_text_indicates_it_and_no_deadline() -> None:
+    app = load_app_module()
+    raw = make_infonalia_message(
+        plain=sample_previous_notice_body(),
+        message_id="<previous-notice@example.test>",
+    )
+    parsed = parse_infonalia_email(raw)
+
+    with temporary_app_database(app):
+        result = import_parsed_email(
+            parsed,
+            raw_bytes=raw,
+            mailbox_user="info3llangon@gmail.com",
+            notification_sender=lambda *_args: ("2026-06-05T12:34:00", None),
+        )
+        with app.db_session() as conn:
+            rows = {
+                row["expediente"]: dict(row)
+                for row in conn.execute(
+                    "SELECT expediente, fecha_limite, tipo_publicacion FROM licitaciones ORDER BY expediente"
+                ).fetchall()
+            }
+
+    assert result["status"] == "imported"
+    assert result["imported"] == 2
+    assert rows["ANUNCIO PREVIO EXP-001"]["tipo_publicacion"] == "anuncio_previo"
+    assert rows["ANUNCIO PREVIO EXP-001"]["fecha_limite"] == ""
+    assert rows["EXP-SIN-FECHA"]["tipo_publicacion"] == "licitacion"
+    assert rows["EXP-SIN-FECHA"]["fecha_limite"] == ""
 
 
 def test_import_does_not_break_if_notification_sender_fails() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import sqlite3
 from http import HTTPStatus
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from webapp.infonalia_webapp.clientes_envios import (
     CORREOS_PREPARADOS_FOLDER,
     create_cliente,
     create_cliente_envio,
+    ensure_client_shipments_schema,
     generate_cliente_envio_draft,
     get_cliente,
     list_dropbox_folder_files,
@@ -83,6 +85,102 @@ def create_test_licitacion(app, *, expediente: str) -> int:
     return licitacion_id
 
 
+def test_client_schema_adds_new_fields_to_existing_table() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE clientes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            razon_social TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+    ensure_client_shipments_schema(conn)
+    cliente = create_cliente(
+        conn,
+        {
+            "razon_social": "Cliente Legacy",
+            "nombre_comercial": "Legacy",
+            "nif_cif": "B12345678",
+            "email_principal": "legacy@example.test",
+            "tipo_cliente": "Recurrente",
+            "plantilla_contractual": "General",
+        },
+        user_id="admin_test",
+        timestamp=TIMESTAMP,
+    )
+
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(clientes)").fetchall()}
+    assert {"nombre_comercial", "email_principal", "tipo_cliente", "plantilla_contractual"} <= columns
+    assert cliente["display_name"] == "Legacy"
+    assert cliente["email_principal"] == "legacy@example.test"
+    assert cliente["tipo_cliente"] == "Recurrente"
+
+
+def test_init_db_repairs_client_schema_when_migration_was_already_applied(tmp_path: Path) -> None:
+    app = load_app_module()
+    from webapp.infonalia_webapp.db_migrations import MIGRATIONS, MIGRATIONS_TABLE
+
+    old_data_root = app.DATA_ROOT
+    old_download_root = app.DOWNLOAD_ROOT
+    old_db_path = app.DB_PATH
+    try:
+        app.DATA_ROOT = tmp_path / "data"
+        app.DOWNLOAD_ROOT = app.DATA_ROOT / "descargas"
+        app.DB_PATH = app.DATA_ROOT / "infonalia.db"
+        app.DATA_ROOT.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(app.DB_PATH)
+        conn.execute(
+            """
+            CREATE TABLE clientes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                razon_social TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE TABLE {MIGRATIONS_TABLE} (
+                version TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.executemany(
+            f"INSERT INTO {MIGRATIONS_TABLE} (version, description, applied_at) VALUES (?, ?, ?)",
+            [(migration.version, migration.description, TIMESTAMP) for migration in MIGRATIONS],
+        )
+        conn.commit()
+        conn.close()
+
+        app.init_db()
+        with app.db_session() as conn:
+            cliente = create_cliente(
+                conn,
+                {
+                    "razon_social": "Cliente Arranque",
+                    "nombre_comercial": "Arranque",
+                    "email_principal": "arranque@example.test",
+                },
+                user_id="admin_test",
+                timestamp=TIMESTAMP,
+            )
+
+        assert cliente["display_name"] == "Arranque"
+        assert cliente["email_principal"] == "arranque@example.test"
+    finally:
+        app.DATA_ROOT = old_data_root
+        app.DOWNLOAD_ROOT = old_download_root
+        app.DB_PATH = old_db_path
+
+
 def test_create_cliente_and_envio_from_licitacion_records_history(monkeypatch, tmp_path: Path) -> None:
     app = load_app_module()
     base = configure_dropbox_base(monkeypatch, tmp_path)
@@ -116,6 +214,34 @@ def test_create_cliente_and_envio_from_licitacion_records_history(monkeypatch, t
     assert [item["id"] for item in cliente_detalle["envios"]] == [envio["id"]]
 
 
+def test_create_envio_endpoint_accepts_base_route(monkeypatch, tmp_path: Path) -> None:
+    app = load_app_module()
+    base = configure_dropbox_base(monkeypatch, tmp_path)
+    folder_path = create_dropbox_folder(base, folder_name="Cliente Endpoint")
+
+    with temporary_app_database(app):
+        licitacion_id = create_test_licitacion(app, expediente="CLI-ENV-BASE")
+        with app.db_session() as conn:
+            cliente = create_test_cliente(conn, nombre="Cliente Endpoint", email="endpoint@example.test")
+        payload = {
+            "cliente_id": cliente["id"],
+            "licitacion_id": licitacion_id,
+            "tipo_envio": "ficha_inicial",
+            "estado": "listo_para_preparar_correo",
+            "carpeta_dropbox": folder_path,
+            "adjuntos": ["ficha.pdf"],
+        }
+
+        handler = make_handler(app, "POST", "/api/cliente-envios", payload)
+        dispatch(handler, "POST")
+
+    assert handler.responses[-1][0] == HTTPStatus.CREATED
+    item = handler.responses[-1][1]["item"]
+    assert item["cliente_id"] == cliente["id"]
+    assert item["licitacion_id"] == licitacion_id
+    assert item["attachment_count"] == 1
+
+
 def test_list_dropbox_folder_files_excludes_temp_empty_and_prepared_files(monkeypatch, tmp_path: Path) -> None:
     base = configure_dropbox_base(monkeypatch, tmp_path)
     folder_path = create_dropbox_folder(base, folder_name="Cliente Ficheros")
@@ -125,6 +251,29 @@ def test_list_dropbox_folder_files_excludes_temp_empty_and_prepared_files(monkey
     relative_paths = {item["relative_path"].replace("\\", "/") for item in payload["files"]}
     assert relative_paths == {"ficha.pdf", "subcarpeta/anexo.docx"}
     assert payload["total_files"] == 2
+
+
+def test_folder_files_endpoint_requires_admin(monkeypatch, tmp_path: Path) -> None:
+    base = configure_dropbox_base(monkeypatch, tmp_path)
+    folder_path = create_dropbox_folder(base, folder_name="Cliente Ficheros Endpoint")
+    app = load_app_module()
+
+    forbidden = make_handler(
+        app,
+        "POST",
+        "/api/cliente-envios/folder-files",
+        {"carpeta_dropbox": folder_path},
+        username="reviewer_test",
+        role="nuria",
+    )
+    dispatch(forbidden, "POST")
+
+    handler = make_handler(app, "POST", "/api/cliente-envios/folder-files", {"carpeta_dropbox": folder_path})
+    dispatch(handler, "POST")
+
+    assert forbidden.responses[-1][0] == HTTPStatus.FORBIDDEN
+    assert handler.responses[-1][0] == HTTPStatus.OK
+    assert handler.responses[-1][1]["total_files"] == 2
 
 
 def test_create_envio_rejects_folder_outside_dropbox_base(monkeypatch, tmp_path: Path) -> None:

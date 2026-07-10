@@ -15,6 +15,7 @@ try:
         ESTADO_PREPARADA,
         ESTADO_PREPARAR_FICHA,
     )
+    from .licitacion_publication import TIPO_PUBLICACION_LICITACION, normalize_tipo_publicacion
 except ImportError:
     from licitacion_states import (
         ESTADO_DESCARGAR_PARA_VER,
@@ -25,6 +26,7 @@ except ImportError:
         ESTADO_PREPARADA,
         ESTADO_PREPARAR_FICHA,
     )
+    from licitacion_publication import TIPO_PUBLICACION_LICITACION, normalize_tipo_publicacion
 
 try:
     from .monitor.repository import ensure_monitor_schema as _ensure_monitor_schema
@@ -739,6 +741,26 @@ def _client_shipments_schema(conn: sqlite3.Connection) -> None:
     _ensure_client_shipments_schema(conn)
 
 
+def _licitacion_publication_type_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "licitaciones"):
+        return
+    if not _column_exists(conn, "licitaciones", "tipo_publicacion"):
+        conn.execute(
+            "ALTER TABLE licitaciones ADD COLUMN tipo_publicacion TEXT NOT NULL DEFAULT 'licitacion'"
+        )
+    rows = conn.execute("SELECT id, tipo_publicacion FROM licitaciones").fetchall()
+    for row in rows:
+        licitacion_id = row["id"] if isinstance(row, sqlite3.Row) else row[0]
+        current_value = row["tipo_publicacion"] if isinstance(row, sqlite3.Row) else row[1]
+        normalized = normalize_tipo_publicacion(current_value, default=TIPO_PUBLICACION_LICITACION)
+        if normalized != current_value:
+            conn.execute(
+                "UPDATE licitaciones SET tipo_publicacion = ? WHERE id = ?",
+                (normalized, licitacion_id),
+            )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_licitaciones_tipo_publicacion ON licitaciones(tipo_publicacion)")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version="0001_baseline_schema",
@@ -874,6 +896,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version="0027_clientes_envios",
         description="Modulo base de clientes y envios documentales",
         apply=_client_shipments_schema,
+    ),
+    Migration(
+        version="0028_licitacion_tipo_publicacion",
+        description="Tipo de publicacion para separar licitaciones y anuncios previos",
+        apply=_licitacion_publication_type_schema,
     ),
 )
 

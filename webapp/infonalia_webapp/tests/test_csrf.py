@@ -81,8 +81,8 @@ def test_is_csrf_required_false_for_get() -> None:
     assert is_csrf_required("GET", "/api/news", authenticated=True) is False
 
 
-def test_is_csrf_required_false_for_public_excluded_route() -> None:
-    assert is_csrf_required("POST", "/api/public/noticias", authenticated=True) is False
+def test_is_csrf_required_true_for_authenticated_public_prefix_post() -> None:
+    assert is_csrf_required("POST", "/api/public/noticias", authenticated=True) is True
 
 
 def test_is_csrf_required_false_for_login_in_this_phase() -> None:

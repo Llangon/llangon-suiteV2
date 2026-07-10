@@ -418,10 +418,22 @@ def test_settings_update_payload_accepts_complete_operational_settings() -> None
     )
 
     assert updates["email_actions_enabled"] == "1"
-    assert updates["action_allowed_senders"] == "nuria@example.test\nmanolo@example.test"
+    assert updates["action_allowed_senders"] == "nuria@example.test, manolo@example.test"
     assert updates["gemini_enabled"] == "1"
     assert "LLANGON_ACTIONS_IMAP_PASSWORD" not in updates
     assert "GEMINI_API_KEY" not in updates
+
+
+def test_settings_update_payload_normalizes_email_lists_with_commas() -> None:
+    updates = settings_update_payload(
+        {
+            "action_allowed_senders": " info@llangon.com\ninfo3@llangon.com ",
+            "monitor_agenda_pending_email_to": "info3@llangon.com; info@llangon.com",
+        }
+    )
+
+    assert updates["action_allowed_senders"] == "info@llangon.com, info3@llangon.com"
+    assert updates["monitor_agenda_pending_email_to"] == "info3@llangon.com, info@llangon.com"
 
 
 def test_settings_update_payload_rejects_gemini_enabled_without_key() -> None:
@@ -456,6 +468,20 @@ def test_email_action_mailbox_config_reads_suite_settings_before_env() -> None:
     assert config.folder == "LLANGON"
     assert config.allowed_senders == ["suite-sender@example.test"]
     assert config.password == "secret"
+
+
+def test_email_action_mailbox_config_accepts_newline_sender_lists() -> None:
+    config = mailbox_config_from_env(
+        {"LLANGON_ACTIONS_IMAP_PASSWORD": "secret"},
+        settings={
+            "actions_imap_host": "imap-suite.example.test",
+            "actions_imap_user": "suite@example.test",
+            "actions_imap_folder": "LLANGON",
+            "action_allowed_senders": "info@llangon.com\ninfo3@llangon.com",
+        },
+    )
+
+    assert config.allowed_senders == ["info@llangon.com", "info3@llangon.com"]
 
 
 def test_infonalia_import_config_reads_suite_settings_before_env() -> None:

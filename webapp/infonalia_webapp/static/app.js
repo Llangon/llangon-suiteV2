@@ -37,6 +37,8 @@ const appState = {
   actuacionSelectorDraft: new Map(),
   clientes: [],
   clienteDetail: null,
+  clienteEnvios: [],
+  clienteEnviosSummary: {},
   clienteFolderFiles: null,
   clienteEnvioDetail: null,
   calendarDate: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
@@ -70,6 +72,7 @@ const licitacionesSection = document.getElementById("licitaciones-section");
 const calendarSection = document.getElementById("calendar-section");
 const actuacionesSection = document.getElementById("actuaciones-section");
 const clientsSection = document.getElementById("clients-section");
+const clienteEnviosSection = document.getElementById("cliente-envios-section");
 const notificationsSection = document.getElementById("notifications-section");
 const newsAdminSection = document.getElementById("news-admin-section");
 const monitorSection = document.getElementById("monitor-section");
@@ -84,6 +87,7 @@ const licitacionesMonthFilters = document.getElementById("licitaciones-month-fil
 const board = document.getElementById("board");
 const summary = document.getElementById("summary");
 const stateFilter = document.getElementById("state-filter");
+const publicationTypeFilter = document.getElementById("publication-type-filter");
 const dateOrder = document.getElementById("date-order");
 const licitacionesActuacionesFilter = document.getElementById("licitaciones-actuaciones-filter");
 const licitacionesQuickFilter = document.getElementById("licitaciones-quick-filter");
@@ -113,7 +117,6 @@ const actuacionLicitacionesSummary = document.getElementById("actuacion-licitaci
 const actuacionSelectedLicitaciones = document.getElementById("actuacion-selected-licitaciones");
 const actuacionHistoryPanel = document.getElementById("actuacion-history-panel");
 const actuacionHistory = document.getElementById("actuacion-history");
-const actuacionComment = document.getElementById("actuacion-comment");
 const actuacionDateWarning = document.getElementById("actuacion-date-warning");
 const licitacionSelectorDialog = document.getElementById("licitacion-selector-dialog");
 const licitacionSelectorForm = document.getElementById("licitacion-selector-form");
@@ -126,6 +129,10 @@ const clientSearch = document.getElementById("clients-search");
 const clientForm = document.getElementById("client-form");
 const clientFormTitle = document.getElementById("client-form-title");
 const clientFormResult = document.getElementById("client-form-result");
+const clienteEnviosBoard = document.getElementById("cliente-envios-board");
+const clienteEnviosSummary = document.getElementById("cliente-envios-summary");
+const clienteEnviosSearch = document.getElementById("cliente-envios-search");
+const clienteEnviosStateFilter = document.getElementById("cliente-envios-state-filter");
 const clienteEnvioDialog = document.getElementById("cliente-envio-dialog");
 const clienteEnvioForm = document.getElementById("cliente-envio-form");
 const clienteEnvioFormTitle = document.getElementById("cliente-envio-form-title");
@@ -249,6 +256,11 @@ const inventoryStatusBoard = document.getElementById("inventory-status-board");
 const advancedStatusBoard = document.getElementById("advanced-status-board");
 const configDiagnosticsText = document.getElementById("config-diagnostics-text");
 const copyConfigDiagnosticsButton = document.getElementById("copy-config-diagnostics-button");
+const configHelpOpenButton = document.getElementById("config-help-open");
+const configHelpDialog = document.getElementById("config-help-dialog");
+const configHelpManualContent = document.getElementById("config-help-manual-content");
+const closeConfigHelpDialogButton = document.getElementById("close-config-help-dialog");
+const closeConfigHelpDialogFooter = document.getElementById("close-config-help-dialog-footer");
 const refreshMonitorRunsButton = document.getElementById("refresh-monitor-runs");
 const pageTitle = document.getElementById("page-title");
 const pageKicker = document.getElementById("page-kicker");
@@ -301,6 +313,10 @@ const nuriaEstados = ["Descartada", "Descargar para ver", "Preparar ficha"];
 const nuriaDefaultReviewEstados = ["Enviada a Nuria", "Descargar para ver", "Preparar ficha", "Preparada", "Oferta enviada"];
 const nuriaVisibleEstados = [...nuriaDefaultReviewEstados, "Descartada"];
 const nuriaLicitacionesEstados = ["Descargar para ver", "Preparar ficha", "Preparada"];
+const publicationTypeOptions = [
+  { value: "licitacion", label: "Licitación" },
+  { value: "anuncio_previo", label: "Anuncio previo" },
+];
 const calendarioEstados = ["Descargar para ver", "Preparar ficha", "Preparada"];
 const gestionadasEstados = ["Oferta enviada", "Preparada", "Descargar para ver", "Preparar ficha", "Preparar"];
 const monthFilterLabels = [
@@ -445,6 +461,7 @@ const editorFields = [
   "id",
   "expediente",
   "estado",
+  "tipo_publicacion",
   "objeto",
   "organismo",
   "provincia",
@@ -511,6 +528,614 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+const CONFIG_HELP_SECTIONS = [
+  {
+    title: "General",
+    description: "Controles de acceso global y resumen de salud de la Suite.",
+    items: [
+      {
+        key: "maintenance_mode",
+        label: "Modo mantenimiento",
+        selector: "[name='maintenance_mode']",
+        help: "Bloquea el uso normal de la Suite mientras haces cambios delicados.",
+        usage: "Actívalo solo durante ajustes o revisiones. Los administradores siguen entrando; los revisores quedan fuera temporalmente.",
+      },
+      {
+        key: "save_general",
+        label: "Guardar estado general",
+        selector: "button[form='settings-form']",
+        help: "Guarda únicamente el estado general que se edita desde esta pestaña.",
+        usage: "Úsalo después de cambiar el modo mantenimiento.",
+      },
+    ],
+  },
+  {
+    title: "Usuarios y permisos",
+    description: "Alta de usuarios internos, permisos y avisos privados de Telegram.",
+    items: [
+      {
+        key: "username",
+        label: "Usuario",
+        selector: "#user-config-form [name='username']",
+        help: "Identificador usado para iniciar sesión.",
+        usage: "Debe tener entre 3 y 40 caracteres. Usa letras, números, punto, guion o guion bajo. Al editar un usuario existente no se cambia.",
+      },
+      {
+        key: "display_name",
+        label: "Nombre visible",
+        selector: "#user-config-form [name='display_name']",
+        help: "Nombre que se muestra dentro de la Suite y en algunos avisos internos.",
+        usage: "Pon un nombre reconocible para que los registros y notificaciones sean fáciles de leer.",
+      },
+      {
+        key: "user_email",
+        label: "Email del usuario",
+        selector: "#user-config-form [name='email']",
+        help: "Correo asociado al usuario para avisos o comunicaciones internas.",
+        usage: "Déjalo vacío solo si ese usuario no debe recibir correos directos desde la Suite.",
+      },
+      {
+        key: "user_password",
+        label: "Contraseña",
+        selector: "#user-config-form [name='password']",
+        help: "Contraseña de acceso del usuario.",
+        usage: "Es obligatoria al crear usuario. Al editar, déjala vacía para conservar la contraseña actual.",
+      },
+      {
+        key: "role",
+        label: "Rol",
+        selector: "#user-config-form [name='role']",
+        help: "Define el nivel de permisos del usuario.",
+        usage: "Administrador puede cambiar configuración y ejecutar acciones técnicas. Revisión trabaja con licitaciones sin tocar configuración crítica.",
+      },
+      {
+        key: "active_user",
+        label: "Usuario activo",
+        selector: "#user-config-form [name='active']",
+        help: "Permite mantener o retirar el acceso del usuario sin borrar su historial.",
+        usage: "Desmárcalo para dar de baja un usuario conservando registros anteriores.",
+      },
+      {
+        key: "telegram_chat_id",
+        label: "Telegram Chat ID",
+        selector: "#user-config-form [name='telegram_chat_id']",
+        help: "Identificador del chat privado o grupo al que se enviarán avisos de ese usuario.",
+        usage: "Debe ser numérico. Los grupos suelen empezar por signo negativo. No es el nombre de usuario de Telegram.",
+      },
+      {
+        key: "telegram_user_enabled",
+        label: "Activar Telegram para usuario",
+        selector: "#user-config-form [name='telegram_notifications_enabled']",
+        help: "Activa los avisos Telegram específicos para este usuario.",
+        usage: "Solo sirve si el Chat ID está informado y el bot global de Telegram está configurado.",
+      },
+      {
+        key: "reset_user_form",
+        label: "Limpiar",
+        selector: "#reset-user-form",
+        help: "Vacía el formulario de usuario y vuelve al modo alta.",
+        usage: "Úsalo si estabas editando un usuario y quieres empezar de cero.",
+      },
+      {
+        key: "test_user_telegram",
+        label: "Probar Telegram usuario",
+        selector: "#test-user-telegram-button",
+        help: "Envía una prueba al Telegram del usuario seleccionado.",
+        usage: "Primero edita o selecciona un usuario con Chat ID. Esta acción puede enviar un mensaje real.",
+      },
+      {
+        key: "save_user",
+        label: "Guardar usuario",
+        selector: "#user-config-form button[type='submit']",
+        help: "Crea o actualiza el usuario del formulario.",
+        usage: "Revisa rol, email y Telegram antes de guardar. No muestra contraseñas existentes.",
+      },
+    ],
+  },
+  {
+    title: "Correos y notificaciones",
+    description: "Salida de correo SMTP, destinatarios internos y pruebas de Telegram.",
+    items: [
+      {
+        key: "smtp_enabled",
+        label: "Activar envío SMTP",
+        selector: "#settings-form [name='smtp_enabled']",
+        help: "Permite que la Suite envíe correos automáticos.",
+        usage: "Actívalo solo cuando servidor, remitente y credenciales estén completos. Si está apagado, muchos avisos quedan sin envío.",
+      },
+      {
+        key: "smtp_host",
+        label: "Servidor SMTP",
+        selector: "#settings-form [name='smtp_host']",
+        help: "Servidor que acepta los correos salientes.",
+        usage: "Ejemplo típico: smtp.gmail.com o el servidor del proveedor de correo corporativo.",
+      },
+      {
+        key: "smtp_port",
+        label: "Puerto SMTP",
+        selector: "#settings-form [name='smtp_port']",
+        help: "Puerto de conexión del servidor SMTP.",
+        usage: "587 suele usarse con TLS. 465 suele usarse con SSL directo. Debe estar entre 1 y 65535.",
+      },
+      {
+        key: "smtp_user",
+        label: "Usuario SMTP",
+        selector: "#settings-form [name='smtp_user']",
+        help: "Cuenta con la que la Suite se autentica en el servidor de correo.",
+        usage: "Normalmente coincide con el remitente, aunque depende del proveedor.",
+      },
+      {
+        key: "smtp_password",
+        label: "Contraseña SMTP",
+        selector: "#settings-form [name='smtp_password']",
+        help: "Clave usada para autenticar el envío de correo.",
+        usage: "No se muestra nunca. Déjala vacía para no cambiarla; escribe una nueva solo para reemplazarla.",
+      },
+      {
+        key: "clear_smtp_password",
+        label: "Borrar contraseña SMTP guardada",
+        selector: "#settings-form [name='clear_smtp_password']",
+        help: "Elimina la contraseña SMTP almacenada en la configuración de la Suite.",
+        usage: "Úsalo si cambias de proveedor, retiras el envío real o quieres forzar una nueva clave.",
+      },
+      {
+        key: "smtp_from",
+        label: "Remitente",
+        selector: "#settings-form [name='smtp_from']",
+        help: "Dirección que aparecerá como remitente de los correos enviados por la Suite.",
+        usage: "Debe ser un email válido. Si el proveedor exige que coincida con el usuario SMTP, respeta esa regla.",
+      },
+      {
+        key: "smtp_tls",
+        label: "Usar TLS",
+        selector: "#settings-form [name='smtp_tls']",
+        help: "Usa STARTTLS para cifrar la conexión después de conectar.",
+        usage: "Es la opción habitual con puerto 587. No la combines al azar con SSL directo.",
+      },
+      {
+        key: "smtp_ssl",
+        label: "Usar SSL directo",
+        selector: "#settings-form [name='smtp_ssl']",
+        help: "Abre la conexión SMTP ya cifrada desde el inicio.",
+        usage: "Suele ir con puerto 465. Si no sabes cuál usar, revisa la configuración del proveedor antes de cambiarlo.",
+      },
+      {
+        key: "email_dry_run",
+        label: "Modo pruebas de email",
+        selector: "#settings-form [name='email_dry_run']",
+        help: "Modo de seguridad para evitar o desviar envíos reales según la lógica actual.",
+        usage: "Manténlo activo cuando estés probando configuración. Desactívalo solo cuando quieras envíos reales.",
+      },
+      {
+        key: "agenda_email_to",
+        label: "Email de respaldo de agenda",
+        selector: "#settings-form [name='agenda_email_to']",
+        help: "Dirección de respaldo para avisos de agenda cuando no hay un destinatario más específico.",
+        usage: "Sirve como fallback operativo. Si está vacío, la Suite intentará usar otros destinatarios configurados.",
+      },
+      {
+        key: "prepared_notice_email_to",
+        label: "Email aviso ficha preparada",
+        selector: "#settings-form [name='prepared_notice_email_to']",
+        help: "Destinatario usado cuando una licitación pasa al estado Preparada.",
+        usage: "Valor habitual: info3@llangon.com. Debe ser un único email válido.",
+      },
+      {
+        key: "seguimiento_emails",
+        label: "Emails de seguimiento internos",
+        selector: "#settings-form [name='seguimiento_emails']",
+        help: "Lista de direcciones usadas por avisos internos o seguimiento automático.",
+        usage: "Puedes separar varios emails con coma, punto y coma o saltos de línea.",
+      },
+      {
+        key: "test_smtp",
+        label: "Probar SMTP",
+        selector: "#test-smtp-button",
+        help: "Guarda la configuración actual y prueba el envío SMTP.",
+        usage: "Puede intentar enviar un correo real si el modo pruebas y el SMTP lo permiten.",
+      },
+      {
+        key: "save_smtp",
+        label: "Guardar configuración",
+        selector: "#settings-form > .dialog-actions button[type='submit']",
+        help: "Guarda SMTP, destinatarios y opciones de correo saliente.",
+        usage: "No prueba el envío; solo valida y guarda los valores.",
+      },
+      {
+        key: "test_telegram_group",
+        label: "Probar Telegram grupo",
+        selector: "#test-telegram-group-button",
+        help: "Envía una prueba al grupo general de Telegram configurado por entorno.",
+        usage: "Puede enviar un mensaje real. El token y el grupo no se muestran en pantalla.",
+      },
+    ],
+  },
+  {
+    title: "Buzones automáticos",
+    description: "Lectura de correo entrante para órdenes y para el correo diario de Infonalia.",
+    items: [
+      {
+        key: "email_actions_enabled",
+        label: "Activar órdenes por correo",
+        selector: "#mail-actions-form [name='email_actions_enabled']",
+        help: "Permite procesar órdenes recibidas por correo, como descargar documentación o preparar fichas.",
+        usage: "Solo se puede activar con IMAP, usuario, contraseña por entorno y remitentes autorizados configurados.",
+      },
+      {
+        key: "email_actions_poll_minutes",
+        label: "Frecuencia de revisión",
+        selector: "#mail-actions-form [name='email_actions_poll_minutes']",
+        help: "Intervalo, en minutos, entre revisiones del buzón de órdenes.",
+        usage: "Debe estar entre 1 y 1440. Un valor bajo revisa más a menudo pero genera más actividad.",
+      },
+      {
+        key: "action_mailbox_to",
+        label: "Destinatario del buzón de órdenes",
+        selector: "#mail-actions-form [name='action_mailbox_to']",
+        help: "Dirección principal a la que se envían las órdenes por correo.",
+        usage: "La Suite puede usarla para generar o validar comunicaciones relacionadas con el buzón de órdenes.",
+      },
+      {
+        key: "action_mailbox_cc",
+        label: "Correo en copia",
+        selector: "#mail-actions-form [name='action_mailbox_cc']",
+        help: "Copias usadas en comunicaciones del flujo de órdenes.",
+        usage: "Acepta varios emails separados por coma, punto y coma o saltos de línea.",
+      },
+      {
+        key: "action_notify_email",
+        label: "Correo técnico de avisos",
+        selector: "#mail-actions-form [name='action_notify_email']",
+        help: "Correo que recibe avisos técnicos del procesamiento de órdenes.",
+        usage: "Útil para enterarse de errores o incidencias del buzón automático.",
+      },
+      {
+        key: "action_allowed_senders",
+        label: "Remitentes autorizados",
+        selector: "#mail-actions-form [name='action_allowed_senders']",
+        help: "Lista blanca de correos autorizados a enviar órdenes válidas.",
+        usage: "Obligatorio si activas órdenes por correo. Separa varios por coma, punto y coma o salto de línea.",
+      },
+      {
+        key: "actions_imap_host",
+        label: "Servidor IMAP",
+        selector: "#mail-actions-form [name='actions_imap_host']",
+        help: "Servidor desde el que la Suite lee correo entrante.",
+        usage: "Ejemplo habitual con Gmail: imap.gmail.com.",
+      },
+      {
+        key: "actions_imap_port",
+        label: "Puerto IMAP",
+        selector: "#mail-actions-form [name='actions_imap_port']",
+        help: "Puerto de conexión IMAP.",
+        usage: "993 es el valor habitual para IMAP seguro. Debe estar entre 1 y 65535.",
+      },
+      {
+        key: "actions_imap_user",
+        label: "Usuario IMAP",
+        selector: "#mail-actions-form [name='actions_imap_user']",
+        help: "Cuenta de correo que la Suite revisa para órdenes e importación.",
+        usage: "La contraseña se gestiona por entorno seguro, no desde esta pantalla.",
+      },
+      {
+        key: "actions_imap_folder",
+        label: "Carpeta o etiqueta IMAP",
+        selector: "#mail-actions-form [name='actions_imap_folder']",
+        help: "Carpeta/etiqueta donde se buscan las órdenes por correo.",
+        usage: "INBOX es el valor por defecto. En Gmail puede ser una etiqueta.",
+      },
+      {
+        key: "save_mail_actions",
+        label: "Guardar acciones por correo",
+        selector: "#mail-actions-form button[type='submit']",
+        help: "Guarda la configuración del buzón de órdenes.",
+        usage: "No ejecuta una revisión del buzón; solo valida y guarda.",
+      },
+      {
+        key: "infonalia_import_enabled",
+        label: "Activar importación automática",
+        selector: "#infonalia-import-form [name='infonalia_import_enabled']",
+        help: "Permite importar automáticamente el correo diario de Infonalia desde el buzón técnico.",
+        usage: "Requiere IMAP y contraseña configurada por entorno. Actívalo solo cuando el buzón ya esté preparado.",
+      },
+      {
+        key: "infonalia_import_folder",
+        label: "Carpeta o etiqueta IMAP de Infonalia",
+        selector: "#infonalia-import-form [name='infonalia_import_folder']",
+        help: "Carpeta/etiqueta donde se espera encontrar el correo diario de Infonalia.",
+        usage: "Valor por defecto: LLANGON_INFONALIA.",
+      },
+      {
+        key: "infonalia_import_notify_email",
+        label: "Correo de aviso",
+        selector: "#infonalia-import-form [name='infonalia_import_notify_email']",
+        help: "Correo que recibirá avisos sobre la importación automática de Infonalia.",
+        usage: "Debe ser un único email válido si la importación está activa.",
+      },
+      {
+        key: "infonalia_import_poll_minutes",
+        label: "Frecuencia de revisión",
+        selector: "#infonalia-import-form [name='infonalia_import_poll_minutes']",
+        help: "Intervalo, en minutos, para revisar si llegó el correo diario.",
+        usage: "Debe estar entre 1 y 1440. Valor por defecto: 30.",
+      },
+      {
+        key: "infonalia_import_lookback_hours",
+        label: "Ventana de búsqueda",
+        selector: "#infonalia-import-form [name='infonalia_import_lookback_hours']",
+        help: "Cuántas horas hacia atrás se revisan al buscar correos de Infonalia.",
+        usage: "Debe estar entre 1 y 168. Útil si hubo cortes o retrasos en la importación.",
+      },
+      {
+        key: "infonalia_import_mark_read_on_success",
+        label: "Marcar como leído al terminar",
+        selector: "#infonalia-import-form [name='infonalia_import_mark_read_on_success']",
+        help: "Marca el correo como leído solo cuando la importación termina o se reconoce como duplicado.",
+        usage: "Conviene mantenerlo activo para no reprocesar correos correctos.",
+      },
+      {
+        key: "save_infonalia_import",
+        label: "Guardar importación Infonalia",
+        selector: "#infonalia-import-form button[type='submit']",
+        help: "Guarda la configuración del importador automático de Infonalia.",
+        usage: "No importa correos en ese momento; solo valida y guarda.",
+      },
+    ],
+  },
+  {
+    title: "Almacenamiento / Dropbox",
+    description: "Estado de carpetas, marcadores y herramientas de revisión de rutas.",
+    items: [
+      {
+        key: "sync_dropbox_markers",
+        label: "Sincronizar marcadores Dropbox",
+        selector: "#sync-dropbox-markers-button",
+        help: "Busca marcadores de seguimiento en Dropbox Desktop y actualiza las rutas registradas.",
+        usage: "Puede modificar registros internos de rutas. Úsalo cuando cambien carpetas o se reparen ubicaciones.",
+      },
+      {
+        key: "monitor_dry_run",
+        label: "Simular monitor",
+        selector: "#monitor-dry-run-button",
+        help: "Ejecuta una revisión del monitor sin escribir cambios reales.",
+        usage: "Es la opción segura para ver qué detectaría el monitor.",
+      },
+      {
+        key: "monitor_repair",
+        label: "Reparar rutas",
+        selector: "#monitor-repair-button",
+        help: "Intenta corregir rutas internas cuando encuentra carpetas reales equivalentes.",
+        usage: "Puede modificar rutas guardadas. Úsalo tras mover o renombrar carpetas en Dropbox.",
+      },
+      {
+        key: "test_dropbox_api",
+        label: "Probar API experimental",
+        selector: "#test-dropbox-button",
+        help: "Comprueba la configuración de la API Dropbox experimental.",
+        usage: "No es el flujo normal si trabajas con Dropbox Desktop/local. Úsalo solo para diagnóstico técnico.",
+      },
+      {
+        key: "dry_run_dropbox_api",
+        label: "Simular API dry-run",
+        selector: "#dry-run-dropbox-button",
+        help: "Simula operaciones de la API Dropbox sin subir archivos reales.",
+        usage: "Sirve para validar la configuración experimental antes de permitir acciones reales.",
+      },
+    ],
+  },
+  {
+    title: "IA documental",
+    description: "Proveedor de IA, límites de uso y modo de entrada de documentos.",
+    items: [
+      {
+        key: "ai_analysis_provider",
+        label: "Proveedor",
+        selector: "#ai-settings-form [name='ai_analysis_provider']",
+        help: "Motor que se usará para los análisis documentales.",
+        usage: "Gemini es el flujo principal. Codex Local es técnico. Desactivado impide nuevos análisis automáticos.",
+      },
+      {
+        key: "gemini_enabled",
+        label: "Gemini activado",
+        selector: "#ai-settings-form [name='gemini_enabled']",
+        help: "Permite usar Gemini si la clave está configurada por entorno.",
+        usage: "No se puede activar sin la clave de Gemini disponible en el entorno seguro.",
+      },
+      {
+        key: "gemini_model",
+        label: "Modelo Gemini",
+        selector: "#ai-settings-form [name='gemini_model']",
+        help: "Modelo que se invoca para generar análisis.",
+        usage: "Cámbialo solo si sabes qué modelo quieres usar y está disponible en la cuenta configurada.",
+      },
+      {
+        key: "gemini_max_requests_per_minute",
+        label: "Peticiones por minuto",
+        selector: "#ai-settings-form [name='gemini_max_requests_per_minute']",
+        help: "Límite de llamadas a Gemini por minuto.",
+        usage: "Sirve para evitar saturar cuotas. Valor bajo = más lento pero más prudente.",
+      },
+      {
+        key: "gemini_max_requests_per_day",
+        label: "Peticiones por día",
+        selector: "#ai-settings-form [name='gemini_max_requests_per_day']",
+        help: "Límite diario de llamadas a Gemini.",
+        usage: "Útil para controlar gasto/cuotas. Debe ser un número positivo.",
+      },
+      {
+        key: "gemini_max_documents_per_analysis",
+        label: "Documentos máximos por análisis",
+        selector: "#ai-settings-form [name='gemini_max_documents_per_analysis']",
+        help: "Número máximo de documentos que se envían en un análisis.",
+        usage: "Más documentos pueden dar más contexto, pero aumentan coste, tiempo y riesgo de error.",
+      },
+      {
+        key: "gemini_max_file_mb",
+        label: "Tamaño máximo por fichero",
+        selector: "#ai-settings-form [name='gemini_max_file_mb']",
+        help: "Tamaño máximo permitido por documento enviado a IA.",
+        usage: "Debe estar entre 1 y 100 MB. Archivos mayores se omiten o fuerzan otro flujo.",
+      },
+      {
+        key: "gemini_timeout_seconds",
+        label: "Timeout",
+        selector: "#ai-settings-form [name='gemini_timeout_seconds']",
+        help: "Tiempo máximo que la Suite espera respuesta de Gemini.",
+        usage: "Subirlo ayuda con documentos pesados. Bajarlo corta antes trabajos lentos.",
+      },
+      {
+        key: "gemini_input_mode",
+        label: "Modo de entrada",
+        selector: "#ai-settings-form [name='gemini_input_mode']",
+        help: "Define cómo se envía el contenido documental a Gemini.",
+        usage: "Texto extraído es más ligero. PDF inline conserva más contexto. Automático deja decidir a la Suite.",
+      },
+      {
+        key: "save_ai",
+        label: "Guardar IA documental",
+        selector: "#ai-settings-form button[type='submit']",
+        help: "Guarda proveedor, límites y modo de entrada.",
+        usage: "No lanza análisis; solo cambia la configuración usada en próximos trabajos.",
+      },
+    ],
+  },
+  {
+    title: "Automatismos",
+    description: "Destinatarios editables y diagnóstico de tareas programadas.",
+    items: [
+      {
+        key: "monitor_test_email",
+        label: "Correo de pruebas del monitor",
+        selector: "#automation-settings-form [name='monitor_test_email']",
+        help: "Destinatario usado por pruebas o ejecuciones manuales del monitor.",
+        usage: "Si está vacío, la Suite puede usar otros correos de respaldo configurados.",
+      },
+      {
+        key: "monitor_agenda_pending_email_to",
+        label: "Correo de agenda diaria",
+        selector: "#automation-settings-form [name='monitor_agenda_pending_email_to']",
+        help: "Direcciones que reciben el resumen diario de pendientes de agenda.",
+        usage: "Acepta varios emails separados por coma, punto y coma o salto de línea.",
+      },
+      {
+        key: "save_automation",
+        label: "Guardar avisos",
+        selector: "#automation-settings-form button[type='submit']",
+        help: "Guarda los destinatarios operativos de automatismos.",
+        usage: "No activa ni ejecuta el scheduler. Solo cambia destinatarios.",
+      },
+    ],
+  },
+  {
+    title: "Avanzado / diagnóstico",
+    description: "Lectura técnica para revisar el entorno sin exponer secretos.",
+    items: [
+      {
+        key: "copy_config_diagnostics",
+        label: "Copiar diagnóstico para GPT/Codex",
+        selector: "#copy-config-diagnostics-button",
+        help: "Copia un resumen técnico sin secretos para pedir ayuda o revisar el estado.",
+        usage: "Incluye estados y rutas configuradas, pero no contraseñas, tokens ni claves.",
+      },
+      {
+        key: "config_diagnostics_text",
+        label: "Texto de diagnóstico",
+        selector: "#config-diagnostics-text",
+        help: "Resumen de estado generado automáticamente.",
+        usage: "Es solo lectura. Sirve para copiar contexto técnico de forma segura.",
+      },
+    ],
+  },
+];
+
+function configHelpItems() {
+  return CONFIG_HELP_SECTIONS.flatMap((section) => (
+    section.items.map((item) => ({ ...item, section: section.title }))
+  ));
+}
+
+function configHelpTooltipText(item) {
+  return `${item.help} ${item.usage}`;
+}
+
+function createConfigHelpButton(item) {
+  const text = configHelpTooltipText(item);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "config-help-button";
+  button.dataset.configHelpKey = item.key;
+  button.setAttribute("aria-label", `Ayuda: ${item.label}`);
+  button.append(document.createTextNode("?"));
+
+  const tooltip = document.createElement("span");
+  tooltip.className = "config-tooltip";
+  tooltip.setAttribute("role", "tooltip");
+
+  const title = document.createElement("strong");
+  title.textContent = item.label;
+  const body = document.createElement("span");
+  body.textContent = text;
+  tooltip.append(title, body);
+  button.append(tooltip);
+
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  return button;
+}
+
+function enhanceConfigHelp() {
+  configHelpItems().forEach((item) => {
+    const target = document.querySelector(item.selector);
+    if (!target) return;
+    if (document.querySelector(`.config-help-button[data-config-help-key="${item.key}"]`)) return;
+    const helpButton = createConfigHelpButton(item);
+    const label = target.closest("label");
+    if (label && label.contains(target)) {
+      label.classList.add("config-help-label");
+      label.append(helpButton);
+      return;
+    }
+    const inline = document.createElement("span");
+    inline.className = "config-help-inline";
+    inline.append(helpButton);
+    target.after(inline);
+  });
+}
+
+function renderConfigHelpManual() {
+  if (!configHelpManualContent) return;
+  configHelpManualContent.innerHTML = CONFIG_HELP_SECTIONS.map((section) => `
+    <section class="config-help-manual-section">
+      <div>
+        <h3>${escapeHtml(section.title)}</h3>
+        <p>${escapeHtml(section.description)}</p>
+      </div>
+      <div class="config-help-manual-items">
+        ${section.items.map((item) => `
+          <article>
+            <strong>${escapeHtml(item.label)}</strong>
+            <p>${escapeHtml(item.help)}</p>
+            <small>${escapeHtml(item.usage)}</small>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `).join("");
+}
+
+function openConfigHelpManual() {
+  renderConfigHelpManual();
+  if (configHelpDialog?.showModal) {
+    configHelpDialog.showModal();
+  }
+}
+
+function closeConfigHelpManual() {
+  configHelpDialog?.close();
 }
 
 function formatMoney(value) {
@@ -626,6 +1251,15 @@ function badgeClass(value) {
 
 function estadoLabel(value) {
   return estadoLabels[value] || value || "";
+}
+
+function publicationTypeLabel(value) {
+  const found = publicationTypeOptions.find((item) => item.value === value);
+  return found?.label || "Licitación";
+}
+
+function isPreviousNotice(item) {
+  return String(item?.tipo_publicacion || "licitacion") === "anuncio_previo";
 }
 
 function estadoActionLabel(value) {
@@ -1103,6 +1737,7 @@ function showDaysView() {
   calendarSection.hidden = true;
   actuacionesSection.hidden = true;
   clientsSection.hidden = true;
+  clienteEnviosSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
@@ -1126,6 +1761,7 @@ function showLicitacionesView({ diaId = "", title = "Centro de licitaciones", vi
   calendarSection.hidden = true;
   actuacionesSection.hidden = true;
   clientsSection.hidden = true;
+  clienteEnviosSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
@@ -1147,6 +1783,7 @@ function showCalendarView() {
   calendarSection.hidden = false;
   actuacionesSection.hidden = true;
   clientsSection.hidden = true;
+  clienteEnviosSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
@@ -1199,6 +1836,7 @@ function showActuacionesView() {
   calendarSection.hidden = true;
   actuacionesSection.hidden = false;
   clientsSection.hidden = true;
+  clienteEnviosSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
@@ -1216,11 +1854,30 @@ function showClientsView() {
   calendarSection.hidden = true;
   actuacionesSection.hidden = true;
   clientsSection.hidden = false;
+  clienteEnviosSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
   configSection.hidden = true;
   loadClientes();
+}
+
+function showClienteEnviosView() {
+  if (!isAdmin()) return;
+  appState.lastSection = "cliente-envios";
+  setActiveNav("cliente-envios");
+  setPageHeader("Envíos de documentación", "Clientes");
+  daysSection.hidden = true;
+  licitacionesSection.hidden = true;
+  calendarSection.hidden = true;
+  actuacionesSection.hidden = true;
+  clientsSection.hidden = true;
+  clienteEnviosSection.hidden = false;
+  notificationsSection.hidden = true;
+  newsAdminSection.hidden = true;
+  monitorSection.hidden = true;
+  configSection.hidden = true;
+  loadClienteEnvios();
 }
 
 function showNotificationsView() {
@@ -1231,6 +1888,7 @@ function showNotificationsView() {
   calendarSection.hidden = true;
   actuacionesSection.hidden = true;
   clientsSection.hidden = true;
+  clienteEnviosSection.hidden = true;
   notificationsSection.hidden = false;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
@@ -1248,6 +1906,7 @@ function showNewsAdminView() {
   calendarSection.hidden = true;
   actuacionesSection.hidden = true;
   clientsSection.hidden = true;
+  clienteEnviosSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = false;
   monitorSection.hidden = true;
@@ -1265,6 +1924,7 @@ function showMonitorView() {
   calendarSection.hidden = true;
   actuacionesSection.hidden = true;
   clientsSection.hidden = true;
+  clienteEnviosSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = false;
@@ -1282,6 +1942,7 @@ function showConfigView() {
   calendarSection.hidden = true;
   actuacionesSection.hidden = true;
   clientsSection.hidden = true;
+  clienteEnviosSection.hidden = true;
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
@@ -1300,6 +1961,10 @@ function backFromNotifications() {
   }
   if (appState.lastSection === "clients") {
     showClientsView();
+    return;
+  }
+  if (appState.lastSection === "cliente-envios") {
+    showClienteEnviosView();
     return;
   }
   if (appState.lastSection === "monitor") {
@@ -1427,32 +2092,72 @@ function licitacionBrief(item) {
   return item.expediente || item.organismo || item.objeto || `Licitación ${item.id}`;
 }
 
+function linkedLicitacionLocatorText(item) {
+  const folderText = compactFolderDisplayPath(folderDisplayPath(item));
+  if (folderText) return folderText;
+  const fallback = [
+    formatDate(item.fecha_limite),
+    item.expediente || "",
+    item.objeto || "",
+  ].filter(Boolean);
+  return fallback.join(" · ") || licitacionBrief(item);
+}
+
 function linkedLicitacionesText(licitaciones = []) {
   if (!licitaciones.length) return "Sin licitación";
-  const labels = licitaciones.slice(0, 3).map(licitacionBrief);
-  if (licitaciones.length > 3) labels.push(`+${licitaciones.length - 3} más`);
-  return labels.join(", ");
+  const labels = licitaciones.slice(0, 2).map(linkedLicitacionLocatorText);
+  if (licitaciones.length > 2) labels.push(`+${licitaciones.length - 2} más`);
+  return labels.join(" | ");
 }
 
 function linkedLicitacionesCountText(licitaciones = []) {
   if (!licitaciones.length) return "Sin licitaciones vinculadas";
-  if (licitaciones.length === 1) return "1 licitación vinculada";
-  return `${licitaciones.length} licitaciones vinculadas`;
+  if (licitaciones.length === 1) return "Licitación vinculada";
+  return "Licitaciones vinculadas";
+}
+
+function cleanActionButtons(actions = []) {
+  return actions.map((action) => String(action || "").trim()).filter(Boolean);
+}
+
+function renderListActions(primaryAction, secondaryActions = [], options = {}) {
+  const primary = String(primaryAction || "").trim();
+  const secondary = cleanActionButtons(secondaryActions);
+  const collapseThreshold = options.collapseThreshold || 2;
+  const menuLabel = options.menuLabel || "Más";
+  if (!primary) return secondary.join("");
+  if (secondary.length + 1 <= collapseThreshold) return [primary, ...secondary].join("");
+  return `
+    ${primary}
+    <details class="card-actions-menu">
+      <summary>${escapeHtml(menuLabel)}</summary>
+      <div class="card-actions-menu-panel">
+        ${secondary.join("")}
+      </div>
+    </details>
+  `;
 }
 
 function renderActuacionCard(item) {
   const deadline = item.deadline_at ? item.deadline_at.replace("T", " ") : "Sin fecha";
   const linked = item.licitaciones || [];
+  const hasLinkedLicitaciones = linked.length > 0;
   const canClose = ["pendiente", "en_preparacion", "preparado"].includes(normalizedActuacionStateValue(item.estado));
   const createEnvioButton = renderCreateClienteEnvioButton({ actuacionId: item.id });
+  const secondaryActions = [
+    createEnvioButton,
+    `<button data-duplicate-actuacion="${escapeHtml(item.id)}">Duplicar actuación</button>`,
+    canClose ? `<button data-close-actuacion="${escapeHtml(item.id)}">Cerrar</button>` : "",
+    canClose ? `<button class="danger" data-cancel-actuacion="${escapeHtml(item.id)}">Cancelar</button>` : "",
+  ];
+  const primaryAction = `<button data-edit-actuacion="${escapeHtml(item.id)}">Abrir</button>`;
+  const mobilePrimaryAction = `<button class="primary" data-edit-actuacion="${escapeHtml(item.id)}">Abrir</button>`;
   return `
-    <article class="card compact-card actuacion-card">
+    <article class="card compact-card actuacion-card mobile-compact-card${hasLinkedLicitaciones ? " has-linked-licitaciones" : ""}">
       <div class="card-content">
         <div class="card-head">
           <div class="card-title-block">
-            <p class="eyebrow">${escapeHtml(linkedLicitacionesCountText(linked))}</p>
             <h2>${escapeHtml(item.titulo)}</h2>
-            <p class="card-organismo">${escapeHtml(linkedLicitacionesText(linked))}</p>
           </div>
           <div class="card-flags">
             <span class="due-chip ${escapeHtml(item.estado_visual)}">${escapeHtml(actuacionLabel(actuacionVisualLabels, item.estado_visual))}</span>
@@ -1462,16 +2167,15 @@ function renderActuacionCard(item) {
         <div class="details">
           <div class="detail"><span>Límite</span>${escapeHtml(deadline)}</div>
           <div class="detail"><span>Estado</span>${escapeHtml(actuacionLabel(actuacionEstadoLabels, item.estado))}</div>
-          <div class="detail"><span>Vínculos</span>${escapeHtml(String(item.licitaciones_count || linked.length || 0))}</div>
+          <div class="detail detail-vinculos"><span>Vínculos</span><span class="actuacion-link-detail">${escapeHtml(linkedLicitacionesText(linked))}</span></div>
         </div>
-        ${item.descripcion ? `<p class="muted">${escapeHtml(item.descripcion)}</p>` : ""}
+        ${item.descripcion ? `<p class="muted actuacion-description">${escapeHtml(item.descripcion)}</p>` : ""}
         ${renderCommentsWidget("actuacion", item.id, item.comments_summary)}
         <div class="card-actions">
-          <button data-edit-actuacion="${escapeHtml(item.id)}">Editar</button>
-          ${createEnvioButton}
-          <button data-duplicate-actuacion="${escapeHtml(item.id)}">Duplicar actuación</button>
-          ${canClose ? `<button data-close-actuacion="${escapeHtml(item.id)}">Cerrar</button>` : ""}
-          ${canClose ? `<button class="danger" data-cancel-actuacion="${escapeHtml(item.id)}">Cancelar</button>` : ""}
+          ${renderListActions(primaryAction, secondaryActions)}
+        </div>
+        <div class="mobile-card-actions no-print">
+          ${renderListActions(mobilePrimaryAction, secondaryActions)}
         </div>
       </div>
     </article>
@@ -1495,9 +2199,12 @@ function renderSelectedActuacionLicitaciones() {
     return;
   }
   actuacionSelectedLicitaciones.innerHTML = selected.map((item) => `
-    <article class="linked-item">
-      <strong>${escapeHtml(licitacionBrief(item))}</strong>
-      <small>${escapeHtml(item.organismo || "")}${item.fecha_limite ? ` · ${escapeHtml(item.fecha_limite)}` : ""}</small>
+    <article class="linked-item linked-item-licitacion">
+      <div>
+        <strong>${escapeHtml(item.objeto || licitacionBrief(item))}</strong>
+        <small>${escapeHtml([item.expediente, item.organismo].filter(Boolean).join(" · ")) || "Sin referencia adicional"}</small>
+        <small>${escapeHtml(linkedLicitacionLocatorText(item))}</small>
+      </div>
       <button type="button" class="ghost" data-remove-selected-licitacion="${escapeHtml(item.id)}">Quitar</button>
     </article>
   `).join("");
@@ -1662,25 +2369,6 @@ async function saveActuacion(event) {
   actuacionDialog.close();
   await loadActuaciones();
   await loadItems();
-}
-
-async function addActuacionComment() {
-  const id = actuacionForm.elements.id.value;
-  const comentario = actuacionComment.value.trim();
-  if (!id || !comentario) return;
-  const response = await fetch(`/api/actuaciones/${id}/historial`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...csrfHeaders() },
-    body: JSON.stringify({ comentario }),
-  });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    alert(result.error || "No se pudo añadir el comentario.");
-    return;
-  }
-  actuacionComment.value = "";
-  renderActuacionHistory(result.item?.historial || []);
-  await loadActuaciones();
 }
 
 async function quickActuacionComment(id) {
@@ -1851,6 +2539,13 @@ function renderDays() {
     const adminReview = dia.ultima_revision_admin || "Sin revisión";
     const nuriaReview = dia.ultima_revision_nuria || "Sin revisión";
     const historyItems = (dia.historial_resumen || []).slice(0, 3);
+    const dayActions = renderListActions(
+      `<button class="primary" data-open-dia="${escapeHtml(dia.id)}" data-title="${escapeHtml(dia.titulo)}">Abrir</button>`,
+      [
+        `<button class="ghost" data-day-comments="${escapeHtml(dia.id)}">Ver comentarios</button>`,
+        isAdmin() ? `<button class="danger" data-delete-dia="${escapeHtml(dia.id)}" data-title="${escapeHtml(dia.titulo)}">Borrar día</button>` : "",
+      ]
+    );
     const historyHtml = historyItems.length
       ? historyItems.map((entry) => `
           <li>
@@ -1882,9 +2577,7 @@ function renderDays() {
         </div>
 
         <div class="card-actions day-card-actions">
-          <button class="primary" data-open-dia="${escapeHtml(dia.id)}" data-title="${escapeHtml(dia.titulo)}">Abrir día</button>
-          <button class="ghost" data-day-comments="${escapeHtml(dia.id)}">Ver comentarios</button>
-          ${isAdmin() ? `<button class="danger" data-delete-dia="${escapeHtml(dia.id)}" data-title="${escapeHtml(dia.titulo)}">Borrar día</button>` : ""}
+          ${dayActions}
         </div>
       </article>
     `;
@@ -1910,6 +2603,9 @@ async function loadItems() {
 
   if (!isNuriaDayReview() && estado && estado !== "Todos") params.set("estado", estado);
   if (appState.currentDiaId) params.set("dia_id", appState.currentDiaId);
+  if (!appState.currentDiaId && publicationTypeFilter?.value) {
+    params.set("tipo_publicacion", publicationTypeFilter.value);
+  }
   if (!appState.currentDiaId && appState.licitacionesView === "live") params.set("vivas", "1");
   if (!appState.currentDiaId && appState.licitacionesView === "managed") params.set("gestionadas", "1");
   if (!appState.currentDiaId && appState.licitacionesYear && appState.licitacionesYear !== "Todos") {
@@ -2285,7 +2981,8 @@ function pendingStateOptions(item) {
   return taskStateOptions;
 }
 
-function renderPendingStateControl(item) {
+function renderPendingStateControl(item, options = {}) {
+  const showLabel = options.showLabel !== false;
   if (!isPendingAgendaView()) return "";
   if (item.source_type === "cliente_envio") return "";
   const token = `${item.source_type}:${item.source_id}`;
@@ -2296,7 +2993,7 @@ function renderPendingStateControl(item) {
       : normalizedTaskStateValue(item.state_value || item.raw_state || item.status || item.state));
   return `
     <label class="agenda-state-control">
-      <span>Estado</span>
+      ${showLabel ? "<span>Estado</span>" : ""}
       <select data-pending-state="${escapeHtml(token)}">
         ${pendingStateOptions(item).map((option) => `
           <option value="${escapeHtml(option.value)}" ${String(option.value) === String(value) ? "selected" : ""}>${escapeHtml(option.label)}</option>
@@ -2308,7 +3005,9 @@ function renderPendingStateControl(item) {
 
 function renderAgendaActions(item) {
   const token = `${item.source_type}:${item.source_id}`;
-  const actions = [`<button type="button" data-agenda-open="${escapeHtml(token)}">${escapeHtml(agendaOpenLabel(item))}</button>`];
+  const primaryLabel = item.source_type === "cliente_envio" ? agendaOpenLabel(item) : "Abrir";
+  const primaryAction = `<button type="button" data-agenda-open="${escapeHtml(token)}">${escapeHtml(primaryLabel)}</button>`;
+  const actions = [];
   if (item.source_type === "cliente_envio") {
     const envio = {
       estado: item.state_value || item.raw_state || "",
@@ -2321,7 +3020,7 @@ function renderAgendaActions(item) {
     if (clienteEnvioCanMarkSent(envio)) {
       actions.push(`<button type="button" data-mark-cliente-envio-sent="${escapeHtml(item.source_id)}">Marcar como enviado</button>`);
     }
-    return `<div class="links">${actions.join("")}</div>`;
+    return `<div class="links">${renderListActions(primaryAction, actions)}</div>`;
   }
   if (item.source_type === "licitacion") {
     actions.push(`<button type="button" data-new-actuacion-id="${escapeHtml(item.source_id)}">Nueva actuación</button>`);
@@ -2333,7 +3032,7 @@ function renderAgendaActions(item) {
     actions.push(`<button type="button" data-agenda-close="${escapeHtml(item.source_id)}">Cerrar</button>`);
     actions.push(`<button type="button" class="danger" data-agenda-cancel="${escapeHtml(item.source_id)}">Cancelar</button>`);
   }
-  return `${renderPendingStateControl(item)}<div class="links">${actions.join("")}</div>`;
+  return `${renderPendingStateControl(item, { showLabel: false })}<div class="links">${renderListActions(primaryAction, actions)}</div>`;
 }
 
 function renderCalendar() {
@@ -2732,7 +3431,7 @@ function renderAgendaCompactCard(item) {
   if (isPendingAgendaView() && item.source_type === "licitacion") {
     return renderCard(pendingLicitacionCardItem(item), {
       extraClass: `agenda-card pending-licitacion-card ${colorClass}`,
-      sideActionsExtra: renderPendingStateControl(item),
+      pendingStateControl: renderPendingStateControl(item, { showLabel: false }),
     });
   }
   if (isPendingAgendaView()) {
@@ -2907,14 +3606,18 @@ function renderClienteEnvioCard(envio, { showClient = true, includeEdit = true }
   ].filter(Boolean);
   return `
     <article class="cliente-envio-card">
-      <div>
-        <strong>${escapeHtml(showClient ? `${envio.cliente_nombre} · ${envio.tipo_envio_label}` : (envio.tipo_envio_label || "Envío"))}</strong>
-        <span>${escapeHtml(envio.estado_label || envio.estado || "")}</span>
-        ${metaLines.map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
-        <span>${escapeHtml(`${envio.attachment_count || 0} adjunto(s) · ${formatBytes(envio.attachments_size_total)}`)}</span>
-        ${envio.correo_generado_at ? `<span>Correo generado: ${escapeHtml(formatDateTime(envio.correo_generado_at))}</span>` : ""}
-        ${envio.enviado_at ? `<span>Enviado: ${escapeHtml(formatDateTime(envio.enviado_at))}</span>` : ""}
-        ${envio.incidencia_detalle ? `<span>${escapeHtml(envio.incidencia_detalle)}</span>` : ""}
+      <div class="cliente-envio-card-main">
+        <div class="cliente-envio-card-head">
+          <strong>${escapeHtml(showClient ? `${envio.cliente_nombre} · ${envio.tipo_envio_label}` : (envio.tipo_envio_label || "Envío"))}</strong>
+          <span class="cliente-envio-state-badge">${escapeHtml(envio.estado_label || envio.estado || "")}</span>
+        </div>
+        <div class="cliente-envio-card-meta">
+          ${metaLines.map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
+          <span>${escapeHtml(`${envio.attachment_count || 0} adjunto(s) · ${formatBytes(envio.attachments_size_total)}`)}</span>
+          ${envio.correo_generado_at ? `<span>Correo generado: ${escapeHtml(formatDateTime(envio.correo_generado_at))}</span>` : ""}
+          ${envio.enviado_at ? `<span>Enviado: ${escapeHtml(formatDateTime(envio.enviado_at))}</span>` : ""}
+          ${envio.incidencia_detalle ? `<span>${escapeHtml(envio.incidencia_detalle)}</span>` : ""}
+        </div>
       </div>
       <div class="card-actions">
         ${envio.licitacion_id ? `<button type="button" data-open-licitacion-detail="${escapeHtml(envio.licitacion_id)}">Abrir licitación</button>` : ""}
@@ -2945,6 +3648,61 @@ function renderClienteEnviosList(envios = [], { showClient = true, includeEdit =
       ${envios.map((envio) => renderClienteEnvioCard(envio, { showClient, includeEdit })).join("")}
     </div>
   `;
+}
+
+function populateClienteEnviosStateFilter() {
+  if (!clienteEnviosStateFilter) return;
+  const selectedValue = clienteEnviosStateFilter.value || "";
+  clienteEnviosStateFilter.innerHTML = [
+    `<option value="">Todos</option>`,
+    ...clienteEnvioStateOptions.map((item) => (
+      `<option value="${escapeHtml(item.value)}" ${item.value === selectedValue ? "selected" : ""}>${escapeHtml(item.label)}</option>`
+    )),
+  ].join("");
+}
+
+function renderClienteEnviosSummary() {
+  if (!clienteEnviosSummary) return;
+  const envios = appState.clienteEnvios || [];
+  const abiertos = envios.filter((item) => !["enviado", "cancelado"].includes(item.estado || "")).length;
+  const listos = envios.filter((item) => item.estado === "listo_para_preparar_correo").length;
+  const generados = envios.filter((item) => item.estado === "correo_outlook_generado").length;
+  const incidencias = envios.filter((item) => item.estado === "incidencia").length;
+  clienteEnviosSummary.innerHTML = [
+    ["Total", envios.length],
+    ["Abiertos", abiertos],
+    ["Listos para correo", listos],
+    ["Correo generado", generados],
+    ["Incidencias", incidencias],
+  ].map(renderMetric).join("");
+}
+
+function renderClienteEnviosBoard() {
+  if (!clienteEnviosBoard) return;
+  clienteEnviosBoard.innerHTML = renderClienteEnviosList(appState.clienteEnvios || [], {
+    emptyText: "No hay envíos de documentación para esta vista.",
+  });
+}
+
+async function loadClienteEnvios() {
+  if (!clienteEnviosBoard) return;
+  const params = new URLSearchParams();
+  const q = clienteEnviosSearch?.value.trim() || "";
+  const estado = clienteEnviosStateFilter?.value || "";
+  if (q) params.set("q", q);
+  if (estado) params.set("estado", estado);
+  clienteEnviosBoard.innerHTML = `<div class="empty">Cargando envíos...</div>`;
+  const response = await fetch(`/api/cliente-envios?${params.toString()}`);
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    clienteEnviosBoard.innerHTML = `<div class="empty">No se pudieron cargar los envíos de documentación.</div>`;
+    if (clienteEnviosSummary) clienteEnviosSummary.innerHTML = "";
+    return;
+  }
+  appState.clienteEnvios = result.items || [];
+  populateClienteEnviosStateFilter();
+  renderClienteEnviosSummary();
+  renderClienteEnviosBoard();
 }
 
 function renderClientHistoryBoard() {
@@ -3284,6 +4042,9 @@ async function afterClienteEnvioMutation(item) {
     await loadClientes();
     if (item.cliente_id) await loadClientDetail(item.cliente_id);
   }
+  if (appState.lastSection === "cliente-envios") {
+    await loadClienteEnvios();
+  }
   if (item.licitacion_id && licitacionDetailDialog.open) {
     await refreshLicitacionDetail(item.licitacion_id);
     const detail = appState.cardDetails[item.licitacion_id]?.item;
@@ -3402,6 +4163,18 @@ async function openLicitacionEnviosTab(licitacionId) {
 }
 
 async function handleClienteEnvioUiAction(target) {
+  const openLicitacionDetailButton = target.closest("button[data-open-licitacion-detail]");
+  if (openLicitacionDetailButton) {
+    await openLicitacionDetail(openLicitacionDetailButton.dataset.openLicitacionDetail);
+    return true;
+  }
+
+  const editActuacionButton = target.closest("button[data-edit-actuacion]");
+  if (editActuacionButton) {
+    await editActuacion(editActuacionButton.dataset.editActuacion);
+    return true;
+  }
+
   const editClientButton = target.closest("button[data-edit-client]");
   if (editClientButton) {
     showClientsView();
@@ -4449,11 +5222,45 @@ function monitorTaskTypeLabel(taskType) {
   return monitorTaskTypeLabels[taskType] || taskType || "Licitaciones";
 }
 
+const monitorErrorReasonLabels = {
+  ADVANCED_STATE: "Licitación en estado avanzado",
+  INVALID_CODE: "Código de acción no válido",
+  LICITACION_NOT_FOUND: "Licitación no encontrada",
+  NO_ALLOWED_SENDERS: "Sin remitentes autorizados configurados",
+  NO_REVIEW_LINK: "Licitación sin revisión Infonalia asociada",
+  NOT_PROCESSABLE: "Orden no procesable",
+  REVIEW_CLOSED: "Revisión Infonalia ya cerrada",
+  REVIEW_NOT_FOUND: "Revisión Infonalia no encontrada",
+  UNAUTHORIZED_SENDER: "Remitente no autorizado",
+  UNKNOWN_ACTION: "Acción no reconocida",
+  "error búsqueda IMAP": "No se pudo consultar el buzón IMAP",
+  "error lectura cabecera": "No se pudo leer la cabecera del correo",
+  "error lectura candidato": "No se pudo leer el correo de orden",
+};
+
+function monitorReasonMapText(reasons) {
+  if (!reasons || typeof reasons !== "object") return "";
+  return Object.entries(reasons)
+    .filter(([reason, count]) => reason && Number(count || 0) > 0)
+    .map(([reason, count]) => {
+      const label = monitorErrorReasonLabels[reason] || reason;
+      const amount = Number(count || 0);
+      return amount > 1 ? `${label}: ${amount}` : label;
+    })
+    .join("; ");
+}
+
 function monitorIncidenceText(item) {
   if (item.error_message) return item.error_message;
+  const details = item.details || {};
+  const errorReasons = monitorReasonMapText(details.errors_by_reason);
+  if (errorReasons) return errorReasons;
+  const detailMessage = details.error_message || details.message || details.error || "";
+  if ((item.status === "failed" || item.status === "error") && detailMessage) return detailMessage;
   const conflicts = Number(item.conflicts_count || 0);
   const warnings = Number(item.warnings_count || 0);
   if (conflicts || warnings) return `${conflicts} conflicto(s), ${warnings} aviso(s)`;
+  if (item.status === "failed" || item.status === "error") return "Fallida sin detalle técnico registrado.";
   return "Sin incidencias";
 }
 
@@ -4678,7 +5485,7 @@ function renderMonitorRuns() {
       </span>
     </button>
   `).join("");
-  renderMonitorRunDetail(appState.monitorRuns[0]);
+  openMonitorRun(appState.monitorRuns[0].id).catch(() => renderMonitorRunDetail(appState.monitorRuns[0]));
 }
 
 async function openMonitorRun(id) {
@@ -4900,17 +5707,34 @@ function renderCard(item, options = {}) {
   const folderText = folderPath ? compactFolderDisplayPath(folderPath) : "Carpeta no localizada";
   const folderClass = folderPath ? "" : " muted";
   const isReview = Boolean(appState.currentDiaId);
-  const stateActions = isAdmin() ? adminReviewEstados : nuriaEstados;
+  const previousNotice = isPreviousNotice(item);
+  const stateActions = previousNotice ? ["Descartada"] : (isAdmin() ? adminReviewEstados : nuriaEstados);
   const showStateActions = options.showStateActions ?? isReview;
   const dueText = dueLabel(remainingDays) || "Sin fecha";
   const dueClassName = remainingDays === null ? "" : dueClass(remainingDays);
   const extraClass = options.extraClass ? ` ${options.extraClass}` : "";
   const sideActionsExtra = options.sideActionsExtra || "";
   const showEditButton = options.showEditButton ?? isAdmin();
-  const showNewActuacionButton = options.showNewActuacionButton ?? true;
+  const showNewActuacionButton = options.showNewActuacionButton ?? !previousNotice;
+  const pendingStateControl = options.pendingStateControl || "";
+  const stateActionButtons = showStateActions ? stateActions.map((estado) => `
+    <button class="${item.estado === estado ? "active-state" : ""}" data-id="${escapeHtml(item.id)}" data-estado="${escapeHtml(estado)}">${escapeHtml(estadoActionLabel(estado))}</button>
+  `) : [];
+  const secondaryActions = [
+    showEditButton ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : "",
+    showNewActuacionButton ? `<button data-new-actuacion-id="${escapeHtml(item.id)}">Crear nueva actuación</button>` : "",
+    `<button data-open-licitacion-envios="${escapeHtml(item.id)}">Envíos a clientes</button>`,
+    sideActionsExtra,
+    ...stateActionButtons,
+  ];
+  const primaryAction = `<button data-open-licitacion-detail="${escapeHtml(item.id)}">Abrir</button>`;
+  const mobilePrimaryAction = `<button class="primary" data-open-licitacion-detail="${escapeHtml(item.id)}">Abrir</button>`;
+  const actionStateControl = pendingStateControl
+    ? `<div class="agenda-card-action-state">${pendingStateControl}</div>`
+    : "";
 
   return `
-    <article class="card compact-card${extraClass}">
+    <article class="card compact-card mobile-compact-card${extraClass}">
       <div class="card-layout">
         <div class="card-content">
           <div class="card-head">
@@ -4922,6 +5746,7 @@ function renderCard(item, options = {}) {
             <div class="card-flags">
               ${renderAiSummaryBadge(item)}
               <span class="badge ${badgeClass(item.estado)}">${escapeHtml(estadoLabel(item.estado))}</span>
+              ${previousNotice ? `<span class="badge">Anuncio previo</span>` : ""}
               <span class="due-chip ${dueClassName}">${escapeHtml(dueText)}</span>
               ${item.provincia ? `<span class="province-chip">${escapeHtml(item.provincia)}</span>` : ""}
             </div>
@@ -4935,21 +5760,17 @@ function renderCard(item, options = {}) {
 
           ${(links || folderText) ? `<div class="links card-footer-links">${links}<span class="card-folder-path${folderClass}" title="${escapeHtml(folderPath || folderText)}" data-folder-path="${escapeHtml(folderPath || "")}">${escapeHtml(folderText)}</span></div>` : ""}
           ${renderCommentsWidget("licitacion", item.id, item.comments_summary)}
-
-          ${showStateActions ? `<div class="card-actions state-actions">
-            ${stateActions.map((estado) => `
-              <button class="${item.estado === estado ? "active-state" : ""}" data-id="${escapeHtml(item.id)}" data-estado="${escapeHtml(estado)}">${escapeHtml(estadoActionLabel(estado))}</button>
-            `).join("")}
-          </div>` : ""}
         </div>
 
         <div class="card-side-actions">
-          <button data-open-licitacion-detail="${escapeHtml(item.id)}">Abrir</button>
-          ${showEditButton ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""}
-          ${showNewActuacionButton ? `<button data-new-actuacion-id="${escapeHtml(item.id)}">Crear nueva actuación</button>` : ""}
-          <button data-open-licitacion-envios="${escapeHtml(item.id)}">Envíos a clientes</button>
-          ${sideActionsExtra}
+          ${actionStateControl}
+          ${renderListActions(primaryAction, secondaryActions)}
           <span class="card-side-id">ID ${escapeHtml(item.id)}</span>
+        </div>
+
+        <div class="mobile-card-actions no-print">
+          ${actionStateControl}
+          ${renderListActions(mobilePrimaryAction, secondaryActions)}
         </div>
       </div>
     </article>
@@ -5139,11 +5960,12 @@ function renderLicitacionDetailView(item) {
 }
 
 function renderDetailActionBar(item) {
+  const previousNotice = isPreviousNotice(item);
   return `
     <section class="expanded-action-bar no-print">
       <div class="detail-action-bar" role="group" aria-label="Acciones de la licitación">
-      ${isAdmin() ? `<button class="download-button primary" data-download-id="${escapeHtml(item.id)}">Descargar documentación</button>` : ""}
-      <button data-new-actuacion-id="${escapeHtml(item.id)}">Crear actuación</button>
+      ${isAdmin() && !previousNotice ? `<button class="download-button primary" data-download-id="${escapeHtml(item.id)}">Descargar documentación</button>` : ""}
+      ${!previousNotice ? `<button data-new-actuacion-id="${escapeHtml(item.id)}">Crear actuación</button>` : ""}
       <button data-open-licitacion-envios="${escapeHtml(item.id)}">Envíos a clientes</button>
       ${isAdmin() ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""}
       <details class="detail-more-actions"${isAdmin() ? "" : ' hidden=""'}>
@@ -6329,6 +7151,7 @@ function renderLicitacionTracking(item) {
 
 function renderDocumentosTabActions(item, folder) {
   const hasFolder = Boolean(String(folder || item.ruta_carpeta || "").trim());
+  const previousNotice = isPreviousNotice(item);
   const id = item.id;
   const idFileName = `${id}.llangon`;
   const seguimiento = item.seguimiento || {};
@@ -6336,7 +7159,7 @@ function renderDocumentosTabActions(item, folder) {
   const followMarkerExists = Boolean(seguimiento.follow_marker_exists);
   return `
     <section class="documentos-tab-actions no-print">
-      ${isAdmin() ? `<button class="download-button primary" data-download-id="${escapeHtml(id)}">Descargar documentación</button>` : ""}
+      ${isAdmin() && !previousNotice ? `<button class="download-button primary" data-download-id="${escapeHtml(id)}">Descargar documentación</button>` : ""}
       ${isAdmin() ? `<button type="button" data-marker-action="id" data-marker-licitacion-id="${escapeHtml(id)}" ${!hasFolder || idMarkerExists ? "disabled" : ""}>${idMarkerExists ? "Ya existe" : `Crear ${escapeHtml(idFileName)}`}</button>` : ""}
       ${isAdmin() ? `<button type="button" data-marker-action="follow" data-marker-licitacion-id="${escapeHtml(id)}" ${!hasFolder || followMarkerExists ? "disabled" : ""}>${followMarkerExists ? "Ya existe" : "Crear EnSeguimiento.llangon"}</button>` : ""}
     </section>
@@ -6915,6 +7738,7 @@ function openCreateEditor() {
   editorEyebrow.textContent = "Alta manual";
   editorTitle.textContent = "Nueva licitación";
   form.elements.estado.value = "Importada";
+  form.elements.tipo_publicacion.value = "licitacion";
   editor.showModal();
 }
 
@@ -7018,8 +7842,13 @@ document.getElementById("list-button").addEventListener("click", () => showLicit
 document.getElementById("calendar-button").addEventListener("click", showCalendarView);
 document.getElementById("actuaciones-button").addEventListener("click", showActuacionesView);
 document.getElementById("clients-button")?.addEventListener("click", showClientsView);
+document.getElementById("cliente-envios-button")?.addEventListener("click", showClienteEnviosView);
 logoutButton?.addEventListener("click", logout);
 aiQueueButton?.addEventListener("click", openAiQueueDialog);
+document.getElementById("ai-queue-menu-button")?.addEventListener("click", () => {
+  closeSidebar();
+  openAiQueueDialog();
+});
 document.getElementById("notifications-button").addEventListener("click", showNotificationsView);
 document.getElementById("notifications-menu-button")?.addEventListener("click", showNotificationsView);
 document.getElementById("back-from-notifications").addEventListener("click", backFromNotifications);
@@ -7027,6 +7856,9 @@ document.getElementById("news-admin-button").addEventListener("click", showNewsA
 document.getElementById("monitor-button").addEventListener("click", showMonitorView);
 document.getElementById("config-button").addEventListener("click", showConfigView);
 document.getElementById("back-from-config").addEventListener("click", backFromConfig);
+configHelpOpenButton?.addEventListener("click", openConfigHelpManual);
+closeConfigHelpDialogButton?.addEventListener("click", closeConfigHelpManual);
+closeConfigHelpDialogFooter?.addEventListener("click", closeConfigHelpManual);
 configTabButtons.forEach((button) => {
   button.addEventListener("click", () => showConfigTab(button.dataset.configTab || "general"));
 });
@@ -7238,6 +8070,9 @@ document.getElementById("new-client-button")?.addEventListener("click", resetCli
 document.getElementById("reset-client-form")?.addEventListener("click", resetClientForm);
 clientSearch?.addEventListener("input", debounce(loadClientes, 250));
 clientForm?.addEventListener("submit", saveClient);
+document.getElementById("refresh-cliente-envios-button")?.addEventListener("click", loadClienteEnvios);
+clienteEnviosSearch?.addEventListener("input", debounce(loadClienteEnvios, 250));
+clienteEnviosStateFilter?.addEventListener("change", loadClienteEnvios);
 document.getElementById("close-cliente-envio-dialog")?.addEventListener("click", () => clienteEnvioDialog.close());
 document.getElementById("cancel-cliente-envio-dialog")?.addEventListener("click", () => clienteEnvioDialog.close());
 document.getElementById("cliente-envio-load-folder")?.addEventListener("click", () => (
@@ -7268,7 +8103,6 @@ document.getElementById("clear-licitacion-selection").addEventListener("click", 
   appState.actuacionSelectorDraft.clear();
   renderLicitacionSelectorResults();
 });
-document.getElementById("add-actuacion-comment")?.addEventListener("click", addActuacionComment);
 actuacionForm.elements.deadline_at.addEventListener("input", () => (
   showDateWarning(actuacionDateWarning, actuacionForm.elements.deadline_at.value)
 ));
@@ -7510,9 +8344,11 @@ licitacionDetailContent.addEventListener("click", async (event) => {
     const id = saveWorkButton.dataset.saveLicitacionWork;
     const notes = licitacionDetailContent.querySelector(`[data-notes-for="${id}"]`);
     const state = licitacionDetailContent.querySelector(`[data-internal-state-for="${id}"]`);
+    const publicationType = licitacionDetailContent.querySelector(`[data-publication-type-for="${id}"]`);
     patchLicitacionWork(id, {
       notas_internas: notes ? notes.value : "",
       estado_interno: state ? state.value : "Nueva",
+      tipo_publicacion: publicationType ? publicationType.value : "licitacion",
     });
     return;
   }
@@ -7640,9 +8476,11 @@ board.addEventListener("click", async (event) => {
     const id = saveWorkButton.dataset.saveLicitacionWork;
     const notes = board.querySelector(`[data-notes-for="${id}"]`);
     const state = board.querySelector(`[data-internal-state-for="${id}"]`);
+    const publicationType = board.querySelector(`[data-publication-type-for="${id}"]`);
     patchLicitacionWork(id, {
       notas_internas: notes ? notes.value : "",
       estado_interno: state ? state.value : "Nueva",
+      tipo_publicacion: publicationType ? publicationType.value : "licitacion",
     });
     return;
   }
@@ -7821,6 +8659,10 @@ clientHistoryBoard?.addEventListener("click", async (event) => {
   if (await handleClienteEnvioUiAction(event.target)) return;
 });
 
+clienteEnviosBoard?.addEventListener("click", async (event) => {
+  if (await handleClienteEnvioUiAction(event.target)) return;
+});
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!isAdmin()) return;
@@ -7918,6 +8760,9 @@ importForm.addEventListener("submit", async (event) => {
 runInfonaliaMailImportButton?.addEventListener("click", () => {
   runInfonaliaMailImportNow();
 });
+
+enhanceConfigHelp();
+renderConfigHelpManual();
 
 loadMe().then(() => {
   showInitialView();

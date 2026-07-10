@@ -59,14 +59,15 @@ def mailbox_config_from_env(
     settings: dict[str, object] | None = None,
 ) -> MailboxConfig:
     env = environ or os.environ
+    suite_settings = {} if settings is None else settings
     return MailboxConfig(
-        host=effective_text("actions_imap_host", settings=settings, environ=env),
-        port=int(effective_text("actions_imap_port", settings=settings, environ=env) or "993"),
-        user=effective_text("actions_imap_user", settings=settings, environ=env),
+        host=effective_text("actions_imap_host", settings=suite_settings, environ=env),
+        port=int(effective_text("actions_imap_port", settings=suite_settings, environ=env) or "993"),
+        user=effective_text("actions_imap_user", settings=suite_settings, environ=env),
         password=clean_text(env.get("LLANGON_ACTIONS_IMAP_PASSWORD")),
-        folder=effective_text("actions_imap_folder", settings=settings, environ=env) or "INBOX",
-        allowed_senders=split_emails(effective_text("action_allowed_senders", settings=settings, environ=env)),
-        notify_email=effective_text("action_notify_email", settings=settings, environ=env) or action_notify_email(env),
+        folder=effective_text("actions_imap_folder", settings=suite_settings, environ=env) or "INBOX",
+        allowed_senders=split_emails(effective_text("action_allowed_senders", settings=suite_settings, environ=env)),
+        notify_email=effective_text("action_notify_email", settings=suite_settings, environ=env) or action_notify_email(env),
     )
 
 
@@ -175,6 +176,7 @@ def process_mailbox_once(
     db_session_factory,
     notification_sender,
     config: MailboxConfig | None = None,
+    settings: dict[str, object] | None = None,
     imap_factory=imaplib.IMAP4_SSL,
     dry_run: bool = False,
     verbose: bool = False,
@@ -183,7 +185,7 @@ def process_mailbox_once(
     scan_all: bool = False,
     mark_invalid_read: bool = False,
 ) -> dict[str, object]:
-    config = config or mailbox_config_from_env()
+    config = config or mailbox_config_from_env(settings=settings)
     if not config.complete:
         message = "Procesador de órdenes por correo desactivado: falta configuración IMAP."
         LOGGER.info(message)
@@ -306,8 +308,12 @@ def process_mailbox_once(
     return summary
 
 
-def check_code_payload(db_session_factory, code: str) -> dict[str, object]:
-    config = mailbox_config_from_env()
+def check_code_payload(
+    db_session_factory,
+    code: str,
+    settings: dict[str, object] | None = None,
+) -> dict[str, object]:
+    config = mailbox_config_from_env(settings=settings)
     with db_session_factory() as conn:
         return check_action_code(conn, code=code, allowed_senders=config.allowed_senders)
 
@@ -318,8 +324,9 @@ def simulate_code_payload(
     code: str,
     from_email: str,
     dry_run: bool,
+    settings: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    config = mailbox_config_from_env()
+    config = mailbox_config_from_env(settings=settings)
     with db_session_factory() as conn:
         return process_email_action(
             conn,
@@ -357,6 +364,7 @@ def main(argv: list[str] | None = None) -> int:
         from . import app
     except ImportError:
         import app  # type: ignore
+    settings = app.get_settings()
 
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING,
@@ -364,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.check_code:
-        payload = check_code_payload(app.db_session, args.check_code)
+        payload = check_code_payload(app.db_session, args.check_code, settings=settings)
         pprint.pp(payload)
         return 0
 
@@ -374,12 +382,13 @@ def main(argv: list[str] | None = None) -> int:
             code=args.simulate_code,
             from_email=args.from_email,
             dry_run=args.dry_run,
+            settings=settings,
         )
         pprint.pp(payload)
         return 0 if payload.get("status") in {"processed", "dry_run", "ignored"} else 1
 
     def sender(to_email: str, subject: str, body: str, html_body: str) -> None:
-        sent_at, error = app.send_monitor_email(to_email, subject, body, html_body)
+        sent_at, error = app.send_monitor_email(to_email, subject, body, html_body, settings=settings)
         if error:
             LOGGER.warning("No se pudo enviar confirmación de orden por correo: %s", error)
         else:
@@ -388,6 +397,7 @@ def main(argv: list[str] | None = None) -> int:
     result = process_mailbox_once(
         db_session_factory=app.db_session,
         notification_sender=sender,
+        settings=settings,
         dry_run=args.dry_run,
         verbose=args.verbose,
         limit=args.limit,

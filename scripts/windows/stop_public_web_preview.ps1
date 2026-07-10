@@ -1,15 +1,37 @@
 $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")
-$RuntimeDir = Join-Path $ProjectRoot "runtime"
-$PidFile = Join-Path $RuntimeDir "public_web_preview.pid"
+$PublicRoot = Join-Path $ProjectRoot "firebase\public_firebase"
+$PreviewServer = Join-Path $ProjectRoot "scripts\public_web_preview_server.py"
+$PreviewStateDir = Join-Path ([System.IO.Path]::GetTempPath()) "LlangonSuite\public_web_preview"
+$PidFile = Join-Path $PreviewStateDir "public_web_preview.pid"
 $Port = 5500
+
+function Test-PreviewCommandLine {
+    param([int]$ProcessId)
+
+    try {
+        $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+        $commandLine = [string]$processInfo.CommandLine
+        return (
+            $commandLine -match [regex]::Escape($PreviewServer) -and
+            $commandLine -match [regex]::Escape($PublicRoot)
+        )
+    } catch {
+        return $false
+    }
+}
 
 function Stop-PreviewProcessById {
     param([int]$ProcessId)
 
     $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
     if ($process) {
+        if (-not (Test-PreviewCommandLine -ProcessId $ProcessId)) {
+            Write-Host "El PID $ProcessId no parece ser la vista previa publica de este repo. No se detiene."
+            return $false
+        }
+
         Stop-Process -Id $ProcessId -Force
         Write-Host "Vista previa detenida. PID: $ProcessId"
         return $true
@@ -33,8 +55,7 @@ if (-not $stopped) {
     try {
         $listener = Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($listener) {
-            $commandLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($listener.OwningProcess)").CommandLine
-            if ($commandLine -match "http\.server" -and $commandLine -match [regex]::Escape("firebase\public_firebase")) {
+            if (Test-PreviewCommandLine -ProcessId $listener.OwningProcess) {
                 $stopped = Stop-PreviewProcessById -ProcessId $listener.OwningProcess
             } else {
                 Write-Host "El puerto $Port esta ocupado por otro proceso. No se detiene automaticamente. PID: $($listener.OwningProcess)"

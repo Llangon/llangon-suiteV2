@@ -5,6 +5,7 @@ __pycache__/
 venv/
 .pytest_cache/
 .pytest_tmp/
+.codex-remote-attachments/
 
 # Node y compilaciones
 node_modules/

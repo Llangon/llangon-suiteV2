@@ -62,6 +62,13 @@ def table_exists(conn: Any, table_name: str) -> bool:
     return bool(row)
 
 
+def column_exists(conn: Any, table_name: str, column_name: str) -> bool:
+    try:
+        return any(row[1] == column_name for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall())
+    except Exception:
+        return False
+
+
 def _max_timestamp(*values: object) -> str:
     timestamps = [clean_text(value) for value in values if clean_text(value)]
     return max(timestamps) if timestamps else ""
@@ -103,7 +110,8 @@ def _actor_kind(user_id: object, roles: dict[str, str]) -> str:
 def _base_activity(licitacion_rows: list[Any]) -> dict[int, dict[str, object]]:
     return {
         int(row["id"]): {
-            "admin": normalize_licitacion_estado(row["estado"]) != ESTADO_IMPORTADA,
+            "admin": normalize_licitacion_estado(row["estado"]) != ESTADO_IMPORTADA
+            or clean_text(row_value(row, "tipo_publicacion")) == "anuncio_previo",
             "reviewer": normalize_licitacion_estado(row["estado"]) in REVIEWER_STATE_FALLBACKS,
             "last_activity_at": clean_text(row_value(row, "updated_at")),
             "last_admin_at": "",
@@ -301,26 +309,36 @@ def mark_day_nuria_dirty(conn: Any, dia_id: int, *, timestamp: str) -> None:
 
 def refresh_day_status(conn: Any, dia_id: int, *, timestamp: str) -> None:
     day = conn.execute("SELECT * FROM infonalia_dias WHERE id = ?", (dia_id,)).fetchone()
+    has_tipo_publicacion = column_exists(conn, "licitaciones", "tipo_publicacion")
+    tipo_select = "COALESCE(tipo_publicacion, 'licitacion')" if has_tipo_publicacion else "'licitacion'"
     rows = conn.execute(
-        """
-        SELECT estado, COUNT(*) AS total
+        f"""
+        SELECT estado, {tipo_select} AS tipo_publicacion, COUNT(*) AS total
         FROM licitaciones
         WHERE infonalia_dia_id = ?
-        GROUP BY estado
+        GROUP BY estado, tipo_publicacion
         """,
         (dia_id,),
     ).fetchall()
     counts: dict[str, int] = {}
+    normal_counts: dict[str, int] = {}
+    anuncios_previos_pendientes = 0
     for row in rows:
         estado = normalize_licitacion_estado(row["estado"])
-        counts[estado] = counts.get(estado, 0) + int(row["total"] or 0)
+        total_row = int(row["total"] or 0)
+        counts[estado] = counts.get(estado, 0) + total_row
+        if clean_text(row_value(row, "tipo_publicacion")) == "anuncio_previo":
+            if estado != ESTADO_DESCARTADA:
+                anuncios_previos_pendientes += total_row
+        else:
+            normal_counts[estado] = normal_counts.get(estado, 0) + total_row
     total = sum(counts.values())
-    pendientes = counts.get(ESTADO_IMPORTADA, 0)
-    pendientes_nuria = counts.get(ESTADO_ENVIADA_NURIA, 0)
+    pendientes = normal_counts.get(ESTADO_IMPORTADA, 0)
+    pendientes_nuria = normal_counts.get(ESTADO_ENVIADA_NURIA, 0)
     decisiones_nuria = (
-        counts.get(ESTADO_DESCARTADA, 0)
-        + counts.get(ESTADO_DESCARGAR_PARA_VER, 0)
-        + counts.get(ESTADO_PREPARAR_FICHA, 0)
+        normal_counts.get(ESTADO_DESCARTADA, 0)
+        + normal_counts.get(ESTADO_DESCARGAR_PARA_VER, 0)
+        + normal_counts.get(ESTADO_PREPARAR_FICHA, 0)
     )
     enviado_nuria_at = clean_text(row_value(day, "enviado_nuria_at"))
     reviewed_at = clean_text(row_value(day, "reviewed_at"))
@@ -334,9 +352,9 @@ def refresh_day_status(conn: Any, dia_id: int, *, timestamp: str) -> None:
         estado = "Completado"
     elif nuria_pending_update and enviado_nuria_at:
         estado = "Cambios pendientes para Nuria"
-    elif not enviado_nuria_at and (pendientes_nuria > 0 or decisiones_nuria > 0):
+    elif not enviado_nuria_at and (pendientes_nuria > 0 or decisiones_nuria > 0 or anuncios_previos_pendientes > 0):
         estado = "Listo para enviar a Nuria"
-    elif pendientes_nuria > 0 and enviado_nuria_at:
+    elif (pendientes_nuria > 0 or anuncios_previos_pendientes > 0) and enviado_nuria_at:
         estado = "Pendiente de revisión Nuria"
     elif decisiones_nuria > 0:
         estado = "Revisión parcial"
@@ -350,9 +368,11 @@ def refresh_day_status(conn: Any, dia_id: int, *, timestamp: str) -> None:
 
 
 def day_row_to_dict(conn: Any, row: Any) -> dict[str, object]:
+    has_tipo_publicacion = column_exists(conn, "licitaciones", "tipo_publicacion")
+    tipo_select = "COALESCE(tipo_publicacion, 'licitacion')" if has_tipo_publicacion else "'licitacion'"
     licitacion_rows = conn.execute(
-        """
-        SELECT id, estado, updated_at
+        f"""
+        SELECT id, estado, updated_at, {tipo_select} AS tipo_publicacion
         FROM licitaciones
         WHERE infonalia_dia_id = ?
         ORDER BY id ASC
@@ -360,30 +380,39 @@ def day_row_to_dict(conn: Any, row: Any) -> dict[str, object]:
         (row["id"],),
     ).fetchall()
     counts_rows = conn.execute(
-        """
-        SELECT estado, COUNT(*) AS total
+        f"""
+        SELECT estado, {tipo_select} AS tipo_publicacion, COUNT(*) AS total
         FROM licitaciones
         WHERE infonalia_dia_id = ?
-        GROUP BY estado
+        GROUP BY estado, tipo_publicacion
         """,
         (row["id"],),
     ).fetchall()
     counts: dict[str, int] = {}
+    normal_counts: dict[str, int] = {}
+    anuncios_previos = 0
     for count_row in counts_rows:
         estado = normalize_licitacion_estado(count_row["estado"])
-        counts[estado] = counts.get(estado, 0) + int(count_row["total"] or 0)
+        total_row = int(count_row["total"] or 0)
+        counts[estado] = counts.get(estado, 0) + total_row
+        if clean_text(row_value(count_row, "tipo_publicacion")) == "anuncio_previo":
+            if estado != ESTADO_DESCARTADA:
+                anuncios_previos += total_row
+        else:
+            normal_counts[estado] = normal_counts.get(estado, 0) + total_row
     total = len(licitacion_rows)
     decisiones_nuria = (
-        counts.get(ESTADO_DESCARTADA, 0)
-        + counts.get(ESTADO_DESCARGAR_PARA_VER, 0)
-        + counts.get(ESTADO_PREPARAR_FICHA, 0)
+        normal_counts.get(ESTADO_DESCARTADA, 0)
+        + normal_counts.get(ESTADO_DESCARGAR_PARA_VER, 0)
+        + normal_counts.get(ESTADO_PREPARAR_FICHA, 0)
     )
-    nuria_total = counts.get(ESTADO_ENVIADA_NURIA, 0) + decisiones_nuria
+    nuria_total = normal_counts.get(ESTADO_ENVIADA_NURIA, 0) + decisiones_nuria + anuncios_previos
     nuria_pending_update = is_nuria_update_pending(row)
     activity = _licitacion_activity(conn, licitacion_rows)
     admin_managed = sum(1 for item in activity.values() if item.get("admin"))
     reviewer_managed = sum(1 for item in activity.values() if item.get("reviewer"))
-    avance = round(((total - counts.get(ESTADO_IMPORTADA, 0)) / total) * 100) if total else 0
+    pending_normal = normal_counts.get(ESTADO_IMPORTADA, 0)
+    avance = round(((total - pending_normal) / total) * 100) if total else 0
     last_activity_at = _max_timestamp(
         row_value(row, "updated_at"),
         row_value(row, "enviado_nuria_at"),
@@ -398,8 +427,8 @@ def day_row_to_dict(conn: Any, row: Any) -> dict[str, object]:
     estado_visual = _day_visual_state(
         row,
         total=total,
-        pendientes=counts.get(ESTADO_IMPORTADA, 0),
-        pendientes_nuria=counts.get(ESTADO_ENVIADA_NURIA, 0),
+        pendientes=pending_normal,
+        pendientes_nuria=normal_counts.get(ESTADO_ENVIADA_NURIA, 0),
         admin_managed=admin_managed,
         reviewer_reviewed=bool(last_reviewer_at),
     )
@@ -416,9 +445,9 @@ def day_row_to_dict(conn: Any, row: Any) -> dict[str, object]:
         "gestionadas_nuria": reviewer_managed,
         "avance_porcentaje": avance,
         "total_nuria": nuria_total,
-        "pendientes": counts.get(ESTADO_IMPORTADA, 0),
+        "pendientes": pending_normal,
         "descartadas_mi": counts.get(ESTADO_DESCARTADA, 0),
-        "pendientes_nuria": counts.get(ESTADO_ENVIADA_NURIA, 0),
+        "pendientes_nuria": normal_counts.get(ESTADO_ENVIADA_NURIA, 0),
         "decisiones_nuria": decisiones_nuria,
         "descartadas_nuria": counts.get(ESTADO_DESCARTADA, 0),
         "solo_descargar": counts.get(ESTADO_DESCARGAR_PARA_VER, 0),

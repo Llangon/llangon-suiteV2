@@ -13,6 +13,24 @@ def memory_db() -> sqlite3.Connection:
     return conn
 
 
+def create_app_settings(conn: sqlite3.Connection, values: dict[str, str]) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT,
+            updated_by TEXT
+        )
+        """
+    )
+    conn.executemany(
+        "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
+        values.items(),
+    )
+    conn.commit()
+
+
 def test_automation_schema_creates_expected_tables() -> None:
     conn = memory_db()
     tables = {
@@ -82,6 +100,73 @@ def test_daily_task_deduplicates_same_day_unless_manual() -> None:
     conn.commit()
 
     assert orchestrator.due_for_tick(conn, definition, current=current) is False
+
+
+def test_mail_automation_payload_uses_configured_poll_minutes(tmp_path) -> None:
+    db_path = tmp_path / "suite.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    orchestrator.ensure_automation_schema(conn)
+    create_app_settings(
+        conn,
+        {
+            "email_actions_poll_minutes": "17",
+            "infonalia_import_poll_minutes": "43",
+        },
+    )
+    conn.close()
+
+    payload = orchestrator.automation_tasks_payload(db_path=db_path)
+    by_key = {item["key"]: item for item in payload}
+
+    assert by_key[orchestrator.TASK_TYPE_EMAIL_ACTIONS_PROCESSOR]["schedule_value"] == "17"
+    assert by_key[orchestrator.TASK_TYPE_EMAIL_ACTIONS_PROCESSOR]["schedule_label"] == "Cada 17 minutos"
+    assert by_key[orchestrator.TASK_TYPE_INFONALIA_MAIL_IMPORT]["schedule_value"] == "43"
+    assert by_key[orchestrator.TASK_TYPE_INFONALIA_MAIL_IMPORT]["schedule_label"] == "Cada 43 minutos"
+
+
+def test_mail_automation_due_uses_configured_poll_minutes(tmp_path) -> None:
+    db_path = tmp_path / "suite.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    orchestrator.ensure_automation_schema(conn)
+    create_app_settings(conn, {"email_actions_poll_minutes": "30"})
+    definition = orchestrator.automation_by_key(orchestrator.TASK_TYPE_EMAIL_ACTIONS_PROCESSOR)
+    assert definition is not None
+    conn.execute(
+        """
+        INSERT INTO automation_runs
+            (task_key, task_name, source, triggered_by, status, started_at, finished_at, duration_seconds, summary, details_json, error_message)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            definition.key,
+            definition.name,
+            "keeper_tick",
+            "",
+            orchestrator.STATUS_COMPLETED,
+            "2026-07-08T08:40:00+02:00",
+            "2026-07-08T08:41:00+02:00",
+            60,
+            "",
+            "{}",
+            "",
+        ),
+    )
+    conn.commit()
+
+    assert orchestrator.due_for_tick(
+        conn,
+        definition,
+        current=datetime.fromisoformat("2026-07-08T09:00:00+02:00"),
+        db_path=db_path,
+    ) is False
+    assert orchestrator.due_for_tick(
+        conn,
+        definition,
+        current=datetime.fromisoformat("2026-07-08T09:11:00+02:00"),
+        db_path=db_path,
+    ) is True
 
 
 def test_scheduler_tick_skips_when_global_lock_is_active(tmp_path, monkeypatch) -> None:

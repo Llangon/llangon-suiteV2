@@ -24,6 +24,7 @@ try:
     from .email_templates import build_llangon_email_shell
     from .environment import load_env_file
     from .formatting import format_date_es, format_datetime_es
+    from .licitacion_publication import detect_tipo_publicacion_from_texts
     from .msg_parsing import extraer_fecha_msg
     from .normalization import clean_text
     from .operational_settings import effective_bool, effective_int, effective_text
@@ -31,6 +32,7 @@ except ImportError:
     from email_templates import build_llangon_email_shell
     from environment import load_env_file
     from formatting import format_date_es, format_datetime_es
+    from licitacion_publication import detect_tipo_publicacion_from_texts
     from msg_parsing import extraer_fecha_msg
     from normalization import clean_text
     from operational_settings import effective_bool, effective_int, effective_text
@@ -85,7 +87,7 @@ def env_int(name: str, default: int, environ: dict[str, str] | None = None, *, m
 
 def split_emails(value: object) -> list[str]:
     result: list[str] = []
-    for item in re.split(r"[;,]", clean_text(value)):
+    for item in re.split(r"[;,\n\r]+", clean_text(value)):
         email = item.strip().lower()
         if email and email not in result:
             result.append(email)
@@ -97,19 +99,20 @@ def config_from_env(
     settings: dict[str, object] | None = None,
 ) -> InfonaliaImportConfig:
     env = environ or os.environ
+    suite_settings = {} if settings is None else settings
     return InfonaliaImportConfig(
-        enabled=effective_bool("infonalia_import_enabled", settings=settings, environ=env),
-        host=effective_text("actions_imap_host", settings=settings, environ=env) or "imap.gmail.com",
-        port=effective_int("actions_imap_port", 993, settings=settings, environ=env, minimum=1),
-        user=effective_text("actions_imap_user", settings=settings, environ=env),
+        enabled=effective_bool("infonalia_import_enabled", settings=suite_settings, environ=env),
+        host=effective_text("actions_imap_host", settings=suite_settings, environ=env) or "imap.gmail.com",
+        port=effective_int("actions_imap_port", 993, settings=suite_settings, environ=env, minimum=1),
+        user=effective_text("actions_imap_user", settings=suite_settings, environ=env),
         password=clean_text(env.get("LLANGON_ACTIONS_IMAP_PASSWORD")),
-        folder=effective_text("infonalia_import_folder", settings=settings, environ=env) or "LLANGON_INFONALIA",
+        folder=effective_text("infonalia_import_folder", settings=suite_settings, environ=env) or "LLANGON_INFONALIA",
         expected_from=clean_text(env.get("LLANGON_INFONALIA_IMPORT_FROM")) or EXPECTED_FROM,
         expected_subject=clean_text(env.get("LLANGON_INFONALIA_IMPORT_SUBJECT")) or EXPECTED_SUBJECT,
-        notify_email=effective_text("infonalia_import_notify_email", settings=settings, environ=env) or "info3@llangon.com",
-        mark_read_on_success=effective_bool("infonalia_import_mark_read_on_success", settings=settings, environ=env),
+        notify_email=effective_text("infonalia_import_notify_email", settings=suite_settings, environ=env) or "info3@llangon.com",
+        mark_read_on_success=effective_bool("infonalia_import_mark_read_on_success", settings=suite_settings, environ=env),
         test_forwarders=split_emails(env.get("LLANGON_INFONALIA_IMPORT_TEST_FORWARDERS")),
-        lookback_hours=effective_int("infonalia_import_lookback_hours", 48, settings=settings, environ=env, minimum=1),
+        lookback_hours=effective_int("infonalia_import_lookback_hours", 48, settings=suite_settings, environ=env, minimum=1),
     )
 
 
@@ -279,6 +282,7 @@ def parse_licitacion_blocks(text: str) -> list[dict[str, object]]:
             "fuente_texto": "",
             "plataforma_origen": "",
             "fecha_fuente": "",
+            "bloque_texto": block,
         }
         current_field = ""
         for raw_line in block.splitlines():
@@ -446,6 +450,15 @@ def existing_import_row(conn: sqlite3.Connection, *, message_id: str, body_hash:
 
 def item_to_payload(item: dict[str, object], fecha_infonalia: str) -> dict[str, object]:
     url_perfil = clean_text(item.get("url_perfil_contratante"))
+    fecha_limite = clean_text(item.get("plazo_presentacion_fecha"))
+    tipo_publicacion = detect_tipo_publicacion_from_texts(
+        item.get("expediente"),
+        item.get("resumen_objeto"),
+        item.get("plazo_presentacion_texto"),
+        item.get("fuente_texto"),
+        item.get("bloque_texto"),
+        has_fecha_limite=bool(fecha_limite),
+    )
     try:
         from .app import detectar_plataforma
     except ImportError:
@@ -458,8 +471,9 @@ def item_to_payload(item: dict[str, object], fecha_infonalia: str) -> dict[str, 
         "provincia": clean_text(item.get("provincia_ejecucion")),
         "tipo": "",
         "presupuesto": item.get("presupuesto"),
-        "fecha_limite": clean_text(item.get("plazo_presentacion_fecha")),
+        "fecha_limite": fecha_limite,
         "hora_limite": "",
+        "tipo_publicacion": tipo_publicacion,
         "plataforma": detectar_plataforma(url_perfil),
         "enlace_perfil": url_perfil,
         "enlace_infonalia": clean_text(item.get("url_anuncio_infonalia")),
@@ -885,13 +899,14 @@ def _fetch_bytes(fetch_data: object) -> bytes:
 def process_mailbox_once(
     *,
     config: InfonaliaImportConfig | None = None,
+    settings: dict[str, object] | None = None,
     imap_factory=imaplib.IMAP4_SSL,
     dry_run: bool = False,
     include_seen: bool = False,
     verbose: bool = False,
     notification_sender: Callable[[str, str, str, str], tuple[str | None, str | None]] | None = None,
 ) -> dict[str, object]:
-    config = config or config_from_env()
+    config = config or config_from_env(settings=settings)
     if not config.enabled:
         return {"enabled": False, "mode": "infonalia_import", "message": "Importador Infonalia desactivado."}
     if not config.complete:
@@ -1022,13 +1037,14 @@ def main(argv: list[str] | None = None) -> int:
             from . import app
         except ImportError:
             import app  # type: ignore
+        settings = app.get_settings()
         result = import_parsed_email(
             parsed,
             raw_bytes=raw,
             dry_run=args.dry_run,
             notify=not args.dry_run,
-            notification_sender=lambda to, subject, body, html: app.send_monitor_email(to, subject, body, html),
-            notify_email=config_from_env().notify_email,
+            notification_sender=lambda to, subject, body, html: app.send_monitor_email(to, subject, body, html, settings=settings),
+            notify_email=config_from_env(settings=settings).notify_email,
         )
         pprint.pp(result)
         return 0 if not result.get("errors") else 1
@@ -1038,11 +1054,13 @@ def main(argv: list[str] | None = None) -> int:
         from . import app
     except ImportError:
         import app  # type: ignore
+    settings = app.get_settings()
     result = process_mailbox_once(
         dry_run=args.dry_run,
         include_seen=args.include_seen,
         verbose=args.verbose,
-        notification_sender=lambda to, subject, body, html: app.send_monitor_email(to, subject, body, html),
+        settings=settings,
+        notification_sender=lambda to, subject, body, html: app.send_monitor_email(to, subject, body, html, settings=settings),
     )
     pprint.pp(result)
     return 0 if not result.get("errors") else 1

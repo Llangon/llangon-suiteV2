@@ -22,8 +22,14 @@ def build_llangon_email_shell(
     safe_title = html.escape(title)
     safe_subtitle = html.escape(subtitle)
     safe_logo_alt = html.escape(logo_alt)
+    eyebrow_html = (
+        f'<p style="margin:0 0 2px 0; color:#667085; font-size:{"11px" if compact else "12px"}; font-weight:800; text-transform:uppercase;">{safe_eyebrow}</p>'
+        if safe_eyebrow
+        else ""
+    )
+    subtitle_size = "12px" if compact else "14px"
     subtitle_html = (
-        f'<p style="margin:6px 0 0 0; color:#667085; font-size:14px; line-height:1.35;">{safe_subtitle}</p>'
+        f'<p style="margin:4px 0 0 0; color:#667085; font-size:{subtitle_size}; line-height:1.35;">{safe_subtitle}</p>'
         if safe_subtitle
         else ""
     )
@@ -48,10 +54,11 @@ def build_llangon_email_shell(
                 {closing_html}
               </td>
             </tr>"""
-    outer_padding = "14px 10px" if compact else "22px 12px"
-    header_padding = "12px 20px" if compact else "18px 24px"
-    body_padding = "18px 20px" if compact else "22px 24px"
-    logo_width = "96px" if compact else "128px"
+    outer_padding = "8px 8px" if compact else "22px 12px"
+    header_padding = "8px 14px" if compact else "18px 24px"
+    body_padding = "14px 16px" if compact else "22px 24px"
+    logo_width = "220" if compact else "128"
+    title_size = "17px" if compact else "20px"
 
     return f"""<!doctype html>
 <html lang="es">
@@ -65,12 +72,12 @@ def build_llangon_email_shell(
                 <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                   <tr>
                     <td style="vertical-align:middle;">
-                      <p style="margin:0 0 4px 0; color:#667085; font-size:12px; font-weight:800; text-transform:uppercase;">{safe_eyebrow}</p>
-                      <h1 style="margin:0; color:#1f2937; font-size:20px; line-height:1.2;">{safe_title}</h1>
+                      {eyebrow_html}
+                      <h1 style="margin:0; color:#1f2937; font-size:{title_size}; line-height:1.2;">{safe_title}</h1>
                       {subtitle_html}
                     </td>
                     <td align="right" style="vertical-align:middle;">
-                      <img src="{LOGO_CID}" alt="{safe_logo_alt}" style="display:block; max-width:{logo_width}; height:auto;">
+                      <img src="{LOGO_CID}" width="{logo_width}" alt="{safe_logo_alt}" style="display:block; width:{logo_width}px; max-width:{logo_width}px; height:auto;">
                     </td>
                   </tr>
                 </table>

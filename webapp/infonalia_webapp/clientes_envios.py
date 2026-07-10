@@ -90,8 +90,95 @@ CLIENT_FIELDS = (
 )
 
 
+CLIENT_COLUMN_DEFINITIONS = {
+    "razon_social": "TEXT NOT NULL DEFAULT ''",
+    "nombre_comercial": "TEXT",
+    "nif_cif": "TEXT",
+    "domicilio_fiscal": "TEXT",
+    "codigo_postal": "TEXT",
+    "municipio": "TEXT",
+    "provincia": "TEXT",
+    "pais": "TEXT",
+    "telefono_principal": "TEXT",
+    "email_principal": "TEXT",
+    "email_alternativo": "TEXT",
+    "persona_contacto_operativa": "TEXT",
+    "observaciones_internas": "TEXT",
+    "representante_nombre": "TEXT",
+    "representante_nif": "TEXT",
+    "representante_cargo": "TEXT",
+    "representante_email": "TEXT",
+    "representante_telefono": "TEXT",
+    "condiciones_particulares": "TEXT",
+    "tipo_cliente": "TEXT",
+    "forma_facturacion": "TEXT",
+    "plantilla_contractual": "TEXT",
+    "created_at": "TEXT NOT NULL DEFAULT ''",
+    "updated_at": "TEXT NOT NULL DEFAULT ''",
+}
+
+CLIENTE_ENVIO_COLUMN_DEFINITIONS = {
+    "cliente_id": "INTEGER NOT NULL DEFAULT 0",
+    "licitacion_id": "INTEGER NOT NULL DEFAULT 0",
+    "actuacion_id": "INTEGER",
+    "tipo_envio": "TEXT NOT NULL DEFAULT 'otro'",
+    "estado": "TEXT NOT NULL DEFAULT 'en_preparacion'",
+    "carpeta_dropbox": "TEXT NOT NULL DEFAULT ''",
+    "destinatario_email": "TEXT",
+    "asunto": "TEXT",
+    "cuerpo": "TEXT",
+    "observaciones_internas": "TEXT",
+    "correo_generado_path": "TEXT",
+    "correo_generado_formato": "TEXT",
+    "correo_generado_warning": "TEXT",
+    "correo_generado_at": "TEXT",
+    "correo_generado_by": "TEXT",
+    "enviado_at": "TEXT",
+    "enviado_by": "TEXT",
+    "incidencia_detalle": "TEXT",
+    "attachments_size_total": "INTEGER NOT NULL DEFAULT 0",
+    "created_by": "TEXT NOT NULL DEFAULT ''",
+    "updated_by": "TEXT NOT NULL DEFAULT ''",
+    "created_at": "TEXT NOT NULL DEFAULT ''",
+    "updated_at": "TEXT NOT NULL DEFAULT ''",
+}
+
+CLIENTE_ENVIO_ADJUNTO_COLUMN_DEFINITIONS = {
+    "envio_id": "INTEGER NOT NULL DEFAULT 0",
+    "relative_path": "TEXT NOT NULL DEFAULT ''",
+    "absolute_path": "TEXT NOT NULL DEFAULT ''",
+    "file_name": "TEXT NOT NULL DEFAULT ''",
+    "size_bytes": "INTEGER NOT NULL DEFAULT 0",
+    "content_type": "TEXT",
+    "created_at": "TEXT NOT NULL DEFAULT ''",
+}
+
+CLIENTE_ENVIO_EVENTO_COLUMN_DEFINITIONS = {
+    "envio_id": "INTEGER NOT NULL DEFAULT 0",
+    "event_type": "TEXT NOT NULL DEFAULT ''",
+    "old_value": "TEXT",
+    "new_value": "TEXT",
+    "user_id": "TEXT",
+    "message": "TEXT",
+    "metadata_json": "TEXT",
+    "created_at": "TEXT NOT NULL DEFAULT ''",
+}
+
+
 def now_iso() -> str:
     return datetime.now().replace(microsecond=0).isoformat()
+
+
+def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str, definitions: dict[str, str]) -> None:
+    columns = _column_names(conn, table)
+    for column, definition in definitions.items():
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            columns.add(column)
 
 
 def ensure_client_shipments_schema(conn: sqlite3.Connection) -> None:
@@ -190,6 +277,10 @@ def ensure_client_shipments_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    _ensure_columns(conn, "clientes", CLIENT_COLUMN_DEFINITIONS)
+    _ensure_columns(conn, "cliente_envios", CLIENTE_ENVIO_COLUMN_DEFINITIONS)
+    _ensure_columns(conn, "cliente_envio_adjuntos", CLIENTE_ENVIO_ADJUNTO_COLUMN_DEFINITIONS)
+    _ensure_columns(conn, "cliente_envio_eventos", CLIENTE_ENVIO_EVENTO_COLUMN_DEFINITIONS)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_clientes_nombre ON clientes(razon_social, nombre_comercial)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_clientes_nif ON clientes(nif_cif)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cliente_envios_cliente ON cliente_envios(cliente_id, created_at DESC)")

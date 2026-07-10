@@ -14,6 +14,7 @@ try:
     from .formatting import format_date_es
     from .infonalia_days import refresh_day_status
     from .licitacion_center import record_licitacion_history
+    from .licitacion_publication import is_anuncio_previo
     from .licitacion_states import (
         ESTADO_DESCARGAR_PARA_VER,
         ESTADO_DESCARTADA,
@@ -29,6 +30,7 @@ except ImportError:
     from formatting import format_date_es
     from infonalia_days import refresh_day_status
     from licitacion_center import record_licitacion_history
+    from licitacion_publication import is_anuncio_previo
     from licitacion_states import (
         ESTADO_DESCARGAR_PARA_VER,
         ESTADO_DESCARTADA,
@@ -47,7 +49,7 @@ ACTION_AI_SUMMARY = "04"
 ACTION_REVIEWED = "99"
 
 ACTION_MAILBOX_TO_DEFAULT = "info3llangon@gmail.com"
-ACTION_MAILBOX_CC_DEFAULT = "info3@llangon.com"
+ACTION_MAILBOX_CC_DEFAULT = ""
 ACTION_NOTIFY_EMAIL_DEFAULT = "info3@llangon.com"
 
 ACTION_DEFINITIONS: dict[str, dict[str, str]] = {
@@ -132,9 +134,9 @@ def split_emails(value: object) -> list[str]:
     if isinstance(value, (list, tuple, set)):
         source = []
         for item in value:
-            source.extend(re.split(r"[;,]", clean_text(item)))
+            source.extend(re.split(r"[;,\n\r]+", clean_text(item)))
     else:
-        source = re.split(r"[;,]", clean_text(value))
+        source = re.split(r"[;,\n\r]+", clean_text(value))
     for item in source:
         email = item.strip().lower()
         if email and email not in result:
@@ -302,7 +304,10 @@ def _format_money(value: object) -> str:
 
 def _date_time_label(row: sqlite3.Row | Mapping[str, object]) -> str:
     date_label = format_date_es(_row_value(row, "fecha_limite"))
-    time_label = parse_time_value(_row_value(row, "hora_limite")) or "Sin hora"
+    time_label = parse_time_value(_row_value(row, "hora_limite"))
+    if not date_label and not time_label:
+        return "No consta"
+    time_label = time_label or "Sin hora"
     return f"{date_label} - {time_label}" if date_label else time_label
 
 
@@ -440,6 +445,7 @@ def build_infonalia_review_email_html(
     rows = sorted(
         licitaciones,
         key=lambda row: (
+            1 if is_anuncio_previo(_row_value(row, "tipo_publicacion")) else 0,
             clean_text(_row_value(row, "fecha_limite")) or "9999-99-99",
             parse_time_value(_row_value(row, "hora_limite")) or "99:99",
             int(_row_value(row, "id", 0) or 0),
@@ -460,8 +466,10 @@ def build_infonalia_review_email_html(
         )
 
     cards: list[str] = []
+    previous_notice_cards: list[str] = []
     for row in rows:
         licitacion_id = int(row["id"])
+        previous_notice = is_anuncio_previo(_row_value(row, "tipo_publicacion"))
         badge_text, badge_bg, badge_color = _days_badge(row, generated_at=generated_at)
         tipo = clean_text(_row_value(row, "tipo"))
         expediente = clean_text(_row_value(row, "expediente")) or f"ID {licitacion_id}"
@@ -483,16 +491,25 @@ def build_infonalia_review_email_html(
                 "padding:4px 7px; border-radius:4px; font-size:12px; font-weight:800; margin-left:4px;'>"
                 f"{html.escape(tipo)}</span>"
             )
+        if previous_notice:
+            badges += (
+                "<span style='display:inline-block; background:#f3f4f6; color:#374151; border:1px solid #9ca3af; "
+                "padding:4px 7px; border-radius:4px; font-size:12px; font-weight:800; margin-left:4px;'>"
+                "Anuncio previo</span>"
+            )
         links = (
             _link_html(_row_value(row, "enlace_perfil"), "Perfil del contratante")
             + _link_html(_row_value(row, "enlace_infonalia"), "Anuncio Infonalia")
         )
         buttons = []
-        for action_code, color, bg in (
+        action_specs = (
+            (ACTION_DISCARD, "#991b1b", "#fee2e2"),
+        ) if previous_notice else (
             (ACTION_DISCARD, "#991b1b", "#fee2e2"),
             (ACTION_DOWNLOAD_REVIEW, "#0f5b8d", "#e8f7ff"),
             (ACTION_PREPARE, "#0e7f15", "#e7f8ea"),
-        ):
+        )
+        for action_code, color, bg in action_specs:
             href = _mailto(
                 mailbox_to,
                 build_licitacion_action_subject(row, action_code),
@@ -501,7 +518,7 @@ def build_infonalia_review_email_html(
             )
             buttons.append(_button_html(href, ACTION_DEFINITIONS[action_code]["name"], color=color, background=bg))
 
-        cards.append(
+        card_html = (
             "<table width='100%' cellpadding='0' cellspacing='0' style='border-collapse:collapse; margin:0 0 18px 0; "
             "background:#ffffff; border:1px solid #d9e2ec; border-left:5px solid #2f80d1;'>"
             "<tr><td style='padding:16px 18px;'>"
@@ -525,6 +542,10 @@ def build_infonalia_review_email_html(
             f"<div style='margin-top:12px;'>{''.join(buttons)}</div>"
             "</td></tr></table>"
         )
+        if previous_notice:
+            previous_notice_cards.append(card_html)
+        else:
+            cards.append(card_html)
 
     review_href = _mailto(
         mailbox_to,
@@ -536,7 +557,18 @@ def build_infonalia_review_email_html(
         f"{_button_html(review_href, 'Revisado', color='#ffffff', background='#19b51f')}"
         "</div>"
     )
-    body_html = intro + "".join(cards) + reviewed_button
+    previous_notice_html = ""
+    if previous_notice_cards:
+        previous_notice_html = (
+            "<div style='margin:24px 0 10px 0; padding-top:16px; border-top:1px solid #d9e2ec;'>"
+            "<p style='margin:0; color:#374151; font-size:13px; font-weight:900; text-transform:uppercase;'>"
+            "Anuncios previos</p>"
+            "<p style='margin:6px 0 14px 0; color:#667085; font-size:13px;'>"
+            "No consta fecha de presentación ni documentación de licitación; solo queda disponible la opción de descartar.</p>"
+            "</div>"
+            + "".join(previous_notice_cards)
+        )
+    body_html = intro + "".join(cards) + previous_notice_html + reviewed_button
     return build_llangon_email_shell(
         eyebrow="",
         title="Asesores Llangón S.L.",
@@ -918,6 +950,25 @@ def _process_individual_action(
             reason=message,
         )
         return {"status": "ignored", "error_code": "ADVANCED_STATE", "message": message}
+    if is_anuncio_previo(_row_value(licitacion, "tipo_publicacion")) and action_code != ACTION_DISCARD:
+        message = "Orden ignorada: los anuncios previos solo admiten descartar desde correo de revisión."
+        _insert_email_action_event(
+            conn,
+            created_at=timestamp,
+            source_message_id=source_message_id,
+            from_email=sender_email,
+            subject=subject,
+            code=code,
+            action_code=action_code,
+            action_name=action["name"],
+            review_id=review_id,
+            licitacion_id=licitacion_id,
+            previous_status=old_state,
+            new_status=old_state,
+            result="ignored",
+            reason=message,
+        )
+        return {"status": "ignored", "error_code": "PREVIOUS_NOTICE_ACTION_NOT_ALLOWED", "message": message}
 
     changed = old_state != new_state
     if old_state != new_state:

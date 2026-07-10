@@ -389,6 +389,47 @@ def test_centro_licitaciones_vivas_and_all_order_and_filters() -> None:
     assert [item["expediente"] for item in by_search] == ["CENTRO-PREPARADA"]
 
 
+def test_licitaciones_center_filters_previous_notices_and_allows_manual_reclassification() -> None:
+    app = load_app_module()
+    with temporary_app_database(app):
+        dia_id = insert_dia(app)
+        normal_id = insert_licitacion(app, dia_id, "CENTRO-LIC-NORMAL")
+        previous_id = insert_licitacion(app, dia_id, "CENTRO-ANUNCIO-PREVIO")
+        with app.db_session() as conn:
+            conn.execute(
+                "UPDATE licitaciones SET tipo_publicacion = ?, fecha_limite = ? WHERE id = ?",
+                ("anuncio_previo", "", previous_id),
+            )
+
+        default_items = list_licitaciones(app)["items"]
+        previous_items = list_licitaciones(app, "?tipo_publicacion=anuncio_previo")["items"]
+        all_items = list_licitaciones(app, "?tipo_publicacion=all")["items"]
+
+        patch = make_handler(
+            app,
+            "PATCH",
+            f"/api/licitaciones/{normal_id}",
+            {"tipo_publicacion": "anuncio_previo"},
+        )
+        dispatch(patch, "PATCH")
+        after_patch_previous = list_licitaciones(app, "?tipo_publicacion=anuncio_previo")["items"]
+        with app.db_session() as conn:
+            patched_row = conn.execute(
+                "SELECT tipo_publicacion FROM licitaciones WHERE id = ?",
+                (normal_id,),
+            ).fetchone()
+
+    assert {item["expediente"] for item in default_items} == {"CENTRO-LIC-NORMAL"}
+    assert {item["expediente"] for item in previous_items} == {"CENTRO-ANUNCIO-PREVIO"}
+    assert {item["expediente"] for item in all_items} == {"CENTRO-LIC-NORMAL", "CENTRO-ANUNCIO-PREVIO"}
+    assert patch.responses[-1][0] == HTTPStatus.OK
+    assert patched_row["tipo_publicacion"] == "anuncio_previo"
+    assert {item["expediente"] for item in after_patch_previous} == {
+        "CENTRO-LIC-NORMAL",
+        "CENTRO-ANUNCIO-PREVIO",
+    }
+
+
 def test_centro_licitaciones_date_hierarchy_filters_by_fecha_presentacion() -> None:
     app = load_app_module()
     rows = [

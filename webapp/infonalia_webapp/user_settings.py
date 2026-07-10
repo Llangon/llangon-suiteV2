@@ -120,7 +120,7 @@ def _validate_email_list(value: object, message: str, *, required: bool = False)
         raise ValueError(message)
     if any(not EMAIL_PATTERN.fullmatch(email) for email in emails):
         raise ValueError(message)
-    return "\n".join(emails)
+    return ", ".join(emails)
 
 
 def _setting_value(

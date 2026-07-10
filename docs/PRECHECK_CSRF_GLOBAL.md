@@ -62,8 +62,7 @@ Rutas excluidas o sin CSRF:
 - `POST /login`, porque no hay sesion autenticada previa y ya existe rate limiting;
 - `GET /logout`, que devuelve `405 Method Not Allowed` y no borra cookie;
 - endpoints GET privados de lectura: `/api/me`, `/api/dias`, `/api/licitaciones`, `/api/notificaciones`, `/api/config`, `/api/news` y `/api/health`;
-- `GET /api/public/noticias`;
-- rutas publicas y Firebase;
+- la web publica y Firebase quedan fuera de la app privada;
 - rutas desconocidas, que deben seguir respondiendo `404 Not Found` y no convertirse en error CSRF.
 
 Respuesta actual ante fallo:
@@ -79,7 +78,7 @@ Una futura fase de CSRF global no deberia ampliar comportamiento a ciegas. El ob
 - solo usuarios autenticados;
 - solo metodos mutantes: `POST`, `PUT`, `PATCH` y `DELETE`;
 - solo rutas privadas existentes;
-- excepciones explicitas para login y rutas publicas;
+- excepciones explicitas solo cuando una ruta no tenga sesion previa, como login;
 - mantener logout protegido;
 - mantener GET sin CSRF;
 - mantener rutas desconocidas como `404 Not Found`.
@@ -91,7 +90,7 @@ El helper `is_csrf_required()` ya modela parte de esa politica, pero todavia no 
 - `POST /login` debe seguir funcionando sin token CSRF.
 - `POST /logout` debe seguir exigiendo token CSRF valido cuando hay sesion autenticada.
 - `GET /logout` debe seguir sin borrar cookie.
-- Las rutas publicas y Firebase no deben exigir token.
+- La app privada no debe servir rutas publicas de Firebase.
 - Los endpoints GET privados no deben exigir token.
 - Rutas desconocidas deben seguir respondiendo `404 Not Found`, no `403 Forbidden`.
 - Las respuestas JSON de exito no deben cambiar.
@@ -104,7 +103,7 @@ El helper `is_csrf_required()` ya modela parte de esa politica, pero todavia no 
 
 - Una validacion global demasiado temprana puede convertir errores 404 en 403.
 - Una excepcion demasiado amplia puede dejar rutas mutantes sin proteger.
-- Una excepcion demasiado estrecha puede romper login, rutas publicas o Firebase.
+- Una excepcion demasiado estrecha puede romper login.
 - Si aparece una nueva llamada mutante en `app.js` sin `csrfHeaders()`, una politica global la romperia.
 - Si una ruta GET empieza a mutar estado, no quedara protegida por CSRF; debe cambiar a metodo mutante.
 - Un XSS podria leer el token en memoria; CSRF no sustituye CSP ni sanitizacion.
@@ -117,7 +116,7 @@ Orden seguro:
 
 1. Mantener un listado de rutas privadas existentes y su metodo.
 2. Crear tests de matriz para todos los endpoints mutantes conocidos.
-3. Crear tests para `POST /login`, `POST /logout`, `GET /logout`, GET privados, rutas publicas y rutas desconocidas.
+3. Crear tests para `POST /login`, `POST /logout`, `GET /logout`, GET privados y rutas desconocidas.
 4. Auditar `app.js` para confirmar que toda llamada mutante usa `csrfHeaders()`.
 5. Sustituir la allowlist solo cuando los tests cubran la semantica de ruta.
 6. Mantener excepciones explicitas y pequenas.
@@ -139,10 +138,9 @@ Orden seguro:
 - `POST /login` debe seguir sin CSRF.
 - `POST /logout` debe mantener CSRF.
 - `GET /logout` debe seguir devolviendo `405 Method Not Allowed`.
-- `GET /api/public/noticias` debe seguir publico.
 - GET privados de lectura deben seguir sin CSRF.
 - `POST /api/unknown` debe seguir siendo `404 Not Found`.
-- Una ruta publica futura no debe quedar protegida por accidente sin decision explicita.
+- Una ruta publica futura no debe incorporarse a la app privada sin decision explicita.
 
 ## Fuera de este precheck
 

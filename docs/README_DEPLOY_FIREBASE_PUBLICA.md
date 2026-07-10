@@ -53,14 +53,18 @@ firebase deploy
 
 - `/`
 - `/servicios/`
-- `/como-trabajamos/`
-- `/nosotros/`
-- `/recursos/`
+- `/metodologia/`
+- `/contratacion-publica/`
+- `/noticias/`
 - `/contacto/`
+- `/aviso-legal/`
+- `/politica-privacidad/`
+- `/politica-cookies/`
 
 ## Notas
 
 - `.firebaserc` es local y no se versiona; solo se conserva el ejemplo.
-- El enlace `Acceso interno` apunta temporalmente a contacto hasta confirmar la URL privada estable.
-- Las rutas antiguas `/metodologia` y `/noticias` redirigen a `/como-trabajamos/` y `/recursos/`.
+- El enlace `Acceso a zona privada` apunta temporalmente a contacto hasta confirmar la URL privada estable.
+- La web publica es una SPA estatica servida por Firebase Hosting; las rutas anteriores se resuelven con rewrites a `index.html`.
+- La seccion de noticias usa contenido estatico del bundle publico y no depende de `/api/public/noticias`.
 - Los datos legales pendientes estan documentados en `docs/DATOS_LEGALES_PENDIENTES.md`.

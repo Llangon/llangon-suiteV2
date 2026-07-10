@@ -407,16 +407,16 @@ def test_pending_tasks_endpoint_includes_cliente_envio_panels_and_email_sections
     assert any("Cliente Generado" in item["title"] for item in panel_map["generated"]["items"])
     assert any("Cliente Incidencia" in item["title"] for item in panel_map["incidents"]["items"])
     section_titles = [section["title"] for section in email_payload["sections"]]
-    assert "HOY" in section_titles
+    assert "Hoy" in section_titles
     assert "Envíos listos para preparar correo" in section_titles
     assert "Correos Outlook generados pendientes de marcar como enviados" in section_titles
     assert "Envíos con incidencia" in section_titles
     assert email_payload["counts"]["client_shipments_ready"] == 1
     assert email_payload["counts"]["client_shipments_generated"] == 1
     assert email_payload["counts"]["client_shipments_incidents"] == 1
-    assert "ENVÍOS LISTOS PARA PREPARAR CORREO" in text_body
-    assert "CORREOS OUTLOOK GENERADOS PENDIENTES DE MARCAR COMO ENVIADOS" in text_body
-    assert "ENVÍOS CON INCIDENCIA" in text_body
+    assert "Envíos listos para preparar correo" in text_body
+    assert "Correos Outlook generados pendientes de marcar como enviados" in text_body
+    assert "Envíos con incidencia" in text_body
     assert "Astur Santina" in html_body
     assert "Cliente Generado" in html_body
     assert "Cliente Incidencia" in html_body

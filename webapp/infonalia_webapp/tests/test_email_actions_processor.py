@@ -14,6 +14,7 @@ from webapp.infonalia_webapp.email_actions import (
 from webapp.infonalia_webapp.email_actions_processor import (
     MailboxConfig,
     check_code_payload,
+    mailbox_config_from_env,
     process_mailbox_once,
     simulate_code_payload,
 )
@@ -94,6 +95,14 @@ def fake_config(allowed: list[str] | None = None) -> MailboxConfig:
         allowed_senders=allowed if allowed is not None else ["nuria@example.test"],
         notify_email="info3@llangon.com",
     )
+
+
+def test_mailbox_config_without_settings_uses_environment_only(monkeypatch) -> None:
+    monkeypatch.setenv("LLANGON_ACTION_ALLOWED_SENDERS", "nuria@example.test")
+
+    config = mailbox_config_from_env()
+
+    assert config.allowed_senders == ["nuria@example.test"]
 
 
 def prepare_action(app, estado: str = "Importada") -> tuple[int, int]:

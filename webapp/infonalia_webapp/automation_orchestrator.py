@@ -70,6 +70,10 @@ STATUS_RUNNING = "running"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_SKIPPED = "skipped"
+TASK_INTERVAL_SETTING_KEYS = {
+    TASK_TYPE_EMAIL_ACTIONS_PROCESSOR: "email_actions_poll_minutes",
+    TASK_TYPE_INFONALIA_MAIL_IMPORT: "infonalia_import_poll_minutes",
+}
 
 
 @dataclass(frozen=True)
@@ -309,11 +313,19 @@ def task_enabled(conn: sqlite3.Connection, definition: AutomationDefinition) -> 
     return env_bool(definition.env_enabled, definition.default_enabled)
 
 
-def task_schedule_value(conn: sqlite3.Connection, definition: AutomationDefinition) -> str:
+def task_schedule_value(
+    conn: sqlite3.Connection,
+    definition: AutomationDefinition,
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> str:
     row = task_override(conn, definition.key)
     if row and clean_text(row["schedule_value"]):
         return clean_text(row["schedule_value"])
     if definition.schedule_type == "interval":
+        setting_key = TASK_INTERVAL_SETTING_KEYS.get(definition.key)
+        if setting_key:
+            return str(effective_int(setting_key, definition.interval_minutes or 1, db_path=db_path, minimum=1))
         return str(env_minutes(definition.env_interval, definition.interval_minutes or 1))
     if definition.schedule_type == "daily_time":
         return parse_hhmm(os.environ.get(definition.env_time or ""), definition.daily_time or "00:00")
@@ -365,12 +377,18 @@ def previous_daily_slot(target: datetime, hhmm: str) -> datetime:
     return slot
 
 
-def compute_next_run(conn: sqlite3.Connection, definition: AutomationDefinition, *, current: datetime | None = None) -> str:
+def compute_next_run(
+    conn: sqlite3.Connection,
+    definition: AutomationDefinition,
+    *,
+    current: datetime | None = None,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> str:
     now = now_local(current)
     if not task_enabled(conn, definition):
         return ""
     if definition.schedule_type == "interval":
-        minutes = int(task_schedule_value(conn, definition) or definition.interval_minutes or 1)
+        minutes = int(task_schedule_value(conn, definition, db_path=db_path) or definition.interval_minutes or 1)
         row = last_run(conn, definition.key, automatic_only=True)
         started = parse_iso(row["started_at"]) if row else None
         candidate = (started + timedelta(minutes=minutes)) if started else now
@@ -378,25 +396,31 @@ def compute_next_run(conn: sqlite3.Connection, definition: AutomationDefinition,
     if definition.schedule_type == "daily_time":
         return next_daily_time(
             now,
-            task_schedule_value(conn, definition) or definition.daily_time or "00:00",
+            task_schedule_value(conn, definition, db_path=db_path) or definition.daily_time or "00:00",
             weekdays_only=definition.weekdays_only,
         ).replace(microsecond=0).isoformat()
     return ""
 
 
-def due_for_tick(conn: sqlite3.Connection, definition: AutomationDefinition, *, current: datetime | None = None) -> bool:
+def due_for_tick(
+    conn: sqlite3.Connection,
+    definition: AutomationDefinition,
+    *,
+    current: datetime | None = None,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> bool:
     now = now_local(current)
     if not task_enabled(conn, definition) or definition.schedule_type in {"manual", "event"}:
         return False
     if definition.schedule_type == "interval":
-        minutes = int(task_schedule_value(conn, definition) or definition.interval_minutes or 1)
+        minutes = int(task_schedule_value(conn, definition, db_path=db_path) or definition.interval_minutes or 1)
         row = last_run(conn, definition.key, automatic_only=True)
         if not row:
             return True
         started = parse_iso(row["started_at"])
         return not started or now - started >= timedelta(minutes=minutes)
     if definition.schedule_type == "daily_time":
-        hhmm = task_schedule_value(conn, definition) or definition.daily_time or "00:00"
+        hhmm = task_schedule_value(conn, definition, db_path=db_path) or definition.daily_time or "00:00"
         if definition.weekdays_only and now.date().weekday() >= 5:
             return False
         slot = previous_daily_slot(now, hhmm)
@@ -731,7 +755,7 @@ def scheduler_tick(
         conn.close()
         return {"ok": True, "status": STATUS_SKIPPED, "message": "skipped: already running", "lock": existing}
     due = sorted(
-        [definition for definition in AUTOMATIONS if due_for_tick(conn, definition, current=current)],
+        [definition for definition in AUTOMATIONS if due_for_tick(conn, definition, current=current, db_path=db_path)],
         key=lambda item: item.priority,
     )
     conn.commit()
@@ -768,12 +792,17 @@ def set_task_enabled(
         (key, 1 if enabled else 0, now_iso(), clean_text(updated_by)),
     )
     conn.commit()
-    payload = task_payload(conn, automation_by_key(key))
+    payload = task_payload(conn, automation_by_key(key), db_path=db_path)
     conn.close()
     return payload
 
 
-def task_payload(conn: sqlite3.Connection, definition: AutomationDefinition | None) -> dict[str, object]:
+def task_payload(
+    conn: sqlite3.Connection,
+    definition: AutomationDefinition | None,
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, object]:
     if not definition:
         return {}
     row = last_run(conn, definition.key)
@@ -782,7 +811,7 @@ def task_payload(conn: sqlite3.Connection, definition: AutomationDefinition | No
         (definition.key, STATUS_RUNNING),
     ).fetchone()
     enabled = task_enabled(conn, definition)
-    schedule_value = task_schedule_value(conn, definition)
+    schedule_value = task_schedule_value(conn, definition, db_path=db_path)
     return {
         "key": definition.key,
         "name": definition.name,
@@ -791,7 +820,7 @@ def task_payload(conn: sqlite3.Connection, definition: AutomationDefinition | No
         "enabled": enabled,
         "schedule_value": schedule_value,
         "schedule_label": schedule_label(definition, schedule_value),
-        "next_run": compute_next_run(conn, definition) if enabled else "",
+        "next_run": compute_next_run(conn, definition, db_path=db_path) if enabled else "",
         "last_run": dict(row) if row else None,
         "status": "running" if running else ("disabled" if not enabled else "idle"),
         "manual_allowed": definition.manual_allowed,
@@ -816,7 +845,7 @@ def automation_tasks_payload(*, db_path: str | Path = DEFAULT_DB_PATH) -> list[d
     conn = connect_db(db_path)
     conn.row_factory = sqlite3.Row
     ensure_automation_schema(conn)
-    items = [task_payload(conn, definition) for definition in sorted(AUTOMATIONS, key=lambda item: item.priority)]
+    items = [task_payload(conn, definition, db_path=db_path) for definition in sorted(AUTOMATIONS, key=lambda item: item.priority)]
     conn.close()
     return items
 
@@ -868,7 +897,7 @@ def automation_status_payload(*, db_path: str | Path = DEFAULT_DB_PATH) -> dict[
     conn.row_factory = sqlite3.Row
     ensure_automation_schema(conn)
     locks = active_locks(conn)
-    tasks = [task_payload(conn, definition) for definition in sorted(AUTOMATIONS, key=lambda item: item.priority)]
+    tasks = [task_payload(conn, definition, db_path=db_path) for definition in sorted(AUTOMATIONS, key=lambda item: item.priority)]
     heartbeat = None
     try:
         heartbeat = conn.execute("SELECT * FROM monitor_scheduler_heartbeat WHERE id = 1").fetchone()
@@ -885,7 +914,10 @@ def automation_status_payload(*, db_path: str | Path = DEFAULT_DB_PATH) -> dict[
         "dropbox_base": str(preferred_dropbox_base_path() or ""),
         "smtp": {"configured": bool(os.environ.get("INFONALIA_SMTP_HOST") and os.environ.get("INFONALIA_SMTP_USER"))},
         "telegram": {"enabled": env_bool("LLANGON_TELEGRAM_ENABLED", False), "group_configured": bool(os.environ.get("LLANGON_TELEGRAM_GROUP_CHAT_ID"))},
-        "imap": {"infonalia_enabled": effective_bool("infonalia_import_enabled"), "actions_enabled": effective_bool("email_actions_enabled")},
+        "imap": {
+            "infonalia_enabled": effective_bool("infonalia_import_enabled", db_path=db_path),
+            "actions_enabled": effective_bool("email_actions_enabled", db_path=db_path),
+        },
     }
     conn.close()
     return payload

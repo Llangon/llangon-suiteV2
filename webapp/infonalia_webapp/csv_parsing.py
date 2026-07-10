@@ -6,10 +6,12 @@ import re
 import unicodedata
 
 try:
+    from .licitacion_publication import normalize_tipo_publicacion
     from .licitacion_states import ESTADO_IMPORTADA, normalize_licitacion_estado
     from .normalization import clean_text, parse_date_value, parse_money, parse_time_value
     from .url_helpers import detectar_plataforma, normalize_url
 except ImportError:
+    from licitacion_publication import normalize_tipo_publicacion
     from licitacion_states import ESTADO_IMPORTADA, normalize_licitacion_estado
     from normalization import clean_text, parse_date_value, parse_money, parse_time_value
     from url_helpers import detectar_plataforma, normalize_url
@@ -71,6 +73,14 @@ CSV_ALIASES = {
     "estado": [
         "Estado",
         "Nuria",
+    ],
+    "tipo_publicacion": [
+        "Tipo publicacion",
+        "Tipo publicación",
+        "Tipo_de_publicacion",
+        "Tipo de publicación",
+        "Publicacion",
+        "Publicación",
     ],
     "comentario": ["Comentario"],
     "ruta_carpeta": [
@@ -174,6 +184,7 @@ def build_payload_from_csv_row(row: dict[str, str], mapping: dict[str, str]) -> 
         "presupuesto": parse_money(row_value(row, mapping, "presupuesto")),
         "fecha_limite": parse_date_value(row_value(row, mapping, "fecha_limite")),
         "hora_limite": parse_time_value(row_value(row, mapping, "hora_limite")),
+        "tipo_publicacion": normalize_tipo_publicacion(row_value(row, mapping, "tipo_publicacion")),
         "plataforma": plataforma,
         "enlace_perfil": enlace_perfil,
         "enlace_infonalia": enlace_infonalia,

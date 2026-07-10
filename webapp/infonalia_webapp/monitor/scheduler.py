@@ -142,12 +142,12 @@ def env_minutes(name: str, default: int) -> int:
         return default
 
 
-def operational_minutes(key: str, default: int) -> int:
-    return effective_int(key, default, minimum=1)
+def operational_minutes(key: str, default: int, *, db_path: str | Path | None = None) -> int:
+    return effective_int(key, default, db_path=db_path, minimum=1)
 
 
-def operational_enabled(key: str) -> bool:
-    return effective_bool(key)
+def operational_enabled(key: str, *, db_path: str | Path | None = None) -> bool:
+    return effective_bool(key, db_path=db_path)
 
 
 def file_inventory_config_status() -> dict[str, object]:
@@ -240,6 +240,30 @@ def _record_interval_run(
     return int(cur.lastrowid)
 
 
+def _interval_error_message(result: dict[str, object]) -> str:
+    for key in ("error_message", "message", "error"):
+        value = str(result.get(key) or "").strip()
+        if value:
+            return value
+    reasons = result.get("errors_by_reason")
+    if isinstance(reasons, dict):
+        parts: list[str] = []
+        for reason, count in reasons.items():
+            label = str(reason or "").strip()
+            if not label:
+                continue
+            try:
+                amount = int(count or 0)
+            except (TypeError, ValueError):
+                amount = 0
+            parts.append(f"{label}: {amount}" if amount > 1 else label)
+        if parts:
+            return "Errores: " + "; ".join(parts)
+    if result.get("errors"):
+        return "La tarea terminó con errores."
+    return ""
+
+
 def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: bool) -> list[dict[str, object]]:
     reports: list[dict[str, object]] = []
     db_file = Path(db_path)
@@ -255,19 +279,23 @@ def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: 
             (
                 TASK_TYPE_INFONALIA_MAIL_IMPORT,
                 "infonalia_import_enabled",
-                operational_minutes("infonalia_import_poll_minutes", 30),
+                operational_minutes("infonalia_import_poll_minutes", 30, db_path=db_file),
             ),
             (
                 TASK_TYPE_EMAIL_ACTIONS_PROCESSOR,
                 "email_actions_enabled",
-                operational_minutes("email_actions_poll_minutes", 10),
+                operational_minutes("email_actions_poll_minutes", 10, db_path=db_file),
             ),
         ]
         due_jobs = [
             (task_type, enabled_var, interval)
             for task_type, enabled_var, interval in jobs
             if (
-                (env_bool(enabled_var, False) if enabled_var.startswith("LLANGON_") else operational_enabled(enabled_var))
+                (
+                    env_bool(enabled_var, False)
+                    if enabled_var.startswith("LLANGON_")
+                    else operational_enabled(enabled_var, db_path=db_file)
+                )
                 and _interval_task_due(conn, task_type=task_type, current=current, interval_minutes=interval)
             )
         ]
@@ -286,6 +314,8 @@ def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: 
         from email_actions_processor import process_mailbox_once as process_action_mailbox_once
         from infonalia_mail_importer import process_mailbox_once as process_infonalia_mailbox_once
 
+    settings = app.get_settings()
+
     for task_type, _enabled_var, _interval in due_jobs:
         started_at = scheduler_now_iso(current)
         error_message = ""
@@ -293,7 +323,8 @@ def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: 
             if task_type == TASK_TYPE_INFONALIA_MAIL_IMPORT:
                 result = process_infonalia_mailbox_once(
                     dry_run=dry_run,
-                    notification_sender=lambda to, subject, body, html: app.send_monitor_email(to, subject, body, html),
+                    settings=settings,
+                    notification_sender=lambda to, subject, body, html: app.send_monitor_email(to, subject, body, html, settings=settings),
                 )
                 processed = int(result.get("imported", 0) or 0) + int(result.get("duplicates", 0) or 0)
                 emails_sent = int(result.get("notified", 0) or 0)
@@ -303,7 +334,8 @@ def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: 
             elif task_type == TASK_TYPE_EMAIL_ACTIONS_PROCESSOR:
                 result = process_action_mailbox_once(
                     db_session_factory=app.db_session,
-                    notification_sender=lambda to, subject, body, html: app.send_monitor_email(to, subject, body, html),
+                    notification_sender=lambda to, subject, body, html: app.send_monitor_email(to, subject, body, html, settings=settings),
+                    settings=settings,
                     dry_run=dry_run,
                 )
                 processed = int(result.get("processed", 0) or 0)
@@ -344,7 +376,7 @@ def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: 
                 inventory_files_count=inventory_count,
                 route_updates_count=route_updates,
                 conflicts_count=conflicts,
-                error_message=error_message or str(result.get("message") or result.get("error_message") or ""),
+                error_message=error_message or _interval_error_message(result),
                 details=result,
                 schedule_key=localize_scheduler_datetime(current).date().isoformat(),
             )
@@ -423,6 +455,7 @@ def next_schedule_preview(current: datetime | None = None) -> dict[str, object]:
 
 def monitor_scheduler_status(db_path: str | Path | None = None) -> dict[str, object]:
     enabled = scheduler_enabled_from_env()
+    db_file = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
     schedules = monitor_automation_schedules()
     status = {
         "enabled": enabled,
@@ -439,13 +472,13 @@ def monitor_scheduler_status(db_path: str | Path | None = None) -> dict[str, obj
         "monitor_licitaciones_schedule_enabled": "monitor_licitaciones" in schedules,
         "monitor_licitaciones_real_enabled": env_bool("MONITOR_LICITACIONES_REAL_ENABLED", False),
         "infonalia_mail_importer": {
-            "enabled": operational_enabled("infonalia_import_enabled"),
-            "interval_minutes": operational_minutes("infonalia_import_poll_minutes", 30),
+            "enabled": operational_enabled("infonalia_import_enabled", db_path=db_file),
+            "interval_minutes": operational_minutes("infonalia_import_poll_minutes", 30, db_path=db_file),
             "last_run": None,
         },
         "email_actions_processor": {
-            "enabled": operational_enabled("email_actions_enabled"),
-            "interval_minutes": operational_minutes("email_actions_poll_minutes", 10),
+            "enabled": operational_enabled("email_actions_enabled", db_path=db_file),
+            "interval_minutes": operational_minutes("email_actions_poll_minutes", 10, db_path=db_file),
             "last_run": None,
         },
         "file_inventory": {
@@ -459,7 +492,6 @@ def monitor_scheduler_status(db_path: str | Path | None = None) -> dict[str, obj
         },
         "last_automatic_run": None,
     }
-    db_file = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
     try:
         conn = connect_db(db_file)
         ensure_monitor_schema(conn)
@@ -542,7 +574,7 @@ def split_email_recipients(value: object) -> list[str]:
     import re
 
     recipients: list[str] = []
-    for part in re.split(r"[;,]", str(value or "")):
+    for part in re.split(r"[;,\n\r]+", str(value or "")):
         email = part.strip()
         if email and email not in recipients:
             recipients.append(email)

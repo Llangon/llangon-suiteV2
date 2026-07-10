@@ -50,7 +50,6 @@ Usa este orden cuando trabajes en `Llangon-SuiteV2`:
 - `.\.venv\Scripts\python.exe -m pytest -q`
 - `node --check webapp/infonalia_webapp/static/app.js`
 - `node --check webapp/infonalia_webapp/static/login.js`
-- `node --check webapp/infonalia_webapp/static/public.js`
 - `node --check firebase/public_firebase/static/public.js`
 - `powershell -ExecutionPolicy Bypass -File .\scripts\run_tests.ps1`
 

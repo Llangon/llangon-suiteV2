@@ -185,6 +185,14 @@ try:
         NURIA_VISIBLE_STATES,
         normalize_licitacion_estado,
     )
+    from .licitacion_publication import (
+        TIPO_PUBLICACION_ANUNCIO_PREVIO,
+        TIPO_PUBLICACION_LABELS,
+        TIPO_PUBLICACION_LICITACION,
+        TIPOS_PUBLICACION,
+        is_anuncio_previo,
+        normalize_tipo_publicacion,
+    )
     from .csv_parsing import (
         CSV_ALIASES,
         build_payload_from_csv_row,
@@ -214,6 +222,14 @@ except ImportError:
         NURIA_REVIEW_STATES,
         NURIA_VISIBLE_STATES,
         normalize_licitacion_estado,
+    )
+    from licitacion_publication import (
+        TIPO_PUBLICACION_ANUNCIO_PREVIO,
+        TIPO_PUBLICACION_LABELS,
+        TIPO_PUBLICACION_LICITACION,
+        TIPOS_PUBLICACION,
+        is_anuncio_previo,
+        normalize_tipo_publicacion,
     )
     from csv_parsing import (
         CSV_ALIASES,
@@ -346,6 +362,7 @@ try:
         CLIENTE_ENVIO_TIPOS,
         create_cliente,
         create_cliente_envio,
+        ensure_client_shipments_schema,
         generate_cliente_envio_draft,
         get_cliente,
         get_cliente_envio,
@@ -364,6 +381,7 @@ except ImportError:
         CLIENTE_ENVIO_TIPOS,
         create_cliente,
         create_cliente_envio,
+        ensure_client_shipments_schema,
         generate_cliente_envio_draft,
         get_cliente,
         get_cliente_envio,
@@ -746,19 +764,6 @@ DB_PATH = DATA_ROOT / "infonalia.db"
 SECRET_PATH = DATA_ROOT / "secret.key"
 LAUNCHER_PATH = TOOLS_ROOT / "Descargar_Licitacion.py"
 ENV_PATH = APP_ROOT / ".env"
-PUBLIC_ROUTES = {
-    "/",
-    "/servicios",
-    "/metodologia",
-    "/contratacion-publica",
-    "/noticias",
-    "/zona-privada",
-    "/contacto",
-    "/aviso-legal",
-    "/politica-privacidad",
-    "/politica-cookies",
-}
-
 load_env_file(ENV_PATH)
 
 
@@ -973,6 +978,7 @@ def init_db() -> None:
                 presupuesto REAL,
                 fecha_limite TEXT,
                 hora_limite TEXT,
+                tipo_publicacion TEXT NOT NULL DEFAULT 'licitacion',
                 plataforma TEXT,
                 enlace_perfil TEXT,
                 enlace_infonalia TEXT,
@@ -1049,6 +1055,7 @@ def init_db() -> None:
             """
         )
         ensure_column(conn, "licitaciones", "infonalia_dia_id", "INTEGER")
+        ensure_column(conn, "licitaciones", "tipo_publicacion", "TEXT NOT NULL DEFAULT 'licitacion'")
         ensure_column(conn, "infonalia_dias", "reviewed_at", "TEXT")
         ensure_column(conn, "infonalia_dias", "nuria_dirty_at", "TEXT")
         ensure_column(conn, "notificaciones", "email_sent_at", "TEXT")
@@ -1065,12 +1072,14 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_licitaciones_dia ON licitaciones(infonalia_dia_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_licitaciones_estado ON licitaciones(estado)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_licitaciones_fecha_limite ON licitaciones(fecha_limite)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_licitaciones_tipo_publicacion ON licitaciones(tipo_publicacion)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_notificaciones_destino ON notificaciones(usuario_destino)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_notificaciones_fecha ON notificaciones(fecha_hora)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_usuarios_role ON usuarios(role)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_noticias_status ON noticias(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_noticias_published ON noticias(published_at)")
         run_migrations(conn)
+        ensure_client_shipments_schema(conn)
         seed_users_and_settings(conn)
 
 
@@ -1102,6 +1111,7 @@ def get_actuacion_row(conn: sqlite3.Connection, actuacion_id: int) -> sqlite3.Ro
 
 
 def licitacion_selection_dict(row: sqlite3.Row) -> dict[str, object]:
+    row_keys = row.keys()
     return {
         "id": row["id"],
         "expediente": row["expediente"] or "",
@@ -1109,9 +1119,11 @@ def licitacion_selection_dict(row: sqlite3.Row) -> dict[str, object]:
         "objeto": row["objeto"] or "",
         "fecha_limite": row["fecha_limite"] or "",
         "hora_limite": row["hora_limite"] or "",
+        "ruta_carpeta": row["ruta_carpeta"] if "ruta_carpeta" in row_keys else "",
         "estado": row["estado"] or "",
         "provincia": row["provincia"] or "",
         "plataforma": row["plataforma"] or "",
+        "tipo_publicacion": normalize_tipo_publicacion(row["tipo_publicacion"] if "tipo_publicacion" in row_keys else ""),
     }
 
 
@@ -1119,6 +1131,7 @@ def actuacion_licitaciones(conn: sqlite3.Connection, actuacion_id: int) -> list[
     rows = conn.execute(
         """
         SELECT l.id, l.expediente, l.organismo, l.objeto, l.fecha_limite, l.hora_limite,
+               l.ruta_carpeta,
                l.estado, l.provincia, l.plataforma
         FROM actuacion_licitaciones al
         JOIN licitaciones l ON l.id = al.licitacion_id
@@ -1896,6 +1909,7 @@ def insert_payload(conn: sqlite3.Connection, payload: dict[str, object], dia_id:
             "presupuesto",
             "fecha_limite",
             "hora_limite",
+            "tipo_publicacion",
             "plataforma",
             "comentario",
         ):
@@ -1928,6 +1942,10 @@ def insert_payload(conn: sqlite3.Connection, payload: dict[str, object], dia_id:
     timestamp = now_iso()
     payload = dict(payload)
     payload["estado"] = normalize_licitacion_estado(payload.get("estado"), default=ESTADO_IMPORTADA)
+    payload["tipo_publicacion"] = normalize_tipo_publicacion(
+        payload.get("tipo_publicacion"),
+        default=TIPO_PUBLICACION_LICITACION,
+    )
     if "ruta_carpeta" in payload:
         payload["ruta_carpeta"] = folder_path_for_storage(payload.get("ruta_carpeta"))
     payload["infonalia_dia_id"] = dia_id
@@ -2405,6 +2423,17 @@ def request_licitacion_download(
     request_message_id: str = "",
     requested_by: str = "",
 ) -> dict[str, object]:
+    try:
+        row = conn.execute("SELECT tipo_publicacion FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+        if row and is_anuncio_previo(row["tipo_publicacion"] if "tipo_publicacion" in row.keys() else ""):
+            return {
+                "ok": False,
+                "status": "skipped",
+                "created": False,
+                "message": "Los anuncios previos no tienen documentación de licitación para descargar.",
+            }
+    except sqlite3.OperationalError:
+        pass
     return create_download_job_request(
         conn,
         licitacion_id,
@@ -3075,7 +3104,7 @@ def monitor_test_recipient(user: dict | None = None, settings: dict[str, str] | 
 
 def split_email_recipients(value: object) -> list[str]:
     recipients: list[str] = []
-    for part in re.split(r"[;,]", clean_text(value)):
+    for part in re.split(r"[;,\n\r]+", clean_text(value)):
         email = clean_text(part)
         if email and email not in recipients:
             recipients.append(email)
@@ -3442,6 +3471,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
+        if path == "/":
+            self.redirect("/app" if self.current_user() else "/login")
+            return
         if path == "/login":
             self.send_login_page()
             return
@@ -3451,15 +3483,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if path.startswith("/static/"):
             self.send_file(STATIC_ROOT / unquote(path.removeprefix("/static/")), is_private=False)
             return
-        if path == "/api/public/noticias":
-            self.api_public_news()
-            return
         if path == "/api/health":
             self.send_json({"status": "ok"})
-            return
-
-        if path in PUBLIC_ROUTES or path.startswith("/noticias/"):
-            self.send_public_page()
             return
 
         if not self.current_user():
@@ -3650,6 +3675,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_test_smtp()
         elif path == "/api/clientes":
             self.api_create_cliente()
+        elif path == "/api/cliente-envios":
+            self.api_create_cliente_envio()
         elif path == "/api/cliente-envios/folder-files":
             self.api_cliente_envio_folder_files()
         elif path == "/api/admin/telegram/test-group":
@@ -4570,19 +4597,6 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         self.send_json({"error": "No tienes permiso para gestionar noticias."}, HTTPStatus.FORBIDDEN)
         return False
 
-    def api_public_news(self) -> None:
-        with db_session() as conn:
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM noticias
-                WHERE status = 'published'
-                ORDER BY is_featured DESC, COALESCE(published_at, created_at) DESC, id DESC
-                LIMIT 30
-                """
-            ).fetchall()
-        self.send_json({"items": [news_to_dict(row) for row in rows]})
-
     def api_list_news(self) -> None:
         if not self.require_news_manager():
             return
@@ -5122,6 +5136,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         self.send_json({"item": item})
 
     def api_cliente_envio_folder_files(self) -> None:
+        if not self.require_admin():
+            return
         try:
             data = self.read_json()
         except (ValueError, json.JSONDecodeError) as exc:
@@ -5382,6 +5398,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         user = self.current_user() or {}
         params = parse_qs(query)
         estado = clean_text(params.get("estado", [""])[0])
+        tipo_publicacion = normalize_tipo_publicacion(params.get("tipo_publicacion", [""])[0], default="")
         search = clean_text(params.get("q", [""])[0])
         dia_id = clean_text(params.get("dia_id", [""])[0])
         ejercicio_text = clean_text(params.get("ejercicio", [""])[0])
@@ -5398,6 +5415,11 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         seguimiento_filter = clean_text(params.get("seguimiento", [""])[0]).lower()
         documentacion_filter = clean_text(params.get("documentacion", [""])[0]).lower()
         estado_interno_filter = clean_text(params.get("estado_interno", [""])[0])
+        tipo_publicacion_filter = normalize_tipo_publicacion(
+            params.get("tipo_publicacion", [""])[0],
+            default="",
+        )
+        tipo_publicacion_raw = clean_text(params.get("tipo_publicacion", [""])[0]).lower()
         direccion_fecha = "DESC" if orden_fecha == "desc" else "ASC"
         selected_year = int(ejercicio_text) if ejercicio_text.isdigit() and len(ejercicio_text) == 4 else None
         selected_month = int(mes_text) if mes_text.isdigit() and 1 <= int(mes_text) <= 12 else None
@@ -5449,8 +5471,17 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if dia_id.isdigit():
             where.append("infonalia_dia_id = ?")
             values.append(int(dia_id))
-        elif vigentes or vivas:
-            current = datetime.now()
+        elif tipo_publicacion_raw in {"all", "todas", "todos"}:
+            pass
+        elif tipo_publicacion_filter:
+            where.append("COALESCE(tipo_publicacion, ?) = ?")
+            values.extend([TIPO_PUBLICACION_LICITACION, tipo_publicacion_filter])
+        else:
+            where.append("COALESCE(tipo_publicacion, ?) = ?")
+            values.extend([TIPO_PUBLICACION_LICITACION, TIPO_PUBLICACION_LICITACION])
+
+        current = datetime.now()
+        if not dia_id.isdigit() and (vigentes or vivas):
             where.append(
                 """
                 fecha_limite GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
@@ -5625,20 +5656,29 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     day_reviewed_at = day_row["reviewed_at"] if "reviewed_at" in day_row.keys() else ""
                 day_counts_rows = conn.execute(
                     """
-                    SELECT estado, COUNT(*) AS total
+                    SELECT estado, COALESCE(tipo_publicacion, 'licitacion') AS tipo_publicacion, COUNT(*) AS total
                     FROM licitaciones
                     WHERE infonalia_dia_id = ?
-                    GROUP BY estado
+                    GROUP BY estado, tipo_publicacion
                     """,
                     (int(dia_id),),
                 ).fetchall()
                 day_counts: dict[str, int] = {}
+                day_counts_normales: dict[str, int] = {}
+                day_anuncios_previos = 0
                 for row in day_counts_rows:
                     normalized_state = normalize_licitacion_estado(row["estado"])
-                    day_counts[normalized_state] = day_counts.get(normalized_state, 0) + int(row["total"] or 0)
-                day_pending_review = day_counts.get(ESTADO_ENVIADA_NURIA, 0)
-                day_pending_admin = day_counts.get(ESTADO_IMPORTADA, 0)
+                    total_row = int(row["total"] or 0)
+                    day_counts[normalized_state] = day_counts.get(normalized_state, 0) + total_row
+                    if is_anuncio_previo(row["tipo_publicacion"]):
+                        if normalized_state != ESTADO_DESCARTADA:
+                            day_anuncios_previos += total_row
+                    else:
+                        day_counts_normales[normalized_state] = day_counts_normales.get(normalized_state, 0) + total_row
+                day_pending_review = day_counts_normales.get(ESTADO_ENVIADA_NURIA, 0)
+                day_pending_admin = day_counts_normales.get(ESTADO_IMPORTADA, 0)
                 day_nuria_total = sum(day_counts.get(state, 0) for state in NURIA_VISIBLE_STATES)
+                day_nuria_total += day_anuncios_previos
         if calendario:
             estados = calendario_estados
         elif vivas:
@@ -5772,6 +5812,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         estado = clean_text(params.get("estado", [""])[0])
         provincia = clean_text(params.get("provincia", [""])[0])
         plataforma = clean_text(params.get("plataforma", [""])[0])
+        tipo_publicacion = normalize_tipo_publicacion(params.get("tipo_publicacion", [""])[0], default="")
         try:
             limit = int(params.get("limit", ["50"])[0])
         except ValueError:
@@ -5794,6 +5835,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if estado:
             where.append("estado = ?")
             values.append(estado)
+        if tipo_publicacion:
+            where.append("COALESCE(tipo_publicacion, ?) = ?")
+            values.extend([TIPO_PUBLICACION_LICITACION, tipo_publicacion])
         if provincia:
             where.append("provincia LIKE ?")
             values.append(f"%{provincia}%")
@@ -5803,7 +5847,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         sql = """
             SELECT id, expediente, organismo, objeto, fecha_limite, hora_limite,
-                   estado, provincia, plataforma
+                   estado, provincia, plataforma, ruta_carpeta, tipo_publicacion
             FROM licitaciones
         """
         if where:
@@ -6241,6 +6285,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             "presupuesto": parse_money(data.get("presupuesto")),
             "fecha_limite": clean_text(data.get("fecha_limite")),
             "hora_limite": clean_text(data.get("hora_limite")),
+            "tipo_publicacion": normalize_tipo_publicacion(data.get("tipo_publicacion")),
             "plataforma": plataforma,
             "enlace_perfil": enlace_perfil,
             "enlace_infonalia": enlace_infonalia,
@@ -6444,48 +6489,66 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
             counts_rows = conn.execute(
                 """
-                SELECT estado, COUNT(*) AS total
+                SELECT estado, COALESCE(tipo_publicacion, 'licitacion') AS tipo_publicacion, COUNT(*) AS total
                 FROM licitaciones
                 WHERE infonalia_dia_id = ?
-                GROUP BY estado
+                GROUP BY estado, tipo_publicacion
                 """,
                 (dia_id,),
             ).fetchall()
             counts: dict[str, int] = {}
+            normal_counts: dict[str, int] = {}
+            anuncios_previos_count = 0
             for row in counts_rows:
                 normalized_state = normalize_licitacion_estado(row["estado"])
-                counts[normalized_state] = counts.get(normalized_state, 0) + int(row["total"] or 0)
-            pendientes = counts.get(ESTADO_IMPORTADA, 0)
-            pendientes_nuria = counts.get(ESTADO_ENVIADA_NURIA, 0)
+                total_row = int(row["total"] or 0)
+                counts[normalized_state] = counts.get(normalized_state, 0) + total_row
+                if is_anuncio_previo(row["tipo_publicacion"]):
+                    if normalized_state != ESTADO_DESCARTADA:
+                        anuncios_previos_count += total_row
+                else:
+                    normal_counts[normalized_state] = normal_counts.get(normalized_state, 0) + total_row
+            pendientes = normal_counts.get(ESTADO_IMPORTADA, 0)
+            pendientes_nuria = normal_counts.get(ESTADO_ENVIADA_NURIA, 0)
             decisiones_nuria = (
-                counts.get(ESTADO_DESCARTADA, 0)
-                + counts.get(ESTADO_DESCARGAR_PARA_VER, 0)
-                + counts.get(ESTADO_PREPARAR_FICHA, 0)
+                normal_counts.get(ESTADO_DESCARTADA, 0)
+                + normal_counts.get(ESTADO_DESCARGAR_PARA_VER, 0)
+                + normal_counts.get(ESTADO_PREPARAR_FICHA, 0)
             )
-            nuria_total = pendientes_nuria + decisiones_nuria
+            nuria_total = pendientes_nuria + decisiones_nuria + anuncios_previos_count
             review_rows = conn.execute(
                 """
                 SELECT *
                 FROM licitaciones
                 WHERE infonalia_dia_id = ?
-                  AND estado IN (?, ?, ?)
-                ORDER BY fecha_limite ASC, hora_limite ASC, id ASC
+                  AND (
+                    (COALESCE(tipo_publicacion, 'licitacion') = 'licitacion' AND estado IN (?, ?, ?))
+                    OR (COALESCE(tipo_publicacion, 'licitacion') = 'anuncio_previo' AND estado <> ?)
+                  )
+                ORDER BY CASE WHEN COALESCE(tipo_publicacion, 'licitacion') = 'anuncio_previo' THEN 1 ELSE 0 END ASC,
+                         fecha_limite ASC, hora_limite ASC, id ASC
                 """,
                 (
                     dia_id,
                     ESTADO_ENVIADA_NURIA,
                     ESTADO_DESCARGAR_PARA_VER,
                     ESTADO_PREPARAR_FICHA,
+                    ESTADO_DESCARTADA,
                 ),
             ).fetchall()
             pending_rows = conn.execute(
                 """
-                SELECT expediente, objeto, fecha_limite, hora_limite
+                SELECT expediente, objeto, fecha_limite, hora_limite, tipo_publicacion
                 FROM licitaciones
-                WHERE infonalia_dia_id = ? AND estado = ?
-                ORDER BY fecha_limite ASC, hora_limite ASC, id ASC
+                WHERE infonalia_dia_id = ?
+                  AND (
+                    (COALESCE(tipo_publicacion, 'licitacion') = 'licitacion' AND estado = ?)
+                    OR (COALESCE(tipo_publicacion, 'licitacion') = 'anuncio_previo' AND estado <> ?)
+                  )
+                ORDER BY CASE WHEN COALESCE(tipo_publicacion, 'licitacion') = 'anuncio_previo' THEN 1 ELSE 0 END ASC,
+                         fecha_limite ASC, hora_limite ASC, id ASC
                 """,
-                (dia_id, ESTADO_ENVIADA_NURIA),
+                (dia_id, ESTADO_ENVIADA_NURIA, ESTADO_DESCARTADA),
             ).fetchall()
             already_sent = bool(clean_text(day["enviado_nuria_at"]))
             pending_update = is_nuria_update_pending(day)
@@ -6543,13 +6606,18 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 intro,
                 "",
                 f"Total de licitaciones del día: {sum(counts.values())}",
-                f"Licitaciones pendientes de revisión: {pendientes_nuria}",
+                f"Licitaciones pendientes de revisión: {len(pending_rows)}",
             ]
-            if pendientes_nuria == 0:
+            if not pending_rows:
                 body_lines.extend(["", "NO HAY LICITACIONES INTERESANTES"])
             else:
                 body_lines.extend(["", "Listado de licitaciones pendientes:"])
                 for row in pending_rows:
+                    tipo_label = (
+                        "Anuncio previo"
+                        if is_anuncio_previo(row["tipo_publicacion"])
+                        else "Licitación"
+                    )
                     fecha_hora = " ".join(
                         part
                         for part in [
@@ -6559,17 +6627,24 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                         if clean_text(part)
                     ).strip()
                     body_lines.append(
-                        f"- {clean_text(row['expediente'])} | "
+                        f"- {tipo_label}: {clean_text(row['expediente'])} | "
                         f"{clean_text(row['objeto'])} | "
                         f"{fecha_hora or 'Sin fecha'}"
                     )
             cuerpo = "\n".join(body_lines)
+            settings = get_settings()
+            mailbox_to = effective_text("action_mailbox_to", settings=settings) or ACTION_MAILBOX_TO
+            mailbox_cc = (
+                clean_text(settings.get("action_mailbox_cc"))
+                if "action_mailbox_cc" in settings
+                else effective_text("action_mailbox_cc", settings=settings)
+            )
             html_body = build_infonalia_review_email_html(
                 day=day,
                 licitaciones=review_rows,
                 action_codes=action_codes,
-                mailbox_to=ACTION_MAILBOX_TO,
-                mailbox_cc=ACTION_MAILBOX_CC,
+                mailbox_to=mailbox_to,
+                mailbox_cc=mailbox_cc,
                 generated_at=datetime.fromisoformat(timestamp),
             )
             create_notification(
@@ -6782,6 +6857,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         self.send_json(payload)
 
     def api_delete_ai_summary(self, licitacion_id: int) -> None:
+        if not self.require_admin():
+            return
         user = self.current_user() or {}
         try:
             with db_session() as conn:
@@ -6801,6 +6878,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         self.send_json(payload)
 
     def api_send_ai_summary_email(self, licitacion_id: int) -> None:
+        if not self.require_admin():
+            return
         user = self.current_user() or {}
         try:
             data = self.read_json()
@@ -6861,6 +6940,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         self.send_json({"ok": ok, "result": result, "notification_status": status_payload, "recipients": recipients})
 
     def api_save_ai_summary_pdf(self, licitacion_id: int) -> None:
+        if not self.require_admin():
+            return
         user = self.current_user() or {}
         with db_session() as conn:
             row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
@@ -7212,6 +7293,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if not row:
             self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
             return
+        if is_anuncio_previo(row["tipo_publicacion"] if "tipo_publicacion" in row.keys() else ""):
+            self.send_json(
+                {"error": "Los anuncios previos no tienen documentación de licitación para descargar."},
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
 
         url = normalize_url(row["enlace_perfil"])
         if not url:
@@ -7394,6 +7481,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             "tipo",
             "fecha_limite",
             "hora_limite",
+            "tipo_publicacion",
             "plataforma",
             "enlace_perfil",
             "enlace_infonalia",
@@ -7421,6 +7509,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             if updates["estado"] not in ESTADOS_VALIDOS:
                 self.send_json({"error": "Estado no valido"}, HTTPStatus.BAD_REQUEST)
                 return
+        if "tipo_publicacion" in updates:
+            updates["tipo_publicacion"] = normalize_tipo_publicacion(updates["tipo_publicacion"])
         if not updates and not any(
             key in data
             for key in {"estado_interno", "notas_internas", "revisada"}
@@ -7641,21 +7731,6 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 },
             }
         )
-
-    def send_public_page(self) -> None:
-        path = STATIC_ROOT / "public.html"
-        if not path.exists():
-            self.send_error(HTTPStatus.NOT_FOUND, "No encontrado")
-            return
-
-        private_url = clean_text(os.environ.get("NEXT_PUBLIC_PRIVATE_APP_URL")) or "/login"
-        body = path.read_text(encoding="utf-8").replace("__PRIVATE_APP_URL__", html.escape(private_url)).encode("utf-8")
-        self.send_response(HTTPStatus.OK)
-        self.send_security_headers(is_private=False)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
 
     def send_login_page(self) -> None:
         path = STATIC_ROOT / "login.html"

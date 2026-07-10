@@ -211,9 +211,9 @@ def _pending_sections(items: list[dict[str, object]], *, current: datetime) -> l
     today = current.date()
     week_limit = today + timedelta(days=7)
     grouped = {
-        "today": {"title": "HOY", "items": []},
-        "next_7_days": {"title": "PRÓXIMOS 7 DÍAS", "items": [], "group_by_date": True},
-        "later": {"title": "PRÓXIMAMENTE", "items": [], "group_by_date": True},
+        "today": {"key": "today", "title": "Hoy", "items": []},
+        "next_7_days": {"key": "next_7_days", "title": "Próximos 7 días", "items": [], "group_by_date": True},
+        "later": {"key": "later", "title": "Más adelante", "items": [], "group_by_date": True},
     }
     for item in sorted(items, key=_pending_sort_key):
         item_day = _item_date_value(item)
@@ -274,13 +274,19 @@ def build_pending_tasks_email_payload(
             if clean_text(panel.get("key")) == "regular":
                 regular_items = panel_items
             elif panel_items:
-                shipment_sections.append({"title": panel.get("title") or "Envíos", "items": panel_items})
+                shipment_sections.append(
+                    {
+                        "key": clean_text(panel.get("key")) or "envios",
+                        "title": panel.get("title") or "Envíos",
+                        "items": panel_items,
+                    }
+                )
         sections = _pending_sections(regular_items or items, current=reference)
         sections.extend(shipment_sections)
     else:
         sections = _pending_sections(items, current=reference)
-    counts["next_7_days"] = sum(len(section["items"]) for section in sections if section["title"] == "PRÓXIMOS 7 DÍAS")
-    counts["later"] = sum(len(section["items"]) for section in sections if section["title"] == "PRÓXIMAMENTE")
+    counts["next_7_days"] = sum(len(section["items"]) for section in sections if section.get("key") == "next_7_days")
+    counts["later"] = sum(len(section["items"]) for section in sections if section.get("key") == "later")
     counts["client_shipments_ready"] = sum(
         1 for item in items if clean_text(item.get("state_value")) == "listo_para_preparar_correo"
     )
@@ -292,8 +298,9 @@ def build_pending_tasks_email_payload(
     )
     return {
         "active_date_label": format_date_es(today.isoformat()),
-        "heading": "Pendientes de Agenda",
-        "subtitle": "Tareas pendientes",
+        "reference_date": today.isoformat(),
+        "heading": "Agenda Llangón",
+        "subtitle": f"{WEEKDAY_NAMES[today.weekday()]} {format_date_es(today.isoformat())}",
         "sections": sections,
         "counts": counts,
         "is_pending_digest": True,
@@ -342,11 +349,55 @@ def _item_type_label(item: dict[str, object], *, source_key: str) -> str:
     return clean_text(item.get("tipo")) or TYPE_STYLES[source_key]["label"]
 
 
-def _item_row_html(item: dict[str, object], *, subdued: bool = False, pending_digest: bool = False) -> str:
+def _parse_reference_date(value: object) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = clean_text(value)
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _due_delta_label(item_date: date | None, *, reference_date: date | None) -> str:
+    if item_date is None or reference_date is None:
+        return ""
+    delta = (item_date - reference_date).days
+    if delta < 0:
+        days = abs(delta)
+        return "Vencido ayer" if days == 1 else f"Vencido hace {days} días"
+    if delta == 0:
+        return "Vence hoy"
+    if delta == 1:
+        return "Falta 1 día"
+    return f"Faltan {delta} días"
+
+
+def _email_reference_date(payload: dict[str, object], generated_at: object) -> date:
+    return (
+        _parse_reference_date(payload.get("reference_date"))
+        or _parse_reference_date(generated_at)
+        or local_email_reference().date()
+    )
+
+
+def _item_row_html(
+    item: dict[str, object],
+    *,
+    subdued: bool = False,
+    pending_digest: bool = False,
+    reference_date: date | None = None,
+) -> str:
     source_key = _item_source_key(item)
     style = TYPE_STYLES[source_key]
     title = html.escape(_item_title(item))
     date_label = html.escape(format_datetime_es(_item_date(item)))
+    item_date = _item_date_value(item)
+    due_delta = html.escape(_due_delta_label(item_date, reference_date=reference_date))
     expediente = html.escape(_item_expediente(item))
     status_text = clean_text(item.get("status")) or "Sin estado"
     status = html.escape(status_text)
@@ -355,12 +406,13 @@ def _item_row_html(item: dict[str, object], *, subdued: bool = False, pending_di
     description = html.escape(_item_description(item))
     profile_url = html.escape(_item_profile_url(item))
     opacity_color = "#475467" if subdued else "#1f2937"
-    due_badge_html = ""
-    if pending_digest and _item_date_value(item) is not None:
-        due_badge_html = (
-            f"<span style='display:inline-block; padding:5px 9px; border:1px solid #b6d7a8; "
-            f"background:#f0f9ec; color:#1f7a4d; border-radius:999px; font-size:12px; "
-            f"font-weight:900; white-space:nowrap;'>Vence: {date_label}</span>"
+    due_block_html = ""
+    if pending_digest and item_date is not None:
+        due_block_html = (
+            f"<p style='margin:0; color:#1f2937; font-size:13px; font-weight:800; "
+            f"line-height:1.25; white-space:nowrap;'>Vence: {date_label}</p>"
+            f"<p style='margin:3px 0 0 0; color:#667085; font-size:12px; "
+            f"line-height:1.25; white-space:nowrap;'>{due_delta}</p>"
         )
     description_html = (
         f"<p style='margin:6px 0 0 0; color:#475467; font-size:13px; line-height:1.35;'>{description}</p>"
@@ -377,38 +429,31 @@ def _item_row_html(item: dict[str, object], *, subdued: bool = False, pending_di
         if profile_url
         else ""
     )
-    detail_cells = [
-        f"<td style=\"padding:8px 10px; border:1px solid #d9e2ec; background:#f8fafc; color:#1f2937; font-size:13px; line-height:1.35;\"><strong>Estado:</strong> <span style=\"display:inline-block; padding:2px 7px; border:1px solid {status_style['border']}; background:{status_style['background']}; color:{status_style['color']}; border-radius:999px; font-weight:800;\">{status}</span></td>",
+    detail_parts = [
+        f"<strong>Estado:</strong> <span style=\"display:inline-block; padding:2px 7px; border:1px solid {status_style['border']}; background:{status_style['background']}; color:{status_style['color']}; border-radius:999px; font-weight:800;\">{status}</span>",
     ]
     if not pending_digest:
-        detail_cells.append(
-            f"<td style=\"padding:8px 10px; border:1px solid #d9e2ec; background:#f8fafc; color:#1f2937; font-size:13px; line-height:1.35;\"><strong>Fecha/hora final:</strong> {date_label}</td>"
-        )
-    detail_cells.append(
-        f"<td style=\"padding:8px 10px; border:1px solid #d9e2ec; background:#f8fafc; color:#1f2937; font-size:13px; line-height:1.35;\"><strong>Tipo:</strong> {type_label}</td>"
-    )
+        detail_parts.append(f"<strong>Fecha/hora final:</strong> {date_label}")
+    detail_parts.append(f"<strong>Tipo:</strong> {type_label}")
+    detail_html = " &nbsp;·&nbsp; ".join(detail_parts)
     return f"""
       <tr>
-        <td style="padding:0 0 10px 0;">
-          <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; border:1px solid {style['border']}; border-left:5px solid {style['color']}; background:#ffffff;">
+        <td style="padding:0 0 12px 0;">
+          <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate; border-spacing:0; border:1px solid #e5e7eb; border-left:4px solid {style['color']}; background:#ffffff; border-radius:8px;">
             <tr>
-              <td style="padding:12px 14px;">
+              <td style="padding:13px 15px;">
                 <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
                   <tr>
                     <td style="vertical-align:top;">
-                      <span style="display:inline-block; padding:3px 8px; background:{style['background']}; color:{style['color']}; border:1px solid {style['border']}; border-radius:999px; font-size:11px; font-weight:800; text-transform:uppercase;">{html.escape(style['label'])}</span>
+                      <span style="display:inline-block; padding:2px 7px; background:{style['background']}; color:{style['color']}; border:1px solid {style['border']}; border-radius:999px; font-size:11px; font-weight:800;">{html.escape(style['label'])}</span>
                     </td>
-                    <td align="right" style="vertical-align:top;">{due_badge_html}</td>
+                    <td align="right" style="vertical-align:top;">{due_block_html}</td>
                   </tr>
                 </table>
-                <p style="margin:9px 0 0 0; color:{opacity_color}; font-size:15px; font-weight:800; line-height:1.35;">{title}</p>
+                <p style="margin:10px 0 0 0; color:{opacity_color}; font-size:15px; font-weight:800; line-height:1.35;">{title}</p>
                 {description_html}
                 {expediente_html}
-                <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin-top:9px;">
-                  <tr>
-                    {"".join(detail_cells)}
-                  </tr>
-                </table>
+                <p style="margin:10px 0 0 0; color:#475467; font-size:13px; line-height:1.55;">{detail_html}</p>
                 {profile_link_html}
               </td>
             </tr>
@@ -419,9 +464,9 @@ def _item_row_html(item: dict[str, object], *, subdued: bool = False, pending_di
 
 def _date_group_title(item_date: date | None) -> str:
     if item_date is None:
-        return "SIN FECHA"
+        return "Sin fecha"
     weekday = WEEKDAY_NAMES[item_date.weekday()].upper()
-    return f"{weekday} {format_date_es(item_date.isoformat())}"
+    return f"{weekday.capitalize()} {format_date_es(item_date.isoformat())}"
 
 
 def _items_grouped_by_date(items: list[dict[str, object]]) -> list[tuple[date | None, list[dict[str, object]]]]:
@@ -434,28 +479,55 @@ def _items_grouped_by_date(items: list[dict[str, object]]) -> list[tuple[date | 
     return groups
 
 
-def _date_group_rows(items: list[dict[str, object]], *, pending_digest: bool) -> str:
+def _date_group_rows(
+    items: list[dict[str, object]],
+    *,
+    pending_digest: bool,
+    reference_date: date | None,
+) -> str:
     rows = []
     for item_date, group_items in _items_grouped_by_date(items):
         rows.append(f"""
       <tr>
-        <td style="padding:2px 0 8px 0; color:#667085; font-size:12px; font-weight:900; text-transform:uppercase;">
+        <td style="padding:4px 0 8px 0; color:#667085; font-size:12px; font-weight:800;">
           {html.escape(_date_group_title(item_date))}
         </td>
       </tr>""")
-        rows.extend(_item_row_html(item, pending_digest=pending_digest, subdued=True) for item in group_items)
+        rows.extend(
+            _item_row_html(
+                item,
+                pending_digest=pending_digest,
+                subdued=True,
+                reference_date=reference_date,
+            )
+            for item in group_items
+        )
     return "".join(rows)
 
 
-def _section_html(section: dict[str, object], *, subdued: bool = False, pending_digest: bool = False) -> str:
-    title = clean_text(section.get("title") or "Sección").upper()
+def _section_html(
+    section: dict[str, object],
+    *,
+    subdued: bool = False,
+    pending_digest: bool = False,
+    reference_date: date | None = None,
+) -> str:
+    title = clean_text(section.get("title") or "Sección")
     items = section.get("items") or []
     if items:
         section_items = [item for item in items if isinstance(item, dict)]
         if pending_digest and bool(section.get("group_by_date")):
-            rows = _date_group_rows(section_items, pending_digest=pending_digest)
+            rows = _date_group_rows(section_items, pending_digest=pending_digest, reference_date=reference_date)
         else:
-            rows = "".join(_item_row_html(item, subdued=subdued, pending_digest=pending_digest) for item in section_items)
+            rows = "".join(
+                _item_row_html(
+                    item,
+                    subdued=subdued,
+                    pending_digest=pending_digest,
+                    reference_date=reference_date,
+                )
+                for item in section_items
+            )
     else:
         rows = """
       <tr>
@@ -464,11 +536,12 @@ def _section_html(section: dict[str, object], *, subdued: bool = False, pending_
         </td>
       </tr>"""
     title_color = "#1f2937" if not subdued else "#475467"
+    display_title = title if pending_digest else title.upper()
     return f"""
     <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin:0 0 20px 0;">
       <tr>
         <td style="padding:0 0 10px 0;">
-          <p style="margin:0; color:{title_color}; font-size:13px; font-weight:900; letter-spacing:0; text-transform:uppercase;">{html.escape(title)}</p>
+          <p style="margin:0; color:{title_color}; font-size:14px; font-weight:800; letter-spacing:0;">{html.escape(display_title)}</p>
         </td>
       </tr>
       {rows}
@@ -529,15 +602,25 @@ def build_operational_email_payload(
 def build_operational_email_text(payload: dict[str, object]) -> str:
     heading = clean_text(payload.get("heading")) or "Resumen operativo de Agenda"
     subtitle = clean_text(payload.get("subtitle")) or "Resumen operativo diario"
-    lines = [
-        heading,
-        f"Agenda Llangón - {subtitle}",
-        f"Fecha: {payload.get('active_date_label') or ''}",
-        "",
-    ]
     is_pending = bool(payload.get("is_pending_digest"))
+    if is_pending:
+        lines = [
+            heading,
+            subtitle,
+            f"Fecha: {payload.get('active_date_label') or ''}",
+            "",
+        ]
+    else:
+        lines = [
+            heading,
+            f"Agenda Llangón - {subtitle}",
+            f"Fecha: {payload.get('active_date_label') or ''}",
+            "",
+        ]
+    reference_date = _email_reference_date(payload, payload.get("reference_date") or "")
     for section in payload.get("sections") or []:
-        lines.append(str(section.get("title") or "Sección").upper())
+        section_title = str(section.get("title") or "Sección")
+        lines.append(section_title if is_pending else section_title.upper())
         items = section.get("items") or []
         if not items:
             lines.append("- Sin elementos")
@@ -557,7 +640,9 @@ def build_operational_email_text(payload: dict[str, object]) -> str:
                 profile_url = _item_profile_url(item)
                 link_text = f" | Ver perfil del contratante: {profile_url}" if profile_url else ""
                 if is_pending:
-                    due_text = f"Vence: {_item_date(item)} | " if _item_date_value(item) is not None else ""
+                    item_date = _item_date_value(item)
+                    due_delta = _due_delta_label(item_date, reference_date=reference_date)
+                    due_text = f"Vence: {_item_date(item)} | {due_delta} | " if item_date is not None else ""
                 else:
                     due_text = f"Fecha/hora final: {_item_date(item)} | "
                 lines.append(
@@ -581,71 +666,59 @@ def build_operational_email_html(payload: dict[str, object], *, generated_at: ob
     generated_label = html.escape(format_datetime_es(generated_at or datetime.now().replace(microsecond=0).isoformat()))
     sections = payload.get("sections") or []
     is_pending = bool(payload.get("is_pending_digest"))
+    reference_date = _email_reference_date(payload, generated_at)
     rendered_sections = [section for section in sections if isinstance(section, dict)]
     if not rendered_sections and not is_pending:
         rendered_sections = [
             {"title": "Principal / Hoy", "items": []},
             {"title": "Resto de la semana hasta domingo", "items": []},
         ]
-    counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
-    today_count = html.escape(str(counts.get("today", 0)))
-    is_notice = isinstance(payload.get("notice"), dict)
-    right_label = "Total aviso" if is_notice else "Total semana"
-    right_count_value = counts.get("total_notice") if is_notice else counts.get("total_week")
-    if is_pending:
-        summary_cells = [
-            ("Total pendientes", counts.get("total", 0)),
-            ("Vencen hoy", counts.get("today", 0)),
-            ("Próximos 7 días", counts.get("next_7_days", 0)),
-            ("Próximamente", counts.get("later", 0)),
-        ]
-        if int(counts.get("no_date", 0) or 0):
-            summary_cells.append(("Sin fecha", counts.get("no_date", 0)))
-    else:
-        if right_count_value is None:
-            right_count_value = int(counts.get("today", 0) or 0) + int(counts.get("week_rest", 0) or 0)
-        summary_cells = [("Vence hoy", today_count), (right_label, right_count_value)]
     heading = html.escape(clean_text(payload.get("heading")) or "Agenda Llangón")
     subtitle = html.escape(clean_text(payload.get("subtitle")) or "Resumen operativo diario")
     sections_html = "".join(
-        _section_html(section, subdued=index > 0, pending_digest=is_pending)
+        _section_html(
+            section,
+            subdued=index > 0,
+            pending_digest=is_pending,
+            reference_date=reference_date,
+        )
         for index, section in enumerate(rendered_sections)
     )
-    summary_html = "".join(
-        f"<td style='padding:8px 10px; border:1px solid #d9e2ec; color:#1f2937; font-size:13px; font-weight:800;'>{html.escape(str(label))}: {html.escape(str(value))}</td>"
-        for label, value in summary_cells
-    )
-    body_html = f"""
-    <table width="100%" cellpadding="0" cellspacing="0" style="border-left:5px solid #2dad2c; background:#ffffff; border-collapse:collapse; margin:0 0 16px 0;">
+    if is_pending:
+        body_html = sections_html
+        footer_left = ""
+        footer_right = ""
+        closing_html = ""
+    else:
+        body_html = f"""
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-left:4px solid #2dad2c; background:#ffffff; border-collapse:collapse; margin:0 0 16px 0;">
       <tr>
-        <td style="padding:0 0 0 14px;">
-          <p style="margin:0 0 5px 0; color:#667085; font-size:12px; font-weight:800; text-transform:uppercase;">{subtitle}</p>
-          <h2 style="margin:0 0 7px 0; color:#1f2937; font-size:20px; line-height:1.25;">{heading}</h2>
+        <td style="padding:0 0 0 12px;">
+          <p style="margin:0 0 5px 0; color:#667085; font-size:12px; font-weight:800;">{subtitle}</p>
+          <h2 style="margin:0 0 7px 0; color:#1f2937; font-size:19px; line-height:1.25;">{heading}</h2>
           <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
             <tr>
               <td style="padding:0; color:#475467; font-size:13px; line-height:1.45;">Fecha: {date_label}</td>
               <td align="right" style="padding:0; color:#667085; font-size:13px; line-height:1.45;">Generado: {generated_label}</td>
             </tr>
           </table>
-          <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin-top:10px;">
-            <tr>
-              {summary_html}
-            </tr>
-          </table>
         </td>
       </tr>
     </table>
     {sections_html}"""
+        footer_left = "Resumen operativo de Agenda"
+        footer_right = generated_label
+        closing_html = (
+            "Este es tu resumen operativo de Agenda.<br>"
+            "Consulta la aplicación para acceder al detalle completo."
+        )
     return build_llangon_email_shell(
-        eyebrow="Llangón Web App",
+        eyebrow="" if is_pending else "Llangón Web App",
         title=heading,
         subtitle=subtitle,
         body_html=body_html,
-        footer_left_html="Resumen operativo de Agenda",
-        footer_right_html=generated_label,
-        closing_html=(
-            "Este es tu resumen operativo de Agenda.<br>"
-            "Consulta la aplicación para acceder al detalle completo."
-        ),
+        footer_left_html=footer_left,
+        footer_right_html=footer_right,
+        closing_html=closing_html,
         compact=is_pending,
     )

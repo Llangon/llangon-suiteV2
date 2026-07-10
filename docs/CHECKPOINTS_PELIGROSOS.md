@@ -55,7 +55,6 @@ python -m compileall webapp herramientas_python
 python -m pytest -q
 node --check webapp/infonalia_webapp/static/app.js
 node --check webapp/infonalia_webapp/static/login.js
-node --check webapp/infonalia_webapp/static/public.js
 node --check firebase/public_firebase/static/public.js
 git diff --check
 ```

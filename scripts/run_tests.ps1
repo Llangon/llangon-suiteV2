@@ -13,11 +13,17 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$appJs = Join-Path $projectRoot "webapp\infonalia_webapp\static\app.js"
 if (Get-Command node -ErrorAction SilentlyContinue) {
-    node --check $appJs
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
+    $javascriptFiles = @(
+        "webapp\infonalia_webapp\static\app.js",
+        "webapp\infonalia_webapp\static\login.js",
+        "firebase\public_firebase\static\public.js"
+    )
+    foreach ($relativePath in $javascriptFiles) {
+        node --check (Join-Path $projectRoot $relativePath)
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
     }
 } else {
     Write-Host "Node.js no esta disponible; se omite node --check."

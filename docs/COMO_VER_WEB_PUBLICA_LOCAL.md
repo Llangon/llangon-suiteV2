@@ -13,7 +13,9 @@ La aplicacion privada se sirve con el despliegue local Windows ya instalado:
 
 `http://127.0.0.1:8787/`
 
-No usa la carpeta `firebase/public_firebase`.
+No usa la carpeta `firebase/public_firebase` y no conserva una copia activa de la web publica.
+
+La raiz `http://127.0.0.1:8787/` redirige a la entrada privada (`/login` o `/app`, segun la sesion).
 
 ## Ver la web publica
 
@@ -32,6 +34,8 @@ La vista previa sirve exclusivamente:
 `firebase/public_firebase`
 
 No interfiere con la aplicacion privada en `127.0.0.1:8787`.
+
+Las rutas de la web publica, como `/contacto`, `/aviso-legal` o `/politica-cookies`, se resuelven desde esta misma carpeta para comportarse como Firebase Hosting.
 
 ## Parar la vista previa publica
 

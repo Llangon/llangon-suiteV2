@@ -64,6 +64,45 @@ def test_mail_scheduler_runs_enabled_jobs_without_interference(monkeypatch) -> N
     assert status["email_actions_processor"]["last_run"]["processed_items_count"] == 1
 
 
+def test_mail_scheduler_records_email_action_error_reasons(monkeypatch) -> None:
+    app = load_app_module()
+    monkeypatch.setenv("LLANGON_INFONALIA_IMPORT_ENABLED", "0")
+    monkeypatch.setenv("LLANGON_EMAIL_ACTIONS_ENABLED", "1")
+    monkeypatch.setenv("LLANGON_FILE_INVENTORY_ENABLED", "0")
+    monkeypatch.setenv("LLANGON_EMAIL_ACTIONS_POLL_MINUTES", "10")
+
+    def fake_actions(**_kwargs):
+        return {
+            "enabled": True,
+            "mode": "llangon_cmd_only",
+            "processed": 0,
+            "errors": 1,
+            "errors_by_reason": {"NO_ALLOWED_SENDERS": 1},
+        }
+
+    monkeypatch.setattr("webapp.infonalia_webapp.email_actions_processor.process_mailbox_once", fake_actions)
+
+    with temporary_app_database(app):
+        reports = scheduler.run_once(db_path=app.DB_PATH, current=datetime(2026, 6, 5, 12, 0), dry_run=False)
+        with app.db_session() as conn:
+            row = conn.execute(
+                """
+                SELECT status, error_message, details_json
+                FROM monitor_runs
+                WHERE task_type = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (TASK_TYPE_EMAIL_ACTIONS_PROCESSOR,),
+            ).fetchone()
+
+    assert reports[0]["task_type"] == TASK_TYPE_EMAIL_ACTIONS_PROCESSOR
+    assert reports[0]["errors"] == 1
+    assert row["status"] == "failed"
+    assert row["error_message"] == "Errores: NO_ALLOWED_SENDERS"
+    assert '"NO_ALLOWED_SENDERS": 1' in row["details_json"]
+
+
 def test_mail_scheduler_respects_poll_interval(monkeypatch) -> None:
     app = load_app_module()
     monkeypatch.setenv("LLANGON_INFONALIA_IMPORT_ENABLED", "1")

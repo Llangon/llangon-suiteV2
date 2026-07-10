@@ -212,6 +212,7 @@ def agenda_licitacion_events(conn: sqlite3.Connection, *, current: datetime) -> 
         FROM licitaciones
         WHERE fecha_limite IS NOT NULL
           AND fecha_limite <> ''
+          AND COALESCE(tipo_publicacion, 'licitacion') = 'licitacion'
         ORDER BY fecha_limite ASC, hora_limite ASC, id ASC
         """
     ).fetchall()

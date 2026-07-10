@@ -43,7 +43,6 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows\start_public_web_prev
 ```powershell
 node --check webapp/infonalia_webapp/static/app.js
 node --check webapp/infonalia_webapp/static/login.js
-node --check webapp/infonalia_webapp/static/public.js
 node --check firebase/public_firebase/static/public.js
 ```
 

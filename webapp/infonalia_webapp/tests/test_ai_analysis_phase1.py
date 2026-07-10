@@ -1730,6 +1730,31 @@ def test_delete_ai_summary_does_not_delete_documents(tmp_path: Path) -> None:
     assert pdf.exists()
 
 
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("DELETE", "/api/licitaciones/1/ai-summary", {}),
+        ("POST", "/api/licitaciones/1/ai-summary/email", {"to": "admin@example.test"}),
+        ("POST", "/api/licitaciones/1/ai-summary/save-pdf", {}),
+        ("POST", "/api/licitaciones/1/ai-summary/regenerate", {}),
+    ],
+)
+def test_ai_summary_effect_routes_require_admin(method: str, path: str, payload: dict[str, object]) -> None:
+    app = load_app_module()
+    handler = make_handler(
+        app,
+        method,
+        path,
+        payload,
+        username="reviewer_test",
+        role="nuria",
+    )
+
+    dispatch(handler, method)
+
+    assert handler.responses[-1][0] == HTTPStatus.FORBIDDEN
+
+
 def test_ai_summary_email_without_summary_fails_cleanly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
     app = load_app_module()

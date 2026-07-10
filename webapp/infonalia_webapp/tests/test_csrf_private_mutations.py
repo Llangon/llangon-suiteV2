@@ -16,6 +16,7 @@ POST_CASES = [
     ("POST", "/api/config/users", "api_create_user", ()),
     ("POST", "/api/config/test-smtp", "api_test_smtp", ()),
     ("POST", "/api/clientes", "api_create_cliente", ()),
+    ("POST", "/api/cliente-envios", "api_create_cliente_envio", ()),
     ("POST", "/api/cliente-envios/folder-files", "api_cliente_envio_folder_files", ()),
     ("POST", "/api/admin/telegram/test-group", "api_test_telegram_group", ()),
     ("POST", "/api/admin/users/manolo/telegram/test", "api_test_telegram_user", ("manolo",)),
@@ -157,7 +158,6 @@ def test_app_csrf_decision_uses_global_policy_for_known_mutations(method, path) 
     [
         ("POST", "/login"),
         ("GET", "/api/news"),
-        ("POST", "/api/public/noticias"),
         ("POST", "/api/unknown"),
         ("PATCH", "/api/unknown"),
         ("DELETE", "/api/unknown"),

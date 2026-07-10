@@ -3,6 +3,15 @@ const privateUrl = configuredPrivateUrl && configuredPrivateUrl !== "__PRIVATE_A
   ? configuredPrivateUrl
   : "/login";
 
+const companyInfo = {
+  name: "ASESORES LLANGON, S.L.",
+  cif: "B73803637",
+  postalAddress: "C/ ULIA, 9, 1ºD, 41005, SEVILLA",
+  email: "info@llangon.com",
+  phone: "617 11 02 81",
+  phoneHref: "tel:+34617110281",
+};
+
 document.querySelectorAll("[data-private-link]").forEach((link) => {
   link.href = privateUrl;
 });
@@ -206,6 +215,19 @@ function safeHref(value) {
 
 function button(label, href, variant = "button-primary") {
   return `<a class="button-link ${escapeHtml(variant)}" href="${escapeHtml(safeHref(href))}">${escapeHtml(label)}</a>`;
+}
+
+function companyIdentityList({ includePhone = false, includeRegistry = false } = {}) {
+  return `
+    <ul>
+      <li><strong>Titular:</strong> ${companyInfo.name}</li>
+      <li><strong>CIF:</strong> ${companyInfo.cif}</li>
+      <li><strong>Dirección postal:</strong> ${companyInfo.postalAddress}</li>
+      <li><strong>Correo electrónico:</strong> <a href="mailto:${companyInfo.email}">${companyInfo.email}</a></li>
+      ${includePhone ? `<li><strong>Teléfono:</strong> <a href="${companyInfo.phoneHref}">${companyInfo.phone}</a></li>` : ""}
+      ${includeRegistry ? "<li><strong>Datos registrales:</strong> pendiente de incorporar tras confirmación.</li>" : ""}
+    </ul>
+  `;
 }
 
 function sectionTitle(kicker, title, text) {
@@ -552,25 +574,31 @@ function contactSection(compact = false) {
   return `
     <section class="public-section ${compact ? "light-band" : ""}">
       <div class="section-inner">
-        ${sectionTitle("Contacto", "Cuéntenos qué procedimiento, licitación o necesidad documental tiene", "Estudiaremos cómo podemos ayudarle desde el análisis del pliego hasta la preparación y seguimiento documental.")}
+        ${sectionTitle("Contacto", "Cuéntenos qué procedimiento, licitación o necesidad documental tiene", "Puede ponerse en contacto con nosotros por correo electrónico o teléfono. Estudiaremos cómo podemos ayudarle desde el análisis del pliego hasta la preparación y seguimiento documental.")}
         <div class="contact-grid">
-          <form class="contact-form" id="contact-form" novalidate>
-            <label>Nombre<input name="name" required></label>
-            <label>Empresa<input name="company"></label>
-            <label>Email<input name="email" type="email" required></label>
-            <label>Teléfono<input name="phone"></label>
-            <label>Mensaje<textarea name="message" rows="5" required></textarea></label>
-            <label class="check-field"><input name="privacy" type="checkbox" required><span>Acepto la política de privacidad.</span></label>
-            <p class="form-message" id="contact-message" aria-live="polite"></p>
-            <button class="button-link button-primary" type="submit">Enviar consulta</button>
-          </form>
+          <article class="contact-panel">
+            <h3>Cómo ponerse en contacto</h3>
+            <p>Para una primera valoración, envíenos el enlace de la licitación, el número de expediente o una descripción breve de la necesidad documental.</p>
+            <div class="contact-methods" aria-label="Datos de contacto">
+              <a class="contact-method" href="mailto:${companyInfo.email}">
+                <span>Correo electrónico</span>
+                <strong>${companyInfo.email}</strong>
+              </a>
+              <a class="contact-method" href="${companyInfo.phoneHref}">
+                <span>Teléfono</span>
+                <strong>${companyInfo.phone}</strong>
+              </a>
+            </div>
+            <p class="contact-hint">Si ya dispone de pliegos, fechas límite o comunicaciones del órgano de contratación, indíquelo en el primer mensaje para poder situar mejor el expediente.</p>
+          </article>
           <aside class="contact-note">
-            <h3>ASESORES LLANGON, S.L.</h3>
+            <h3>Datos de la empresa</h3>
+            <p><strong>${companyInfo.name}</strong></p>
+            <p>CIF: ${companyInfo.cif}</p>
+            <p>Dir. postal: ${companyInfo.postalAddress}</p>
+            <p>Correo electrónico: <a href="mailto:${companyInfo.email}">${companyInfo.email}</a></p>
+            <p>Teléfono: <a href="${companyInfo.phoneHref}">${companyInfo.phone}</a></p>
             <p>Especialistas en contratación pública.</p>
-            <p>España.</p>
-            <p>Email: [pendiente de completar]</p>
-            <p>Teléfono: [pendiente de completar]</p>
-            <p>Dirección: [pendiente de completar]</p>
           </aside>
         </div>
       </div>
@@ -584,20 +612,67 @@ function legalPage(kind) {
     "/politica-privacidad": "Política de privacidad",
     "/politica-cookies": "Política de cookies",
   };
+  const updatedAt = "10 de julio de 2026";
+  let body = "";
+
+  if (kind === "/aviso-legal") {
+    body = `
+      <h3>Titular del sitio web</h3>
+      ${companyIdentityList({ includePhone: true, includeRegistry: true })}
+      <h3>Objeto del sitio</h3>
+      <p>Este sitio web ofrece información corporativa y profesional sobre los servicios de asesoramiento en contratación pública prestados por ${companyInfo.name}.</p>
+      <h3>Uso del sitio</h3>
+      <p>La persona usuaria se compromete a utilizar este sitio de forma lícita, diligente y respetuosa con la normativa aplicable, sin dañar el funcionamiento de la web ni los derechos de terceros.</p>
+      <h3>Propiedad intelectual</h3>
+      <p>Los textos, diseño, logotipos, imágenes y demás contenidos de este sitio pertenecen a ${companyInfo.name} o se utilizan con autorización, salvo indicación expresa en contrario.</p>
+      <h3>Responsabilidad</h3>
+      <p>La información publicada tiene carácter informativo y no sustituye el estudio individual de cada expediente, pliego o situación jurídica concreta.</p>
+      <h3>Legislación aplicable</h3>
+      <p>Este sitio se rige por la normativa española aplicable, incluida la normativa sobre servicios de la sociedad de la información, protección de datos y contratación pública cuando corresponda.</p>
+      <p class="legal-muted">Última actualización: ${updatedAt}.</p>
+    `;
+  } else if (kind === "/politica-privacidad") {
+    body = `
+      <h3>Responsable del tratamiento</h3>
+      ${companyIdentityList({ includePhone: true })}
+      <h3>Datos tratados</h3>
+      <p>La web pública no incorpora formulario de contacto. Si una persona contacta por correo electrónico o teléfono, trataremos los datos que facilite voluntariamente para atender su consulta.</p>
+      <h3>Finalidades</h3>
+      <ul>
+        <li>Responder solicitudes de información, valoración o contacto profesional.</li>
+        <li>Gestionar comunicaciones relacionadas con servicios de asesoramiento en contratación pública.</li>
+        <li>Mantener la relación precontractual o contractual cuando proceda.</li>
+      </ul>
+      <h3>Legitimación</h3>
+      <p>El tratamiento se basa en la aplicación de medidas precontractuales o contractuales solicitadas por la persona interesada, el interés legítimo en responder consultas profesionales y, cuando sea necesario, el consentimiento prestado por la persona que contacta.</p>
+      <h3>Destinatarios</h3>
+      <p>No se prevén cesiones de datos a terceros salvo obligación legal o intervención de proveedores necesarios para prestar servicios técnicos, administrativos o profesionales bajo las garantías correspondientes.</p>
+      <h3>Conservación</h3>
+      <p>Los datos se conservarán durante el tiempo necesario para atender la consulta, gestionar la relación profesional y cumplir las obligaciones legales que puedan resultar aplicables.</p>
+      <h3>Derechos</h3>
+      <p>Puede ejercer los derechos de acceso, rectificación, supresión, oposición, limitación y portabilidad escribiendo a <a href="mailto:${companyInfo.email}">${companyInfo.email}</a>. También puede presentar una reclamación ante la Agencia Española de Protección de Datos si considera que el tratamiento no se ajusta a la normativa.</p>
+      <p class="legal-muted">Última actualización: ${updatedAt}.</p>
+    `;
+  } else {
+    body = `
+      <h3>Uso actual de cookies</h3>
+      <p>En esta versión, el código público de la web no instala cookies propias no técnicas ni cookies de analítica, publicidad o seguimiento desde el navegador.</p>
+      <h3>Cookies técnicas</h3>
+      <p>Si en algún momento fueran necesarias cookies técnicas para prestar un servicio solicitado por la persona usuaria, se utilizarían únicamente con esa finalidad y no requerirían consentimiento previo.</p>
+      <h3>Herramientas externas</h3>
+      <p>Si más adelante se incorporan herramientas de analítica, publicidad, mapas, vídeos, chat, medición o servicios de terceros que instalen cookies no exentas, se actualizará esta política y se mostrará un mecanismo de consentimiento con opciones para aceptar, rechazar y configurar.</p>
+      <h3>Configuración del navegador</h3>
+      <p>La persona usuaria puede revisar, bloquear o eliminar cookies desde la configuración de su navegador. El bloqueo de cookies técnicas podría afectar al funcionamiento de algunos sitios web.</p>
+      <p class="legal-muted">Última actualización: ${updatedAt}.</p>
+    `;
+  }
+
   return `
     <section class="public-section">
       <div class="section-inner">
-        ${sectionTitle("Información legal", titles[kind] || "Información legal", "Texto provisional pendiente de revisión antes de publicación definitiva.")}
+        ${sectionTitle("Información legal", titles[kind] || "Información legal", "Información corporativa y normativa básica de la web pública de ASESORES LLANGON, S.L.")}
         <div class="legal-box">
-          <p>Este contenido es un placeholder profesional y debe ser completado y revisado antes de la publicación definitiva de la web.</p>
-          <ul>
-            <li>ASESORES LLANGON, S.L.</li>
-            <li>CIF: [Completar CIF]</li>
-            <li>Domicilio social: [Completar domicilio social]</li>
-            <li>Email de contacto: [Completar email de contacto]</li>
-            <li>Datos registrales: [Completar datos registrales]</li>
-          </ul>
-          <p>No se han incluido datos fiscales, registrales o de contacto no facilitados.</p>
+          ${body}
         </div>
       </div>
     </section>
@@ -643,31 +718,6 @@ function render() {
 
   content.innerHTML = html;
   setMeta(title, description);
-  wireContactForm();
-}
-
-function wireContactForm() {
-  const form = document.getElementById("contact-form");
-  if (!form) return;
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const message = document.getElementById("contact-message");
-    if (!form.reportValidity()) return;
-    if (message) {
-      message.textContent = "Gracias por contactar con ASESORES LLANGON, S.L. Hemos recibido su consulta.";
-    }
-    form.reset();
-  });
 }
 
 render();
-
-fetch("/api/public/noticias")
-  .then((response) => response.ok ? response.json() : { items: [] })
-  .then((data) => {
-    publicNews = Array.isArray(data.items) ? data.items : [];
-    if (location.pathname === "/" || location.pathname.startsWith("/noticias")) {
-      render();
-    }
-  })
-  .catch(() => {});

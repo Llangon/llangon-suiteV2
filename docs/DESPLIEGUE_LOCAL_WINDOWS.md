@@ -472,6 +472,17 @@ No cambiar `INFONALIA_HOST` a `0.0.0.0`.
 
 No guardar tokens de Cloudflare en Git. La configuracion del tunnel y sus credenciales deben quedar fuera del repositorio.
 
+Checklist antes de publicar por Cloudflare:
+
+- Mantener `INFONALIA_HOST=127.0.0.1` y `INFONALIA_PORT=8787`.
+- No usar `INFONALIA_ALLOW_NON_LOOPBACK=1` salvo autorizacion explicita y temporal.
+- Configurar el servicio de Cloudflare Tunnel contra `http://127.0.0.1:8787`; no abrir puertos entrantes en el router ni en el firewall.
+- Proteger la app privada con Cloudflare Access antes de exponer el hostname del tunnel.
+- En acceso HTTPS publico por Cloudflare, activar `INFONALIA_COOKIE_SECURE=1` para que la cookie de sesion solo viaje sobre HTTPS.
+- Verificar en Windows con `netstat -ano | findstr :8787` que la escucha es `127.0.0.1:8787`, no `0.0.0.0:8787`.
+- Probar `http://127.0.0.1:8787/api/health` localmente antes de revisar el hostname de Cloudflare.
+- Mantener tokens, credenciales y configuracion local de Cloudflare fuera del repositorio.
+
 ## Comandos de validacion
 
 ```powershell

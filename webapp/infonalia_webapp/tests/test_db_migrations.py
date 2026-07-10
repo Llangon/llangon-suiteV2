@@ -88,6 +88,8 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
         "0024_email_action_events_telegram_notifications",
         "0025_infonalia_email_imports_telegram_notifications",
         "0026_automation_orchestrator",
+        "0027_clientes_envios",
+        "0028_licitacion_tipo_publicacion",
     ]
     assert table_exists(conn, MIGRATIONS_TABLE)
     rows = conn.execute(
@@ -224,6 +226,16 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
             "Orquestador interno unico de automatizaciones",
             "2026-06-12T10:00:00",
         ),
+        (
+            "0027_clientes_envios",
+            "Modulo base de clientes y envios documentales",
+            "2026-06-12T10:00:00",
+        ),
+        (
+            "0028_licitacion_tipo_publicacion",
+            "Tipo de publicacion para separar licitaciones y anuncios previos",
+            "2026-06-12T10:00:00",
+        ),
     ]
     assert table_exists(conn, "download_jobs")
     assert table_exists(conn, "import_runs")
@@ -305,6 +317,8 @@ def test_run_migrations_is_idempotent() -> None:
         "0024_email_action_events_telegram_notifications",
         "0025_infonalia_email_imports_telegram_notifications",
         "0026_automation_orchestrator",
+        "0027_clientes_envios",
+        "0028_licitacion_tipo_publicacion",
     ]
     assert run_migrations(conn, now=lambda: "2026-06-12T10:05:00") == []
 
@@ -336,6 +350,8 @@ def test_run_migrations_is_idempotent() -> None:
         ("0024_email_action_events_telegram_notifications", "2026-06-12T10:00:00"),
         ("0025_infonalia_email_imports_telegram_notifications", "2026-06-12T10:00:00"),
         ("0026_automation_orchestrator", "2026-06-12T10:00:00"),
+        ("0027_clientes_envios", "2026-06-12T10:00:00"),
+        ("0028_licitacion_tipo_publicacion", "2026-06-12T10:00:00"),
     ]
 
 
@@ -1092,7 +1108,14 @@ def test_licitaciones_center_migration_prepares_followup_without_per_licitacion_
         "seguimiento_ultima_sync",
         "seguimiento_marker_path",
         "seguimiento_marker_warning",
+        "tipo_publicacion",
     } <= set(licitacion_columns)
+    assert licitacion_columns["tipo_publicacion"] == "TEXT"
+    licitacion_indexes = {
+        row[1]
+        for row in conn.execute("PRAGMA index_list(licitaciones)").fetchall()
+    }
+    assert "idx_licitaciones_tipo_publicacion" in licitacion_indexes
 
     novedades_columns = {
         row[1]: row[2]

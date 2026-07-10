@@ -100,6 +100,29 @@ def test_review_email_html_uses_mailto_buttons_and_cc_rules() -> None:
     assert html.count("cc=info3%40llangon.com") == 3
 
 
+def test_review_email_html_omits_cc_when_not_configured() -> None:
+    app = load_app_module()
+    with temporary_app_database(app):
+        dia_id = insert_dia(app)
+        licitacion_id = insert_licitacion(app, dia_id, "EXP-MAILTO-NO-CC")
+        set_licitacion_state(app, licitacion_id, "Enviada a Nuria")
+        with app.db_session() as conn:
+            day = conn.execute("SELECT * FROM infonalia_dias WHERE id = ?", (dia_id,)).fetchone()
+            rows = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchall()
+            codes = ensure_review_action_codes(conn, review_id=dia_id, licitaciones=rows, timestamp="2026-06-26T14:00:00")
+            html = build_infonalia_review_email_html(
+                day=day,
+                licitaciones=rows,
+                action_codes=codes,
+                mailbox_to="info3llangon@gmail.com",
+                mailbox_cc="",
+                generated_at=datetime(2026, 6, 26, 14, 0, 0),
+            )
+
+    assert "mailto:info3llangon%40gmail.com?subject=" in html
+    assert "cc=" not in html
+
+
 @pytest.mark.parametrize(
     ("action_code", "expected_state"),
     [

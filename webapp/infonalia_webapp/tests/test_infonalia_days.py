@@ -209,6 +209,35 @@ def test_refresh_day_status_preserves_existing_state_machine(
     assert dict(row) == {"estado": expected, "updated_at": "2026-06-12T13:00:00"}
 
 
+def test_previous_notices_keep_day_ready_for_nuria_until_discarded() -> None:
+    conn = make_conn()
+    conn.execute("ALTER TABLE licitaciones ADD COLUMN tipo_publicacion TEXT DEFAULT 'licitacion'")
+    dia_id = insert_day(conn)
+    conn.execute(
+        """
+        INSERT INTO licitaciones (infonalia_dia_id, estado, updated_at, tipo_publicacion)
+        VALUES (?, ?, ?, ?)
+        """,
+        (dia_id, "Importada", "2026-06-12T08:30:00", "anuncio_previo"),
+    )
+
+    refresh_day_status(conn, dia_id, timestamp="2026-06-12T13:00:00")
+    row = conn.execute("SELECT * FROM infonalia_dias WHERE id = ?", (dia_id,)).fetchone()
+    item = day_row_to_dict(conn, row)
+
+    assert row["estado"] == "Listo para enviar a Nuria"
+    assert item["pendientes"] == 0
+    assert item["total_nuria"] == 1
+
+    conn.execute("UPDATE licitaciones SET estado = ? WHERE infonalia_dia_id = ?", ("Descartada", dia_id))
+    refresh_day_status(conn, dia_id, timestamp="2026-06-12T14:00:00")
+    row = conn.execute("SELECT * FROM infonalia_dias WHERE id = ?", (dia_id,)).fetchone()
+    item = day_row_to_dict(conn, row)
+
+    assert row["estado"] == "Completado"
+    assert item["total_nuria"] == 0
+
+
 def test_day_row_to_dict_preserves_api_payload_shape() -> None:
     conn = make_conn()
     dia_id = insert_day(

@@ -77,12 +77,22 @@ def test_private_html_entrypoints_do_not_need_inline_scripts() -> None:
 
 
 def test_public_html_entrypoints_do_not_need_inline_scripts() -> None:
-    for path in (STATIC_ROOT / "public.html", FIREBASE_ROOT / "index.html"):
-        html = path.read_text(encoding="utf-8")
-        assert 'data-private-app-url="' in html
-        assert not re.search(r"<script(?!\s+src=)", html)
-        assert "<style" not in html
-        assert not re.search(r"<[^>]+\son[a-z]+\s*=", html)
+    html = (FIREBASE_ROOT / "index.html").read_text(encoding="utf-8")
+    assert 'data-private-app-url="' in html
+    assert not re.search(r"<script(?!\s+src=)", html)
+    assert "<style" not in html
+    assert not re.search(r"<[^>]+\son[a-z]+\s*=", html)
+
+
+def test_private_static_tree_does_not_keep_public_site_copy() -> None:
+    removed_public_files = [
+        STATIC_ROOT / "public.html",
+        STATIC_ROOT / "public.css",
+        STATIC_ROOT / "public.js",
+        STATIC_ROOT / "assets" / "public-hero-procurement.png",
+    ]
+
+    assert not any(path.exists() for path in removed_public_files)
 
 
 def test_login_back_link_points_to_firebase_public_site() -> None:
@@ -107,14 +117,13 @@ def test_firebase_hosting_headers_include_public_csp() -> None:
 
 
 def test_public_js_escapes_dynamic_button_hrefs() -> None:
-    for path in (STATIC_ROOT / "public.js", FIREBASE_ROOT / "static" / "public.js"):
-        script = path.read_text(encoding="utf-8")
-        assert "function safeHref" in script
-        assert 'if (text.startsWith("//")) return "#";' in script
-        assert '["http:", "https:"]' in script
-        assert 'href="${escapeHtml(safeHref(href))}"' in script
-        assert ">${escapeHtml(label)}</a>" in script
-        assert 'href="${href}"' not in script
+    script = (FIREBASE_ROOT / "static" / "public.js").read_text(encoding="utf-8")
+    assert "function safeHref" in script
+    assert 'if (text.startsWith("//")) return "#";' in script
+    assert '["http:", "https:"]' in script
+    assert 'href="${escapeHtml(safeHref(href))}"' in script
+    assert ">${escapeHtml(label)}</a>" in script
+    assert 'href="${href}"' not in script
 
 
 def test_private_app_normalize_url_rejects_unsafe_schemes() -> None:
@@ -177,7 +186,10 @@ def test_licitaciones_center_ui_is_simplified_and_has_detail_view() -> None:
     assert 'id="licitacion-detail-dialog"' in html
     assert "Detalle de trabajo" in html
     assert "PRÓXIMOS MÓDULOS" not in html
-    assert "Clientes" not in html
+    assert '<p class="nav-group-title" data-admin-only hidden>Clientes</p>' in html
+    assert 'id="clients-button"' in html
+    assert 'id="cliente-envios-button"' in html
+    assert 'data-nav-section="cliente-envios"' in html
     assert "Requerimientos" not in html
     assert 'data-open-licitacion-detail="${escapeHtml(item.id)}"' in script
     assert "function renderLicitacionDetailView" in script
