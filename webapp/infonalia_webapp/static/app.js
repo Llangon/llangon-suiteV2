@@ -6722,6 +6722,83 @@ async function loadAiSummary(licitacionId, options = {}) {
   }
 }
 
+function aiQueueStatusClass(job) {
+  if (job?.status === "error") return "danger";
+  if (job?.status === "completed") return "ok";
+  return "warning";
+}
+
+function renderAiQueueActions(job) {
+  const actions = [];
+  if (job.can_open) actions.push(`<button type="button" data-ai-queue-open="${escapeHtml(job.licitacion_id)}">Abrir ficha</button>`);
+  if (job.can_cancel) actions.push(`<button type="button" data-ai-queue-cancel="${escapeHtml(job.id)}" data-ai-queue-cancel-status="${escapeHtml(job.status || "")}">Cancelar</button>`);
+  if (job.can_retry) actions.push(`<button type="button" data-ai-queue-open="${escapeHtml(job.licitacion_id)}">Reintentar</button>`);
+  if (!["pending", "queued", "processing", "deferred"].includes(job.status || "")) {
+    actions.push(`<button type="button" data-ai-queue-dismiss="${escapeHtml(job.id)}">Ocultar</button>`);
+  }
+  return actions.join("");
+}
+
+function renderAiQueueDiagnosticContent(job) {
+  if (!job || !["error", "deferred"].includes(job.status || "")) return "";
+  const diagnostic = job.error_diagnostic || {};
+  const code = diagnostic.code || job.error_code || "ERROR_IA";
+  const returnCode = diagnostic.returncode;
+  const hint = diagnostic.hint || "Consulta el detalle técnico para diagnosticar el fallo.";
+  const detail = diagnostic.detail || "El proveedor no devolvió un detalle técnico adicional.";
+  return `
+    <div class="ai-queue-diagnostic">
+      <div class="ai-queue-diagnostic-head">
+        <strong>Diagnóstico del error</strong>
+        <code>${escapeHtml([code, returnCode !== null && returnCode !== undefined ? `salida ${returnCode}` : ""].filter(Boolean).join(" · "))}</code>
+      </div>
+      <p>${escapeHtml(hint)}</p>
+      <details>
+        <summary>Ver detalle técnico</summary>
+        <pre>${escapeHtml(detail)}</pre>
+      </details>
+    </div>
+  `;
+}
+
+function renderAiQueueErrorDiagnostic(job) {
+  const diagnostic = renderAiQueueDiagnosticContent(job);
+  if (!diagnostic) return "";
+  return `
+    <tr class="ai-queue-diagnostic-row">
+      <td colspan="9">
+        ${diagnostic}
+      </td>
+    </tr>
+  `;
+}
+
+function renderAiQueueCard(job) {
+  const actions = renderAiQueueActions(job);
+  const notification = job.notification_status?.state && job.notification_status.state !== "none"
+    ? `<small>${escapeHtml(job.notification_status.label || "")}</small>`
+    : "";
+  return `
+    <article class="ai-queue-card${job.is_taking_longer_than_expected ? " is-late" : ""}">
+      <div class="ai-queue-card-head">
+        <span class="ai-status ${aiQueueStatusClass(job)}">${escapeHtml(job.progress_label || job.status || "Sin estado")}</span>
+        <strong class="ai-queue-card-expediente">${escapeHtml(job.expediente || "Sin expediente")}</strong>
+      </div>
+      ${job.progress_message ? `<p class="ai-queue-card-progress">${escapeHtml(job.progress_message)}</p>` : ""}
+      <h4>${escapeHtml(job.titulo_corto || "Sin título")}</h4>
+      ${actions ? `<div class="ai-queue-actions">${actions}</div>` : ""}
+      <dl class="ai-queue-card-meta">
+        <div><dt>Proveedor</dt><dd>${escapeHtml(job.provider || "—")}</dd></div>
+        <div><dt>Inicio / creado</dt><dd>${escapeHtml(formatDateTime(job.started_at || job.created_at) || "—")}</dd></div>
+        <div><dt>Tiempo</dt><dd>${escapeHtml(formatDuration(job.elapsed_seconds) || "—")}</dd></div>
+        <div><dt>Estimación</dt><dd>${escapeHtml(job.estimated_label || "—")}</dd></div>
+        <div><dt>Documentos</dt><dd>${escapeHtml(job.selected_documents_count || 0)}${notification}</dd></div>
+      </dl>
+      ${renderAiQueueDiagnosticContent(job)}
+    </article>
+  `;
+}
+
 function renderAiQueueJobs(title, items) {
   if (!items.length) return "";
   return `
@@ -6746,7 +6823,7 @@ function renderAiQueueJobs(title, items) {
             ${items.map((job) => `
               <tr class="${job.is_taking_longer_than_expected ? "is-late" : ""}">
                 <td>
-                  <span class="ai-status ${job.status === "error" ? "danger" : job.status === "completed" ? "ok" : "warning"}">${escapeHtml(job.progress_label || job.status || "")}</span>
+                  <span class="ai-status ${aiQueueStatusClass(job)}">${escapeHtml(job.progress_label || job.status || "")}</span>
                   ${job.progress_message ? `<small>${escapeHtml(job.progress_message)}</small>` : ""}
                 </td>
                 <td><strong>${escapeHtml(job.expediente || "")}</strong></td>
@@ -6759,47 +6836,17 @@ function renderAiQueueJobs(title, items) {
                   ${escapeHtml(job.selected_documents_count || 0)}
                   ${job.notification_status?.state && job.notification_status.state !== "none" ? `<small>${escapeHtml(job.notification_status.label || "")}</small>` : ""}
                 </td>
-                <td>
-                  <div class="ai-queue-actions">
-                    ${job.can_open ? `<button type="button" data-ai-queue-open="${escapeHtml(job.licitacion_id)}">Abrir ficha</button>` : ""}
-                    ${job.can_cancel ? `<button type="button" data-ai-queue-cancel="${escapeHtml(job.id)}" data-ai-queue-cancel-status="${escapeHtml(job.status || "")}">Cancelar</button>` : ""}
-                    ${job.can_retry ? `<button type="button" data-ai-queue-open="${escapeHtml(job.licitacion_id)}">Reintentar</button>` : ""}
-                    ${!["pending", "queued", "processing", "deferred"].includes(job.status || "") ? `<button type="button" data-ai-queue-dismiss="${escapeHtml(job.id)}">Ocultar</button>` : ""}
-                  </div>
-                </td>
+                <td><div class="ai-queue-actions">${renderAiQueueActions(job)}</div></td>
               </tr>
               ${renderAiQueueErrorDiagnostic(job)}
             `).join("")}
           </tbody>
         </table>
       </div>
+      <div class="ai-queue-card-list">
+        ${items.map(renderAiQueueCard).join("")}
+      </div>
     </section>
-  `;
-}
-
-function renderAiQueueErrorDiagnostic(job) {
-  if (!job || !["error", "deferred"].includes(job.status || "")) return "";
-  const diagnostic = job.error_diagnostic || {};
-  const code = diagnostic.code || job.error_code || "ERROR_IA";
-  const returnCode = diagnostic.returncode;
-  const hint = diagnostic.hint || "Consulta el detalle técnico para diagnosticar el fallo.";
-  const detail = diagnostic.detail || "El proveedor no devolvió un detalle técnico adicional.";
-  return `
-    <tr class="ai-queue-diagnostic-row">
-      <td colspan="9">
-        <div class="ai-queue-diagnostic">
-          <div class="ai-queue-diagnostic-head">
-            <strong>Diagnóstico del error</strong>
-            <code>${escapeHtml([code, returnCode !== null && returnCode !== undefined ? `salida ${returnCode}` : ""].filter(Boolean).join(" · "))}</code>
-          </div>
-          <p>${escapeHtml(hint)}</p>
-          <details>
-            <summary>Ver detalle técnico</summary>
-            <pre>${escapeHtml(detail)}</pre>
-          </details>
-        </div>
-      </td>
-    </tr>
   `;
 }
 
@@ -6887,14 +6934,20 @@ function startAiQueuePolling(interval = 15000) {
 function openAiQueueDialog() {
   appState.aiQueueOpen = true;
   if (aiQueueContent) aiQueueContent.innerHTML = `<div class="empty">Cargando Cola IA...</div>`;
-  aiQueueDialog.showModal();
+  if (!aiQueueDialog.open) aiQueueDialog.showModal();
   loadAiQueue({ forceRender: true });
   startAiQueuePolling(5000);
 }
 
 function closeAiQueueDialog() {
   appState.aiQueueOpen = false;
-  aiQueueDialog.close();
+  if (aiQueueDialog.open) aiQueueDialog.close();
+  startAiQueuePolling(15000);
+}
+
+function handleAiQueueDialogClosed() {
+  if (!appState.aiQueueOpen) return;
+  appState.aiQueueOpen = false;
   startAiQueuePolling(15000);
 }
 
@@ -8008,6 +8061,7 @@ document.getElementById("close-ai-summary-email").addEventListener("click", () =
 document.getElementById("cancel-ai-summary-email").addEventListener("click", () => aiSummaryEmailDialog.close());
 sendAiSummaryEmailButton.addEventListener("click", sendAiSummaryEmail);
 document.getElementById("close-ai-queue").addEventListener("click", closeAiQueueDialog);
+aiQueueDialog.addEventListener("close", handleAiQueueDialogClosed);
 refreshAiQueueButton.addEventListener("click", () => loadAiQueue({ forceRender: true }));
 clearFinishedAiQueueButton.addEventListener("click", clearFinishedAiQueue);
 aiQueueContent.addEventListener("click", async (event) => {
