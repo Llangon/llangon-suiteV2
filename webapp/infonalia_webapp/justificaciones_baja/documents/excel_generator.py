@@ -125,8 +125,8 @@ def _build_identification_sheet(sheet: object, payload: DocumentPayloadV1) -> No
         ("Aviso", payload.narrative.estimated_draft_notice),
     ]
     for row, (label, value) in enumerate(rows, start=3):
-        sheet.cell(row, 1, label)
-        sheet.cell(row, 2, value)
+        _write_cell(sheet, row, 1, label)
+        _write_cell(sheet, row, 2, value)
         _style_label(sheet.cell(row, 1))
         sheet.merge_cells(start_row=row, start_column=2, end_row=row, end_column=4)
         sheet.cell(row, 2).alignment = Alignment(wrap_text=True, vertical="top")
@@ -155,7 +155,7 @@ def _build_products_sheet(sheet: object, payload: DocumentPayloadV1) -> None:
     )
     _title(sheet, "AUDITORÍA DOCUMENTAL - PRODUCTOS", len(headers))
     for column, header in enumerate(headers, start=1):
-        sheet.cell(2, column, header)
+        _write_cell(sheet, 2, column, header)
     _style_header(sheet, 2, len(headers))
     for row, product in enumerate(payload.products, start=3):
         warnings = "; ".join(issue.code for issue in product.warnings)
@@ -176,7 +176,7 @@ def _build_products_sheet(sheet: object, payload: DocumentPayloadV1) -> None:
             warnings,
         )
         for column, value in enumerate(values, start=1):
-            sheet.cell(row, column, value)
+            _write_cell(sheet, row, column, value)
             sheet.cell(row, column).alignment = Alignment(
                 horizontal="left" if column in (1, 2, 3, 12, 14) else "right",
                 vertical="top",
@@ -235,8 +235,8 @@ def _build_transport_sheet(
         ("Transporte imputado", _decimal(value.allocated_transport.raw), "money"),
     ]
     for row, (label, cell_value, kind) in enumerate(rows, start=3):
-        sheet.cell(row, 1, label)
-        sheet.cell(row, 2, cell_value)
+        _write_cell(sheet, row, 1, label)
+        _write_cell(sheet, row, 2, cell_value)
         _style_label(sheet.cell(row, 1))
         if kind == "integer":
             sheet.cell(row, 2).number_format = "#,##0"
@@ -269,7 +269,7 @@ def _build_summary_sheet(sheet: object, payload: DocumentPayloadV1) -> None:
     _title(sheet, "AUDITORÍA DOCUMENTAL - RESUMEN ECONÓMICO", 4)
     headers = ("Concepto", "Valor numérico", "Valor canónico", "Presentación Word")
     for column, header in enumerate(headers, start=1):
-        sheet.cell(3, column, header)
+        _write_cell(sheet, 3, column, header)
     _style_header(sheet, 3, 4)
     rows = (
         ("Oferta", payload.summary.offer, "money"),
@@ -291,10 +291,10 @@ def _build_summary_sheet(sheet: object, payload: DocumentPayloadV1) -> None:
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     for row, (label, value, kind) in enumerate(rows, start=4):
         numeric = _decimal(value.raw)
-        sheet.cell(row, 1, label)
-        sheet.cell(row, 2, numeric)
-        sheet.cell(row, 3, value.raw)
-        sheet.cell(row, 4, value.display)
+        _write_cell(sheet, row, 1, label)
+        _write_cell(sheet, row, 2, numeric)
+        _write_cell(sheet, row, 3, value.raw)
+        _write_cell(sheet, row, 4, value.display)
         sheet.cell(row, 2).number_format = "0.00%" if kind == "percentage" else "#,##0.00 [$€-es-ES]"
         for column in range(1, 5):
             cell = sheet.cell(row, column)
@@ -368,8 +368,8 @@ def _build_audit_sheet(
             )
         )
     for row, (key, value) in enumerate(entries, start=3):
-        sheet.cell(row, 1, key)
-        sheet.cell(row, 2, value)
+        _write_cell(sheet, row, 1, key)
+        _write_cell(sheet, row, 2, value)
         _style_label(sheet.cell(row, 1))
         sheet.merge_cells(start_row=row, start_column=2, end_row=row, end_column=4)
         sheet.cell(row, 2).alignment = Alignment(wrap_text=True, vertical="top")
@@ -383,7 +383,7 @@ def _build_audit_sheet(
 
 def _title(sheet: object, title: str, columns: int) -> None:
     sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=columns)
-    cell = sheet.cell(1, 1, title)
+    cell = _write_cell(sheet, 1, 1, title)
     cell.font = Font(name="Arial", size=16, bold=True, color=WHITE)
     cell.fill = PatternFill("solid", fgColor=ACCENT)
     cell.alignment = Alignment(horizontal="left", vertical="center")
@@ -397,6 +397,16 @@ def _style_header(sheet: object, row: int, columns: int) -> None:
         cell.font = Font(name="Arial", size=9, bold=True, color=WHITE)
         cell.fill = PatternFill("solid", fgColor=ACCENT)
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+
+def _write_cell(sheet: object, row: int, column: int, value: object) -> object:
+    """Write untrusted payload strings as literal text, never as Excel formulas."""
+
+    cell = sheet.cell(row, column)
+    cell.value = value
+    if isinstance(value, str):
+        cell.data_type = "s"
+    return cell
 
 
 def _style_label(cell: object) -> None:

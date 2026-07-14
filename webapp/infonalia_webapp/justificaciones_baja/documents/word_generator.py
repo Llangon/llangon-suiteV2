@@ -94,7 +94,8 @@ def generate_word(
             context["route_image_note"] = "[IMAGEN DE RUTA PENDIENTE]"
         template_document.render(
             context,
-            jinja_env=Environment(undefined=StrictUndefined, autoescape=False),
+            jinja_env=Environment(undefined=StrictUndefined),
+            autoescape=True,
         )
         template_document.save(raw_temp)
         _postprocess_word(raw_temp, processed_temp)

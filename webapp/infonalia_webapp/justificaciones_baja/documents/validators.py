@@ -422,7 +422,7 @@ def validate_excel(path: str | Path, payload: DocumentPayloadV1) -> DocumentVali
     for sheet in workbook.worksheets:
         for row in sheet.iter_rows():
             for cell in row:
-                if cell.data_type == "f" or (isinstance(cell.value, str) and cell.value.startswith("=")):
+                if cell.data_type == "f":
                     formulas.append(f"{sheet.title}!{cell.coordinate}")
                 if isinstance(cell.value, str) and PERSONAL_PATH_PATTERN.search(cell.value):
                     personal_paths.append(f"{sheet.title}!{cell.coordinate}")

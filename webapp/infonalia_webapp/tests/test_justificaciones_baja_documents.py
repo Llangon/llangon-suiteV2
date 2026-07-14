@@ -509,6 +509,85 @@ def test_t40_valores_opcionales_nulos(tmp_path: Path) -> None:
     assert validate_word(generate_word(payload, tmp_path.resolve()).path, payload).is_valid
 
 
+def test_t41_word_escapa_caracteres_xml_y_conserva_imagen(tmp_path: Path) -> None:
+    snapshot = _snapshot(product_count=1)
+    product_name = "Pan & aceite <Premium> > estándar"
+    product_characteristics = "Formato 1 < 2 & calidad A > B"
+    product = replace(
+        snapshot.justification.products[0],
+        name=product_name,
+        characteristics=product_characteristics,
+    )
+    justification = replace(snapshot.justification, products=(product,))
+    calculation = calculate_justification(justification)
+    assert calculation.is_valid, calculation.errors
+    snapshot_result = create_snapshot(justification, calculation, snapshot.metadata)
+    assert snapshot_result.snapshot is not None, snapshot_result.errors
+
+    client = "EMPRESA & ASOCIADOS <PRUEBA>"
+    exposition = "Comparativa 1 < 2 & margen 3 > 2."
+    argument = "Compra directa & logística <integrada> > estándar."
+    image = _route_image(tmp_path / "route-special.png")
+    payload = build_document_payload(
+        snapshot_result.snapshot,
+        IdentificationInput(
+            expediente="EXP-&-<2026>",
+            organismo="Organismo & Área <Compras>",
+            objeto="Suministro A < B & C > D",
+            lot_number="1",
+            lot_name="Pan & bollería <especial>",
+            duration_description="12 meses & prórroga <prevista>",
+            place="Córdoba & provincia",
+            date_text="14 < 15 & 16 > 15",
+            client=client,
+        ),
+        NarrativeInput(
+            subject="Justificación & viabilidad <económica>.",
+            exposition=exposition,
+            arguments=(argument,),
+            acquisition_text="Adquisición < coste & calidad > referencia.",
+            transport_text="Ruta A > B & vuelta < C.",
+            structure_text="Estructura & medios <propios>.",
+            conclusion="Resultado > 0 & ejecución < plazo.",
+        ),
+        TransportDocumentInput(
+            observatory="Observatorio & Costes <Transporte>",
+            observatory_date="abril < mayo & junio > marzo",
+            observatory_url="https://example.invalid/?a=1&b=2",
+            vehicle="Vehículo rígido <2 ejes> & distribución",
+        ),
+        route_image_path=image,
+        route_image_logical_name=image.name,
+        generated_at="2026-07-14T12:00:00+00:00",
+        generated_by="test-suite",
+    )
+
+    result = generate_word(payload, tmp_path.resolve(), route_image_path=image)
+    assert validate_word(result.path, payload).is_valid
+    document = Document(result.path)
+    all_text = "\n".join(
+        [paragraph.text for paragraph in document.paragraphs]
+        + [
+            cell.text
+            for table in document.tables
+            for row in table.rows
+            for cell in row.cells
+        ]
+    )
+    for expected in (client, exposition, argument, product_name, product_characteristics):
+        assert expected in all_text
+
+    with zipfile.ZipFile(result.path) as archive:
+        story_names = [
+            name
+            for name in archive.namelist()
+            if re.fullmatch(r"word/(?:document|header\d+|footer\d+)\.xml", name)
+        ]
+        for story_name in story_names:
+            ET.fromstring(archive.read(story_name))
+        assert any(name.startswith("word/media/") for name in archive.namelist())
+
+
 def test_escritura_atomica_y_no_sobrescritura(tmp_path: Path) -> None:
     final = tmp_path / "atomic.docx"
     temp = temporary_output_path(final)
@@ -556,6 +635,59 @@ def test_igualdad_word_excel_payload(tmp_path: Path) -> None:
     workbook.close()
     assert values["snapshot_sha256"] == payload.control.snapshot_sha256
     assert values["payload_sha256"] == payload.sha256
+
+
+@pytest.mark.parametrize("literal", ("=literal", "+literal", "-literal", "@literal"))
+def test_excel_writes_all_user_text_as_literal_without_formulas(
+    literal: str,
+    tmp_path: Path,
+) -> None:
+    payload, _ = _payload(tmp_path, product_count=1)
+    changed = replace(
+        payload,
+        identification=replace(payload.identification, client=literal),
+        products=(
+            replace(payload.products[0], name=literal, characteristics=literal),
+        ),
+        transport=replace(payload.transport, observatory=literal),
+        control=replace(payload.control, generated_by=literal),
+    )
+
+    result = generate_excel(changed, tmp_path.resolve())
+    assert validate_excel(result.path, changed).is_valid
+
+    workbook = load_workbook(result.path, data_only=False)
+    try:
+        assert workbook["Identificación"]["B9"].value == literal
+        assert workbook["Productos"]["B3"].value == literal
+        assert workbook["Productos"]["C3"].value == literal
+        assert workbook["Transporte"]["B3"].value == literal
+        audit = workbook["Auditoría"]
+        generated_by = next(
+            audit.cell(row, 2)
+            for row in range(1, audit.max_row + 1)
+            if audit.cell(row, 1).value == "generated_by"
+        )
+        assert generated_by.value == literal
+        assert all(
+            cell.data_type != "f"
+            for sheet in workbook.worksheets
+            for row in sheet.iter_rows()
+            for cell in row
+        )
+    finally:
+        workbook.close()
+
+    with zipfile.ZipFile(result.path) as archive:
+        worksheet_xml = [
+            ET.fromstring(archive.read(name))
+            for name in archive.namelist()
+            if name.startswith("xl/worksheets/") and name.endswith(".xml")
+        ]
+    assert not any(
+        root.findall(".//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}f")
+        for root in worksheet_xml
+    )
 
 
 def test_plantilla_productiva_normalizada() -> None:
