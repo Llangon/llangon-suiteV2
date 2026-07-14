@@ -1,6 +1,10 @@
 beautifulsoup4
+docxtpl==0.20.2
 extract-msg
 google-genai
+openpyxl==3.1.5
+Pillow==12.3.0
 pypdf
+python-docx==1.2.0
 requests
 websocket-client
