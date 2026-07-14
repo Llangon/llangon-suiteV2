@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -29,28 +30,52 @@ except ImportError:
 
 
 DOWNLOAD_BAT_FILENAME = "Descargar ficheros de la plataforma.bat"
-DOWNLOAD_BAT_CONTENT = """@echo off
+
+
+def _escape_batch_value(value: object) -> str:
+    return str(value).replace("%", "%%")
+
+
+def build_download_bat_content(
+    launcher_path: Path | str | None = None,
+    python_executable: Path | str | None = None,
+) -> str:
+    if launcher_path is None:
+        launcher_path = Path(__file__).resolve().parents[2] / "herramientas_python" / "Descargar_Licitacion.py"
+    if python_executable is None:
+        python_executable = sys.executable
+
+    launcher = _escape_batch_value(Path(launcher_path).resolve(strict=False))
+    python = _escape_batch_value(Path(python_executable).resolve(strict=False))
+    return f"""@echo off
 setlocal
 cd /d "%~dp0"
-set "BUSCAR=%CD%"
-:buscar_lanzador
-if exist "%BUSCAR%\\Infonalia\\Descargar_Licitacion.py" (
-    set "SCRIPT=%BUSCAR%\\Infonalia\\Descargar_Licitacion.py"
-    goto ejecutar
+set "PYTHON={python}"
+set "SCRIPT={launcher}"
+
+if not exist "%PYTHON%" (
+    echo No se encontro el Python de la app:
+    echo %PYTHON%
+    pause
+    exit /b 1
 )
-for %%I in ("%BUSCAR%\\..") do set "PADRE=%%~fI"
-if /I "%PADRE%"=="%BUSCAR%" goto no_encontrado
-set "BUSCAR=%PADRE%"
-goto buscar_lanzador
-:no_encontrado
-echo No se encontro Infonalia\\Descargar_Licitacion.py buscando desde:
-echo %~dp0
-pause
-exit /b 1
-:ejecutar
-python "%SCRIPT%"
-if errorlevel 1 pause
+
+if not exist "%SCRIPT%" (
+    echo No se encontro el descargador central de la app:
+    echo %SCRIPT%
+    pause
+    exit /b 1
+)
+
+"%PYTHON%" "%SCRIPT%"
+set "EXIT_CODE=%ERRORLEVEL%"
+if not "%EXIT_CODE%"=="0" pause
+exit /b %EXIT_CODE%
 """
+
+
+def _is_legacy_download_bat(content: str) -> bool:
+    return "Infonalia\\Descargar_Licitacion.py" in content and ":buscar_lanzador" in content
 
 
 def path_is_relative_to(path: Path, parent: Path) -> bool:
@@ -264,7 +289,13 @@ def resolve_destination_folder(row: Any, *, download_root: Path, dropbox_root: P
     return download_root / safe_folder_name(label)
 
 
-def write_http_url(folder: Path, url: str) -> None:
+def write_http_url(
+    folder: Path,
+    url: str,
+    *,
+    launcher_path: Path | str | None = None,
+    python_executable: Path | str | None = None,
+) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     http_url = folder / "HTTP.url"
     if not http_url.exists():
@@ -273,8 +304,13 @@ def write_http_url(folder: Path, url: str) -> None:
             encoding="utf-8",
         )
     bat_path = folder / DOWNLOAD_BAT_FILENAME
+    bat_content = build_download_bat_content(launcher_path, python_executable)
     if not bat_path.exists():
-        bat_path.write_text(DOWNLOAD_BAT_CONTENT, encoding="utf-8")
+        bat_path.write_text(bat_content, encoding="utf-8")
+    else:
+        current_content = bat_path.read_text(encoding="utf-8", errors="ignore")
+        if _is_legacy_download_bat(current_content):
+            bat_path.write_text(bat_content, encoding="utf-8")
 
 
 def storage_root_for_destination(destination: Path, allowed_roots: list[Path]) -> Path:

@@ -172,12 +172,36 @@ def test_storage_root_for_destination_rejects_outside_path(tmp_path) -> None:
 
 
 def test_write_http_url_creates_shortcut_file(tmp_path) -> None:
-    write_http_url(tmp_path, "https://example.test/perfil")
+    launcher = tmp_path / "suite app" / "herramientas_python" / "Descargar_Licitacion.py"
+    python = tmp_path / "suite app" / ".venv" / "Scripts" / "python.exe"
+    write_http_url(
+        tmp_path,
+        "https://example.test/perfil",
+        launcher_path=launcher,
+        python_executable=python,
+    )
 
     assert (tmp_path / "HTTP.url").read_text(encoding="utf-8") == "[InternetShortcut]\nURL=https://example.test/perfil\n"
     bat = (tmp_path / DOWNLOAD_BAT_FILENAME).read_text(encoding="utf-8")
-    assert 'Infonalia\\Descargar_Licitacion.py' in bat
-    assert 'python "%SCRIPT%"' in bat
+    assert f'set "PYTHON={python.resolve()}"' in bat
+    assert f'set "SCRIPT={launcher.resolve()}"' in bat
+    assert '"%PYTHON%" "%SCRIPT%"' in bat
+    assert 'Infonalia\\Descargar_Licitacion.py' not in bat
+
+
+def test_write_http_url_migrates_legacy_generated_bat(tmp_path) -> None:
+    bat_path = tmp_path / DOWNLOAD_BAT_FILENAME
+    bat_path.write_text(
+        '@echo off\n:buscar_lanzador\nif exist "%BUSCAR%\\Infonalia\\Descargar_Licitacion.py" echo legacy\n',
+        encoding="utf-8",
+    )
+    launcher = tmp_path / "repo" / "herramientas_python" / "Descargar_Licitacion.py"
+
+    write_http_url(tmp_path, "https://example.test/perfil", launcher_path=launcher)
+
+    bat = bat_path.read_text(encoding="utf-8")
+    assert str(launcher.resolve()) in bat
+    assert ":buscar_lanzador" not in bat
 
 
 def test_is_internal_download_path_checks_download_root(tmp_path) -> None:

@@ -20,7 +20,7 @@ SUMMARY_TEMPLATE: dict[str, Any] = {
         "tipo_contrato": "",
         "regulacion_armonizada": None,
     },
-    "resumen_ejecutivo": {"texto": "", "decision_preliminar": "", "aspectos_clave": []},
+    "resumen_ejecutivo": {"texto": "", "aspectos_clave": []},
     "caracteristicas": {
         "presupuesto_base": None,
         "valor_estimado": None,
@@ -40,8 +40,9 @@ SUMMARY_TEMPLATE: dict[str, Any] = {
         "prorrogas": {"existen": None, "detalle": ""},
     },
     "lotes": [],
+    "productos": [],
     "garantias": {
-        "garantia_provisional": {"exigida": None, "importe": None, "observaciones": "", "alerta": ""},
+        "garantia_provisional": {"exigida": None, "importe": None, "observaciones": ""},
         "garantia_definitiva": {"exigida": None, "importe": None, "observaciones": ""},
         "garantia_complementaria": {"exigida": None, "observaciones": ""},
     },
@@ -75,8 +76,7 @@ SUMMARY_TEMPLATE: dict[str, Any] = {
         "pago_directo_subcontratistas": None,
         "restricciones": "",
         "penalidades": "",
-        "comentario_practico": "",
-        "alerta": "",
+        "observaciones": "",
     },
     "solvencia": {"economica": [], "tecnica": [], "observaciones": ""},
     "condiciones_especiales_ejecucion": [],
@@ -104,9 +104,8 @@ SUMMARY_TEMPLATE: dict[str, Any] = {
         "descarga": "",
         "observaciones_producto": [],
     },
-    "alertas": [],
-    "acciones_recomendadas": [],
-    "preguntas_revisar": [],
+    "puntos_atencion": [],
+    "fuentes_consultadas": [],
     "referencias_historicas_no_analizadas": [],
     "control_calidad": {"campos_no_encontrados": [], "campos_con_baja_confianza": [], "advertencias": []},
 }
@@ -223,10 +222,10 @@ def summary_quality_check(summary: dict[str, Any]) -> dict[str, Any]:
     has_criterios = bool(_non_empty_list(criterios.get("juicio_valor")) or _non_empty_list(criterios.get("formulas"))) if isinstance(criterios, dict) else _non_empty_list(criterios)
     if has_criterios:
         signals.append("criterios_adjudicacion")
-    if _non_empty_list(summary.get("alertas")):
-        signals.append("alertas")
-    if _non_empty_list(summary.get("acciones_recomendadas")):
-        signals.append("acciones_recomendadas")
+    if _non_empty_list(summary.get("puntos_atencion")):
+        signals.append("puntos_atencion")
+    if _non_empty_list(summary.get("productos")):
+        signals.append("productos")
     for key in (
         "documentacion_administrativa",
         "documentacion_economica",
@@ -273,8 +272,10 @@ def summary_quality_check(summary: dict[str, Any]) -> dict[str, Any]:
         "has_caracteristicas": any(caracteristicas.get(key) not in (None, "", []) for key in caracteristicas),
         "has_criterios": has_criterios,
         "has_lotes": _non_empty_list(summary.get("lotes")),
-        "has_alertas": _non_empty_list(summary.get("alertas")),
-        "has_acciones": _non_empty_list(summary.get("acciones_recomendadas")),
+        "has_puntos_atencion": _non_empty_list(summary.get("puntos_atencion")),
+        "has_productos": _non_empty_list(summary.get("productos")),
+        "has_alertas": _non_empty_list(summary.get("puntos_atencion")),
+        "has_acciones": False,
         "has_logistica": "observaciones_operativas" in signals,
         "has_documentacion": any(signal.startswith("presentacion.") for signal in signals),
         "has_solvencia": "solvencia" in signals,

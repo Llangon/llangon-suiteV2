@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import io
+import sys
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime
@@ -242,7 +243,12 @@ def test_download_endpoint_success_updates_ruta_carpeta_with_mocked_subprocess()
         assert ruta_carpeta
         assert ruta_carpeta == payload["ruta_carpeta"]
         assert Path(payload["carpeta"], "HTTP.url").exists()
-        assert Path(payload["carpeta"], "Descargar ficheros de la plataforma.bat").exists()
+        bat_path = Path(payload["carpeta"], "Descargar ficheros de la plataforma.bat")
+        assert bat_path.exists()
+        bat_content = bat_path.read_text(encoding="utf-8")
+        assert str(app.LAUNCHER_PATH.resolve()) in bat_content
+        assert str(Path(sys.executable).resolve()) in bat_content
+        assert '"%PYTHON%" "%SCRIPT%"' in bat_content
         assert Path(payload["carpeta"], "documento-ficticio.pdf").exists()
         assert Path(payload["carpeta"], f"{licitacion_id}.llangon").exists()
         assert not Path(payload["carpeta"], "EnSeguimiento.llangon").exists()

@@ -295,8 +295,9 @@ def process_mailbox_once(
                 _counter_increment(summary["ignored_by_reason"], "dry-run")
             elif result_status == "ignored":
                 _counter_increment(summary["ignored_by_reason"], reason or "ignorado")
-                if result.get("error_code") == "DUPLICATE_EMAIL_ACTION":
-                    summary["total_duplicate_codes"] += 1
+                if result.get("error_code") in {"DUPLICATE_EMAIL_ACTION", "AI_SUMMARY_DISABLED"}:
+                    if result.get("error_code") == "DUPLICATE_EMAIL_ACTION":
+                        summary["total_duplicate_codes"] += 1
                     if not dry_run:
                         client.uid("STORE", uid, "+FLAGS", "\\Seen")
             else:

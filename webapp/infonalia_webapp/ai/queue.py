@@ -420,6 +420,29 @@ def dismiss_job(conn: sqlite3.Connection, job_id: int, dismissed_by: str = "") -
     }
 
 
+def dismiss_finished_jobs(conn: sqlite3.Connection, dismissed_by: str = "") -> dict[str, object]:
+    timestamp = now_iso()
+    cur = conn.execute(
+        """
+        UPDATE ai_analysis_jobs
+        SET dismissed_at = ?, dismissed_by = ?
+        WHERE status NOT IN ('pending', 'queued', 'processing', 'deferred')
+          AND (dismissed_at IS NULL OR dismissed_at = '')
+        """,
+        (timestamp, dismissed_by or "ui"),
+    )
+    dismissed = max(0, int(cur.rowcount or 0))
+    return {
+        "ok": True,
+        "dismissed": dismissed,
+        "message": (
+            f"Se han ocultado {dismissed} trabajos terminados."
+            if dismissed
+            else "No había trabajos terminados para limpiar."
+        ),
+    }
+
+
 def mark_stale_jobs_in_conn(conn: sqlite3.Connection, *, processing_timeout_seconds: int, pending_timeout_minutes: int = 30) -> int:
     now = datetime.now().replace(microsecond=0)
     heartbeat_threshold = (now - timedelta(seconds=max(60, processing_timeout_seconds))).isoformat()

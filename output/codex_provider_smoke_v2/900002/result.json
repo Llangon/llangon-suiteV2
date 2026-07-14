@@ -1,0 +1,201 @@
+{
+  "metadata": {
+    "expediente": "PRUEBA-AISLADA",
+    "titulo": "Prueba técnica sin documentos reales",
+    "organismo": "",
+    "provincia": "",
+    "plataforma": "",
+    "enlace_licitacion": "",
+    "fecha_limite_presentacion": "",
+    "hora_limite_presentacion": "",
+    "tipo_contrato": "",
+    "regulacion_armonizada": null
+  },
+  "resumen_ejecutivo": {
+    "texto": "El manifiesto identifica el expediente PRUEBA-AISLADA con el objeto «Prueba técnica sin documentos reales». No hay documentos de licitación ni textos extraídos disponibles para determinar su alcance, estructura por lotes, dimensión económica, duración o condiciones de presentación y ejecución.",
+    "aspectos_clave": [
+      "El manifiesto no contiene documentos asociados.",
+      "No existen textos extraídos disponibles.",
+      "Los datos del expediente y del objeto proceden únicamente del manifiesto."
+    ]
+  },
+  "caracteristicas": {
+    "presupuesto_base": null,
+    "valor_estimado": null,
+    "moneda": "EUR",
+    "plazo_ejecucion_inicial": "",
+    "fecha_inicio_prevista": "",
+    "prorrogas": {
+      "existen": null,
+      "detalle": ""
+    },
+    "adjudicacion": "",
+    "numero_sobres": null,
+    "observaciones": "No consta documentación de contratación que permita extraer estas características."
+  },
+  "datos_economicos": {
+    "presupuesto_base": null,
+    "valor_estimado": null,
+    "moneda": "EUR",
+    "observaciones": "No consta información económica."
+  },
+  "plazos": {
+    "plazo_ejecucion_inicial": "",
+    "fecha_inicio_prevista": "",
+    "fecha_fin_prevista": "",
+    "prorrogas": {
+      "existen": null,
+      "detalle": ""
+    }
+  },
+  "lotes": [],
+  "productos": [],
+  "garantias": {
+    "garantia_provisional": {
+      "exigida": null,
+      "importe": null,
+      "observaciones": ""
+    },
+    "garantia_definitiva": {
+      "exigida": null,
+      "importe": null,
+      "observaciones": ""
+    },
+    "garantia_complementaria": {
+      "exigida": null,
+      "observaciones": ""
+    }
+  },
+  "presentacion_documentacion": {
+    "numero_sobres": null,
+    "forma_presentacion": "",
+    "documentacion_administrativa": [],
+    "documentacion_economica": [],
+    "documentacion_tecnica": [],
+    "anexos_relevantes": [],
+    "observaciones": "No consta documentación sobre la forma de presentación."
+  },
+  "presentacion": {
+    "numero_sobres": null,
+    "forma_presentacion": "",
+    "documentacion_administrativa": [],
+    "documentacion_economica": [],
+    "documentacion_tecnica": [],
+    "anexos_relevantes": []
+  },
+  "muestras_fichas_memoria": {
+    "muestras": {
+      "exigidas": null,
+      "momento": "",
+      "detalle": "",
+      "consecuencia_no_presentar": ""
+    },
+    "fichas_tecnicas": {
+      "exigidas": null,
+      "sobre": "",
+      "detalle": ""
+    },
+    "memoria_tecnica": {
+      "exigida": null,
+      "detalle": ""
+    },
+    "adscripcion_medios": {
+      "exigida": null,
+      "detalle": ""
+    }
+  },
+  "criterios_adjudicacion": {
+    "juicio_valor": [],
+    "formulas": [],
+    "total_puntos": null,
+    "observaciones": "No constan criterios de adjudicación."
+  },
+  "subcontratacion": {
+    "permitida": null,
+    "debe_declararse_en_oferta": null,
+    "pago_directo_subcontratistas": null,
+    "restricciones": "",
+    "penalidades": "",
+    "observaciones": "No consta información sobre subcontratación."
+  },
+  "solvencia": {
+    "economica": [],
+    "tecnica": [],
+    "observaciones": "No constan requisitos de solvencia."
+  },
+  "condiciones_especiales_ejecucion": [],
+  "observaciones_operativas": {
+    "habilitacion_profesional": "",
+    "seguro_obligatorio": "",
+    "lugar_entrega": [],
+    "horario_entrega": [],
+    "plazo_entrega": [],
+    "periodicidad": "",
+    "transporte": "",
+    "descarga": "",
+    "albaranes": "",
+    "envases_etiquetado": "",
+    "caducidad_consumo_preferente": "",
+    "observaciones_producto": []
+  },
+  "logistica_entrega": {
+    "lugares_entrega": [],
+    "horarios_entrega": [],
+    "plazos_entrega_desde_pedido": [],
+    "periodicidad": "",
+    "transporte": "",
+    "albaranes": "",
+    "descarga": "",
+    "observaciones_producto": []
+  },
+  "puntos_atencion": [],
+  "fuentes_consultadas": [
+    {
+      "documento": "manifest.json",
+      "tipo": "Manifiesto del workspace",
+      "paginas_relevantes": []
+    }
+  ],
+  "referencias_historicas_no_analizadas": [],
+  "control_calidad": {
+    "campos_no_encontrados": [
+      "organismo",
+      "provincia",
+      "plataforma",
+      "enlace_licitacion",
+      "fecha y hora límite de presentación",
+      "tipo de contrato",
+      "regulación armonizada",
+      "presupuesto base",
+      "valor estimado",
+      "duración",
+      "fecha de inicio y fin",
+      "prórrogas",
+      "lotes",
+      "productos y cantidades",
+      "precios unitarios máximos",
+      "garantías",
+      "número de sobres",
+      "forma de presentación",
+      "documentación administrativa",
+      "documentación económica",
+      "documentación técnica",
+      "anexos",
+      "muestras",
+      "fichas técnicas",
+      "memoria técnica",
+      "adscripción de medios",
+      "criterios de adjudicación",
+      "solvencia económica y técnica",
+      "subcontratación",
+      "condiciones especiales de ejecución",
+      "penalidades",
+      "logística de entrega"
+    ],
+    "campos_con_baja_confianza": [],
+    "advertencias": [
+      "No hay archivos en inputs/ ni textos en extracted_text/ para efectuar el análisis documental.",
+      "El expediente y el título no han podido contrastarse con un PCAP, PPT, cuadro de características, anuncio o anexo."
+    ]
+  }
+}

@@ -1,0 +1,155 @@
+{
+  "metadata": {
+    "expediente": "",
+    "titulo": "",
+    "organismo": "",
+    "provincia": "",
+    "plataforma": "",
+    "enlace_licitacion": "",
+    "fecha_limite_presentacion": "",
+    "hora_limite_presentacion": "",
+    "tipo_contrato": "",
+    "regulacion_armonizada": null
+  },
+  "resumen_ejecutivo": {
+    "texto": "",
+    "aspectos_clave": []
+  },
+  "caracteristicas": {
+    "presupuesto_base": null,
+    "valor_estimado": null,
+    "moneda": "EUR",
+    "plazo_ejecucion_inicial": "",
+    "fecha_inicio_prevista": "",
+    "prorrogas": {
+      "existen": null,
+      "detalle": ""
+    },
+    "adjudicacion": "",
+    "numero_sobres": null,
+    "observaciones": ""
+  },
+  "datos_economicos": {
+    "presupuesto_base": null,
+    "valor_estimado": null,
+    "moneda": "EUR",
+    "observaciones": ""
+  },
+  "plazos": {
+    "plazo_ejecucion_inicial": "",
+    "fecha_inicio_prevista": "",
+    "fecha_fin_prevista": "",
+    "prorrogas": {
+      "existen": null,
+      "detalle": ""
+    }
+  },
+  "lotes": [],
+  "productos": [],
+  "garantias": {
+    "garantia_provisional": {
+      "exigida": null,
+      "importe": null,
+      "observaciones": ""
+    },
+    "garantia_definitiva": {
+      "exigida": null,
+      "importe": null,
+      "observaciones": ""
+    },
+    "garantia_complementaria": {
+      "exigida": null,
+      "observaciones": ""
+    }
+  },
+  "presentacion_documentacion": {
+    "numero_sobres": null,
+    "forma_presentacion": "",
+    "documentacion_administrativa": [],
+    "documentacion_economica": [],
+    "documentacion_tecnica": [],
+    "anexos_relevantes": [],
+    "observaciones": ""
+  },
+  "presentacion": {
+    "numero_sobres": null,
+    "forma_presentacion": "",
+    "documentacion_administrativa": [],
+    "documentacion_economica": [],
+    "documentacion_tecnica": [],
+    "anexos_relevantes": []
+  },
+  "muestras_fichas_memoria": {
+    "muestras": {
+      "exigidas": null,
+      "momento": "",
+      "detalle": "",
+      "consecuencia_no_presentar": ""
+    },
+    "fichas_tecnicas": {
+      "exigidas": null,
+      "sobre": "",
+      "detalle": ""
+    },
+    "memoria_tecnica": {
+      "exigida": null,
+      "detalle": ""
+    },
+    "adscripcion_medios": {
+      "exigida": null,
+      "detalle": ""
+    }
+  },
+  "criterios_adjudicacion": {
+    "juicio_valor": [],
+    "formulas": [],
+    "total_puntos": null,
+    "observaciones": ""
+  },
+  "subcontratacion": {
+    "permitida": null,
+    "debe_declararse_en_oferta": null,
+    "pago_directo_subcontratistas": null,
+    "restricciones": "",
+    "penalidades": "",
+    "observaciones": ""
+  },
+  "solvencia": {
+    "economica": [],
+    "tecnica": [],
+    "observaciones": ""
+  },
+  "condiciones_especiales_ejecucion": [],
+  "observaciones_operativas": {
+    "habilitacion_profesional": "",
+    "seguro_obligatorio": "",
+    "lugar_entrega": [],
+    "horario_entrega": [],
+    "plazo_entrega": [],
+    "periodicidad": "",
+    "transporte": "",
+    "descarga": "",
+    "albaranes": "",
+    "envases_etiquetado": "",
+    "caducidad_consumo_preferente": "",
+    "observaciones_producto": []
+  },
+  "logistica_entrega": {
+    "lugares_entrega": [],
+    "horarios_entrega": [],
+    "plazos_entrega_desde_pedido": [],
+    "periodicidad": "",
+    "transporte": "",
+    "albaranes": "",
+    "descarga": "",
+    "observaciones_producto": []
+  },
+  "puntos_atencion": [],
+  "fuentes_consultadas": [],
+  "referencias_historicas_no_analizadas": [],
+  "control_calidad": {
+    "campos_no_encontrados": [],
+    "campos_con_baja_confianza": [],
+    "advertencias": []
+  }
+}

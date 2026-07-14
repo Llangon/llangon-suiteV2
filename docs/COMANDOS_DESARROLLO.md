@@ -62,6 +62,20 @@ python -m webapp.infonalia_webapp.automation_orchestrator --status
 python -m webapp.infonalia_webapp.backup_sqlite --dry-run
 ```
 
+## Tests de descargadores sin efectos reales
+
+Estas pruebas usan dobles y fixtures; no descargan documentos ni acceden a plataformas externas:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q `
+  webapp\infonalia_webapp\tests\test_catalunya_downloader.py `
+  webapp\infonalia_webapp\tests\test_download_launcher.py `
+  webapp\infonalia_webapp\tests\test_legacy_download_launcher_bridge.py `
+  webapp\infonalia_webapp\tests\test_storage_paths.py
+```
+
+La arquitectura y el diagnóstico están documentados en `docs/DESCARGADORES_LICITACIONES.md`.
+
 ## Comandos no automaticos salvo peticion explicita
 
 - `python -m webapp.infonalia_webapp.infonalia_mail_importer --once`

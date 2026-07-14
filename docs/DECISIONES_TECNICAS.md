@@ -1130,3 +1130,27 @@ Regla futura:
 - el monitor se ejecutará como script externo de Windows;
 - si detecta novedades en 20 licitaciones, enviará 20 emails, uno por licitación;
 - todos los emails irán a destinatarios globales, no a emails configurados por expediente.
+
+## ADR-056 — Fuente única para descargadores y BAT unificado
+
+### Contexto
+
+Los BAT manuales de las carpetas de licitación buscaban `Infonalia\Descargar_Licitacion.py` ascendiendo por Dropbox. Esto permitió que coexistieran el lanzador y los descargadores del repositorio con copias operativas antiguas bajo Dropbox. En julio de 2026, Catalunya seguía agotando el timeout de Chrome aunque el repositorio ya contenía una corrección mediante API, porque el BAT ejecutaba la copia antigua.
+
+### Decisión
+
+- mantener todos los descargadores de plataforma únicamente en `herramientas_python`;
+- hacer que los BAT generados por la app y la macro invoquen el `.venv` y `herramientas_python/Descargar_Licitacion.py` del repositorio;
+- migrar automáticamente los BAT estándar antiguos cuando la app vuelva a preparar una carpeta;
+- conservar un puente mínimo en el antiguo punto de entrada para que los BAT ya existentes deleguen inmediatamente en el lanzador central;
+- mantener toda detección de plataforma en `Descargar_Licitacion.py`, nunca en el BAT o en el puente;
+- usar en Catalunya la API JSON de detalle como vía principal y HTML/Chrome únicamente como fallback.
+
+### Consecuencias
+
+- una corrección en `herramientas_python` se aplica a la app, los BAT nuevos y los BAT antiguos;
+- las copias de descargadores de plataforma bajo Dropbox dejan de ser fuentes de verdad;
+- el puente legado no contiene lógica de plataformas y no requiere sincronización cuando cambia un descargador;
+- los BAT personalizados no se sobrescriben;
+- un cambio de ubicación del repositorio requiere `LLANGON_SUITE_ROOT` o regeneración de BAT;
+- el diagnóstico y las pruebas obligatorias quedan descritos en `docs/DESCARGADORES_LICITACIONES.md`.

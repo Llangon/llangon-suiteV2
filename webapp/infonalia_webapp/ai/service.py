@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import smtplib
 import sqlite3
 from datetime import datetime, timedelta
@@ -26,6 +27,7 @@ from .queue import (
     cancel_job,
     claim_pending_job,
     create_job,
+    dismiss_finished_jobs,
     dismiss_job,
     elapsed_seconds_for_row,
     estimate_label_for_job,
@@ -110,7 +112,11 @@ def _provider_configured(config: AIConfig) -> bool:
 
 
 def _provider_model(config: AIConfig) -> str:
-    return config.model if config.analysis_provider == "gemini" else config.analysis_provider
+    if config.analysis_provider == "gemini":
+        return config.model
+    if config.analysis_provider == "codex_local":
+        return config.codex_model
+    return config.analysis_provider
 
 
 def _provider_unavailable(config: AIConfig) -> tuple[str, str, str]:
@@ -189,6 +195,76 @@ def _latest_useful_summary(
     return None
 
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|authorization|password)\b\s*[:=]\s*([^\s,;]+)"
+)
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
+
+
+def _safe_provider_error_preview(value: object, *, limit: int = 1800) -> str:
+    text = _ANSI_ESCAPE_RE.sub("", str(value or ""))
+    text = _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}=[oculto]", text)
+    text = _BEARER_RE.sub("Bearer [oculto]", text)
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text).strip()
+    if len(text) > limit:
+        text = f"[inicio omitido]\n{text[-limit:]}"
+    return text
+
+
+def _provider_error_hint(error_code: str, preview: str) -> str:
+    code = str(error_code or "").upper()
+    lowered = preview.lower()
+    if code == "CODEX_NOT_FOUND":
+        return "No se localiza el ejecutable configurado de Codex."
+    if code == "CODEX_LAUNCH_ERROR":
+        return "Codex está instalado, pero Windows no ha podido iniciar el proceso."
+    if code == "CODEX_UPDATE_REQUIRED":
+        return "La versión instalada de Codex es demasiado antigua para el modelo configurado; hay que actualizar Codex CLI."
+    if code == "CODEX_TIMEOUT":
+        return "Codex superó el tiempo máximo configurado antes de devolver el informe."
+    if code == "INVALID_JSON":
+        return "Codex respondió, pero el resultado no tenía el formato estructurado esperado."
+    if code == "RESOURCE_EXHAUSTED":
+        return "El proveedor ha aplicado un límite temporal; el trabajo puede reintentarse más tarde."
+    if code != "CODEX_ERROR":
+        return "Consulta el detalle técnico para identificar la fase exacta del fallo."
+    if "requires a newer version of codex" in lowered or "please upgrade to the latest app or cli" in lowered:
+        return "La versión instalada de Codex es demasiado antigua para el modelo configurado; hay que actualizar Codex CLI."
+    if any(marker in lowered for marker in ("401", "unauthorized", "not logged in", "authentication", "credentials", "refresh token")):
+        return "La sesión de Codex no está autorizada o ha caducado."
+    if any(marker in lowered for marker in ("429", "rate limit", "too many requests", "quota")):
+        return "Codex ha aplicado un límite temporal de uso."
+    if any(marker in lowered for marker in ("context window", "context length", "too many tokens", "maximum context")):
+        return "La documentación o la respuesta superó la capacidad admitida por el modelo."
+    if any(marker in lowered for marker in ("failed to connect", "connection", "network", "dns", "tls", "certificate")):
+        return "Codex no pudo completar la conexión con el servicio."
+    if any(marker in lowered for marker in ("permission denied", "access is denied", "acceso denegado", "sandbox", "read-only")):
+        return "Windows o el entorno de seguridad impidió una operación necesaria."
+    if "model" in lowered and any(marker in lowered for marker in ("not found", "unavailable", "unsupported")):
+        return "El modelo configurado no está disponible para esta ejecución."
+    return "Codex terminó antes de entregar el informe; el detalle técnico contiene la causa devuelta por el ejecutable."
+
+
+def _job_error_diagnostic(data: dict[str, object], diagnostics: dict[str, object]) -> dict[str, object]:
+    error_code = str(data.get("error_code") or "")
+    if not error_code:
+        return {}
+    detail = _safe_provider_error_preview(
+        diagnostics.get("stderr_preview")
+        or diagnostics.get("provider_error_preview")
+        or diagnostics.get("os_error_message")
+        or diagnostics.get("stdout_preview")
+        or diagnostics.get("raw_response_preview")
+    )
+    return {
+        "code": error_code,
+        "returncode": diagnostics.get("returncode"),
+        "detail": detail,
+        "hint": _provider_error_hint(error_code, detail),
+    }
+
+
 def _job_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
     data = row_to_dict(row)
     if not data:
@@ -238,6 +314,7 @@ def _job_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
         "is_taking_longer_than_expected": is_taking_longer,
         "error_code": data.get("error_code") or "",
         "error_message": data.get("error_message") or "",
+        "error_diagnostic": _job_error_diagnostic(data, raw_diagnostics),
         "next_retry_at": data.get("next_retry_at") or "",
         "dismissed_at": data.get("dismissed_at") or "",
         "dismissed_by": data.get("dismissed_by") or "",
@@ -746,6 +823,10 @@ def cancel_ai_job(conn: sqlite3.Connection, job_id: int) -> dict[str, object]:
 
 def dismiss_ai_job(conn: sqlite3.Connection, job_id: int, dismissed_by: str = "") -> dict[str, object]:
     return dismiss_job(conn, job_id, dismissed_by=dismissed_by)
+
+
+def dismiss_finished_ai_jobs(conn: sqlite3.Connection, dismissed_by: str = "") -> dict[str, object]:
+    return dismiss_finished_jobs(conn, dismissed_by=dismissed_by)
 
 
 def mark_stale_ai_jobs(conn: sqlite3.Connection, *, timeout_seconds: int) -> dict[str, object]:

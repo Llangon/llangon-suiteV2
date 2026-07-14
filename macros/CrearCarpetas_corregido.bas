@@ -173,13 +173,24 @@ Sub CrearCarpetas()
     textStream.Close
     
     '-------------------------------------------
-    ' El BAT estandar llama al lanzador central, que lee HTTP.url y detecta la plataforma.
+    ' El BAT estandar llama al mismo lanzador central y Python que usa Llangon Suite.
     Dim scriptLanzador As String
+    Dim pythonExe As String
+    Dim suiteRoot As String
     
-    scriptLanzador = ThisWorkbook.Path & "\Descargar_Licitacion.py"
+    suiteRoot = Environ$("LLANGON_SUITE_ROOT")
+    If suiteRoot = "" Then
+        suiteRoot = Environ$("USERPROFILE") & "\Documents\Codex\Llangon-SuiteV2"
+    End If
+    scriptLanzador = suiteRoot & "\herramientas_python\Descargar_Licitacion.py"
+    pythonExe = suiteRoot & "\.venv\Scripts\python.exe"
     
     If Dir(scriptLanzador) = "" Then
-        MsgBox "No se encontro Descargar_Licitacion.py en la carpeta del Excel.", vbCritical
+        MsgBox "No se encontro el descargador central de Llangon Suite: " & scriptLanzador, vbCritical
+        Exit Sub
+    End If
+    If Dir(pythonExe) = "" Then
+        MsgBox "No se encontro el Python de Llangon Suite: " & pythonExe, vbCritical
         Exit Sub
     End If
     
@@ -197,24 +208,12 @@ Sub CrearCarpetas()
     logFile.WriteLine "@echo off"
     logFile.WriteLine "setlocal"
     logFile.WriteLine "cd /d ""%~dp0"""
-    logFile.WriteLine "set ""BUSCAR=%CD%"""
-    logFile.WriteLine ":buscar_lanzador"
-    logFile.WriteLine "if exist ""%BUSCAR%\Infonalia\Descargar_Licitacion.py"" ("
-    logFile.WriteLine "    set ""SCRIPT=%BUSCAR%\Infonalia\Descargar_Licitacion.py"""
-    logFile.WriteLine "    goto ejecutar"
-    logFile.WriteLine ")"
-    logFile.WriteLine "for %%I in (""%BUSCAR%\.."") do set ""PADRE=%%~fI"""
-    logFile.WriteLine "if /I ""%PADRE%""==""%BUSCAR%"" goto no_encontrado"
-    logFile.WriteLine "set ""BUSCAR=%PADRE%"""
-    logFile.WriteLine "goto buscar_lanzador"
-    logFile.WriteLine ":no_encontrado"
-    logFile.WriteLine "echo No se encontro Infonalia\Descargar_Licitacion.py buscando desde:"
-    logFile.WriteLine "echo %~dp0"
-    logFile.WriteLine "pause"
-    logFile.WriteLine "exit /b 1"
-    logFile.WriteLine ":ejecutar"
-    logFile.WriteLine "python ""%SCRIPT%"""
-    logFile.WriteLine "if errorlevel 1 pause"
+    logFile.WriteLine "set ""PYTHON=" & pythonExe & """"
+    logFile.WriteLine "set ""SCRIPT=" & scriptLanzador & """"
+    logFile.WriteLine """%PYTHON%"" ""%SCRIPT%"""
+    logFile.WriteLine "set ""EXIT_CODE=%ERRORLEVEL%"""
+    logFile.WriteLine "if not ""%EXIT_CODE%""==""0"" pause"
+    logFile.WriteLine "exit /b %EXIT_CODE%"
     logFile.Close
     
     Shell """" & logPath & """", vbNormalFocus

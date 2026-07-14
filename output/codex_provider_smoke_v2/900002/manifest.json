@@ -1,0 +1,15 @@
+{
+  "job_id": 900002,
+  "licitacion_id": 0,
+  "expediente": "PRUEBA-AISLADA",
+  "objeto": "Prueba técnica sin documentos reales",
+  "organismo": null,
+  "fecha_limite": null,
+  "hora_limite": null,
+  "plataforma": null,
+  "created_at": "2026-07-13T19:19:37",
+  "files": [],
+  "extracted_text_files": [],
+  "extracted_chars_by_file": {},
+  "pages_by_file": {}
+}

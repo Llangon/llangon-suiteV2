@@ -5,6 +5,7 @@ from datetime import datetime
 import pytest
 
 from webapp.infonalia_webapp.email_actions import (
+    ACTION_AI_SUMMARY,
     ACTION_DISCARD,
     ACTION_DOWNLOAD_REVIEW,
     ACTION_PREPARE,
@@ -121,6 +122,81 @@ def test_review_email_html_omits_cc_when_not_configured() -> None:
 
     assert "mailto:info3llangon%40gmail.com?subject=" in html
     assert "cc=" not in html
+
+
+def test_review_email_html_includes_ai_summary_only_when_feature_is_enabled() -> None:
+    app = load_app_module()
+    with temporary_app_database(app):
+        dia_id = insert_dia(app)
+        licitacion_id = insert_licitacion(app, dia_id, "EXP-MAILTO-IA")
+        set_licitacion_state(app, licitacion_id, "Enviada a Nuria")
+        with app.db_session() as conn:
+            day = conn.execute("SELECT * FROM infonalia_dias WHERE id = ?", (dia_id,)).fetchone()
+            rows = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchall()
+            disabled_codes = ensure_review_action_codes(
+                conn,
+                review_id=dia_id,
+                licitaciones=rows,
+                timestamp="2026-06-26T14:00:00",
+                ai_summary_enabled=False,
+            )
+            disabled_html = build_infonalia_review_email_html(
+                day=day,
+                licitaciones=rows,
+                action_codes=disabled_codes,
+                mailbox_to="info3llangon@gmail.com",
+                mailbox_cc="info3@llangon.com",
+                ai_summary_enabled=False,
+            )
+            enabled_codes = ensure_review_action_codes(
+                conn,
+                review_id=dia_id,
+                licitaciones=rows,
+                timestamp="2026-06-26T14:00:00",
+                ai_summary_enabled=True,
+            )
+            enabled_html = build_infonalia_review_email_html(
+                day=day,
+                licitaciones=rows,
+                action_codes=enabled_codes,
+                mailbox_to="info3llangon@gmail.com",
+                mailbox_cc="info3@llangon.com",
+                ai_summary_enabled=True,
+            )
+
+    assert (licitacion_id, ACTION_AI_SUMMARY) not in disabled_codes
+    assert "Solicitar resumen IA" not in disabled_html
+    assert (licitacion_id, ACTION_AI_SUMMARY) in enabled_codes
+    assert "Solicitar resumen IA" in enabled_html
+    assert generate_action_code(licitacion_id, ACTION_AI_SUMMARY) in enabled_html
+    assert enabled_html.count("cc=info3%40llangon.com") == 4
+
+
+def test_ai_summary_email_action_is_ignored_when_feature_is_disabled(monkeypatch) -> None:
+    monkeypatch.delenv("LLANGON_REVIEW_AI_SUMMARY_BUTTON_ENABLED", raising=False)
+    app = load_app_module()
+    with temporary_app_database(app):
+        dia_id = insert_dia(app)
+        licitacion_id = insert_licitacion(app, dia_id, "EXP-IA-DISABLED")
+        set_licitacion_state(app, licitacion_id, "Enviada a Nuria")
+        with app.db_session() as conn:
+            result = process_email_action(
+                conn,
+                code=generate_action_code(licitacion_id, ACTION_AI_SUMMARY),
+                sender_email="nuria@example.test",
+                source_message_id="<disabled-ia>",
+                allowed_senders=["nuria@example.test"],
+            )
+            event = conn.execute(
+                "SELECT result FROM email_action_events WHERE code = ? ORDER BY id DESC LIMIT 1",
+                (generate_action_code(licitacion_id, ACTION_AI_SUMMARY),),
+            ).fetchone()
+            state = conn.execute("SELECT estado FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()["estado"]
+
+    assert result["status"] == "ignored"
+    assert result["error_code"] == "AI_SUMMARY_DISABLED"
+    assert state == "Enviada a Nuria"
+    assert event["result"] == "ignored"
 
 
 @pytest.mark.parametrize(

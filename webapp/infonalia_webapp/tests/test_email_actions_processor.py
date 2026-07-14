@@ -4,6 +4,7 @@ from email.message import EmailMessage
 from http import HTTPStatus
 
 from webapp.infonalia_webapp.email_actions import (
+    ACTION_AI_SUMMARY,
     ACTION_DISCARD,
     ACTION_DOWNLOAD_REVIEW,
     ACTION_PREPARE,
@@ -440,6 +441,228 @@ def test_download_review_email_action_queues_download_job_and_starts_worker(monk
     assert jobs[0]["request_action"] == "Descargar para ver"
     assert jobs[0]["requested_by"] == "nuria@example.test"
     assert worker_calls == [jobs[0]["id"]]
+
+
+def test_ai_summary_email_action_chains_download_to_ai_job_and_email_notification(monkeypatch) -> None:
+    monkeypatch.setenv("LLANGON_REVIEW_AI_SUMMARY_BUTTON_ENABLED", "1")
+    app = load_app_module()
+    download_workers: list[int] = []
+    ai_workers: list[int] = []
+    ai_requests: list[dict] = []
+    notification_calls: list[dict] = []
+
+    monkeypatch.setattr(
+        app,
+        "start_download_worker",
+        lambda *, job_id=None: download_workers.append(int(job_id)) or {"started": True, "pid": 4321},
+    )
+
+    def fake_request_ai_analysis(conn, licitacion_id, **kwargs):
+        ai_requests.append({"licitacion_id": licitacion_id, **kwargs})
+        return {
+            "ok": True,
+            "job_id": 701,
+            "job_status": "pending",
+            "job": {"id": 701, "status": "pending"},
+        }
+
+    def fake_create_job_notifications(conn, **kwargs):
+        notification_calls.append(kwargs)
+        return 1
+
+    monkeypatch.setattr(app, "request_ai_analysis", fake_request_ai_analysis)
+    monkeypatch.setattr(app, "create_job_notifications", fake_create_job_notifications)
+    monkeypatch.setattr(
+        app,
+        "start_ai_worker_for_job",
+        lambda conn, job_id: ai_workers.append(job_id) or {"ok": True, "pid": 9876, "log_path": "worker.log"},
+    )
+
+    with temporary_app_database(app):
+        _dia_id, licitacion_id = prepare_action(app, estado="Enviada a Nuria")
+        code = generate_action_code(licitacion_id, ACTION_AI_SUMMARY)
+        fake = FakeIMAP(
+            {
+                b"91": {
+                    "subject": f"LLANGON_CMD {code} - Solicitar resumen IA",
+                    "seen": False,
+                    "raw": make_message(
+                        f"LLANGON_CMD {code} - Solicitar resumen IA",
+                        "nuria@example.test",
+                        f"LLANGON_ACTION_CODE={code}",
+                        "<ai-summary-new-job>",
+                    ),
+                }
+            }
+        )
+
+        mailbox_result = run_with_fake_imap(app, fake)
+        jobs = download_jobs_for_licitacion(app, licitacion_id)
+        monkeypatch.setattr(app, "execute_download_for_destination", fake_completed_download_factory(app))
+        completion = app.process_download_job(int(jobs[0]["id"]))
+        with app.db_session() as conn:
+            request = conn.execute(
+                "SELECT * FROM email_ai_summary_requests WHERE licitacion_id = ?",
+                (licitacion_id,),
+            ).fetchone()
+            current_state = conn.execute("SELECT estado FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()["estado"]
+
+    assert mailbox_result["processed"] == 1
+    assert fake.messages[b"91"]["seen"] is True
+    assert current_state == "Descargar para ver"
+    assert download_workers == [jobs[0]["id"]]
+    assert ai_requests == [
+        {
+            "licitacion_id": licitacion_id,
+            "requested_by": "nuria@example.test",
+            "selected_files": None,
+            "notify_on_completion": True,
+            "notification_emails": ["nuria@example.test"],
+        }
+    ]
+    assert len(notification_calls) == 1
+    assert notification_calls[0]["job_id"] == 701
+    assert notification_calls[0]["licitacion_id"] == licitacion_id
+    assert notification_calls[0]["requested_by"] == "nuria@example.test"
+    assert notification_calls[0]["recipients"] == ["nuria@example.test"]
+    assert notification_calls[0]["created_at"]
+    assert ai_workers == [701]
+    assert request["download_job_id"] == jobs[0]["id"]
+    assert request["ai_job_id"] == 701
+    assert request["status"] == "analysis_queued"
+    assert completion["payload"]["ai_summary_requests"]["queued"] == 1
+
+
+def test_ai_summary_email_action_attaches_to_existing_download_and_active_ai_job(monkeypatch) -> None:
+    monkeypatch.setenv("LLANGON_REVIEW_AI_SUMMARY_BUTTON_ENABLED", "1")
+    app = load_app_module()
+    download_workers: list[int] = []
+    ai_workers: list[int] = []
+    notification_calls: list[dict] = []
+
+    monkeypatch.setattr(
+        app,
+        "start_download_worker",
+        lambda *, job_id=None: download_workers.append(int(job_id)) or {"started": True, "pid": 4321},
+    )
+    monkeypatch.setattr(
+        app,
+        "request_ai_analysis",
+        lambda conn, licitacion_id, **kwargs: {
+            "ok": True,
+            "job_status": "processing",
+            "job": {"id": 702, "status": "processing"},
+        },
+    )
+    monkeypatch.setattr(app, "create_job_notifications", lambda conn, **kwargs: notification_calls.append(kwargs) or 1)
+    monkeypatch.setattr(app, "start_ai_worker_for_job", lambda conn, job_id: ai_workers.append(job_id) or {"ok": True})
+
+    with temporary_app_database(app):
+        _dia_id, licitacion_id = prepare_action(app, estado="Descargar para ver")
+        with app.db_session() as conn:
+            existing_job_id = app.create_download_job(
+                conn,
+                licitacion_id,
+                timestamp="2026-07-11T10:00:00",
+                status="pending",
+                request_source="manual_button",
+                request_action="manual_download",
+                request_message_id="",
+                requested_by="admin_test",
+            )
+        code = generate_action_code(licitacion_id, ACTION_AI_SUMMARY)
+        fake = FakeIMAP(
+            {
+                b"92": {
+                    "subject": f"LLANGON_CMD {code} - Solicitar resumen IA",
+                    "seen": False,
+                    "raw": make_message(
+                        f"LLANGON_CMD {code} - Solicitar resumen IA",
+                        "nuria@example.test",
+                        f"LLANGON_ACTION_CODE={code}",
+                        "<ai-summary-existing-job>",
+                    ),
+                }
+            }
+        )
+
+        mailbox_result = run_with_fake_imap(app, fake)
+        monkeypatch.setattr(app, "execute_download_for_destination", fake_completed_download_factory(app))
+        completion = app.process_download_job(existing_job_id)
+        with app.db_session() as conn:
+            request = conn.execute(
+                "SELECT * FROM email_ai_summary_requests WHERE licitacion_id = ?",
+                (licitacion_id,),
+            ).fetchone()
+
+    assert mailbox_result["processed"] == 1
+    assert download_workers == []
+    assert ai_workers == []
+    assert notification_calls[0]["job_id"] == 702
+    assert notification_calls[0]["recipients"] == ["nuria@example.test"]
+    assert request["download_job_id"] == existing_job_id
+    assert request["ai_job_id"] == 702
+    assert request["status"] == "analysis_waiting"
+    assert completion["payload"]["ai_summary_requests"]["waiting_for_active_job"] == 1
+
+
+def test_ai_summary_email_action_sends_existing_summary_without_starting_another_ai_job(monkeypatch) -> None:
+    monkeypatch.setenv("LLANGON_REVIEW_AI_SUMMARY_BUTTON_ENABLED", "1")
+    app = load_app_module()
+    deliveries: list[dict] = []
+    ai_workers: list[int] = []
+
+    monkeypatch.setattr(app, "start_download_worker", lambda *, job_id=None: {"started": True, "pid": 4321})
+    monkeypatch.setattr(
+        app,
+        "request_ai_analysis",
+        lambda conn, licitacion_id, **kwargs: {"ok": True, "has_summary": True, "job_status": "completed"},
+    )
+    monkeypatch.setattr(
+        app,
+        "generate_ai_summary_pdf_and_email",
+        lambda conn, **kwargs: deliveries.append(kwargs) or {"sent": 1, "error": 0, "job_id": 703},
+    )
+    monkeypatch.setattr(app, "start_ai_worker_for_job", lambda conn, job_id: ai_workers.append(job_id) or {"ok": True})
+
+    with temporary_app_database(app):
+        _dia_id, licitacion_id = prepare_action(app, estado="Enviada a Nuria")
+        code = generate_action_code(licitacion_id, ACTION_AI_SUMMARY)
+        fake = FakeIMAP(
+            {
+                b"93": {
+                    "subject": f"LLANGON_CMD {code} - Solicitar resumen IA",
+                    "seen": False,
+                    "raw": make_message(
+                        f"LLANGON_CMD {code} - Solicitar resumen IA",
+                        "nuria@example.test",
+                        f"LLANGON_ACTION_CODE={code}",
+                        "<ai-summary-existing-summary>",
+                    ),
+                }
+            }
+        )
+
+        run_with_fake_imap(app, fake)
+        job_id = download_jobs_for_licitacion(app, licitacion_id)[0]["id"]
+        monkeypatch.setattr(app, "execute_download_for_destination", fake_completed_download_factory(app))
+        completion = app.process_download_job(int(job_id))
+        with app.db_session() as conn:
+            request = conn.execute(
+                "SELECT * FROM email_ai_summary_requests WHERE licitacion_id = ?",
+                (licitacion_id,),
+            ).fetchone()
+
+    assert len(deliveries) == 1
+    assert deliveries[0]["licitacion_id"] == licitacion_id
+    assert deliveries[0]["recipients"] == ["nuria@example.test"]
+    assert deliveries[0]["requested_by"] == "nuria@example.test"
+    assert deliveries[0]["now"] is app.now_iso
+    assert deliveries[0]["pdf_output_root"].name == "ai_summary_pdfs"
+    assert ai_workers == []
+    assert request["ai_job_id"] == 703
+    assert request["status"] == "summary_delivered"
+    assert completion["payload"]["ai_summary_requests"]["delivered_existing_summary"] == 1
 
 
 def test_prepare_email_action_does_not_duplicate_existing_pending_download_job(monkeypatch) -> None:

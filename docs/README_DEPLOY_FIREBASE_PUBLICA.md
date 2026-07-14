@@ -56,6 +56,7 @@ firebase deploy
 - `/metodologia/`
 - `/contratacion-publica/`
 - `/noticias/`
+- `/zona-privada/`
 - `/contacto/`
 - `/aviso-legal/`
 - `/politica-privacidad/`
@@ -64,7 +65,9 @@ firebase deploy
 ## Notas
 
 - `.firebaserc` es local y no se versiona; solo se conserva el ejemplo.
-- El enlace `Acceso a zona privada` apunta temporalmente a contacto hasta confirmar la URL privada estable.
+- `Noticias` y `Acceso a zona privada` no se muestran en la navegacion ni en el pie mientras no exista contenido real o una URL externa estable.
 - La web publica es una SPA estatica servida por Firebase Hosting; las rutas anteriores se resuelven con rewrites a `index.html`.
-- La seccion de noticias usa contenido estatico del bundle publico y no depende de `/api/public/noticias`.
+- La ruta `/noticias/` muestra un estado vacio honesto y no contiene noticias ficticias ni depende de la aplicacion privada.
+- La ruta `/zona-privada/` es auxiliar y solo ofrece contacto mientras no exista un acceso externo configurado.
+- La imagen principal usa `public-hero-procurement.webp` con el PNG original como respaldo.
 - Los datos legales pendientes estan documentados en `docs/DATOS_LEGALES_PENDIENTES.md`.

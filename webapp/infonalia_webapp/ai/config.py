@@ -53,6 +53,7 @@ class AIConfig:
     codex_timeout_seconds: int = 600
     codex_work_root: str = "runtime/ai_work/jobs"
     codex_sandbox: str = "read-only"
+    codex_model: str = "auto"
     codex_max_files: int = 8
     codex_max_file_mb: int = 45
 
@@ -107,6 +108,8 @@ class AIConfig:
             "min_extracted_chars": self.min_extracted_chars,
             "codex_local_enabled": self.codex_local_enabled,
             "codex_sandbox": self.codex_sandbox,
+            "codex_model": self.codex_model,
+            "codex_model_label": "Automático (Codex CLI)" if self.codex_model == "auto" else self.codex_model,
         }
 
 
@@ -141,6 +144,7 @@ def get_ai_config() -> AIConfig:
         codex_timeout_seconds=max(1, _int_env("CODEX_TIMEOUT_SECONDS", 600)),
         codex_work_root=os.environ.get("CODEX_WORK_ROOT", "runtime/ai_work/jobs").strip() or "runtime/ai_work/jobs",
         codex_sandbox=os.environ.get("CODEX_SANDBOX", "read-only").strip() or "read-only",
+        codex_model=os.environ.get("CODEX_MODEL", "auto").strip() or "auto",
         codex_max_files=max(1, _int_env("CODEX_MAX_FILES", 8)),
         codex_max_file_mb=max(1, _int_env("CODEX_MAX_FILE_MB", 45)),
     )

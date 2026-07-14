@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from email.message import EmailMessage
 from contextlib import contextmanager
 from datetime import datetime
@@ -416,6 +417,7 @@ try:
     from .ai.file_selection import AIFileSelectionError, list_ai_files
     from .ai.notifications import (
         EmailListError,
+        create_job_notifications,
         generate_ai_summary_pdf_and_email,
         normalize_email_list,
         notification_status_payload,
@@ -424,6 +426,7 @@ try:
         cancel_ai_job,
         delete_ai_summary,
         dismiss_ai_job,
+        dismiss_finished_ai_jobs,
         get_ai_job_payload,
         get_ai_queue_payload,
         get_ai_summary_payload,
@@ -437,6 +440,7 @@ except ImportError:
     from ai.file_selection import AIFileSelectionError, list_ai_files
     from ai.notifications import (
         EmailListError,
+        create_job_notifications,
         generate_ai_summary_pdf_and_email,
         normalize_email_list,
         notification_status_payload,
@@ -445,6 +449,7 @@ except ImportError:
         cancel_ai_job,
         delete_ai_summary,
         dismiss_ai_job,
+        dismiss_finished_ai_jobs,
         get_ai_job_payload,
         get_ai_queue_payload,
         get_ai_summary_payload,
@@ -492,6 +497,7 @@ try:
         action_mailbox_cc,
         action_mailbox_to,
         build_infonalia_review_email_html,
+        ensure_email_action_schema,
         ensure_review_action_codes,
     )
 except ImportError:
@@ -499,6 +505,7 @@ except ImportError:
         action_mailbox_cc,
         action_mailbox_to,
         build_infonalia_review_email_html,
+        ensure_email_action_schema,
         ensure_review_action_codes,
     )
 
@@ -2281,7 +2288,7 @@ DOWNLOAD_REQUEST_SOURCE_EMAIL_ACTION = "email_action"
 
 EMAIL_ACTION_DOWNLOAD_REVIEW_CODE = "02"
 EMAIL_ACTION_PREPARE_CODE = "03"
-EMAIL_ACTION_AI_SUMMARY_CODE = "04"  # Reservado para futura fase de resumen IA por correo.
+EMAIL_ACTION_AI_SUMMARY_CODE = "04"
 EMAIL_ACTION_TELEGRAM_CODES = {
     EMAIL_ACTION_DOWNLOAD_REVIEW_CODE,
     EMAIL_ACTION_PREPARE_CODE,
@@ -2733,6 +2740,206 @@ def _download_completed_successfully(http_status: HTTPStatus, payload: dict[str,
     return True
 
 
+def _email_ai_summary_request_rows_for_download(conn: sqlite3.Connection, download_job_id: int) -> list[sqlite3.Row]:
+    ensure_email_action_schema(conn)
+    return conn.execute(
+        """
+        SELECT *
+        FROM email_ai_summary_requests
+        WHERE download_job_id = ? AND status = 'download_pending'
+        ORDER BY id ASC
+        """,
+        (download_job_id,),
+    ).fetchall()
+
+
+def _update_email_ai_summary_request(
+    conn: sqlite3.Connection,
+    request_id: int,
+    *,
+    status: str,
+    detail: str,
+    ai_job_id: int | None = None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE email_ai_summary_requests
+        SET status = ?, detail = ?, ai_job_id = COALESCE(?, ai_job_id), updated_at = ?
+        WHERE id = ?
+        """,
+        (status, clean_text(detail)[:2000], ai_job_id, now_iso(), request_id),
+    )
+
+
+def _record_email_ai_summary_request_history(
+    conn: sqlite3.Connection,
+    request: sqlite3.Row,
+    *,
+    state: str,
+    detail: str,
+) -> None:
+    record_licitacion_history(
+        conn,
+        int(request["licitacion_id"]),
+        event_type="resumen_ia_correo",
+        old_value="",
+        new_value=f"{state}: {clean_text(detail)[:500]}",
+        user_id=clean_text(request["requested_by"]) or "correo_infonalia",
+        timestamp=now_iso(),
+    )
+
+
+def mark_email_ai_summary_requests_download_failed(download_job_id: int, error_message: str) -> int:
+    """Deja trazada la petición de resumen si su descarga previa no pudo terminar."""
+    with db_session() as conn:
+        requests = _email_ai_summary_request_rows_for_download(conn, download_job_id)
+        for request in requests:
+            _update_email_ai_summary_request(
+                conn,
+                int(request["id"]),
+                status="download_failed",
+                detail=error_message,
+            )
+            _record_email_ai_summary_request_history(
+                conn,
+                request,
+                state="descarga_fallida",
+                detail=error_message,
+            )
+        return len(requests)
+
+
+def start_email_ai_summary_requests_for_download(download_job_id: int) -> dict[str, object]:
+    """Encola o entrega los resúmenes IA pedidos desde un correo ya descargado."""
+    result: dict[str, object] = {
+        "checked": 0,
+        "queued": 0,
+        "waiting_for_active_job": 0,
+        "delivered_existing_summary": 0,
+        "skipped": 0,
+        "errors": 0,
+        "workers": [],
+    }
+    jobs_to_start: list[int] = []
+    with db_session() as conn:
+        requests = _email_ai_summary_request_rows_for_download(conn, download_job_id)
+        result["checked"] = len(requests)
+        for request in requests:
+            request_id = int(request["id"])
+            licitacion_id = int(request["licitacion_id"])
+            recipient = clean_text(request["requested_by"]).lower()
+            if not recipient:
+                detail = "La orden de resumen IA no contiene un email de destino válido."
+                _update_email_ai_summary_request(conn, request_id, status="analysis_skipped", detail=detail)
+                _record_email_ai_summary_request_history(conn, request, state="sin_destinatario", detail=detail)
+                result["skipped"] = int(result["skipped"]) + 1
+                continue
+            try:
+                payload = request_ai_analysis(
+                    conn,
+                    licitacion_id,
+                    requested_by=recipient,
+                    selected_files=None,
+                    notify_on_completion=True,
+                    notification_emails=[recipient],
+                )
+            except (AIFileSelectionError, EmailListError, ValueError) as exc:
+                detail = f"No se pudo preparar el resumen IA: {exc}"
+                _update_email_ai_summary_request(conn, request_id, status="analysis_error", detail=detail)
+                _record_email_ai_summary_request_history(conn, request, state="error_preparando_ia", detail=detail)
+                result["errors"] = int(result["errors"]) + 1
+                continue
+
+            if payload.get("has_summary"):
+                try:
+                    delivery = generate_ai_summary_pdf_and_email(
+                        conn,
+                        licitacion_id=licitacion_id,
+                        recipients=[recipient],
+                        requested_by=recipient,
+                        now=now_iso,
+                        pdf_output_root=DATA_ROOT / "runtime" / "ai_summary_pdfs",
+                    )
+                except Exception as exc:
+                    detail = f"No se pudo enviar el resumen IA ya disponible: {exc}"
+                    _update_email_ai_summary_request(conn, request_id, status="delivery_error", detail=detail)
+                    _record_email_ai_summary_request_history(conn, request, state="error_envio_resumen", detail=detail)
+                    result["errors"] = int(result["errors"]) + 1
+                    continue
+                sent = int(delivery.get("sent") or 0)
+                errors = int(delivery.get("error") or 0)
+                detail = "Resumen IA existente enviado por correo." if sent and not errors else "El resumen IA existente no pudo enviarse por completo."
+                _update_email_ai_summary_request(
+                    conn,
+                    request_id,
+                    status="summary_delivered" if sent and not errors else "delivery_error",
+                    detail=detail,
+                    ai_job_id=int(delivery.get("job_id") or 0) or None,
+                )
+                _record_email_ai_summary_request_history(
+                    conn,
+                    request,
+                    state="resumen_enviado" if sent and not errors else "error_envio_resumen",
+                    detail=detail,
+                )
+                if sent and not errors:
+                    result["delivered_existing_summary"] = int(result["delivered_existing_summary"]) + 1
+                else:
+                    result["errors"] = int(result["errors"]) + 1
+                continue
+
+            job = payload.get("job")
+            job = job if isinstance(job, Mapping) else {}
+            raw_job_id = payload.get("job_id") or job.get("id")
+            try:
+                ai_job_id = int(raw_job_id) if raw_job_id is not None else 0
+            except (TypeError, ValueError):
+                ai_job_id = 0
+            if not ai_job_id:
+                detail = clean_text(payload.get("motivo_si_no_puede_generar")) or "No hay documentos aptos para generar el resumen IA."
+                _update_email_ai_summary_request(conn, request_id, status="analysis_skipped", detail=detail)
+                _record_email_ai_summary_request_history(conn, request, state="analisis_no_disponible", detail=detail)
+                result["skipped"] = int(result["skipped"]) + 1
+                continue
+
+            create_job_notifications(
+                conn,
+                job_id=ai_job_id,
+                licitacion_id=licitacion_id,
+                requested_by=recipient,
+                recipients=[recipient],
+                created_at=now_iso(),
+            )
+            new_job = bool(payload.get("job_id"))
+            detail = "Análisis IA en cola; el resumen se enviará al terminar." if new_job else "La petición se ha añadido a un análisis IA ya en curso."
+            _update_email_ai_summary_request(
+                conn,
+                request_id,
+                status="analysis_queued" if new_job else "analysis_waiting",
+                detail=detail,
+                ai_job_id=ai_job_id,
+            )
+            _record_email_ai_summary_request_history(
+                conn,
+                request,
+                state="analisis_ia_en_cola" if new_job else "esperando_analisis_ia",
+                detail=detail,
+            )
+            if new_job:
+                jobs_to_start.append(ai_job_id)
+                result["queued"] = int(result["queued"]) + 1
+            else:
+                result["waiting_for_active_job"] = int(result["waiting_for_active_job"]) + 1
+
+    for ai_job_id in dict.fromkeys(jobs_to_start):
+        with db_session() as conn:
+            worker = start_ai_worker_for_job(conn, ai_job_id)
+        workers = result["workers"]
+        if isinstance(workers, list):
+            workers.append({"job_id": ai_job_id, **worker})
+    return result
+
+
 def _finish_failed_download_job(download_job_id: int, error_message: str) -> None:
     with db_session() as conn:
         finish_download_job(
@@ -2742,6 +2949,7 @@ def _finish_failed_download_job(download_job_id: int, error_message: str) -> Non
             error_message=error_message[:2000],
             timestamp=now_iso(),
         )
+    mark_email_ai_summary_requests_download_failed(download_job_id, error_message)
 
 
 def execute_download_for_destination(
@@ -2755,7 +2963,12 @@ def execute_download_for_destination(
 ) -> tuple[HTTPStatus, dict[str, object]]:
     url = clean_text(source_url)
     destino.mkdir(parents=True, exist_ok=True)
-    write_http_url(destino, url)
+    write_http_url(
+        destino,
+        url,
+        launcher_path=LAUNCHER_PATH,
+        python_executable=sys.executable,
+    )
 
     try:
         completed = subprocess.run(
@@ -2993,10 +3206,18 @@ def process_download_job(job_id: int) -> dict[str, object]:
         source_url=url,
     )
     if _download_completed_successfully(http_status, payload):
+        payload["ai_summary_requests"] = start_email_ai_summary_requests_for_download(job_id)
         payload["telegram_notifications"] = notify_pending_email_action_telegram_events(
             licitacion_id=licitacion_id,
             download_job_id=job_id,
         )
+    else:
+        payload["ai_summary_requests"] = {
+            "download_failed": mark_email_ai_summary_requests_download_failed(
+                job_id,
+                clean_text(payload.get("error")) or "La descarga necesaria para el resumen IA no pudo completarse.",
+            )
+        }
     return {"ok": http_status == HTTPStatus.OK, "status": payload.get("ok") and "completed" or "failed", "job_id": job_id, "payload": payload}
 
 def repair_internal_download_routes() -> int:
@@ -3785,6 +4006,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_save_ai_summary_pdf(int(licitacion_id))
         elif path == "/api/ai/jobs/mark-stale":
             self.api_mark_stale_ai_jobs()
+        elif path == "/api/ai/queue/dismiss-finished":
+            self.api_dismiss_finished_ai_jobs()
         elif path.startswith("/api/ai/jobs/") and path.endswith("/cancel"):
             job_id = path.removeprefix("/api/ai/jobs/").removesuffix("/cancel").strip("/")
             if not job_id.isdigit():
@@ -4124,6 +4347,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             ):
                 return True
             if path == "/api/ai/jobs/mark-stale":
+                return True
+            if path == "/api/ai/queue/dismiss-finished":
                 return True
             if path.startswith("/api/ai/jobs/") and (
                 path.endswith("/run")
@@ -7141,6 +7366,34 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         )
         self.send_json(payload)
 
+    def api_dismiss_finished_ai_jobs(self) -> None:
+        if not self.require_admin():
+            return
+        user = self.current_user() or {}
+        username = clean_text(user.get("username")) or "ui"
+        LOGGER.info("Limpieza de trabajos IA terminados solicitada usuario=%s", username)
+        try:
+            with db_session() as conn:
+                payload = dismiss_finished_ai_jobs(conn, dismissed_by=username)
+        except Exception:
+            LOGGER.exception("Error limpiando trabajos IA terminados usuario=%s", username)
+            self.send_json(
+                {
+                    "ok": False,
+                    "error_code": "AI_DISMISS_FINISHED_ERROR",
+                    "error_message": "No se pudieron limpiar los trabajos IA terminados.",
+                    "error": "No se pudieron limpiar los trabajos IA terminados.",
+                },
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+            return
+        LOGGER.info(
+            "Limpieza de trabajos IA terminados resuelta usuario=%s ocultados=%s",
+            username,
+            payload.get("dismissed", 0),
+        )
+        self.send_json(payload)
+
     def api_mark_stale_ai_jobs(self) -> None:
         if not self.require_admin():
             return
@@ -7409,10 +7662,18 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             source_url=url,
         )
         if _download_completed_successfully(http_status, payload):
+            payload["ai_summary_requests"] = start_email_ai_summary_requests_for_download(download_job_id)
             payload["telegram_notifications"] = notify_pending_email_action_telegram_events(
                 licitacion_id=licitacion_id,
                 download_job_id=download_job_id,
             )
+        else:
+            payload["ai_summary_requests"] = {
+                "download_failed": mark_email_ai_summary_requests_download_failed(
+                    download_job_id,
+                    clean_text(payload.get("error")) or "La descarga necesaria para el resumen IA no pudo completarse.",
+                )
+            }
         self.send_json(payload, http_status)
 
     def api_update_licitacion(self, licitacion_id: int) -> None:

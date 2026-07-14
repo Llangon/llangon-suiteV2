@@ -27,7 +27,8 @@
 - Existen submodulos relevantes como `ai/`, `agenda/`, `monitor/`, `storage/` y `services/`.
 - La web publica y la app privada deben mantenerse separadas.
 - Los tests estan centralizados en `webapp/infonalia_webapp/tests`.
-- Hoy se han recogido `861` tests con `.\.venv\Scripts\python.exe -m pytest --collect-only -q`.
+- Hoy pasan `891` tests con `.\.venv\Scripts\python.exe -m pytest -q`.
+- Los descargadores usan una sola fuente de verdad en `herramientas_python`; los BAT y el puente legado delegan en el mismo lanzador central.
 
 ## Como se ejecuta el proyecto hoy
 
@@ -73,3 +74,4 @@
 - `docs/DESPLIEGUE_LOCAL_WINDOWS.md`: operacion local Windows
 - `docs/DECISIONES_TECNICAS.md`: decisiones acumuladas
 - `docs/ARQUITECTURA_FUTURA.md`: arquitectura y fases previas
+- `docs/DESCARGADORES_LICITACIONES.md`: arquitectura operativa, diagnóstico y mantenimiento de descargadores

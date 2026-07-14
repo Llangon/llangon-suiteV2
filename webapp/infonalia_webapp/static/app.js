@@ -213,6 +213,7 @@ const aiQueueDialog = document.getElementById("ai-queue-dialog");
 const aiQueueContent = document.getElementById("ai-queue-content");
 const aiQueueStatus = document.getElementById("ai-queue-status");
 const refreshAiQueueButton = document.getElementById("refresh-ai-queue");
+const clearFinishedAiQueueButton = document.getElementById("clear-finished-ai-queue");
 const importer = document.getElementById("importer");
 const importForm = document.getElementById("import-form");
 const importResult = document.getElementById("import-result");
@@ -4702,7 +4703,7 @@ function renderAiConfig() {
     { label: "Estado", value: ai.provider_status_label || "IA desactivada" },
     { label: "Proveedor activo", value: ai.active_provider || ai.analysis_provider || "disabled" },
     { label: "Configuración", value: ai.provider_configured ? "Clave/configuración disponible" : "No configurada" },
-    { label: "Modelo", value: ai.model || "No configurado" },
+    { label: "Modelo", value: ai.active_provider === "codex_local" ? (ai.codex_model_label || "Automático (Codex CLI)") : (ai.model || "No configurado") },
     { label: "Documentos máximos", value: String(ai.max_documents_per_analysis || "No configurado") },
     { label: "Tamaño máximo por fichero", value: ai.max_file_mb ? `${ai.max_file_mb} MB` : "No configurado" },
     { label: "Modo de entrada", value: ai.input_mode || "No configurado" },
@@ -6259,6 +6260,7 @@ function aiProviderErrorMessage(payload) {
     if (code === "CODEX_DISABLED") return "Codex Local no está activado.";
     if (code === "CODEX_NOT_FOUND") return "No se encuentra el ejecutable de Codex.";
     if (code === "CODEX_TIMEOUT") return "Codex no respondió dentro del tiempo configurado.";
+    if (code === "CODEX_UPDATE_REQUIRED") return "La versión instalada de Codex debe actualizarse para usar el modelo configurado.";
     if (code === "INVALID_JSON") return "Codex devolvió una respuesta que no es JSON válido.";
     if (code) return job.error_message || "Error consultando Codex Local.";
   }
@@ -6429,16 +6431,16 @@ function renderAiKeyTable(rows) {
   `;
 }
 
-function renderAiAlertList(alerts) {
-  const list = aiAsArray(alerts).filter((item) => item && typeof item === "object");
-  if (!list.length) return `<p class="ai-muted">Sin alertas destacadas.</p>`;
+function renderAiInformationList(points) {
+  const list = aiAsArray(points).filter((item) => item && typeof item === "object");
+  if (!list.length) return `<p class="ai-muted">Sin información adicional destacada.</p>`;
   return `
     <div class="ai-alert-list">
       ${list.map((item) => `
-        <article class="${aiRiskClass(item.nivel)}">
-          <strong>${escapeHtml(item.titulo || item.nivel || "Alerta")}</strong>
-          <p>${escapeHtml(item.descripcion || item.observaciones || "")}</p>
-          ${item.accion_recomendada ? `<span>${escapeHtml(item.accion_recomendada)}</span>` : ""}
+        <article class="ai-muted">
+          <strong>${escapeHtml(item.titulo || item.nombre || "Información relevante")}</strong>
+          <p>${escapeHtml(item.detalle || item.descripcion || item.observaciones || "")}</p>
+          ${item.fuente && item.fuente !== "postproceso" ? `<span>Fuente: ${escapeHtml(item.fuente)}</span>` : ""}
         </article>
       `).join("")}
     </div>
@@ -6466,6 +6468,7 @@ function renderAiSummaryBlocks(payload) {
   const subcontratacion = data.subcontratacion || {};
   const criterios = aiCriteriaAsObject(data.criterios_adjudicacion);
   const operaciones = data.observaciones_operativas || data.logistica_entrega || {};
+  const puntosAtencion = aiAsArray(data.puntos_atencion).length ? data.puntos_atencion : data.alertas;
   const calidad = data.control_calidad || {};
   const technical = {
     provider: record.provider || payload.provider || "",
@@ -6484,13 +6487,10 @@ function renderAiSummaryBlocks(payload) {
         <h4 class="ai-section-title">Resumen ejecutivo</h4>
         <p>${escapeHtml(ejecutivo.texto || record.summary_text || "Sin resumen ejecutivo.")}</p>
         ${renderAiList(ejecutivo.aspectos_clave, "Sin aspectos clave.")}
-        ${ejecutivo.decision_preliminar ? `<p class="ai-decision">${escapeHtml(ejecutivo.decision_preliminar)}</p>` : ""}
       </section>
       <section class="ai-section full">
-        <h4 class="ai-section-title">Alertas y acciones</h4>
-        ${renderAiAlertList(data.alertas)}
-        <h5>Acciones recomendadas</h5>
-        ${renderAiObjectTable(data.acciones_recomendadas, [["Prioridad", "prioridad"], ["Acción", "accion"], ["Motivo", "motivo"]], "Sin acciones recomendadas.")}
+        <h4 class="ai-section-title">Información relevante</h4>
+        ${renderAiInformationList(puntosAtencion)}
       </section>
       <section class="ai-section">
         <h4 class="ai-section-title">Datos clave</h4>
@@ -6509,7 +6509,7 @@ function renderAiSummaryBlocks(payload) {
           { label: "Prórrogas", value: caracteristicas.prorrogas?.existen ?? plazos.prorrogas?.existen, note: caracteristicas.prorrogas?.detalle || plazos.prorrogas?.detalle },
           { label: "Adjudicación", value: caracteristicas.adjudicacion },
           { label: "Nº sobres", value: caracteristicas.numero_sobres ?? presentacion.numero_sobres },
-          { label: "Garantía provisional", value: garantias.garantia_provisional?.exigida, note: [garantias.garantia_provisional?.importe, garantias.garantia_provisional?.alerta, garantias.garantia_provisional?.observaciones].filter(Boolean).join(" · "), critical: garantias.garantia_provisional?.exigida === true },
+          { label: "Garantía provisional", value: garantias.garantia_provisional?.exigida, note: [garantias.garantia_provisional?.importe, garantias.garantia_provisional?.observaciones].filter(Boolean).join(" · "), critical: garantias.garantia_provisional?.exigida === true },
           { label: "Garantía definitiva", value: garantias.garantia_definitiva?.exigida, note: [garantias.garantia_definitiva?.importe, garantias.garantia_definitiva?.observaciones].filter(Boolean).join(" · ") },
           { label: "Garantía complementaria", value: garantias.garantia_complementaria?.exigida, note: garantias.garantia_complementaria?.observaciones, critical: garantias.garantia_complementaria?.exigida === true },
           { label: "Fichas técnicas", value: muestras.fichas_tecnicas?.exigidas, note: muestras.fichas_tecnicas?.detalle, critical: muestras.fichas_tecnicas?.exigidas === true },
@@ -6519,7 +6519,11 @@ function renderAiSummaryBlocks(payload) {
       </section>
       <section class="ai-section">
         <h4 class="ai-section-title">Lotes</h4>
-        ${renderAiObjectTable(data.lotes, [["Lote", "numero_lote"], ["Denominación", "denominacion"], ["Presupuesto", "presupuesto"], ["Observaciones", "observaciones"]], "Expediente completo o sin división en lotes localizada.")}
+        ${renderAiObjectTable(data.lotes, [["Lote", "numero_lote"], ["Denominación", "denominacion"], ["Presupuesto", "presupuesto"], ["Valor estimado", "valor_estimado"], ["Duración", "duracion"], ["Observaciones", "observaciones"], ["Fuente", "fuente"]], "Expediente completo o sin división en lotes localizada.")}
+      </section>
+      <section class="ai-section full">
+        <h4 class="ai-section-title">Productos</h4>
+        ${renderAiObjectTable(data.productos, [["Lote", "lote"], ["Código", "codigo"], ["Producto", "descripcion"], ["Unidad", "unidad"], ["Cantidad", "cantidad_estimada"], ["Precio unitario máximo", "precio_unitario_maximo"], ["Importe", "importe_estimado"], ["Especificaciones", "especificaciones_relevantes"], ["Fuente", "fuente"]], "No se ha localizado una relación estructurada de productos.")}
       </section>
       <section class="ai-section">
         <h4 class="ai-section-title">Presentación y documentación</h4>
@@ -6563,8 +6567,7 @@ function renderAiSummaryBlocks(payload) {
           { label: "Pago directo subcontratistas", value: subcontratacion.pago_directo_subcontratistas },
           { label: "Restricciones", value: subcontratacion.restricciones },
           { label: "Penalidades", value: subcontratacion.penalidades },
-          { label: "Comentario práctico", value: subcontratacion.comentario_practico },
-          { label: "Alerta", value: subcontratacion.alerta, critical: Boolean(subcontratacion.alerta) },
+          { label: "Observaciones", value: subcontratacion.observaciones },
         ])}
       </section>
       <section class="ai-section">
@@ -6577,7 +6580,7 @@ function renderAiSummaryBlocks(payload) {
       </section>
       <section class="ai-section">
         <h4 class="ai-section-title">Condiciones especiales de ejecución</h4>
-        ${renderAiObjectTable(data.condiciones_especiales_ejecucion, [["Categoría", "categoria"], ["Obligación", "obligacion"], ["Riesgo", "riesgo"], ["Observaciones", "observaciones"]], "No localizadas en los documentos seleccionados.")}
+        ${renderAiObjectTable(data.condiciones_especiales_ejecucion, [["Categoría", "categoria"], ["Obligación", "obligacion"], ["Consecuencia del incumplimiento", "consecuencia_incumplimiento"], ["Observaciones", "observaciones"], ["Fuente", "fuente"]], "No localizadas en los documentos seleccionados.")}
       </section>
       <section class="ai-section">
         <h4 class="ai-section-title">Observaciones operativas</h4>
@@ -6765,11 +6768,38 @@ function renderAiQueueJobs(title, items) {
                   </div>
                 </td>
               </tr>
+              ${renderAiQueueErrorDiagnostic(job)}
             `).join("")}
           </tbody>
         </table>
       </div>
     </section>
+  `;
+}
+
+function renderAiQueueErrorDiagnostic(job) {
+  if (!job || !["error", "deferred"].includes(job.status || "")) return "";
+  const diagnostic = job.error_diagnostic || {};
+  const code = diagnostic.code || job.error_code || "ERROR_IA";
+  const returnCode = diagnostic.returncode;
+  const hint = diagnostic.hint || "Consulta el detalle técnico para diagnosticar el fallo.";
+  const detail = diagnostic.detail || "El proveedor no devolvió un detalle técnico adicional.";
+  return `
+    <tr class="ai-queue-diagnostic-row">
+      <td colspan="9">
+        <div class="ai-queue-diagnostic">
+          <div class="ai-queue-diagnostic-head">
+            <strong>Diagnóstico del error</strong>
+            <code>${escapeHtml([code, returnCode !== null && returnCode !== undefined ? `salida ${returnCode}` : ""].filter(Boolean).join(" · "))}</code>
+          </div>
+          <p>${escapeHtml(hint)}</p>
+          <details>
+            <summary>Ver detalle técnico</summary>
+            <pre>${escapeHtml(detail)}</pre>
+          </details>
+        </div>
+      </td>
+    </tr>
   `;
 }
 
@@ -6830,6 +6860,7 @@ async function loadAiQueue(options = {}) {
     }
     appState.aiQueue = payload;
     updateAiQueueBadge(payload);
+    if (clearFinishedAiQueueButton) clearFinishedAiQueueButton.disabled = !(payload.recent_jobs || []).length;
     if (aiQueueContent && (appState.aiQueueOpen || options.forceRender)) {
       aiQueueContent.innerHTML = renderAiQueue(payload);
     }
@@ -6888,6 +6919,28 @@ async function aiQueueAction(jobId, action, button = null) {
       button.disabled = false;
       button.removeAttribute("aria-busy");
     }
+  }
+}
+
+async function clearFinishedAiQueue() {
+  if (!confirm("¿Limpiar todos los análisis IA terminados?\n\nSe ocultarán los completados, los que terminaron con error y los cancelados. Los pendientes o en ejecución permanecerán visibles.")) return;
+  clearFinishedAiQueueButton.disabled = true;
+  clearFinishedAiQueueButton.setAttribute("aria-busy", "true");
+  try {
+    const response = await fetch("/api/ai/queue/dismiss-finished", { method: "POST", headers: csrfHeaders() });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error_message || payload.error || "No se pudieron limpiar los análisis terminados.");
+    }
+    await loadAiQueue({ forceRender: true });
+    aiQueueStatus.className = "import-result success";
+    aiQueueStatus.textContent = payload.message || "Análisis terminados ocultados.";
+  } catch (error) {
+    aiQueueStatus.className = "import-result error";
+    aiQueueStatus.textContent = handleAiQueueActionError(error, "No se pudieron limpiar los análisis terminados.");
+  } finally {
+    clearFinishedAiQueueButton.removeAttribute("aria-busy");
+    clearFinishedAiQueueButton.disabled = !(appState.aiQueue?.recent_jobs || []).length;
   }
 }
 
@@ -7956,6 +8009,7 @@ document.getElementById("cancel-ai-summary-email").addEventListener("click", () 
 sendAiSummaryEmailButton.addEventListener("click", sendAiSummaryEmail);
 document.getElementById("close-ai-queue").addEventListener("click", closeAiQueueDialog);
 refreshAiQueueButton.addEventListener("click", () => loadAiQueue({ forceRender: true }));
+clearFinishedAiQueueButton.addEventListener("click", clearFinishedAiQueue);
 aiQueueContent.addEventListener("click", async (event) => {
   const openButton = event.target.closest("button[data-ai-queue-open]");
   if (openButton) {

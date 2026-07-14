@@ -2092,6 +2092,13 @@ textarea {
   justify-content: space-between;
 }
 
+.ai-queue-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .ai-queue-content {
   display: grid;
   gap: 14px;
@@ -2139,6 +2146,55 @@ textarea {
 
 .ai-queue-table tr.is-late td {
   background: #fff8dd;
+}
+
+.ai-queue-diagnostic-row td {
+  background: #fff8f8;
+  padding: 0 10px 12px;
+}
+
+.ai-queue-diagnostic {
+  border: 1px solid #efcaca;
+  border-radius: 9px;
+  color: #6f2424;
+  padding: 10px 12px;
+}
+
+.ai-queue-diagnostic-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.ai-queue-diagnostic code {
+  background: #fde8e8;
+  border-radius: 5px;
+  color: #8f1f1f;
+  padding: 3px 6px;
+}
+
+.ai-queue-diagnostic p {
+  margin: 7px 0;
+}
+
+.ai-queue-diagnostic summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.ai-queue-diagnostic pre {
+  background: #fff;
+  border: 1px solid #efdada;
+  border-radius: 7px;
+  color: #4d2727;
+  margin: 8px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 9px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .ai-queue-actions {

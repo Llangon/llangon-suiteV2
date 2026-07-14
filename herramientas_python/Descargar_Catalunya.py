@@ -22,6 +22,7 @@ from bs4 import BeautifulSoup
 TIMEOUT_CARGA_PAGINA = 60
 TIMEOUT_DESCARGA = (5, 90)
 DOMINIO_CATALUNYA = "contractaciopublica.cat"
+IDIOMAS_PORTAL = {"ca", "es", "en", "oc"}
 
 EXTENSIONES_VALIDAS = {
     ".pdf", ".xml", ".html", ".htm", ".txt",
@@ -381,6 +382,89 @@ def es_enlace_documento(url):
         "/portal-api/descarrega-document/" in path
         or "/portal-api/descarrega-document-antic/" in path
     )
+
+
+def url_api_detall_publicacion(url):
+    parsed = urlparse(url)
+    if not es_url_catalunya(url):
+        return ""
+
+    partes = [unquote(parte) for parte in parsed.path.split("/") if parte]
+    if partes and partes[0].lower() in IDIOMAS_PORTAL:
+        partes = partes[1:]
+    if len(partes) not in (2, 3) or partes[0].lower() != "detall-publicacio":
+        return ""
+
+    identificadores = partes[1:]
+    if not all(re.fullmatch(r"[A-Za-z0-9-]+", valor) for valor in identificadores):
+        return ""
+
+    origen = f"{parsed.scheme or 'https'}://{parsed.netloc}"
+    return f"{origen}/portal-api/detall-publicacio-expedient/{'/'.join(identificadores)}"
+
+
+def extraer_documentos_de_api(session, url):
+    api_url = url_api_detall_publicacion(url)
+    if not api_url:
+        return []
+
+    respuesta = session.get(
+        api_url,
+        timeout=TIMEOUT_DESCARGA,
+        headers={"Accept": "application/json", "Referer": url},
+    )
+    respuesta.raise_for_status()
+    detalle = respuesta.json()
+
+    publicacion_antigua = bool(detalle.get("publicacioAntiga"))
+    publicacion_id = detalle.get("publicacioId")
+    origen = f"{urlparse(api_url).scheme}://{urlparse(api_url).netloc}"
+    documentos = []
+    vistos = set()
+
+    def recorrer(valor, seccion="Documentacio"):
+        if isinstance(valor, dict):
+            titulo = valor.get("titol")
+            documento_hash = valor.get("hash")
+            documento_id = valor.get("id")
+            subtipo = valor.get("subtipusDocument")
+
+            if titulo and documento_hash and subtipo in (None, 0):
+                if publicacion_antigua and publicacion_id:
+                    href = (
+                        f"{origen}/portal-api/descarrega-document-antic/"
+                        f"{publicacion_id}/{documento_hash}"
+                    )
+                elif documento_id:
+                    href = (
+                        f"{origen}/portal-api/descarrega-document/"
+                        f"{documento_id}/{documento_hash}"
+                    )
+                else:
+                    href = ""
+
+                clave = href.lower()
+                if href and clave not in vistos:
+                    vistos.add(clave)
+                    fecha = str(valor.get("dataPublicacio") or "")
+                    documentos.append({
+                        "href": href,
+                        "text": str(titulo),
+                        "title": str(titulo),
+                        "download": str(titulo),
+                        "itemText": " ".join(parte for parte in (str(titulo), fecha) if parte),
+                        "section": seccion,
+                        "fecha": fecha_desde_texto(fecha),
+                    })
+
+            for clave_hija, valor_hijo in valor.items():
+                recorrer(valor_hijo, str(clave_hija or seccion))
+        elif isinstance(valor, list):
+            for elemento in valor:
+                recorrer(elemento, seccion)
+
+    recorrer(detalle)
+    return documentos
 
 
 def fecha_desde_texto(texto):
@@ -744,11 +828,17 @@ def main():
     documentos = []
     try:
         log(f"Accediendo a Contractacio Publica Catalunya: {url}")
-        respuesta = session.get(url, timeout=TIMEOUT_DESCARGA)
-        respuesta.raise_for_status()
-        documentos = extraer_documentos_de_html(respuesta.text, url)
+        documentos = extraer_documentos_de_api(session, url)
     except Exception:
         documentos = []
+
+    if not documentos:
+        try:
+            respuesta = session.get(url, timeout=TIMEOUT_DESCARGA)
+            respuesta.raise_for_status()
+            documentos = extraer_documentos_de_html(respuesta.text, url)
+        except Exception:
+            documentos = []
 
     if not documentos:
         log("La ficha necesita Javascript. Abriendo Chrome en segundo plano...")

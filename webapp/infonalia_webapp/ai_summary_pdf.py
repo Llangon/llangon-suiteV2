@@ -13,9 +13,10 @@ from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import LongTable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 try:
     from .dropbox_paths import resolve_licitacion_folder
@@ -848,7 +849,7 @@ class _PdfLayout:
             )
 
 
-def _build_pdf_bytes(
+def _build_pdf_bytes_legacy(
     licitacion: Any,
     summary: dict[str, Any],
     *,
@@ -1108,6 +1109,667 @@ def _build_pdf_bytes(
         onFirstPage=lambda canvas, document: _draw_header(canvas, document, True),
         onLaterPages=lambda canvas, document: _draw_header(canvas, document, False),
     )
+    return buffer.getvalue()
+
+
+def _build_pdf_bytes(
+    licitacion: Any,
+    summary: dict[str, Any],
+    *,
+    selected_documents: Sequence[dict[str, object]] | None = None,
+    generated_at: str = "",
+) -> bytes:
+    generated_label = generated_at or _now().isoformat()
+    metadata = summary.get("metadata") if isinstance(summary.get("metadata"), dict) else {}
+    expediente = clean_pdf_text(_row_get(licitacion, "expediente")) or clean_pdf_text(metadata.get("expediente")) or "Sin expediente"
+    contract_title = clean_pdf_text(_row_get(licitacion, "objeto")) or clean_pdf_text(metadata.get("titulo")) or "Contrato sin título localizado"
+    regular_font, bold_font = _register_pdf_fonts()
+
+    palette = {
+        "text": colors.Color(*COLOR_TEXT),
+        "muted": colors.Color(*COLOR_MUTED),
+        "green": colors.Color(*COLOR_GREEN),
+        "green_dark": colors.Color(0.05, 0.30, 0.18),
+        "soft": colors.Color(*COLOR_GREEN_SOFT),
+        "row": colors.Color(*COLOR_GREEN_ROW),
+        "border": colors.Color(*COLOR_BORDER),
+        "white": colors.white,
+    }
+    stylesheet = getSampleStyleSheet()
+    styles = {
+        "title": ParagraphStyle(
+            "DecisionBriefTitle",
+            parent=stylesheet["Heading1"],
+            fontName=bold_font,
+            fontSize=17.5,
+            leading=21,
+            textColor=palette["green_dark"],
+            spaceAfter=5,
+        ),
+        "contract": ParagraphStyle(
+            "DecisionBriefContract",
+            parent=stylesheet["BodyText"],
+            fontName=regular_font,
+            fontSize=11.5,
+            leading=14.5,
+            textColor=palette["text"],
+            spaceAfter=10,
+        ),
+        "section": ParagraphStyle(
+            "DecisionBriefSection",
+            parent=stylesheet["Heading2"],
+            fontName=bold_font,
+            fontSize=12.5,
+            leading=15,
+            textColor=palette["green"],
+            spaceBefore=9,
+            spaceAfter=6,
+            keepWithNext=True,
+        ),
+        "subsection": ParagraphStyle(
+            "DecisionBriefSubsection",
+            parent=stylesheet["Heading3"],
+            fontName=bold_font,
+            fontSize=9.5,
+            leading=12,
+            textColor=palette["green_dark"],
+            spaceBefore=5,
+            spaceAfter=3,
+            keepWithNext=True,
+        ),
+        "body": ParagraphStyle(
+            "DecisionBriefBody",
+            parent=stylesheet["BodyText"],
+            fontName=regular_font,
+            fontSize=9.7,
+            leading=12.8,
+            textColor=palette["text"],
+            spaceAfter=5,
+        ),
+        "bullet": ParagraphStyle(
+            "DecisionBriefBullet",
+            parent=stylesheet["BodyText"],
+            fontName=regular_font,
+            fontSize=9.3,
+            leading=12.2,
+            leftIndent=13,
+            firstLineIndent=-9,
+            textColor=palette["text"],
+            spaceAfter=3,
+        ),
+        "label": ParagraphStyle(
+            "DecisionBriefLabel",
+            parent=stylesheet["BodyText"],
+            fontName=bold_font,
+            fontSize=7.7,
+            leading=9.2,
+            textColor=palette["green"],
+            spaceAfter=2,
+        ),
+        "value": ParagraphStyle(
+            "DecisionBriefValue",
+            parent=stylesheet["BodyText"],
+            fontName=regular_font,
+            fontSize=9.0,
+            leading=11.2,
+            textColor=palette["text"],
+            wordWrap="CJK",
+        ),
+        "table_header": ParagraphStyle(
+            "DecisionBriefTableHeader",
+            parent=stylesheet["BodyText"],
+            fontName=bold_font,
+            fontSize=7.2,
+            leading=8.7,
+            textColor=palette["white"],
+            alignment=TA_LEFT,
+        ),
+        "table_cell": ParagraphStyle(
+            "DecisionBriefTableCell",
+            parent=stylesheet["BodyText"],
+            fontName=regular_font,
+            fontSize=7.4,
+            leading=9.3,
+            textColor=palette["text"],
+            wordWrap="CJK",
+        ),
+        "source": ParagraphStyle(
+            "DecisionBriefSource",
+            parent=stylesheet["BodyText"],
+            fontName=regular_font,
+            fontSize=7.2,
+            leading=9.0,
+            textColor=palette["muted"],
+            wordWrap="CJK",
+        ),
+        "point_title": ParagraphStyle(
+            "DecisionBriefPointTitle",
+            parent=stylesheet["BodyText"],
+            fontName=bold_font,
+            fontSize=9.3,
+            leading=11.5,
+            textColor=palette["green_dark"],
+            spaceAfter=2,
+        ),
+    }
+
+    def _html(value: object) -> str:
+        safe = clean_pdf_text(value)
+        safe = safe.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return safe.replace("\n", "<br/>")
+
+    def _meaningful(value: object) -> bool:
+        if value is None or value == "":
+            return False
+        if isinstance(value, bool):
+            return True
+        if isinstance(value, dict):
+            return any(_meaningful(item) for item in value.values())
+        if isinstance(value, (list, tuple, set)):
+            return any(_meaningful(item) for item in value)
+        return bool(clean_pdf_text(value))
+
+    def _value(value: object, *, money: bool = False) -> str:
+        if value is None or value == "":
+            return "-"
+        if isinstance(value, bool):
+            return "Sí" if value else "No"
+        if isinstance(value, (list, tuple, set)):
+            parts = [_value(item) for item in value if _meaningful(item)]
+            return "; ".join(part for part in parts if part != "-") or "-"
+        if money:
+            return _format_money(value)
+        return clean_pdf_text(value) or "-"
+
+    def _bool_detail(value: object, detail: object = "", *extras: object) -> str:
+        parts: list[str] = []
+        if value is not None and value != "":
+            parts.append(_value(value))
+        for item in (detail, *extras):
+            text = _value(item)
+            if text != "-" and text not in parts:
+                parts.append(text)
+        return ". ".join(parts)
+
+    def _section(title: str, *, keep_with_next: bool = True) -> list[object]:
+        heading = Paragraph(_html(title), styles["section"])
+        table = Table([[heading]], colWidths=[CONTENT_WIDTH], hAlign="LEFT")
+        table.setStyle(
+            TableStyle(
+                [
+                    ("LINEBELOW", (0, 0), (-1, -1), 0.7, palette["border"]),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ]
+            )
+        )
+        table.keepWithNext = keep_with_next
+        return [table]
+
+    def _key_table(pairs: Sequence[tuple[str, object]]) -> Table | None:
+        visible = [(label, value) for label, value in pairs if _meaningful(value)]
+        if not visible:
+            return None
+        rows: list[list[object]] = []
+        for index in range(0, len(visible), 2):
+            left = visible[index]
+            right = visible[index + 1] if index + 1 < len(visible) else ("", "")
+            cells: list[object] = []
+            for label, value in (left, right):
+                if not label:
+                    cells.append(Paragraph("", styles["value"]))
+                    continue
+                cells.append(
+                    [
+                        Paragraph(_html(label), styles["label"]),
+                        Paragraph(_html(_value(value)), styles["value"]),
+                    ]
+                )
+            rows.append(cells)
+        table = Table(rows, colWidths=[CONTENT_WIDTH / 2, CONTENT_WIDTH / 2], hAlign="LEFT")
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), palette["row"]),
+                    ("BOX", (0, 0), (-1, -1), 0.7, palette["border"]),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.45, palette["border"]),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ]
+            )
+        )
+        return table
+
+    def _data_table(headers: Sequence[str], rows: Sequence[Sequence[object]], widths: Sequence[float]) -> LongTable | None:
+        if not rows:
+            return None
+        data: list[list[object]] = [[Paragraph(_html(header), styles["table_header"]) for header in headers]]
+        for row in rows:
+            data.append([Paragraph(_html(value), styles["table_cell"]) for value in row])
+        table = LongTable(data, colWidths=list(widths), repeatRows=1, splitByRow=1, hAlign="LEFT")
+        commands: list[tuple] = [
+            ("BACKGROUND", (0, 0), (-1, 0), palette["green"]),
+            ("BOX", (0, 0), (-1, -1), 0.65, palette["border"]),
+            ("INNERGRID", (0, 0), (-1, -1), 0.4, palette["border"]),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]
+        for index in range(1, len(data)):
+            if index % 2 == 0:
+                commands.append(("BACKGROUND", (0, index), (-1, index), palette["row"]))
+        table.setStyle(TableStyle(commands))
+        return table
+
+    def _append_bullets(story: list[object], items: object, *, empty: str = "") -> None:
+        lines = _dedupe(_clean_orphan_items(_human_lines(items)))
+        if not lines and empty:
+            story.append(Paragraph(_html(empty), styles["source"]))
+            return
+        for line in lines:
+            story.append(Paragraph(_html(f"- {line}"), styles["bullet"]))
+
+    def _information_point_flowables(values: object) -> list[object]:
+        flowables: list[object] = []
+        for item in _as_list(values):
+            if isinstance(item, dict):
+                title = clean_pdf_text(item.get("titulo") or item.get("nombre"))
+                detail = clean_pdf_text(item.get("detalle") or item.get("descripcion") or item.get("observaciones"))
+                source = clean_pdf_text(item.get("fuente"))
+            else:
+                title, detail, source = clean_pdf_text(item), "", ""
+            if not title and not detail:
+                continue
+            content: list[object] = [Paragraph(_html(title or "Información relevante"), styles["point_title"])]
+            if detail:
+                content.append(Paragraph(_html(detail), styles["body"]))
+            if source and source.lower() != "postproceso":
+                content.append(Paragraph(_html(f"Fuente: {source}"), styles["source"]))
+            box = Table([[content]], colWidths=[CONTENT_WIDTH], hAlign="LEFT")
+            box.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, -1), palette["soft"]),
+                        ("BOX", (0, 0), (-1, -1), 0.65, palette["border"]),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 9),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+                        ("TOPPADDING", (0, 0), (-1, -1), 7),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                    ]
+                )
+            )
+            flowables.extend([box, Spacer(1, 5)])
+        return flowables
+
+    story: list[object] = [
+        Paragraph(_html(f"Resumen IA del expediente {expediente}"), styles["title"]),
+        Paragraph(_html(contract_title), styles["contract"]),
+    ]
+
+    story.extend(_section("Datos principales"))
+    main_pairs = [
+        pair
+        for pair in _build_header_pairs(licitacion, summary, generated_label)
+        if pair[0] not in {"Estado", "Fecha de generación"}
+    ]
+    main_table = _key_table(main_pairs)
+    if main_table:
+        story.extend([main_table, Spacer(1, 7)])
+
+    executive = summary.get("resumen_ejecutivo") if isinstance(summary.get("resumen_ejecutivo"), dict) else {}
+    story.extend(_section("Resumen ejecutivo"))
+    story.append(
+        Paragraph(
+            _html(executive.get("texto") or _summary_text(summary, "summary_text") or "No se ha generado un resumen ejecutivo."),
+            styles["body"],
+        )
+    )
+    key_aspects = _dedupe(_clean_orphan_items(_human_lines(executive.get("aspectos_clave"))))[:5]
+    if key_aspects:
+        story.append(Paragraph("Aspectos clave", styles["subsection"]))
+        _append_bullets(story, key_aspects)
+
+    point_flowables = _information_point_flowables(summary.get("puntos_atencion") or summary.get("alertas"))
+    if point_flowables:
+        story.extend(_section("Información relevante"))
+        story.extend(point_flowables)
+
+    lots = [item for item in _as_list(summary.get("lotes")) if isinstance(item, dict)]
+    if lots:
+        story.extend(_section("Lotes licitados"))
+        lot_rows = [
+            [
+                _value(item.get("numero_lote")),
+                _value(item.get("denominacion")),
+                _value(item.get("presupuesto"), money=True),
+                _value(item.get("valor_estimado"), money=True),
+                _value(item.get("duracion")),
+                _value(item.get("observaciones") or item.get("fuente")),
+            ]
+            for item in lots
+        ]
+        table = _data_table(
+            ["Lote", "Denominación", "Presupuesto", "Valor estimado", "Duración", "Observaciones / fuente"],
+            lot_rows,
+            [34, 154, 72, 72, 63, 116],
+        )
+        if table:
+            story.extend([table, Spacer(1, 5)])
+
+    products = [item for item in _as_list(summary.get("productos")) if isinstance(item, dict)]
+    if products:
+        story.extend(_section("Productos y cantidades", keep_with_next=False))
+        product_rows: list[list[str]] = []
+        for item in products:
+            description = _value(item.get("descripcion"))
+            specifications = _value(item.get("especificaciones_relevantes"))
+            if specifications != "-" and specifications.lower() not in description.lower():
+                description = f"{description}\n{specifications}"
+            product_rows.append(
+                [
+                    _value(item.get("lote")),
+                    _value(item.get("codigo")),
+                    description,
+                    _value(item.get("unidad")),
+                    _value(item.get("cantidad_estimada")),
+                    _value(item.get("precio_unitario_maximo"), money=True),
+                    _value(item.get("importe_estimado"), money=True),
+                    _value(item.get("fuente")),
+                ]
+            )
+        table = _data_table(
+            ["Lote", "Código", "Producto / especificación", "Unidad", "Cantidad", "Precio máx.", "Importe", "Fuente"],
+            product_rows,
+            [30, 43, 158, 42, 48, 61, 62, 67],
+        )
+        if table:
+            story.extend([table, Spacer(1, 5)])
+
+    characteristics = summary.get("caracteristicas") if isinstance(summary.get("caracteristicas"), dict) else {}
+    periods = summary.get("plazos") if isinstance(summary.get("plazos"), dict) else {}
+    extension = characteristics.get("prorrogas") if isinstance(characteristics.get("prorrogas"), dict) else periods.get("prorrogas")
+    extension = extension if isinstance(extension, dict) else {}
+    economic_pairs = [
+        ("Valor estimado", _format_money(characteristics.get("valor_estimado")) if _meaningful(characteristics.get("valor_estimado")) else ""),
+        ("Plazo inicial", characteristics.get("plazo_ejecucion_inicial") or periods.get("plazo_ejecucion_inicial")),
+        ("Inicio previsto", characteristics.get("fecha_inicio_prevista") or periods.get("fecha_inicio_prevista")),
+        ("Fin previsto", periods.get("fecha_fin_prevista")),
+        ("Prórrogas", _bool_detail(extension.get("existen"), extension.get("detalle"))),
+        ("Forma de adjudicación", characteristics.get("adjudicacion")),
+    ]
+    if any(_meaningful(value) for _, value in economic_pairs):
+        story.extend(_section("Dimensión económica y temporal"))
+        table = _key_table(economic_pairs)
+        if table:
+            story.extend([table, Spacer(1, 5)])
+
+    criteria = summary.get("criterios_adjudicacion") if isinstance(summary.get("criterios_adjudicacion"), dict) else {}
+    criteria_rows: list[list[str]] = []
+    for kind, key in (("Juicio de valor", "juicio_valor"), ("Fórmula", "formulas"), ("Otro", "otros")):
+        for item in _as_list(criteria.get(key)):
+            if isinstance(item, dict):
+                detail = item.get("formula") or item.get("descripcion") or item.get("detalle")
+                criteria_rows.append(
+                    [
+                        kind,
+                        _value(item.get("nombre") or item.get("criterio")),
+                        _value(item.get("puntuacion_maxima") or item.get("ponderacion")),
+                        _value(detail),
+                        _value(item.get("documentacion_a_aportar")),
+                        _value(item.get("fuente")),
+                    ]
+                )
+            else:
+                criteria_rows.append([kind, _value(item), "-", "-", "-", "-"])
+    if criteria_rows or _meaningful(criteria.get("observaciones")):
+        story.extend(_section("Criterios de adjudicación"))
+        table = _data_table(
+            ["Tipo", "Criterio", "Puntos", "Fórmula / descripción", "Documentación", "Fuente"],
+            criteria_rows,
+            [67, 112, 40, 126, 94, 72],
+        )
+        if table:
+            story.extend([table, Spacer(1, 4)])
+        criteria_notes: list[str] = []
+        if _meaningful(criteria.get("total_puntos")):
+            criteria_notes.append(f"Total: {_value(criteria.get('total_puntos'))} puntos")
+        if _meaningful(criteria.get("observaciones")):
+            criteria_notes.append(_value(criteria.get("observaciones")))
+        _append_bullets(story, criteria_notes)
+
+    guarantees = summary.get("garantias") if isinstance(summary.get("garantias"), dict) else {}
+    samples = summary.get("muestras_fichas_memoria") if isinstance(summary.get("muestras_fichas_memoria"), dict) else {}
+    participation_pairs: list[tuple[str, object]] = []
+    for label, key in (
+        ("Garantía provisional", "garantia_provisional"),
+        ("Garantía definitiva", "garantia_definitiva"),
+        ("Garantía complementaria", "garantia_complementaria"),
+    ):
+        value = guarantees.get(key) if isinstance(guarantees.get(key), dict) else {}
+        participation_pairs.append(
+            (label, _bool_detail(value.get("exigida"), _format_money(value.get("importe")) if _meaningful(value.get("importe")) else "", value.get("observaciones")))
+        )
+    for label, key, flag in (
+        ("Muestras", "muestras", "exigidas"),
+        ("Fichas técnicas", "fichas_tecnicas", "exigidas"),
+        ("Memoria técnica", "memoria_tecnica", "exigida"),
+        ("Adscripción de medios", "adscripcion_medios", "exigida"),
+    ):
+        value = samples.get(key) if isinstance(samples.get(key), dict) else {}
+        participation_pairs.append(
+            (label, _bool_detail(value.get(flag), value.get("momento") or value.get("sobre"), value.get("detalle"), value.get("consecuencia_no_presentar")))
+        )
+
+    solvency = summary.get("solvencia") if isinstance(summary.get("solvencia"), dict) else {}
+    solvency_rows: list[list[str]] = []
+    for kind, key in (("Económica", "economica"), ("Técnica", "tecnica")):
+        for item in _as_list(solvency.get(key)):
+            if isinstance(item, dict):
+                solvency_rows.append(
+                    [
+                        kind,
+                        _value(item.get("lote")),
+                        _value(item.get("objeto")),
+                        _value(item.get("importe_minimo"), money=True),
+                        _value(item.get("detalle") or item.get("certificados_o_suministros")),
+                        _value(item.get("fuente")),
+                    ]
+                )
+            else:
+                solvency_rows.append([kind, "-", _value(item), "-", "-", "-"])
+    if any(_meaningful(value) for _, value in participation_pairs) or solvency_rows or _meaningful(solvency.get("observaciones")):
+        story.extend(_section("Requisitos de participación"))
+        table = _key_table(participation_pairs)
+        if table:
+            story.extend([table, Spacer(1, 6)])
+        if solvency_rows:
+            story.append(Paragraph("Solvencia", styles["subsection"]))
+            table = _data_table(
+                ["Tipo", "Lote", "Requisito", "Importe mínimo", "Acreditación / detalle", "Fuente"],
+                solvency_rows,
+                [57, 36, 105, 72, 161, 80],
+            )
+            if table:
+                story.extend([table, Spacer(1, 4)])
+        if _meaningful(solvency.get("observaciones")):
+            _append_bullets(story, solvency.get("observaciones"))
+
+    presentation = summary.get("presentacion_documentacion") if isinstance(summary.get("presentacion_documentacion"), dict) else {}
+    if not presentation:
+        presentation = summary.get("presentacion") if isinstance(summary.get("presentacion"), dict) else {}
+    presentation_lists = {
+        "Documentación administrativa": presentation.get("documentacion_administrativa"),
+        "Documentación técnica": presentation.get("documentacion_tecnica"),
+        "Documentación económica": presentation.get("documentacion_economica"),
+        "Anexos relevantes": presentation.get("anexos_relevantes"),
+    }
+    if _meaningful(presentation) or any(_meaningful(value) for value in presentation_lists.values()):
+        story.extend(_section("Presentación de la oferta"))
+        table = _key_table(
+            [
+                ("Forma de presentación", presentation.get("forma_presentacion")),
+                ("Número de sobres", presentation.get("numero_sobres")),
+                ("Observaciones", presentation.get("observaciones")),
+            ]
+        )
+        if table:
+            story.extend([table, Spacer(1, 4)])
+        for label, values in presentation_lists.items():
+            mapped_values = [_map_annex_label(value) for value in _human_lines(values)]
+            cleaned_values = _dedupe(_clean_orphan_items(mapped_values))
+            if not cleaned_values:
+                continue
+            story.append(Paragraph(_html(label), styles["subsection"]))
+            _append_bullets(story, cleaned_values)
+
+    operations = summary.get("observaciones_operativas") if isinstance(summary.get("observaciones_operativas"), dict) else {}
+    conditions = [item for item in _as_list(summary.get("condiciones_especiales_ejecucion")) if isinstance(item, dict)]
+    subcontracting = summary.get("subcontratacion") if isinstance(summary.get("subcontratacion"), dict) else {}
+    operational_pairs = [
+        ("Habilitación profesional", operations.get("habilitacion_profesional")),
+        ("Seguro obligatorio", operations.get("seguro_obligatorio")),
+        ("Lugar de entrega", operations.get("lugar_entrega") or operations.get("lugares_entrega")),
+        ("Horario", operations.get("horario_entrega") or operations.get("horarios_entrega")),
+        ("Plazo de entrega", operations.get("plazo_entrega") or operations.get("plazos_entrega_desde_pedido")),
+        ("Periodicidad", operations.get("periodicidad")),
+        ("Transporte", operations.get("transporte")),
+        ("Descarga", operations.get("descarga")),
+        ("Albaranes", operations.get("albaranes")),
+        ("Envases y etiquetado", operations.get("envases_etiquetado")),
+        ("Caducidad", operations.get("caducidad_consumo_preferente")),
+        ("Observaciones de producto", operations.get("observaciones_producto")),
+    ]
+    subcontracting_pairs = [
+        ("Subcontratación permitida", subcontracting.get("permitida")),
+        ("Declaración en oferta", subcontracting.get("debe_declararse_en_oferta")),
+        ("Pago directo", subcontracting.get("pago_directo_subcontratistas")),
+        ("Restricciones", subcontracting.get("restricciones")),
+        ("Penalidades", subcontracting.get("penalidades")),
+        ("Observaciones", subcontracting.get("observaciones") or subcontracting.get("comentario_practico")),
+    ]
+    if any(_meaningful(value) for _, value in operational_pairs + subcontracting_pairs) or conditions:
+        story.extend(_section("Condiciones de ejecución y logística"))
+        table = _key_table(operational_pairs)
+        if table:
+            story.extend([table, Spacer(1, 5)])
+        if any(_meaningful(value) for _, value in subcontracting_pairs):
+            story.append(Paragraph("Subcontratación", styles["subsection"]))
+            table = _key_table(subcontracting_pairs)
+            if table:
+                story.extend([table, Spacer(1, 5)])
+        if conditions:
+            story.append(Paragraph("Condiciones especiales", styles["subsection"]))
+            condition_rows = [
+                [
+                    _value(item.get("categoria")),
+                    _value(item.get("obligacion")),
+                    _value(item.get("consecuencia_incumplimiento") or item.get("riesgo")),
+                    _value(item.get("observaciones")),
+                    _value(item.get("fuente")),
+                ]
+                for item in conditions
+            ]
+            table = _data_table(
+                ["Categoría", "Obligación", "Consecuencia", "Observaciones", "Fuente"],
+                condition_rows,
+                [70, 153, 105, 103, 80],
+            )
+            if table:
+                story.extend([table, Spacer(1, 4)])
+
+    quality = summary.get("control_calidad") if isinstance(summary.get("control_calidad"), dict) else {}
+    quality_groups = [
+        ("Información no localizada", quality.get("campos_no_encontrados")),
+        ("Información con baja confianza", quality.get("campos_con_baja_confianza")),
+        ("Advertencias de coherencia", quality.get("advertencias")),
+    ]
+    if any(_meaningful(values) for _, values in quality_groups):
+        story.extend(_section("Información no localizada o dudosa"))
+        for label, values in quality_groups:
+            if not _meaningful(values):
+                continue
+            story.append(Paragraph(_html(label), styles["subsection"]))
+            _append_bullets(story, values)
+
+    sources: list[dict[str, str]] = []
+    seen_sources: set[str] = set()
+    for item in _as_list(summary.get("fuentes_consultadas")):
+        if not isinstance(item, dict):
+            continue
+        document = clean_pdf_text(item.get("documento") or item.get("nombre"))
+        if not document:
+            continue
+        pages = _value(item.get("paginas_relevantes") or item.get("paginas"))
+        sources.append({"document": document, "type": _value(item.get("tipo")), "pages": pages})
+        seen_sources.add(document.lower())
+    for item in selected_documents or []:
+        if not isinstance(item, dict):
+            continue
+        document = clean_pdf_text(item.get("name") or item.get("relative_path") or item.get("path"))
+        if not document or document.lower() in seen_sources:
+            continue
+        sources.append({"document": document, "type": _value(item.get("role")), "pages": "-"})
+        seen_sources.add(document.lower())
+    if sources:
+        story.extend(_section("Fuentes consultadas"))
+        source_rows = [[item["document"], item["type"], item["pages"]] for item in sources]
+        table = _data_table(["Documento", "Tipo", "Páginas relevantes"], source_rows, [298, 88, 125])
+        if table:
+            story.append(table)
+
+    buffer = BytesIO()
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=PAGE_MARGIN_X,
+        rightMargin=PAGE_MARGIN_X,
+        topMargin=82,
+        bottomMargin=48,
+        title=f"Resumen IA del expediente {expediente}",
+        author="Asesores Llangón SL",
+        subject=contract_title,
+    )
+
+    logo_path = Path(__file__).resolve().parent / "static" / "logo-llangon.png"
+    logo_reader = ImageReader(str(logo_path)) if logo_path.is_file() else None
+
+    def _draw_header_footer(canvas, _document) -> None:
+        canvas.saveState()
+        if logo_reader:
+            canvas.drawImage(
+                logo_reader,
+                PAGE_MARGIN_X,
+                A4[1] - 58,
+                width=78,
+                height=32.5,
+                preserveAspectRatio=True,
+                anchor="sw",
+                mask="auto",
+            )
+        canvas.setFillColor(palette["text"])
+        canvas.setFont(bold_font, 9.2)
+        canvas.drawRightString(A4[0] - PAGE_MARGIN_X, A4[1] - 38, "Asesores Llangón SL")
+        canvas.setFillColor(palette["muted"])
+        canvas.setFont(regular_font, 7.9)
+        canvas.drawRightString(A4[0] - PAGE_MARGIN_X, A4[1] - 51, f"Resumen IA - {expediente}")
+        canvas.setStrokeColor(palette["border"])
+        canvas.setLineWidth(0.65)
+        canvas.line(PAGE_MARGIN_X, A4[1] - 66, A4[0] - PAGE_MARGIN_X, A4[1] - 66)
+        canvas.line(PAGE_MARGIN_X, 34, A4[0] - PAGE_MARGIN_X, 34)
+        canvas.setFillColor(palette["muted"])
+        canvas.setFont(regular_font, 7.8)
+        canvas.drawString(PAGE_MARGIN_X, 21, f"Fecha de generación: {format_datetime_es(generated_label)}")
+        canvas.drawRightString(A4[0] - PAGE_MARGIN_X, 21, f"Página {canvas.getPageNumber()}")
+        canvas.restoreState()
+
+    document.build(story, onFirstPage=_draw_header_footer, onLaterPages=_draw_header_footer)
     return buffer.getvalue()
 
 

@@ -1144,7 +1144,10 @@
     </div>
     <div class="ai-queue-head">
       <p class="muted">Puedes cerrar este panel. Los análisis siguen en segundo plano.</p>
-      <button type="button" class="secondary" id="refresh-ai-queue">Actualizar</button>
+      <div class="ai-queue-head-actions">
+        <button type="button" class="secondary" id="clear-finished-ai-queue">Limpiar terminados</button>
+        <button type="button" class="secondary" id="refresh-ai-queue">Actualizar</button>
+      </div>
     </div>
     <div id="ai-queue-status" class="import-result"></div>
     <section id="ai-queue-content" class="ai-queue-content"></section>

@@ -6,6 +6,8 @@ Actualizacion posterior: el 24/06/2026 se revirtio la web publica a la version a
 
 Actualizacion 10/07/2026: se retiro la copia publica antigua que seguia dentro de la app privada. La app privada queda solo para trabajo interno y la web publica activa queda exclusivamente en `firebase/public_firebase`.
 
+Actualizacion 13/07/2026: se reorganizo la SPA publica con enfoque comercial, se retiraron de la navegacion las noticias ficticias y el acceso privado no operativo, y se anadio una version WebP optimizada de la imagen principal. La aplicacion privada no se modifico.
+
 Objetivo de esta limpieza: dejar una unica carpeta activa y clara para la web publica nueva:
 
 `firebase/public_firebase`
@@ -38,7 +40,8 @@ Tras la reversion, `firebase/public_firebase/` contiene actualmente:
 - `static/public.css`;
 - `static/public.js`;
 - `static/logo-llangon.png`;
-- `static/assets/public-hero-procurement.png`.
+- `static/assets/public-hero-procurement.png`;
+- `static/assets/public-hero-procurement.webp`.
 
 La version actual vuelve a ser una SPA estatica. Las rutas publicas se resuelven desde `static/public.js`.
 

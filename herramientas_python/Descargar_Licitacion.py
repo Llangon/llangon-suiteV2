@@ -8,6 +8,17 @@ def log(mensaje=""):
     print(mensaje, flush=True)
 
 
+def normalizar_url_entrada(url):
+    url = str(url or "").strip().strip('"').strip("'")
+    if not url:
+        return ""
+    if "://" not in url and not url.startswith("//"):
+        url = "https://" + url.lstrip("/")
+    elif url.startswith("//"):
+        url = "https:" + url
+    return url
+
+
 def script_en_misma_carpeta(nombre):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), nombre)
 
@@ -27,20 +38,25 @@ def leer_url_desde_http_url(carpeta):
 
 
 def detectar_plataforma(url):
-    host = urlparse(url).netloc.lower()
-    ruta = urlparse(url).path.lower()
+    url_normalizada = normalizar_url_entrada(url)
+    parsed = urlparse(url_normalizada)
+    host = parsed.netloc.lower()
+    ruta = parsed.path.lower()
+    full_url = url_normalizada.lower()
 
-    if "contrataciondelestado.es" in host:
+    if "contrataciondelestado.es" in host or "contrataciondelestado.es" in full_url:
         return "PLACE"
 
     if (
         "juntadeandalucia.es" in host
         or "junta-andalucia.es" in host
         or "pdc-front-publico" in ruta
+        or "juntadeandalucia.es" in full_url
+        or "junta-andalucia.es" in full_url
     ):
         return "JUNTA_ANDALUCIA"
 
-    if "contratos-publicos.comunidad.madrid" in host:
+    if "contratos-publicos.comunidad.madrid" in host or "contratos-publicos.comunidad.madrid" in full_url:
         return "COMUNIDAD_MADRID"
 
     if (
@@ -49,8 +65,16 @@ def detectar_plataforma(url):
             (host == "euskadi.eus" or host.endswith(".euskadi.eus"))
             and "/anuncio_contratacion/" in ruta
         )
+        or "contratacion.euskadi.eus" in full_url
     ):
         return "EUSKADI"
+
+    if (
+        host == "contractaciopublica.cat"
+        or host.endswith(".contractaciopublica.cat")
+        or "contractaciopublica.cat" in full_url
+    ):
+        return "CATALUNYA"
 
     return ""
 
@@ -74,11 +98,14 @@ def main():
         url = leer_url_desde_http_url(carpeta_destino)
         opciones = []
 
+    url = normalizar_url_entrada(url)
+
     if not url:
         log("Uso: python Descargar_Licitacion.py <URL> [opciones]")
         log("Tambien puede ejecutarse sin argumentos desde una carpeta que contenga HTTP.url.")
         sys.exit(1)
 
+    log(f"URL detectada: {url}")
     plataforma = detectar_plataforma(url)
 
     if plataforma == "PLACE":
@@ -101,8 +128,15 @@ def main():
         script = script_en_misma_carpeta("Descargar_Euskadi.py")
         sys.exit(ejecutar(script, [url], carpeta_destino))
 
+    if plataforma == "CATALUNYA":
+        log("Plataforma detectada: Catalunya")
+        script = script_en_misma_carpeta("Descargar_Catalunya.py")
+        sys.exit(ejecutar(script, [url], carpeta_destino))
+
+    parsed = urlparse(url)
     log("No se reconoce la plataforma de esta URL.")
-    log("Por ahora estan soportadas: PLACE, Junta de Andalucia, Comunidad de Madrid y Euskadi.")
+    log(f"Host detectado: {parsed.netloc or '(vacio)'}")
+    log("Por ahora estan soportadas: PLACE, Junta de Andalucia, Comunidad de Madrid, Euskadi y Catalunya.")
     sys.exit(1)
 
 

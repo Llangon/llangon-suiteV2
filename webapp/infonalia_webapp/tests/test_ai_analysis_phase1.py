@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from webapp.infonalia_webapp.ai.config import AIConfig, get_ai_config
-from webapp.infonalia_webapp.ai.codex_local_provider import CodexLocalProvider
+from webapp.infonalia_webapp.ai.codex_local_provider import CodexLocalProvider, build_codex_command
 from webapp.infonalia_webapp.ai.document_selector import inspect_document_selection, select_relevant_documents
 from webapp.infonalia_webapp.ai.file_selection import AIFileSelectionError, list_ai_files, resolve_selected_ai_files
 from webapp.infonalia_webapp.ai.gemini_provider import (
@@ -37,7 +37,7 @@ from webapp.infonalia_webapp.ai.postprocess import postprocess_summary
 from webapp.infonalia_webapp.ai.queue import active_job, create_job, ensure_ai_schema, latest_job, latest_summary, save_summary, update_job
 from webapp.infonalia_webapp.ai.rate_limit import check_rate_limit
 from webapp.infonalia_webapp.ai.schemas import parse_summary_json, summary_quality_check
-from webapp.infonalia_webapp.ai.service import cancel_ai_job, delete_ai_summary, dismiss_ai_job, get_ai_queue_payload, get_ai_summary_payload, mark_stale_ai_jobs, process_ai_job, request_ai_analysis
+from webapp.infonalia_webapp.ai.service import cancel_ai_job, delete_ai_summary, dismiss_ai_job, dismiss_finished_ai_jobs, get_ai_queue_payload, get_ai_summary_payload, mark_stale_ai_jobs, process_ai_job, request_ai_analysis
 from webapp.infonalia_webapp.ai.worker import mark_stale_jobs, process_one_job
 from webapp.infonalia_webapp.ai.worker_launcher import start_ai_worker_for_job
 from webapp.infonalia_webapp.ai.workspace import prepare_ai_workspace
@@ -119,8 +119,7 @@ def _useful_summary_payload(text: str | None = None) -> dict[str, object]:
         },
         "resumen_ejecutivo": {
             "texto": summary_text,
-            "aspectos_clave": ["Revisar anexos", "Comprobar solvencia"],
-            "decision_preliminar": "Revisar documentación antes de decidir.",
+            "aspectos_clave": ["Dos sobres electrónicos", "Plazo de entrega de 48 horas"],
         },
         "caracteristicas": {
             "presupuesto_base": 12000,
@@ -131,6 +130,30 @@ def _useful_summary_payload(text: str | None = None) -> dict[str, object]:
             "adjudicacion": "Expediente completo",
             "numero_sobres": 2,
         },
+        "lotes": [
+            {
+                "numero_lote": "1",
+                "denominacion": "Productos de alimentación",
+                "presupuesto": 12000,
+                "valor_estimado": 14000,
+                "duracion": "12 meses",
+                "observaciones": "Oferta completa del lote.",
+                "fuente": "PCAP, página 5",
+            }
+        ],
+        "productos": [
+            {
+                "lote": "1",
+                "codigo": "P-01",
+                "descripcion": "Aceite de oliva virgen extra",
+                "unidad": "Botella 1 l",
+                "cantidad_estimada": 500,
+                "precio_unitario_maximo": 8.5,
+                "importe_estimado": 4250,
+                "especificaciones_relevantes": "Envase reciclable.",
+                "fuente": "PPT, página 12",
+            }
+        ],
         "presentacion_documentacion": {
             "forma_presentacion": "Electrónica",
             "documentacion_administrativa": ["DEUC"],
@@ -154,15 +177,31 @@ def _useful_summary_payload(text: str | None = None) -> dict[str, object]:
             "economica": [{"objeto": "Volumen anual", "importe_minimo": 10000, "detalle": "Acreditar solvencia económica."}],
             "tecnica": [{"objeto": "Suministros similares", "detalle": "Relación de suministros realizados."}],
         },
-        "condiciones_especiales_ejecucion": [{"categoria": "Social", "obligacion": "Cumplimiento laboral", "riesgo": "medio"}],
+        "condiciones_especiales_ejecucion": [
+            {
+                "categoria": "Social",
+                "obligacion": "Cumplimiento laboral",
+                "consecuencia_incumplimiento": "Penalidad prevista en el PCAP",
+                "fuente": "PCAP, página 31",
+            }
+        ],
         "observaciones_operativas": {
             "lugar_entrega": ["Centro indicado en pedido"],
             "horario_entrega": ["Horario de mañana"],
             "plazo_entrega": ["48 horas desde pedido"],
             "transporte": "A cargo del adjudicatario",
         },
-        "alertas": [{"nivel": "alta", "titulo": "Memoria técnica", "descripcion": "Puede condicionar la puntuación.", "accion_recomendada": "Preparar borrador."}],
-        "acciones_recomendadas": [{"prioridad": "alta", "accion": "Revisar anexos", "motivo": "Evitar omisiones."}],
+        "puntos_atencion": [
+            {
+                "titulo": "Oferta por lote completo",
+                "detalle": "No se admiten ofertas parciales dentro del lote.",
+                "fuente": "PCAP, página 8",
+            }
+        ],
+        "fuentes_consultadas": [
+            {"documento": "PCAP.pdf", "tipo": "PCAP", "paginas_relevantes": [5, 8, 31]},
+            {"documento": "PPT.pdf", "tipo": "PPT", "paginas_relevantes": [12]},
+        ],
         "control_calidad": {"campos_no_encontrados": [], "campos_con_baja_confianza": [], "advertencias": []},
     }
 
@@ -572,11 +611,19 @@ def test_summary_quality_rejects_mojibake() -> None:
     assert result["contains_mojibake"] is True
 
 
-def test_postprocess_adds_operational_alerts_and_actions() -> None:
+def test_postprocess_removes_recommendations_and_keeps_factual_information() -> None:
     summary = parse_summary_json(
         {
             "metadata": {"plataforma": "Junta de Andalucía", "hora_limite_presentacion": "14:00"},
             "resumen_ejecutivo": {"texto": "La licitación se adjudica con criterio precio y exige revisión documental."},
+            "acciones_recomendadas": [{"accion": "Revisar anexos", "motivo": "Evitar omisiones."}],
+            "alertas": [
+                {
+                    "titulo": "Muestras obligatorias",
+                    "descripcion": "Se exigen muestras etiquetadas.",
+                    "accion_recomendada": "Preparar muestras.",
+                }
+            ],
             "garantias": {"garantia_definitiva": {"exigida": True}},
             "muestras_fichas_memoria": {
                 "fichas_tecnicas": {"exigidas": True, "detalle": "Fichas por producto."},
@@ -588,14 +635,12 @@ def test_postprocess_adds_operational_alerts_and_actions() -> None:
 
     processed = postprocess_summary(summary)
 
-    alert_titles = {item["titulo"] for item in processed["alertas"]}
-    action_text = " ".join(item["accion"] for item in processed["acciones_recomendadas"])
+    point_titles = {item["titulo"] for item in processed["puntos_atencion"]}
     warnings = processed["control_calidad"]["advertencias"]
-    assert "Muestras obligatorias" in alert_titles
-    assert "Fichas técnicas" in alert_titles
-    assert "Plataforma no habitual" in alert_titles
-    assert "Hora límite no estándar" in alert_titles
-    assert "garantía definitiva" in action_text.lower()
+    assert "Muestras obligatorias" in point_titles
+    assert "acciones_recomendadas" not in processed
+    assert "alertas" not in processed
+    assert "accion_recomendada" not in processed["puntos_atencion"][0]
     assert any("criterios" in item.lower() for item in warnings)
 
 
@@ -620,6 +665,78 @@ def test_ai_queue_payload_counts_active_and_estimates(tmp_path: Path) -> None:
     assert payload["active_jobs"][0]["id"] == job_id
     assert payload["active_jobs"][0]["estimated_label"] == "4-7 min aprox."
     assert payload["active_jobs"][0]["progress_label"] == "En cola"
+
+
+def test_ai_queue_payload_exposes_safe_codex_error_diagnostic(tmp_path: Path) -> None:
+    conn = _conn()
+    _insert_licitacion(conn, tmp_path)
+    job_id = create_job(
+        conn,
+        licitacion_id=1,
+        document_hash="hash-error",
+        selected_documents=[],
+        model="codex",
+        provider="codex_local",
+        status="pending",
+    )
+    update_job(
+        conn,
+        job_id,
+        status="error",
+        error_code="CODEX_ERROR",
+        error_message="Codex Local terminó con error.",
+        raw_usage_json=json.dumps(
+            {
+                "diagnostics": {
+                    "returncode": 1,
+                    "stderr_preview": "access_token=very-secret-value\n401 Unauthorized",
+                }
+            }
+        ),
+    )
+
+    payload = get_ai_queue_payload(conn)
+
+    diagnostic = payload["recent_jobs"][0]["error_diagnostic"]
+    assert diagnostic["code"] == "CODEX_ERROR"
+    assert diagnostic["returncode"] == 1
+    assert "sesión de Codex" in diagnostic["hint"]
+    assert "very-secret-value" not in diagnostic["detail"]
+    assert "[oculto]" in diagnostic["detail"]
+
+
+def test_dismiss_finished_ai_jobs_preserves_every_active_status(tmp_path: Path) -> None:
+    conn = _conn()
+    _insert_licitacion(conn, tmp_path)
+    job_ids: dict[str, int] = {}
+    for status in ("pending", "queued", "processing", "deferred", "completed", "error", "cancelled"):
+        job_ids[status] = create_job(
+            conn,
+            licitacion_id=1,
+            document_hash=f"hash-{status}",
+            selected_documents=[],
+            model="codex",
+            provider="codex_local",
+            status=status,
+        )
+
+    result = dismiss_finished_ai_jobs(conn, dismissed_by="nuria")
+
+    assert result["ok"] is True
+    assert result["dismissed"] == 3
+    rows = {
+        row["status"]: row
+        for row in conn.execute("SELECT status, dismissed_at, dismissed_by FROM ai_analysis_jobs").fetchall()
+    }
+    for status in ("pending", "queued", "processing", "deferred"):
+        assert not rows[status]["dismissed_at"]
+        assert not rows[status]["dismissed_by"]
+    for status in ("completed", "error", "cancelled"):
+        assert rows[status]["dismissed_at"]
+        assert rows[status]["dismissed_by"] == "nuria"
+    payload = get_ai_queue_payload(conn)
+    assert {job["status"] for job in payload["active_jobs"]} == {"pending", "queued", "processing", "deferred"}
+    assert payload["recent_jobs"] == []
 
 
 def test_ai_queue_endpoint_returns_active_jobs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -650,6 +767,46 @@ def test_ai_queue_endpoint_returns_active_jobs(tmp_path: Path, monkeypatch: pyte
         assert status == HTTPStatus.OK
         assert payload["counts"]["active"] == 1
         assert payload["active_jobs"][0]["expediente"] == "EXP-COLA"
+
+
+def test_ai_queue_dismiss_finished_endpoint_keeps_active_jobs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    app = load_app_module()
+    with temporary_app_database(app):
+        folder = tmp_path / "cola-limpieza"
+        folder.mkdir()
+        with app.db_session() as conn:
+            _insert_app_licitacion_for_ai(conn, folder)
+            for status in ("pending", "processing", "completed", "error", "cancelled"):
+                create_job(
+                    conn,
+                    licitacion_id=1,
+                    document_hash=f"endpoint-{status}",
+                    selected_documents=[],
+                    model="codex",
+                    provider="codex_local",
+                    status=status,
+                )
+
+        handler = make_handler(app, "POST", "/api/ai/queue/dismiss-finished", {}, username="nuria")
+        dispatch(handler, "POST")
+
+        assert handler.responses[-1][0] == HTTPStatus.OK
+        assert handler.responses[-1][1]["ok"] is True
+        assert handler.responses[-1][1]["dismissed"] == 3
+        with app.db_session() as conn:
+            visible = get_ai_queue_payload(conn)
+            assert {job["status"] for job in visible["active_jobs"]} == {"pending", "processing"}
+            assert visible["recent_jobs"] == []
+            hidden_by = {
+                row["status"]: row["dismissed_by"]
+                for row in conn.execute("SELECT status, dismissed_by FROM ai_analysis_jobs").fetchall()
+            }
+            assert hidden_by["pending"] in (None, "")
+            assert hidden_by["processing"] in (None, "")
+            assert hidden_by["completed"] == "nuria"
+            assert hidden_by["error"] == "nuria"
+            assert hidden_by["cancelled"] == "nuria"
 
 
 def test_ai_cancel_pending_and_processing(tmp_path: Path) -> None:
@@ -828,16 +985,19 @@ def test_ai_queue_endpoints_return_json_on_internal_errors(monkeypatch: pytest.M
 
     monkeypatch.setattr(app, "cancel_ai_job", boom)
     monkeypatch.setattr(app, "dismiss_ai_job", boom)
+    monkeypatch.setattr(app, "dismiss_finished_ai_jobs", boom)
     monkeypatch.setattr(app, "get_ai_queue_payload", boom)
     monkeypatch.setattr(app, "get_ai_job_payload", boom)
 
     cancel_handler = make_handler(app, "POST", "/api/ai/jobs/7/cancel", {})
     dismiss_handler = make_handler(app, "POST", "/api/ai/jobs/7/dismiss", {})
+    dismiss_finished_handler = make_handler(app, "POST", "/api/ai/queue/dismiss-finished", {})
     queue_handler = make_handler(app, "GET", "/api/ai/queue", {})
     job_handler = make_handler(app, "GET", "/api/ai/jobs/7", {})
 
     dispatch(cancel_handler, "POST")
     dispatch(dismiss_handler, "POST")
+    dispatch(dismiss_finished_handler, "POST")
     dispatch(queue_handler, "GET")
     dispatch(job_handler, "GET")
 
@@ -847,6 +1007,9 @@ def test_ai_queue_endpoints_return_json_on_internal_errors(monkeypatch: pytest.M
     assert dismiss_handler.responses[-1][0] == HTTPStatus.INTERNAL_SERVER_ERROR
     assert dismiss_handler.responses[-1][1]["ok"] is False
     assert dismiss_handler.responses[-1][1]["error_code"] == "AI_DISMISS_ERROR"
+    assert dismiss_finished_handler.responses[-1][0] == HTTPStatus.INTERNAL_SERVER_ERROR
+    assert dismiss_finished_handler.responses[-1][1]["ok"] is False
+    assert dismiss_finished_handler.responses[-1][1]["error_code"] == "AI_DISMISS_FINISHED_ERROR"
     assert queue_handler.responses[-1][0] == HTTPStatus.INTERNAL_SERVER_ERROR
     assert queue_handler.responses[-1][1]["ok"] is False
     assert queue_handler.responses[-1][1]["error_code"] == "AI_QUEUE_ERROR"
@@ -2008,7 +2171,9 @@ def test_prepare_ai_workspace_copies_only_selected_and_keeps_originals(tmp_path:
     assert "pages_by_file" in manifest
     prompt = (job_root / "prompt.md").read_text(encoding="utf-8")
     schema = json.loads((job_root / "schema.json").read_text(encoding="utf-8"))
-    assert "ficha operativa" in prompt
+    assert "ficha previa de interés" in prompt
+    assert "No emitas decisiones preliminares" in prompt
+    assert "productos" in prompt
     assert "extracted_text" in prompt
     assert "caracteristicas" in schema
     assert "observaciones_operativas" in schema
@@ -2094,17 +2259,23 @@ def test_codex_local_subprocess_is_sandboxed_and_saves_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("CODEX_WORK_ROOT", str(tmp_path / "work"))
-    monkeypatch.setattr("webapp.infonalia_webapp.ai.codex_local_provider.shutil.which", lambda _value: "codex")
+    resolved_executable = str(tmp_path / "codex.CMD")
+    monkeypatch.setattr("webapp.infonalia_webapp.ai.codex_local_provider.shutil.which", lambda _value: resolved_executable)
     source = _write_pdf(tmp_path / "PCAP.pdf", b"%PDF-1.4\n")
     calls: list[dict[str, object]] = []
 
     def fake_runner(command, **kwargs):
         calls.append({"command": command, **kwargs})
+        output_name = command[command.index("--output-last-message") + 1]
+        Path(kwargs["cwd"], output_name).write_text(
+            json.dumps({"resumen_ejecutivo": {"texto": "Resumen Codex"}}),
+            encoding="utf-8",
+        )
         return subprocess.CompletedProcess(
             command,
             0,
-            stdout=json.dumps({"resumen_ejecutivo": {"texto": "Resumen Codex"}}),
-            stderr="",
+            stdout="salida auxiliar que no es JSON",
+            stderr="progreso interno",
         )
 
     provider = CodexLocalProvider(
@@ -2125,10 +2296,100 @@ def test_codex_local_subprocess_is_sandboxed_and_saves_result(
     )
 
     assert result.summary["resumen_ejecutivo"]["texto"] == "Resumen Codex"
+    assert calls[0]["command"][0] == resolved_executable
+    assert "--ignore-user-config" in calls[0]["command"]
+    assert "--ephemeral" in calls[0]["command"]
+    assert "--output-last-message" in calls[0]["command"]
+    assert "--model" not in calls[0]["command"]
     assert calls[0]["shell"] is False
     assert calls[0]["timeout"] == 33
     assert str(tmp_path / "work" / "99") == calls[0]["cwd"]
     assert (tmp_path / "work" / "99" / "result.json").exists()
+
+
+def test_codex_local_allows_explicit_model_override_without_loading_user_config() -> None:
+    command = build_codex_command(
+        _ai_config(
+            analysis_provider="codex_local",
+            codex_local_enabled=True,
+            codex_model="gpt-explicit-test",
+        ),
+        executable="codex.CMD",
+    )
+
+    assert "--ignore-user-config" in command
+    assert command[command.index("--model") + 1] == "gpt-explicit-test"
+
+
+def test_codex_local_nonzero_exit_keeps_tail_diagnostics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODEX_WORK_ROOT", str(tmp_path / "work"))
+    monkeypatch.setattr("webapp.infonalia_webapp.ai.codex_local_provider.shutil.which", lambda _value: str(tmp_path / "codex.CMD"))
+    source = _write_pdf(tmp_path / "PCAP.pdf", b"%PDF-1.4\n")
+
+    def fake_runner(command, **kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout="salida parcial", stderr=("x" * 3500) + "\n401 Unauthorized")
+
+    provider = CodexLocalProvider(
+        _ai_config(analysis_provider="codex_local", codex_local_enabled=True),
+        job_id=101,
+        runner=fake_runner,
+    )
+
+    with pytest.raises(AIProviderError) as excinfo:
+        provider.analyze_documents(
+            {"id": 1, "expediente": "EXP"},
+            [{"path": str(source), "name": "PCAP.pdf", "relative_path": "PCAP.pdf"}],
+        )
+
+    assert excinfo.value.code == "CODEX_ERROR"
+    assert excinfo.value.diagnostics["returncode"] == 1
+    assert "401 Unauthorized" in excinfo.value.diagnostics["stderr_preview"]
+    assert excinfo.value.diagnostics["stdout_preview"] == "salida parcial"
+
+
+def test_codex_local_update_required_has_specific_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODEX_WORK_ROOT", str(tmp_path / "work"))
+    monkeypatch.setattr("webapp.infonalia_webapp.ai.codex_local_provider.shutil.which", lambda _value: str(tmp_path / "codex.CMD"))
+
+    def fake_runner(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr="The 'gpt-test' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.",
+        )
+
+    provider = CodexLocalProvider(
+        _ai_config(analysis_provider="codex_local", codex_local_enabled=True),
+        job_id=103,
+        runner=fake_runner,
+    )
+
+    with pytest.raises(AIProviderError) as excinfo:
+        provider.analyze_documents({"id": 1, "expediente": "EXP"}, [])
+
+    assert excinfo.value.code == "CODEX_UPDATE_REQUIRED"
+    assert "no es compatible" in str(excinfo.value)
+
+
+def test_codex_local_launch_error_is_classified(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODEX_WORK_ROOT", str(tmp_path / "work"))
+    monkeypatch.setattr("webapp.infonalia_webapp.ai.codex_local_provider.shutil.which", lambda _value: str(tmp_path / "codex.CMD"))
+
+    def fake_runner(command, **kwargs):
+        raise PermissionError("Acceso denegado")
+
+    provider = CodexLocalProvider(
+        _ai_config(analysis_provider="codex_local", codex_local_enabled=True),
+        job_id=102,
+        runner=fake_runner,
+    )
+
+    with pytest.raises(AIProviderError) as excinfo:
+        provider.analyze_documents({"id": 1, "expediente": "EXP"}, [])
+
+    assert excinfo.value.code == "CODEX_LAUNCH_ERROR"
+    assert excinfo.value.diagnostics["os_error"] == "PermissionError"
 
 
 def test_codex_local_invalid_stdout_is_classified(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2199,7 +2460,8 @@ def test_parse_summary_json_fills_missing_sections() -> None:
     parsed = parse_summary_json({"metadata": {"expediente": "EXP"}, "resumen_ejecutivo": {"texto": "ok"}})
 
     assert parsed["metadata"]["expediente"] == "EXP"
-    assert "alertas" in parsed
+    assert "puntos_atencion" in parsed
+    assert "productos" in parsed
     assert "solvencia" in parsed
 
 
@@ -2210,16 +2472,26 @@ def test_ai_summary_ui_source_renders_operational_ficha() -> None:
     assert "ai-ficha" in source
     assert "Resumen ejecutivo" in source
     assert "Datos clave" in source
+    assert "Información relevante" in source
+    assert "Productos" in source
     assert "Criterios sujetos a juicio de valor" in source
     assert "Observaciones operativas" in source
+    assert "Acciones recomendadas" not in source
+    assert "decision_preliminar" not in source
     assert "Ver detalles técnicos" in source
     assert "Ver JSON técnico" not in source
     assert "low_quality_analysis" in source
     assert "encoding_error" in source
     assert "ai-queue-button" in html_source
     assert "ai-queue-dialog" in html_source
+    assert 'id="clear-finished-ai-queue"' in html_source
     assert "/api/ai/queue" in source
+    assert "/api/ai/queue/dismiss-finished" in source
+    assert "Limpiar terminados" in html_source
     assert "handleAiQueueActionError" in source
+    assert "Diagnóstico del error" in source
+    assert "Ver detalle técnico" in source
+    assert "error_diagnostic" in source
     assert "No se pudo contactar con la web local. Comprueba que la Suite sigue arrancada." in source
     assert source.count("Failed to fetch") == 1
 

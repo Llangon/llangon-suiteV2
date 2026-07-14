@@ -79,7 +79,7 @@ ACTION_DEFINITIONS: dict[str, dict[str, str]] = {
         "subject": "Solicitar resumen IA de licitación",
         "state": ESTADO_DESCARGAR_PARA_VER,
         "body_label": "Solicitar resumen IA de licitación.",
-        "comment": "Acción futura reservada para solicitar resumen IA tras descargar la documentación.",
+        "comment": "Acción recibida desde correo de revisión Infonalia: Nuria solicitó RESUMEN IA.",
     },
     ACTION_REVIEWED: {
         "name": "Revisado",
@@ -210,6 +210,28 @@ def ensure_email_action_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS email_ai_summary_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email_action_event_id INTEGER NOT NULL UNIQUE,
+            review_id INTEGER,
+            licitacion_id INTEGER NOT NULL,
+            download_job_id INTEGER,
+            ai_job_id INTEGER,
+            source_message_id TEXT,
+            requested_by TEXT,
+            status TEXT NOT NULL,
+            detail TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (email_action_event_id) REFERENCES email_action_events(id),
+            FOREIGN KEY (review_id) REFERENCES infonalia_dias(id),
+            FOREIGN KEY (licitacion_id) REFERENCES licitaciones(id),
+            FOREIGN KEY (download_job_id) REFERENCES download_jobs(id)
+        )
+        """
+    )
     code_additions = {
         "processed_at": "TEXT",
         "processed_by_email": "TEXT",
@@ -240,6 +262,8 @@ def ensure_email_action_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_email_action_events_review ON email_action_events(review_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_email_action_events_licitacion ON email_action_events(licitacion_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_email_action_events_created ON email_action_events(created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_email_ai_summary_requests_download ON email_ai_summary_requests(download_job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_email_ai_summary_requests_status ON email_ai_summary_requests(status)")
 
 
 def ensure_review_action_codes(
@@ -248,14 +272,19 @@ def ensure_review_action_codes(
     review_id: int,
     licitaciones: Sequence[sqlite3.Row | Mapping[str, object]],
     timestamp: str | None = None,
+    ai_summary_enabled: bool | None = None,
 ) -> dict[tuple[int | None, str], str]:
     ensure_email_action_schema(conn)
     created_at = timestamp or now_iso()
     result: dict[tuple[int | None, str], str] = {}
+    ai_summary_enabled = review_ai_summary_button_enabled() if ai_summary_enabled is None else bool(ai_summary_enabled)
+    individual_actions = [ACTION_DISCARD, ACTION_DOWNLOAD_REVIEW, ACTION_PREPARE]
+    if ai_summary_enabled:
+        individual_actions.append(ACTION_AI_SUMMARY)
 
     for row in licitaciones:
         licitacion_id = int(row["id"])
-        for action_code in (ACTION_DISCARD, ACTION_DOWNLOAD_REVIEW, ACTION_PREPARE):
+        for action_code in individual_actions:
             code = generate_action_code(licitacion_id, action_code)
             action = ACTION_DEFINITIONS[action_code]
             conn.execute(
@@ -440,8 +469,10 @@ def build_infonalia_review_email_html(
     mailbox_to: str,
     mailbox_cc: str,
     generated_at: datetime | None = None,
+    ai_summary_enabled: bool | None = None,
 ) -> str:
     generated_at = generated_at or datetime.now().replace(microsecond=0)
+    ai_summary_enabled = review_ai_summary_button_enabled() if ai_summary_enabled is None else bool(ai_summary_enabled)
     rows = sorted(
         licitaciones,
         key=lambda row: (
@@ -502,13 +533,15 @@ def build_infonalia_review_email_html(
             + _link_html(_row_value(row, "enlace_infonalia"), "Anuncio Infonalia")
         )
         buttons = []
-        action_specs = (
+        action_specs = [
             (ACTION_DISCARD, "#991b1b", "#fee2e2"),
-        ) if previous_notice else (
+        ] if previous_notice else [
             (ACTION_DISCARD, "#991b1b", "#fee2e2"),
             (ACTION_DOWNLOAD_REVIEW, "#0f5b8d", "#e8f7ff"),
             (ACTION_PREPARE, "#0e7f15", "#e7f8ea"),
-        )
+        ]
+        if ai_summary_enabled and not previous_notice and (licitacion_id, ACTION_AI_SUMMARY) in action_codes:
+            action_specs.append((ACTION_AI_SUMMARY, "#5b21b6", "#f3e8ff"))
         for action_code, color, bg in action_specs:
             href = _mailto(
                 mailbox_to,
@@ -652,9 +685,9 @@ def _insert_email_action_event(
     new_status: str = "",
     result: str,
     reason: str = "",
-) -> None:
+) -> int:
     ensure_email_action_schema(conn)
-    conn.execute(
+    cur = conn.execute(
         """
         INSERT INTO email_action_events (
             created_at, source_message_id, from_email, subject, code, action_code,
@@ -679,6 +712,58 @@ def _insert_email_action_event(
             clean_text(reason),
         ),
     )
+    return int(cur.lastrowid)
+
+
+def _create_email_ai_summary_request(
+    conn: sqlite3.Connection,
+    *,
+    event_id: int,
+    review_id: int,
+    licitacion_id: int,
+    download_request: Mapping[str, object] | None,
+    source_message_id: str,
+    sender_email: str,
+    timestamp: str,
+) -> int:
+    queue = download_request.get("queue") if isinstance(download_request, Mapping) else None
+    queue = queue if isinstance(queue, Mapping) else {}
+    raw_job_id = queue.get("job_id")
+    try:
+        download_job_id = int(raw_job_id) if raw_job_id is not None else None
+    except (TypeError, ValueError):
+        download_job_id = None
+    queue_status = clean_text(queue.get("status"))
+    status = "download_pending" if download_job_id and queue_status in {"queued", "already_pending"} else "download_failed"
+    detail = clean_text(queue.get("message")) or queue_status or "No se pudo vincular la descarga requerida para el resumen IA."
+    cur = conn.execute(
+        """
+        INSERT OR IGNORE INTO email_ai_summary_requests (
+            email_action_event_id, review_id, licitacion_id, download_job_id, ai_job_id,
+            source_message_id, requested_by, status, detail, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_id,
+            review_id or None,
+            licitacion_id,
+            download_job_id,
+            clean_text(source_message_id),
+            clean_text(sender_email).lower(),
+            status,
+            detail,
+            timestamp,
+            timestamp,
+        ),
+    )
+    if cur.lastrowid:
+        return int(cur.lastrowid)
+    row = conn.execute(
+        "SELECT id FROM email_ai_summary_requests WHERE email_action_event_id = ?",
+        (event_id,),
+    ).fetchone()
+    return int(row["id"]) if row else 0
 
 
 def _processed_email_action_event(
@@ -730,6 +815,9 @@ def check_action_code(
     action_code = clean_text(parsed["action_code"])
     action = ACTION_DEFINITIONS.get(action_code)
     if not action:
+        return payload
+    if action_code == ACTION_AI_SUMMARY and not review_ai_summary_button_enabled():
+        payload["reason"] = "resumen IA por correo desactivado"
         return payload
     payload["sender_authorized"] = sender_is_allowed(sender_email, allowed_senders) if sender_email else None
 
@@ -840,8 +928,9 @@ def _request_automatic_download_after_email_action(
     sender_email: str,
     source_message_id: str,
     timestamp: str,
+    start_worker: bool = True,
 ) -> dict[str, object]:
-    if action_code not in {ACTION_DOWNLOAD_REVIEW, ACTION_PREPARE}:
+    if action_code not in {ACTION_DOWNLOAD_REVIEW, ACTION_PREPARE, ACTION_AI_SUMMARY}:
         return {"requested": False, "reason": "action_without_download"}
     try:
         try:
@@ -859,7 +948,7 @@ def _request_automatic_download_after_email_action(
             requested_by=sender_email,
         )
         worker_result: dict[str, object] | None = None
-        if queue_result.get("created") and queue_result.get("job_id"):
+        if start_worker and queue_result.get("created") and queue_result.get("job_id"):
             worker_result = app_module.start_download_worker(job_id=int(queue_result["job_id"]))
         return {
             "requested": True,
@@ -1009,10 +1098,11 @@ def _process_individual_action(
         sender_email=sender_email,
         source_message_id=source_message_id,
         timestamp=timestamp,
+        start_worker=action_code != ACTION_AI_SUMMARY,
     )
     message = f"Acción {action['name']} aplicada a la licitación {licitacion_id}."
     queue_info = download_request.get("queue") if isinstance(download_request, dict) else None
-    if isinstance(queue_info, Mapping) and action_code in {ACTION_DOWNLOAD_REVIEW, ACTION_PREPARE}:
+    if isinstance(queue_info, Mapping) and action_code in {ACTION_DOWNLOAD_REVIEW, ACTION_PREPARE, ACTION_AI_SUMMARY}:
         queue_status = clean_text(queue_info.get("status"))
         if queue_status == "queued":
             message += f" Descarga automática encolada (trabajo {queue_info.get('job_id')})."
@@ -1022,11 +1112,13 @@ def _process_individual_action(
             message += " La documentación ya estaba descargada."
         elif queue_status == "error":
             message += f" Error al solicitar la descarga automática: {clean_text(queue_info.get('message'))}."
+        if action_code == ACTION_AI_SUMMARY and queue_status in {"queued", "already_pending"}:
+            message += " El resumen IA se enviará por correo cuando termine el análisis."
     worker_info = download_request.get("worker") if isinstance(download_request, dict) else None
     if isinstance(worker_info, Mapping) and queue_info and clean_text(queue_info.get("status")) == "queued":
         if worker_info.get("started") is False:
             message += f" Worker de descarga no iniciado automáticamente: {clean_text(worker_info.get('error'))}."
-    _insert_email_action_event(
+    event_id = _insert_email_action_event(
         conn,
         created_at=timestamp,
         source_message_id=source_message_id,
@@ -1042,6 +1134,36 @@ def _process_individual_action(
         result="processed",
         reason=message,
     )
+    ai_summary_request_id = 0
+    if action_code == ACTION_AI_SUMMARY:
+        ai_summary_request_id = _create_email_ai_summary_request(
+            conn,
+            event_id=event_id,
+            review_id=review_id,
+            licitacion_id=licitacion_id,
+            download_request=download_request,
+            source_message_id=source_message_id,
+            sender_email=sender_email,
+            timestamp=timestamp,
+        )
+        if isinstance(queue_info, Mapping) and clean_text(queue_info.get("status")) == "queued" and queue_info.get("job_id"):
+            # La petición queda persistida antes de arrancar el worker, para que éste
+            # pueda enlazar la descarga y el análisis incluso si termina muy rápido.
+            conn.commit()
+            try:
+                try:
+                    from . import app as app_module
+                except ImportError:
+                    import app as app_module  # type: ignore
+
+                worker_info = app_module.start_download_worker(job_id=int(queue_info["job_id"]))
+                download_request["worker"] = worker_info
+                if isinstance(worker_info, Mapping) and worker_info.get("started") is False:
+                    message += f" Worker de descarga no iniciado automáticamente: {clean_text(worker_info.get('error'))}."
+                    conn.execute("UPDATE email_action_events SET reason = ? WHERE id = ?", (message, event_id))
+            except Exception as exc:
+                message += f" Worker de descarga no iniciado automáticamente: {exc}."
+                conn.execute("UPDATE email_action_events SET reason = ? WHERE id = ?", (message, event_id))
     return {
         "status": "processed",
         "action": action["name"],
@@ -1050,6 +1172,7 @@ def _process_individual_action(
         "new_state": new_state,
         "changed": changed,
         "download_request": download_request,
+        "ai_summary_request_id": ai_summary_request_id or None,
         "message": message,
     }
 
@@ -1135,10 +1258,10 @@ def _process_review_action(
         SELECT COUNT(*) AS total
         FROM email_action_events
         WHERE review_id = ?
-          AND action_code IN (?, ?, ?)
+          AND action_code IN (?, ?, ?, ?)
           AND result = 'processed'
         """,
-        (review_id, ACTION_DISCARD, ACTION_DOWNLOAD_REVIEW, ACTION_PREPARE),
+        (review_id, ACTION_DISCARD, ACTION_DOWNLOAD_REVIEW, ACTION_PREPARE, ACTION_AI_SUMMARY),
     ).fetchone()["total"]
     auto_discarded = 0
     untouched = 0
@@ -1276,6 +1399,10 @@ def process_email_action(
         error = "Remitente no autorizado."
         audit_blocked(result="error", reason=error)
         return {"status": "error", "error_code": "UNAUTHORIZED_SENDER", "message": error}
+    if action_code == ACTION_AI_SUMMARY and not review_ai_summary_button_enabled():
+        message = "Orden ignorada: el resumen IA por correo está desactivado."
+        audit_blocked(result="ignored", reason=message)
+        return {"status": "ignored", "error_code": "AI_SUMMARY_DISABLED", "message": message}
 
     if _same_message_already_processed(conn, code_row=code_row, source_message_id=source_message_id):
         message = "Orden duplicada ignorada: este correo ya fue procesado."
@@ -1366,6 +1493,17 @@ def process_email_action(
                 new_status=previous_status,
             )
             return {"status": "ignored", "error_code": "ADVANCED_STATE", "message": message}
+        if reason == "resumen IA por correo desactivado":
+            message = "Orden ignorada: el resumen IA por correo está desactivado."
+            audit_blocked(
+                result="ignored",
+                reason=message,
+                review_id=review_id,
+                licitacion_id=licitacion_id,
+                previous_status=previous_status,
+                new_status=previous_status,
+            )
+            return {"status": "ignored", "error_code": "AI_SUMMARY_DISABLED", "message": message}
         error_codes = {
             "licitación inexistente": "LICITACION_NOT_FOUND",
             "revisión inexistente": "REVIEW_NOT_FOUND",
