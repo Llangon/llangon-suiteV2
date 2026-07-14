@@ -90,6 +90,7 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
         "0026_automation_orchestrator",
         "0027_clientes_envios",
         "0028_licitacion_tipo_publicacion",
+        "0029_justificaciones_baja",
     ]
     assert table_exists(conn, MIGRATIONS_TABLE)
     rows = conn.execute(
@@ -236,6 +237,11 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
             "Tipo de publicacion para separar licitaciones y anuncios previos",
             "2026-06-12T10:00:00",
         ),
+        (
+            "0029_justificaciones_baja",
+            "Borradores, versiones y documentos de justificaciones de baja",
+            "2026-06-12T10:00:00",
+        ),
     ]
     assert table_exists(conn, "download_jobs")
     assert table_exists(conn, "import_runs")
@@ -258,6 +264,11 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
     assert table_exists(conn, "email_action_codes")
     assert table_exists(conn, "email_action_events")
     assert table_exists(conn, "infonalia_email_imports")
+    assert table_exists(conn, "justificaciones_baja")
+    assert table_exists(conn, "justificacion_baja_versiones")
+    assert table_exists(conn, "justificacion_baja_documentos")
+    assert table_exists(conn, "justificacion_baja_assets")
+    assert table_exists(conn, "justificacion_baja_historial")
     ai_job_columns = {row[1] for row in conn.execute("PRAGMA table_info(ai_analysis_jobs)").fetchall()}
     assert {"dismissed_at", "dismissed_by"} | AI_JOB_PROGRESS_COLUMNS <= ai_job_columns
     assert not table_exists(conn, "licitacion_actuaciones")
@@ -319,6 +330,7 @@ def test_run_migrations_is_idempotent() -> None:
         "0026_automation_orchestrator",
         "0027_clientes_envios",
         "0028_licitacion_tipo_publicacion",
+        "0029_justificaciones_baja",
     ]
     assert run_migrations(conn, now=lambda: "2026-06-12T10:05:00") == []
 
@@ -352,6 +364,7 @@ def test_run_migrations_is_idempotent() -> None:
         ("0026_automation_orchestrator", "2026-06-12T10:00:00"),
         ("0027_clientes_envios", "2026-06-12T10:00:00"),
         ("0028_licitacion_tipo_publicacion", "2026-06-12T10:00:00"),
+        ("0029_justificaciones_baja", "2026-06-12T10:00:00"),
     ]
 
 
