@@ -69,6 +69,7 @@ const appState = {
 
 const daysSection = document.getElementById("days-section");
 const licitacionesSection = document.getElementById("licitaciones-section");
+const justificacionesBajaSection = document.getElementById("justificaciones-baja-section");
 const calendarSection = document.getElementById("calendar-section");
 const actuacionesSection = document.getElementById("actuaciones-section");
 const clientsSection = document.getElementById("clients-section");
@@ -1700,6 +1701,7 @@ function setActiveNav(section) {
     button.classList.toggle("active", button.dataset.navSection === section);
   });
   document.body.dataset.activeSection = section || "";
+  window.dispatchEvent(new CustomEvent("llangon:viewchange", { detail: { section } }));
 }
 
 function setPageHeader(title, kicker = "Panel privado") {
@@ -1770,6 +1772,25 @@ function showLicitacionesView({ diaId = "", title = "Centro de licitaciones", vi
   renderLicitacionesTabs();
   renderLicitacionesDateFilters();
   loadItems();
+}
+
+function showJustificacionesBajaView(title = "Justificaciones de baja", kicker = "Licitaciones") {
+  appState.lastSection = "justificaciones-baja";
+  setActiveNav("justificaciones-baja");
+  setPageHeader(title, kicker);
+  daysSection.hidden = true;
+  licitacionesSection.hidden = true;
+  calendarSection.hidden = true;
+  actuacionesSection.hidden = true;
+  clientsSection.hidden = true;
+  clienteEnviosSection.hidden = true;
+  notificationsSection.hidden = true;
+  newsAdminSection.hidden = true;
+  monitorSection.hidden = true;
+  configSection.hidden = true;
+  if (justificacionesBajaSection) justificacionesBajaSection.hidden = false;
+  if (licitacionDetailDialog?.open) licitacionDetailDialog.close();
+  closeSidebar();
 }
 
 function showCalendarView() {
@@ -5967,6 +5988,8 @@ function renderDetailActionBar(item) {
       <div class="detail-action-bar" role="group" aria-label="Acciones de la licitación">
       ${isAdmin() && !previousNotice ? `<button class="download-button primary" data-download-id="${escapeHtml(item.id)}">Descargar documentación</button>` : ""}
       ${!previousNotice ? `<button data-new-actuacion-id="${escapeHtml(item.id)}">Crear actuación</button>` : ""}
+      ${!previousNotice ? `<button data-open-justificaciones-baja="${escapeHtml(item.id)}">Ver justificaciones de baja</button>` : ""}
+      ${isAdmin() && !previousNotice ? `<button data-create-justificacion-baja="${escapeHtml(item.id)}">Crear justificación de baja</button>` : ""}
       <button data-open-licitacion-envios="${escapeHtml(item.id)}">Envíos a clientes</button>
       ${isAdmin() ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""}
       <details class="detail-more-actions"${isAdmin() ? "" : ' hidden=""'}>
@@ -8873,6 +8896,13 @@ enhanceConfigHelp();
 renderConfigHelpManual();
 
 loadMe().then(() => {
+  window.JustificacionesBaja?.init({
+    bridge: {
+      csrfHeaders,
+      getCurrentUser: () => appState.user,
+      navigate: (_section, title, kicker) => showJustificacionesBajaView(title, kicker),
+    },
+  });
   showInitialView();
   loadAiQueue();
   startAiQueuePolling(15000);

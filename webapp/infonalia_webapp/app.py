@@ -10,6 +10,7 @@ import re
 import secrets
 import smtplib
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -288,9 +289,9 @@ except ImportError:
     )
 
 try:
-    from .multipart_uploads import extract_multipart_file
+    from .multipart_uploads import extract_multipart_fields, extract_multipart_file
 except ImportError:
-    from multipart_uploads import extract_multipart_file
+    from multipart_uploads import extract_multipart_fields, extract_multipart_file
 
 try:
     from .pdf_enrichment import (
@@ -339,9 +340,12 @@ except ImportError:
 try:
     from .dropbox_paths import (
         DropboxPathError,
+        LicitacionFolderResolution,
         dropbox_base_status,
         folder_status_label,
+        path_inside_base,
         preferred_dropbox_base_path,
+        resolve_path_inside_base,
         resolve_licitacion_folder,
         stored_folder_path_for_base,
         validate_dropbox_base_path,
@@ -349,9 +353,12 @@ try:
 except ImportError:
     from dropbox_paths import (
         DropboxPathError,
+        LicitacionFolderResolution,
         dropbox_base_status,
         folder_status_label,
+        path_inside_base,
         preferred_dropbox_base_path,
+        resolve_path_inside_base,
         resolve_licitacion_folder,
         stored_folder_path_for_base,
         validate_dropbox_base_path,
@@ -536,6 +543,25 @@ try:
     from .db_migrations import enable_foreign_keys, run_migrations
 except ImportError:
     from db_migrations import enable_foreign_keys, run_migrations
+
+try:
+    from .justificaciones_baja.application import JustificationApplicationService
+    from .justificaciones_baja.application.errors import JustificationApplicationError
+    from .justificaciones_baja.imports import ProductImportError, preview_tabular, preview_xlsx
+    from .justificaciones_baja.persistence import (
+        JustificationNotFoundError,
+        JustificationRepository,
+    )
+    from .justificaciones_baja.documents.filenames import safe_component
+except ImportError:
+    from justificaciones_baja.application import JustificationApplicationService
+    from justificaciones_baja.application.errors import JustificationApplicationError
+    from justificaciones_baja.imports import ProductImportError, preview_tabular, preview_xlsx
+    from justificaciones_baja.persistence import (
+        JustificationNotFoundError,
+        JustificationRepository,
+    )
+    from justificaciones_baja.documents.filenames import safe_component
 
 try:
     from .infonalia_mail_importer import process_mailbox_once as process_infonalia_mailbox_once
@@ -1847,6 +1873,129 @@ def dropbox_relative_path(value: object, dropbox_root: Path | None = None) -> st
 
 def folder_path_for_storage(value: object, dropbox_root: Path | None = None) -> str:
     return stored_folder_path_for_base(value, dropbox_root or find_dropbox_root())
+
+
+def _path_component_is_link(path: Path) -> bool:
+    """Detect links and Windows reparse points without following them.
+
+    ``Path.is_junction`` was added in Python 3.12.  On 3.10/3.11 the
+    ``st_file_attributes`` fallback rejects junctions (and other reparse
+    points) conservatively instead of silently treating them as directories.
+    """
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        if callable(is_junction) and is_junction():
+            return True
+        try:
+            attributes = int(getattr(path.lstat(), "st_file_attributes", 0) or 0)
+        except FileNotFoundError:
+            # Output directories may not exist yet; absence is not a link.
+            return False
+        reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400))
+        return bool(attributes & reparse_flag)
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError, TypeError):
+        # Permission/stat failures are unsafe to follow, so fail closed.
+        return True
+
+
+def _ensure_no_link_components(base_path: Path, candidate_path: Path) -> Path:
+    """Validate a lexical path below *base_path* before any component is resolved."""
+    base = Path(base_path).resolve(strict=True)
+    candidate = Path(os.path.abspath(candidate_path))
+    try:
+        relative = candidate.relative_to(base)
+    except ValueError as exc:
+        raise DropboxPathError("La ruta queda fuera de la carpeta permitida.") from exc
+
+    current = base
+    for part in relative.parts:
+        current = current / part
+        if _path_component_is_link(current):
+            raise DropboxPathError("La ruta contiene un enlace simbólico o unión no permitidos.")
+    return candidate
+
+
+def _resolve_existing_path_without_links(base_path: Path, relative_path: object) -> Path:
+    """Resolve an existing relative path while rejecting traversal and link escapes."""
+    base = Path(base_path).resolve(strict=True)
+    text = str(relative_path or "").strip().strip('"')
+    resolve_path_inside_base(base, text)
+    parts = [part for part in text.replace("\\", "/").split("/") if part]
+    lexical = _ensure_no_link_components(base, base.joinpath(*parts))
+    try:
+        resolved = lexical.resolve(strict=True)
+    except (FileNotFoundError, OSError) as exc:
+        raise DropboxPathError("La ruta seleccionada no existe.") from exc
+    if not path_inside_base(resolved, base):
+        raise DropboxPathError("La ruta queda fuera de la carpeta permitida.")
+    return resolved
+
+
+def _resolve_licitacion_folder_without_links(
+    licitacion: object,
+    base_path: Path,
+    resolution: LicitacionFolderResolution,
+) -> Path:
+    """Recover the stored lexical folder before resolving any link component."""
+
+    base = Path(base_path).resolve(strict=True)
+    try:
+        stored = clean_text(licitacion["ruta_carpeta"]).strip('"')  # type: ignore[index]
+    except (KeyError, IndexError, TypeError):
+        stored = ""
+    if not stored:
+        raise DropboxPathError("La licitación no tiene una ruta de carpeta válida.")
+
+    raw = Path(stored)
+    if raw.is_absolute() or (len(stored) >= 2 and stored[1] == ":"):
+        lexical = _ensure_no_link_components(base, raw)
+        try:
+            resolved = lexical.resolve(strict=True)
+        except (FileNotFoundError, OSError) as exc:
+            raise DropboxPathError("La carpeta de la licitación no existe.") from exc
+        if not path_inside_base(resolved, base):
+            raise DropboxPathError("La carpeta de la licitación queda fuera de Dropbox.")
+        return resolved
+
+    # This validates absolute paths, traversal and NULs but its returned path is
+    # deliberately ignored because it may already have followed a junction.
+    resolve_path_inside_base(base, stored)
+    parts = [part for part in stored.replace("\\", "/").split("/") if part]
+    direct = _ensure_no_link_components(base, base.joinpath(*parts))
+    if direct.exists():
+        try:
+            return direct.resolve(strict=True)
+        except OSError as exc:
+            raise DropboxPathError("La carpeta de la licitación no puede resolverse.") from exc
+
+    # Preserve the existing legacy lookup for records stored without their year
+    # prefix, while checking every lexical candidate before resolving it.
+    legacy_candidates: list[Path] = []
+    try:
+        year_directories = list(base.iterdir())
+    except OSError as exc:
+        raise DropboxPathError("No se puede inspeccionar la carpeta base de Dropbox.") from exc
+    for year_directory in year_directories:
+        if len(year_directory.name) != 4 or not year_directory.name.isdigit():
+            continue
+        candidate = year_directory.joinpath(*parts)
+        if not candidate.exists():
+            continue
+        legacy_candidates.append(_ensure_no_link_components(base, candidate))
+    if len(legacy_candidates) == 1:
+        return legacy_candidates[0].resolve(strict=True)
+
+    # Do not fall back to resolution.path: resolve_licitacion_folder currently
+    # returns a resolved path, so doing so would lose evidence of a symlink.
+    if resolution.exists:
+        raise DropboxPathError(
+            "La ruta almacenada de la licitación no puede reconstruirse de forma segura."
+        )
+    raise DropboxPathError("La carpeta de la licitación no existe.")
 
 
 def get_or_create_dia(conn: sqlite3.Connection, fecha_infonalia: str) -> int:
@@ -3750,6 +3899,20 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_get_cliente_envio(int(envio_id))
+        elif path == "/api/justificaciones-baja":
+            self.api_list_justificaciones_baja(parsed.query)
+        elif path.startswith("/api/justificaciones-baja/documentos/") and path.endswith("/download"):
+            document_id = path.removeprefix("/api/justificaciones-baja/documentos/").removesuffix("/download").strip("/")
+            if not document_id.isdigit():
+                self.send_json({"error": "Id no válido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_download_justificacion_document(int(document_id))
+        elif path.startswith("/api/justificaciones-baja/"):
+            justification_id = path.removeprefix("/api/justificaciones-baja/").strip("/")
+            if not justification_id.isdigit():
+                self.send_json({"error": "Id no válido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_get_justificacion_baja(int(justification_id))
         elif path == "/api/licitaciones/search":
             self.api_search_licitaciones(parsed.query)
         elif path == "/api/licitaciones":
@@ -3872,7 +4035,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if self.csrf_required_for_path("POST", path) and not self.require_csrf_token():
             return
 
-        if path == "/api/licitaciones":
+        if path == "/api/justificaciones-baja" or path.startswith("/api/justificaciones-baja/"):
+            self.api_post_justificacion_baja(path)
+        elif path == "/api/licitaciones":
             self.api_create_licitacion()
         elif path == "/api/comments":
             self.api_create_comment()
@@ -4141,7 +4306,13 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if self.csrf_required_for_path("PATCH", path) and not self.require_csrf_token():
             return
 
-        if path.startswith("/api/comments/"):
+        if path.startswith("/api/justificaciones-baja/"):
+            justification_id = path.removeprefix("/api/justificaciones-baja/").strip("/")
+            if not justification_id.isdigit():
+                self.send_json({"error": "Id no válido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_update_justificacion_baja(int(justification_id))
+        elif path.startswith("/api/comments/"):
             comment_id = path.removeprefix("/api/comments/").strip("/")
             if not comment_id.isdigit():
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
@@ -4278,6 +4449,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
     def is_known_mutating_route(self, method: str, path: str) -> bool:
         method = method.upper()
         if method == "POST":
+            if path == "/api/justificaciones-baja" or path.startswith("/api/justificaciones-baja/"):
+                return True
             if path in {
                 "/api/licitaciones",
                 "/api/licitaciones/capture",
@@ -4372,7 +4545,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             return False
         if method == "PATCH":
             return (
-                path.startswith("/api/comments/")
+                path.startswith("/api/justificaciones-baja/")
+                or path.startswith("/api/comments/")
                 or path.startswith("/api/clientes/")
                 or path.startswith("/api/cliente-envios/")
                 or path.startswith("/api/agenda/eventos/")
@@ -5929,6 +6103,454 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "day_nuria_total": day_nuria_total,
             }
         )
+
+    def _justificaciones_permissions(self) -> dict[str, bool]:
+        editable = self.is_admin()
+        return {
+            "view": True,
+            "download": True,
+            "create": editable,
+            "edit": editable,
+            "generate_costs": editable,
+            "freeze": editable,
+            "generate_documents": editable,
+            "change_state": editable,
+        }
+
+    def _justificaciones_service(self, conn: sqlite3.Connection) -> JustificationApplicationService:
+        return JustificationApplicationService(
+            JustificationRepository(conn),
+            temporary_root=PROJECT_ROOT / "tmp" / "justificaciones_baja_runtime",
+        )
+
+    def _read_bounded_json(self) -> dict:
+        body = self.read_body(max_bytes=MAX_BODY_BYTES)
+        if not body:
+            return {}
+        value = json.loads(body.decode("utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("El cuerpo JSON debe ser un objeto.")
+        return value
+
+    def _send_justificaciones_error(self, exc: Exception) -> None:
+        if isinstance(exc, JustificationApplicationError):
+            payload = {"error": str(exc), "code": exc.code}
+            issues = getattr(exc, "issues", None)
+            if issues:
+                payload["issues"] = issues
+            self.send_json(payload, HTTPStatus(exc.status_code))
+            return
+        if isinstance(exc, JustificationNotFoundError):
+            self.send_json(
+                {"error": str(exc), "code": "justificacion_no_encontrada"},
+                HTTPStatus.NOT_FOUND,
+            )
+            return
+        if isinstance(exc, (ProductImportError, DropboxPathError, ValueError, KeyError, TypeError)):
+            self.send_json({"error": str(exc), "code": "peticion_invalida"}, HTTPStatus.BAD_REQUEST)
+            return
+        LOGGER.exception("Fallo no controlado en justificaciones de baja", exc_info=exc)
+        self.send_json({"error": "No se pudo completar la operación."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def api_list_justificaciones_baja(self, query: str) -> None:
+        params = parse_qs(query)
+        try:
+            filters: dict[str, object] = {}
+            for query_name, filter_name in (("licitacion_id", "licitacion_id"), ("cliente_id", "cliente_id")):
+                raw = str(params.get(query_name, [""])[0]).strip()
+                if raw:
+                    if not raw.isdigit():
+                        raise ValueError(f"{query_name} no es válido.")
+                    filters[filter_name] = int(raw)
+            state = str(params.get("estado", [""])[0]).strip()
+            if state:
+                filters["state"] = state
+            q = str(params.get("q", [""])[0]).strip()
+            if q:
+                filters["q"] = q
+            with db_session() as conn:
+                items = self._justificaciones_service(conn).list(**filters)
+            self.send_json({"items": items, "permissions": self._justificaciones_permissions()})
+        except Exception as exc:
+            self._send_justificaciones_error(exc)
+
+    def api_get_justificacion_baja(self, justification_id: int) -> None:
+        try:
+            with db_session() as conn:
+                item = self._justificaciones_service(conn).get(justification_id)
+            self.send_json({"item": item, "permissions": self._justificaciones_permissions()})
+        except Exception as exc:
+            self._send_justificaciones_error(exc)
+
+    def api_update_justificacion_baja(self, justification_id: int) -> None:
+        if not self.require_admin():
+            return
+        try:
+            data = self._read_bounded_json()
+            with db_session() as conn:
+                item = self._justificaciones_service(conn).save(
+                    justification_id,
+                    draft=data["draft"],
+                    expected_revision=int(data["revision"]),
+                    user_id=str(self.current_user()["username"]),
+                )
+            self.send_json({"item": item, "permissions": self._justificaciones_permissions()})
+        except Exception as exc:
+            self._send_justificaciones_error(exc)
+
+    def api_post_justificacion_baja(self, path: str) -> None:
+        if not self.require_admin():
+            return
+        try:
+            if path == "/api/justificaciones-baja/importar-xlsx/preview":
+                content_type = self.headers.get("Content-Type", "")
+                body = self.read_body(max_bytes=MAX_BODY_BYTES)
+                fields, files = extract_multipart_fields(
+                    content_type,
+                    body,
+                    allowed_file_fields={"file": {".xlsx"}},
+                    max_upload_bytes=MAX_UPLOAD_BYTES,
+                )
+                upload = files.get("file")
+                if upload is None:
+                    raise ValueError("Falta el fichero XLSX.")
+                mapping_raw = fields.get("mapping", "").strip()
+                mapping = json.loads(mapping_raw) if mapping_raw else None
+                result = preview_xlsx(
+                    upload.content,
+                    filename=upload.filename,
+                    sheet_name=fields.get("sheet_name") or None,
+                    start_row=int(fields.get("start_row") or 1),
+                    mapping=mapping,
+                    preview_rows=int(fields.get("preview_rows") or 20),
+                )
+                self.send_json({"preview": result})
+                return
+            if path == "/api/justificaciones-baja/pegar/preview":
+                data = self._read_bounded_json()
+                result = preview_tabular(
+                    str(data.get("text") or ""),
+                    start_row=int(data.get("start_row") or 1),
+                    mapping=data.get("mapping"),
+                    preview_rows=int(data.get("preview_rows") or 20),
+                )
+                self.send_json({"preview": result})
+                return
+            if path == "/api/justificaciones-baja/preview":
+                data = self._read_bounded_json()
+                with db_session() as conn:
+                    result = self._justificaciones_service(conn).preview(data["draft"])
+                self.send_json(result)
+                return
+            if path == "/api/justificaciones-baja":
+                data = self._read_bounded_json()
+                licitacion_id = int(data["licitacion_id"])
+                cliente_id = int(data["cliente_id"])
+                supplied_draft = data.get("draft")
+                if supplied_draft is not None and not isinstance(supplied_draft, dict):
+                    raise ValueError("draft debe ser un objeto o null.")
+                if "proposals" in data:
+                    raise ValueError(
+                        "proposals ya no forma parte del contrato; envía los valores dentro de draft."
+                    )
+                with db_session() as conn:
+                    licitacion_row = conn.execute(
+                        "SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)
+                    ).fetchone()
+                    if licitacion_row is None:
+                        raise ValueError("La licitación indicada no existe.")
+                    cliente = get_cliente(conn, cliente_id)
+                    if cliente is None:
+                        raise ValueError("El cliente indicado no existe.")
+                    item = self._justificaciones_service(conn).create(
+                        licitacion=row_to_dict(licitacion_row),
+                        cliente=cliente,
+                        lote_numero=str(data.get("lote_numero") or "1"),
+                        lote_nombre=str(data.get("lote_nombre") or ""),
+                        declared_offer=data.get("importe_ofertado", "0"),
+                        draft=supplied_draft,
+                        user_id=str(self.current_user()["username"]),
+                    )
+                self.send_json({"item": item, "permissions": self._justificaciones_permissions()}, HTTPStatus.CREATED)
+                return
+
+            parts = path.removeprefix("/api/justificaciones-baja/").strip("/").split("/")
+            if not parts or not parts[0].isdigit():
+                raise ValueError("Id de justificación no válido.")
+            justification_id = int(parts[0])
+            action = "/".join(parts[1:])
+            if action == "imagen-ruta":
+                self._api_attach_justificacion_image(justification_id)
+                return
+            data = self._read_bounded_json()
+            revision = int(data.get("revision") or 0)
+            username = str(self.current_user()["username"])
+            with db_session() as conn:
+                service = self._justificaciones_service(conn)
+                if action == "costes/generar":
+                    item = service.generate_costs(justification_id, expected_revision=revision, user_id=username)
+                elif action == "costes/recalcular":
+                    line_ids = data.get("line_ids")
+                    if line_ids is not None and not isinstance(line_ids, list):
+                        raise ValueError("line_ids debe ser una lista o null.")
+                    item = service.recalculate_costs(
+                        justification_id,
+                        expected_revision=revision,
+                        line_ids=line_ids,
+                        user_id=username,
+                    )
+                elif action == "costes/manual":
+                    item = service.set_manual_cost(
+                        justification_id,
+                        expected_revision=revision,
+                        line_id=str(data["line_id"]),
+                        manual_unit_cost=data["manual_unit_cost"],
+                        user_id=username,
+                    )
+                elif action == "costes/retirar-manual":
+                    item = service.remove_manual_cost(
+                        justification_id,
+                        expected_revision=revision,
+                        line_id=str(data["line_id"]),
+                        user_id=username,
+                    )
+                elif action == "productos/bloqueo":
+                    if not isinstance(data.get("locked"), bool):
+                        raise ValueError("locked debe ser booleano.")
+                    raw_line_ids = data.get("line_ids")
+                    if raw_line_ids is None and data.get("line_id") not in (None, ""):
+                        raw_line_ids = [data.get("line_id")]
+                    if not isinstance(raw_line_ids, list) or not raw_line_ids:
+                        raise ValueError("line_ids debe ser una lista no vacía.")
+                    line_ids = [str(line_id).strip() for line_id in raw_line_ids]
+                    if any(not line_id for line_id in line_ids):
+                        raise ValueError("line_ids contiene identificadores vacíos.")
+                    item = service.set_product_locks(
+                        justification_id,
+                        expected_revision=revision,
+                        line_ids=line_ids,
+                        locked=bool(data["locked"]),
+                        user_id=username,
+                    )
+                elif action == "congelar":
+                    result = service.freeze(
+                        justification_id, expected_revision=revision, user_id=username
+                    )
+                    self.send_json({**result, "permissions": self._justificaciones_permissions()})
+                    return
+                elif action == "estado":
+                    item = service.update_state(
+                        justification_id,
+                        expected_revision=revision,
+                        state=str(data.get("state") or ""),
+                        user_id=username,
+                    )
+                elif len(parts) == 5 and parts[1] == "versiones" and parts[2].isdigit() and parts[3] == "documentos":
+                    raise ValueError("Ruta documental no válida.")
+                elif len(parts) == 4 and parts[1] == "versiones" and parts[2].isdigit() and parts[3] == "documentos":
+                    version_number = int(parts[2])
+                    output, base = self._justificacion_output_directory(
+                        conn, justification_id, version_number
+                    )
+                    result = service.generate_documents(
+                        justification_id,
+                        version_number=version_number,
+                        output_directory=output,
+                        dropbox_base=base,
+                        user_id=username,
+                    )
+                    self.send_json({**result, "permissions": self._justificaciones_permissions()}, HTTPStatus.CREATED)
+                    return
+                else:
+                    raise ValueError("Acción de justificación no reconocida.")
+            self.send_json({"item": item, "permissions": self._justificaciones_permissions()})
+        except Exception as exc:
+            self._send_justificaciones_error(exc)
+
+    def _api_attach_justificacion_image(self, justification_id: int) -> None:
+        content_type = self.headers.get("Content-Type", "")
+        username = str(self.current_user()["username"])
+        if "multipart/form-data" in content_type.lower():
+            body = self.read_body(max_bytes=MAX_BODY_BYTES)
+            fields, files = extract_multipart_fields(
+                content_type,
+                body,
+                allowed_file_fields={
+                    "file": {".png", ".jpg", ".jpeg"},
+                    "image": {".png", ".jpg", ".jpeg"},
+                },
+                max_upload_bytes=MAX_UPLOAD_BYTES,
+            )
+            upload = files.get("file") or files.get("image")
+            if upload is None:
+                raise ValueError("Falta la imagen de ruta.")
+            revision = int(fields.get("revision") or 0)
+            filename = upload.filename
+            content = upload.content
+        else:
+            data = self._read_bounded_json()
+            revision = int(data.get("revision") or 0)
+            relative_path = str(data.get("relative_path") or "").strip()
+            if not relative_path:
+                raise ValueError("Falta la ruta relativa de la imagen.")
+            with db_session() as conn:
+                row = conn.execute(
+                    """
+                    SELECT l.* FROM licitaciones l
+                    JOIN justificaciones_baja jb ON jb.licitacion_id = l.id
+                    WHERE jb.id = ? AND jb.archived_at IS NULL
+                    """,
+                    (justification_id,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("No existe la justificación.")
+                base = validate_dropbox_base_path()
+                resolution = resolve_licitacion_folder(row, dropbox_base=base)
+                if not (resolution.ok and resolution.exists and resolution.inside_dropbox_base):
+                    raise DropboxPathError("La carpeta de la licitación no es una salida Dropbox válida.")
+                licitation_folder = _resolve_licitacion_folder_without_links(
+                    row, base, resolution
+                )
+                resolved = _resolve_existing_path_without_links(
+                    licitation_folder, relative_path
+                )
+                if not path_inside_base(resolved, licitation_folder):
+                    raise DropboxPathError("La imagen queda fuera de la carpeta de la licitación.")
+                if resolved.suffix.lower() not in {".png", ".jpg", ".jpeg"} or not resolved.is_file():
+                    raise ValueError("El documento seleccionado no es una imagen PNG/JPEG.")
+                filename = resolved.name
+                with resolved.open("rb") as stream:
+                    size = os.fstat(stream.fileno()).st_size
+                    if size > MAX_UPLOAD_BYTES:
+                        raise ValueError("La imagen supera el tamaño permitido.")
+                    content = stream.read(MAX_UPLOAD_BYTES + 1)
+                if len(content) != size or len(content) > MAX_UPLOAD_BYTES:
+                    raise ValueError("La imagen cambió durante la lectura o supera el tamaño permitido.")
+        with db_session() as conn:
+            item = self._justificaciones_service(conn).attach_route_image(
+                justification_id,
+                expected_revision=revision,
+                filename=filename,
+                content=content,
+                user_id=username,
+            )
+        self.send_json({"item": item, "permissions": self._justificaciones_permissions()})
+
+    def _justificacion_output_directory(
+        self,
+        conn: sqlite3.Connection,
+        justification_id: int,
+        version_number: int,
+    ) -> tuple[Path, Path]:
+        row = conn.execute(
+            """
+            SELECT l.*, v.document_context_json
+            FROM licitaciones l
+            JOIN justificaciones_baja jb ON jb.licitacion_id = l.id
+            JOIN justificacion_baja_versiones v ON v.justificacion_id = jb.id
+            WHERE jb.id = ? AND jb.archived_at IS NULL AND v.version_number = ?
+            """,
+            (justification_id, version_number),
+        ).fetchone()
+        if row is None:
+            raise ValueError("No existe la justificación o la versión congelada indicada.")
+        base = validate_dropbox_base_path().resolve(strict=True)
+        resolution = resolve_licitacion_folder(row, dropbox_base=base)
+        if not (
+            resolution.ok
+            and resolution.exists
+            and resolution.inside_dropbox_base
+            and Path(resolution.path).is_dir()
+        ):
+            raise DropboxPathError("La carpeta de la licitación no es una salida Dropbox válida.")
+        licitation_folder = _resolve_licitacion_folder_without_links(
+            row, base, resolution
+        )
+        if not path_inside_base(licitation_folder, base):
+            raise DropboxPathError("La carpeta de la licitación queda fuera de Dropbox.")
+        try:
+            context = json.loads(row["document_context_json"])
+            frozen_lot = context["identification"]["lot_number"]
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("La versión congelada no identifica el lote de forma íntegra.") from exc
+        lot = safe_component(frozen_lot, maximum_length=40)
+        output = _ensure_no_link_components(
+            base,
+            licitation_folder
+            / "Justificaciones de baja"
+            / f"Lote_{lot}"
+            / f"Justificacion_{justification_id}",
+        )
+        if not path_inside_base(output, base):
+            raise DropboxPathError("La salida documental queda fuera de Dropbox.")
+        return output, base
+
+    def api_download_justificacion_document(self, document_id: int) -> None:
+        try:
+            with db_session() as conn:
+                repository = JustificationRepository(conn)
+                document = repository.get_document_by_id(document_id)
+                licitacion = conn.execute(
+                    "SELECT * FROM licitaciones WHERE id = ?", (document["licitacion_id"],)
+                ).fetchone()
+                if licitacion is None:
+                    raise ValueError("No existe la licitación del documento.")
+                base = validate_dropbox_base_path().resolve(strict=True)
+                resolution = resolve_licitacion_folder(licitacion, dropbox_base=base)
+                if not (resolution.ok and resolution.exists and resolution.inside_dropbox_base):
+                    raise DropboxPathError("La carpeta de la licitación no es válida.")
+                licitation_folder = _resolve_licitacion_folder_without_links(
+                    licitacion, base, resolution
+                )
+                if (
+                    not licitation_folder.is_dir()
+                    or not path_inside_base(licitation_folder, base)
+                ):
+                    raise DropboxPathError("La carpeta de la licitación no es válida.")
+                path = _resolve_existing_path_without_links(
+                    base, document["relative_path"]
+                )
+                if (
+                    not path_inside_base(path, base)
+                    or not path_inside_base(path, licitation_folder)
+                    or not path.is_file()
+                ):
+                    raise DropboxPathError("El documento no está en una ruta permitida.")
+                if path.suffix.lower() not in {".docx", ".xlsx"}:
+                    raise ValueError("El tipo documental no está permitido.")
+                expected_size = int(document["size_bytes"])
+                if expected_size < 0 or expected_size > 64 * 1024 * 1024:
+                    raise ValueError("El tamaño registrado del documento no es admisible.")
+                with path.open("rb") as stream:
+                    actual_size = os.fstat(stream.fileno()).st_size
+                    if actual_size != expected_size:
+                        raise ValueError("El tamaño del documento no coincide con el registro.")
+                    body = stream.read(expected_size + 1)
+                if len(body) != expected_size:
+                    raise ValueError("El documento cambió durante la lectura.")
+                digest = hashlib.sha256(body).hexdigest().upper()
+                if digest != str(document["sha256"]).upper():
+                    raise ValueError("El hash del documento no coincide con el registro.")
+            self.send_private_document(body, str(document["file_name"]), path.suffix.lower())
+        except Exception as exc:
+            self._send_justificaciones_error(exc)
+
+    def send_private_document(self, body: bytes, filename: str, suffix: str) -> None:
+        safe_name = Path(filename).name.replace('"', "_")
+        content_type = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            if suffix == ".docx"
+            else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        self.send_response(HTTPStatus.OK)
+        self.send_security_headers(is_private=True)
+        self.send_pending_session_cookie()
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def api_get_licitacion(self, licitacion_id: int) -> None:
         current = datetime.now().replace(microsecond=0)

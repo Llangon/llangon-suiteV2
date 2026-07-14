@@ -11,6 +11,19 @@ from webapp.infonalia_webapp.tests.test_import_endpoints import (
 
 
 POST_CASES = [
+    ("POST", "/api/justificaciones-baja", "api_post_justificacion_baja", ("/api/justificaciones-baja",)),
+    ("POST", "/api/justificaciones-baja/preview", "api_post_justificacion_baja", ("/api/justificaciones-baja/preview",)),
+    ("POST", "/api/justificaciones-baja/importar-xlsx/preview", "api_post_justificacion_baja", ("/api/justificaciones-baja/importar-xlsx/preview",)),
+    ("POST", "/api/justificaciones-baja/pegar/preview", "api_post_justificacion_baja", ("/api/justificaciones-baja/pegar/preview",)),
+    ("POST", "/api/justificaciones-baja/3/imagen-ruta", "api_post_justificacion_baja", ("/api/justificaciones-baja/3/imagen-ruta",)),
+    ("POST", "/api/justificaciones-baja/3/costes/generar", "api_post_justificacion_baja", ("/api/justificaciones-baja/3/costes/generar",)),
+    ("POST", "/api/justificaciones-baja/3/costes/recalcular", "api_post_justificacion_baja", ("/api/justificaciones-baja/3/costes/recalcular",)),
+    ("POST", "/api/justificaciones-baja/3/costes/manual", "api_post_justificacion_baja", ("/api/justificaciones-baja/3/costes/manual",)),
+    ("POST", "/api/justificaciones-baja/3/costes/retirar-manual", "api_post_justificacion_baja", ("/api/justificaciones-baja/3/costes/retirar-manual",)),
+    ("POST", "/api/justificaciones-baja/3/productos/bloqueo", "api_post_justificacion_baja", ("/api/justificaciones-baja/3/productos/bloqueo",)),
+    ("POST", "/api/justificaciones-baja/3/congelar", "api_post_justificacion_baja", ("/api/justificaciones-baja/3/congelar",)),
+    ("POST", "/api/justificaciones-baja/3/estado", "api_post_justificacion_baja", ("/api/justificaciones-baja/3/estado",)),
+    ("POST", "/api/justificaciones-baja/3/versiones/1/documentos", "api_post_justificacion_baja", ("/api/justificaciones-baja/3/versiones/1/documentos",)),
     ("POST", "/api/licitaciones", "api_create_licitacion", ()),
     ("POST", "/api/licitaciones/capture", "api_capture_licitacion", ()),
     ("POST", "/api/config/users", "api_create_user", ()),
@@ -49,6 +62,7 @@ POST_CASES = [
 ]
 
 PATCH_CASES = [
+    ("PATCH", "/api/justificaciones-baja/3", "api_update_justificacion_baja", (3,)),
     ("PATCH", "/api/clientes/7", "api_update_cliente", (7,)),
     ("PATCH", "/api/cliente-envios/4", "api_update_cliente_envio", (4,)),
     ("PATCH", "/api/agenda/eventos/4", "api_update_agenda_evento", (4,)),
