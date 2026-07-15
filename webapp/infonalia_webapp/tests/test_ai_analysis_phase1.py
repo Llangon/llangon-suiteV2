@@ -2496,6 +2496,25 @@ def test_ai_summary_ui_source_renders_operational_ficha() -> None:
     assert source.count("Failed to fetch") == 1
 
 
+def test_ai_queue_modal_has_mobile_cards_and_accessible_close_behavior() -> None:
+    source = Path("webapp/infonalia_webapp/static/app.js").read_text(encoding="utf-8")
+    html_source = Path("webapp/infonalia_webapp/static/index.html").read_text(encoding="utf-8")
+    styles = Path("webapp/infonalia_webapp/static/styles.css").read_text(encoding="utf-8")
+
+    assert 'aria-labelledby="ai-queue-title"' in html_source
+    assert 'aria-describedby="ai-queue-description"' in html_source
+    assert 'aria-label="Cerrar Cola IA"' in html_source
+    assert 'aria-live="polite"' in html_source
+    assert "function renderAiQueueCard(job)" in source
+    assert 'class="ai-queue-card-list"' in source
+    assert 'aiQueueDialog.addEventListener("close", handleAiQueueDialogClosed);' in source
+    assert "#ai-queue-dialog[open]" in styles
+    assert ".ai-queue-card-list" in styles
+    assert ".ai-queue-table-wrap {\n    display: none;" in styles
+    assert "grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));" in styles
+    assert "overscroll-behavior: contain;" in styles
+
+
 def test_ai_summary_api_without_config_returns_controlled_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
     monkeypatch.setenv("AI_ANALYSIS_PROVIDER", "gemini")

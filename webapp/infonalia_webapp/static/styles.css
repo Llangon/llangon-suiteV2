@@ -2103,6 +2103,11 @@ textarea {
   display: grid;
   gap: 14px;
   margin-top: 12px;
+  min-width: 0;
+}
+
+.ai-queue-section {
+  min-width: 0;
 }
 
 .ai-queue-section h3 {
@@ -2112,7 +2117,13 @@ textarea {
 .ai-queue-table-wrap {
   border: 1px solid var(--line);
   border-radius: 10px;
+  max-width: 100%;
+  min-width: 0;
   overflow: auto;
+}
+
+.ai-queue-card-list {
+  display: none;
 }
 
 .ai-queue-table {
@@ -5106,6 +5117,170 @@ dialog::backdrop {
 
   .dialog-head h2 {
     font-size: 18px;
+  }
+
+  #ai-queue-dialog {
+    max-height: calc(100dvh - 16px);
+    overflow: hidden;
+    padding: 14px;
+    width: min(100% - 14px, 720px);
+  }
+
+  #ai-queue-dialog[open] {
+    display: flex;
+    flex-direction: column;
+  }
+
+  #ai-queue-dialog .dialog-head {
+    flex: 0 0 auto;
+    margin-bottom: 12px;
+  }
+
+  .ai-queue-head {
+    align-items: stretch;
+    flex: 0 0 auto;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .ai-queue-head .muted {
+    margin: 0;
+  }
+
+  .ai-queue-head-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-content: stretch;
+  }
+
+  .ai-queue-head-actions button {
+    font-size: 13px;
+    min-width: 0;
+    width: 100%;
+  }
+
+  #ai-queue-status {
+    flex: 0 0 auto;
+  }
+
+  .ai-queue-content {
+    flex: 1 1 auto;
+    min-height: 0;
+    overscroll-behavior: contain;
+    overflow-y: auto;
+    padding: 0 2px 2px 0;
+  }
+
+  .ai-queue-table-wrap {
+    display: none;
+  }
+
+  .ai-queue-card-list {
+    display: grid;
+    gap: 10px;
+  }
+
+  .ai-queue-card {
+    background: #ffffff;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .ai-queue-card.is-late {
+    background: #fff8dd;
+    border-color: #eadb9e;
+  }
+
+  .ai-queue-card-head {
+    align-items: start;
+    display: grid;
+    gap: 10px;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .ai-queue-card-head .ai-status {
+    justify-self: start;
+  }
+
+  .ai-queue-card-expediente {
+    max-width: 42vw;
+    overflow-wrap: anywhere;
+    text-align: right;
+  }
+
+  .ai-queue-card-progress {
+    color: var(--muted);
+    font-size: 13px;
+    margin: -4px 0 0;
+  }
+
+  .ai-queue-card h4 {
+    font-size: 15px;
+    line-height: 1.25;
+    margin: 0;
+  }
+
+  .ai-queue-card-meta {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 0;
+  }
+
+  .ai-queue-card-meta > div {
+    background: rgba(246, 250, 247, 0.9);
+    border-radius: 7px;
+    min-width: 0;
+    padding: 8px;
+  }
+
+  .ai-queue-card-meta dt {
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
+  .ai-queue-card-meta dd {
+    font-size: 13px;
+    font-weight: 700;
+    margin: 3px 0 0;
+    overflow-wrap: anywhere;
+  }
+
+  .ai-queue-card-meta small {
+    color: var(--muted);
+    display: block;
+    font-weight: 700;
+    margin-top: 3px;
+  }
+
+  .ai-queue-card .ai-queue-actions {
+    border-top: 1px solid var(--line);
+    display: grid;
+    gap: 8px;
+    grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+    padding-top: 10px;
+  }
+
+  .ai-queue-card .ai-queue-actions button {
+    width: 100%;
+  }
+
+  .ai-queue-card .ai-queue-actions button:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+
+  .ai-queue-card .ai-queue-diagnostic {
+    margin-top: 2px;
+  }
+
+  .ai-queue-card .ai-queue-diagnostic code {
+    overflow-wrap: anywhere;
   }
 
   .detail-dialog {

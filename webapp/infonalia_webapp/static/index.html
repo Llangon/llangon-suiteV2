@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Llangón Web App</title>
   <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/justificaciones_baja.css">
 </head>
 <body>
   <header class="mobile-topbar" aria-label="Cabecera móvil">
@@ -37,6 +38,7 @@
         <button id="days-button" class="nav-item" data-nav-section="days">Infonalia</button>
         <button id="list-button" class="nav-item" data-nav-section="licitaciones">Centro de licitaciones</button>
         <button id="actuaciones-button" class="nav-item" data-nav-section="actuaciones">Actuaciones</button>
+        <button id="justificaciones-baja-button" class="nav-item" data-nav-section="justificaciones-baja">Justificaciones de baja</button>
 
         <p class="nav-group-title" data-admin-only hidden>Clientes</p>
         <button id="clients-button" class="nav-item" data-nav-section="clients" data-admin-only hidden>Clientes</button>
@@ -188,6 +190,10 @@
       </div>
       <section id="licitacion-detail-content" class="licitacion-detail-view"></section>
     </dialog>
+
+    <section id="justificaciones-baja-section" hidden>
+      <div id="justificaciones-baja-root"></div>
+    </section>
 
     <section id="calendar-section" hidden>
       <div class="section-head">
@@ -1134,22 +1140,22 @@
     </div>
   </dialog>
 
-  <dialog id="ai-queue-dialog" class="notice-dialog wide-dialog">
+  <dialog id="ai-queue-dialog" class="notice-dialog wide-dialog" aria-labelledby="ai-queue-title" aria-describedby="ai-queue-description">
     <div class="dialog-head">
       <div>
         <p class="eyebrow">Análisis documental</p>
-        <h2>Cola IA</h2>
+        <h2 id="ai-queue-title">Cola IA</h2>
       </div>
-      <button type="button" class="icon-button" id="close-ai-queue">×</button>
+      <button type="button" class="icon-button" id="close-ai-queue" aria-label="Cerrar Cola IA">×</button>
     </div>
     <div class="ai-queue-head">
-      <p class="muted">Puedes cerrar este panel. Los análisis siguen en segundo plano.</p>
+      <p class="muted" id="ai-queue-description">Puedes cerrar este panel. Los análisis siguen en segundo plano.</p>
       <div class="ai-queue-head-actions">
         <button type="button" class="secondary" id="clear-finished-ai-queue">Limpiar terminados</button>
         <button type="button" class="secondary" id="refresh-ai-queue">Actualizar</button>
       </div>
     </div>
-    <div id="ai-queue-status" class="import-result"></div>
+    <div id="ai-queue-status" class="import-result" role="status" aria-live="polite" aria-atomic="true"></div>
     <section id="ai-queue-content" class="ai-queue-content"></section>
   </dialog>
 
@@ -1437,6 +1443,7 @@
     </form>
   </dialog>
 
+  <script src="/static/justificaciones_baja.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

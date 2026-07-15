@@ -59,6 +59,15 @@ except ImportError:
     from infonalia_mail_importer import ensure_infonalia_email_import_schema as _ensure_infonalia_email_import_schema
 
 try:
+    from .justificaciones_baja.persistence.migrations import (
+        ensure_justificaciones_baja_schema as _ensure_justificaciones_baja_schema,
+    )
+except ImportError:
+    from justificaciones_baja.persistence.migrations import (
+        ensure_justificaciones_baja_schema as _ensure_justificaciones_baja_schema,
+    )
+
+try:
     from .clientes_envios import ensure_client_shipments_schema as _ensure_client_shipments_schema
 except ImportError:
     from clientes_envios import ensure_client_shipments_schema as _ensure_client_shipments_schema
@@ -761,6 +770,10 @@ def _licitacion_publication_type_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_licitaciones_tipo_publicacion ON licitaciones(tipo_publicacion)")
 
 
+def _justificaciones_baja_schema(conn: sqlite3.Connection) -> None:
+    _ensure_justificaciones_baja_schema(conn)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version="0001_baseline_schema",
@@ -901,6 +914,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version="0028_licitacion_tipo_publicacion",
         description="Tipo de publicacion para separar licitaciones y anuncios previos",
         apply=_licitacion_publication_type_schema,
+    ),
+    Migration(
+        version="0029_justificaciones_baja",
+        description="Borradores, versiones y documentos de justificaciones de baja",
+        apply=_justificaciones_baja_schema,
     ),
 )
 
