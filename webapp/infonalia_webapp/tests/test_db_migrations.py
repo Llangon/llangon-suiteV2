@@ -91,6 +91,7 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
         "0027_clientes_envios",
         "0028_licitacion_tipo_publicacion",
         "0029_justificaciones_baja",
+        "0035_tender_monitor_e2e",
     ]
     assert table_exists(conn, MIGRATIONS_TABLE)
     rows = conn.execute(
@@ -242,6 +243,11 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
             "Borradores, versiones y documentos de justificaciones de baja",
             "2026-06-12T10:00:00",
         ),
+        (
+            "0035_tender_monitor_e2e",
+            "Ciclos, snapshots, lotes, IA, notificaciones e incidencias del monitor de licitaciones",
+            "2026-06-12T10:00:00",
+        ),
     ]
     assert table_exists(conn, "download_jobs")
     assert table_exists(conn, "import_runs")
@@ -331,6 +337,7 @@ def test_run_migrations_is_idempotent() -> None:
         "0027_clientes_envios",
         "0028_licitacion_tipo_publicacion",
         "0029_justificaciones_baja",
+        "0035_tender_monitor_e2e",
     ]
     assert run_migrations(conn, now=lambda: "2026-06-12T10:05:00") == []
 
@@ -365,6 +372,7 @@ def test_run_migrations_is_idempotent() -> None:
         ("0027_clientes_envios", "2026-06-12T10:00:00"),
         ("0028_licitacion_tipo_publicacion", "2026-06-12T10:00:00"),
         ("0029_justificaciones_baja", "2026-06-12T10:00:00"),
+        ("0035_tender_monitor_e2e", "2026-06-12T10:00:00"),
     ]
 
 

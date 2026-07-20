@@ -16,6 +16,7 @@ if ($LASTEXITCODE -ne 0) {
 if (Get-Command node -ErrorAction SilentlyContinue) {
     $javascriptFiles = @(
         "webapp\infonalia_webapp\static\app.js",
+        "webapp\infonalia_webapp\static\tender_monitor.js",
         "webapp\infonalia_webapp\static\login.js",
         "firebase\public_firebase\static\public.js"
     )

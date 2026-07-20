@@ -382,7 +382,7 @@ def test_monitor_history_endpoint_filters_by_task_type_and_agenda_summary_skelet
     assert payload["items"][0]["processed_items_count"] == 1
 
 
-def test_monitor_automation_schedule_declares_agenda_tasks_and_licitaciones_proposal(monkeypatch) -> None:
+def test_monitor_automation_schedule_keeps_licitaciones_disabled_even_with_legacy_env(monkeypatch) -> None:
     monkeypatch.setenv("MONITOR_AGENDA_PENDING_DAILY_ENABLED", "1")
     monkeypatch.setenv("MONITOR_AGENDA_PENDING_DAILY_TIME", "06:00")
     monkeypatch.setenv("MONITOR_AGENDA_PENDING_DAILY_WEEKDAYS_ONLY", "1")
@@ -392,16 +392,12 @@ def test_monitor_automation_schedule_declares_agenda_tasks_and_licitaciones_prop
     monkeypatch.setenv("MONITOR_LICITACIONES_TIME_3", "17:30")
     schedules = monitor_automation_schedules()
 
-    assert set(schedules) == {"agenda_pendientes_diaria", "monitor_licitaciones"}
+    assert set(schedules) == {"agenda_pendientes_diaria"}
     assert schedules["agenda_pendientes_diaria"]["time"] == "06:00"
-    assert schedules["monitor_licitaciones"]["times"] == ["07:00", "12:30", "17:30"]
     assert due_automation_task_types(datetime(2026, 6, 15, 5, 59)) == []
     assert due_automation_task_types(datetime(2026, 6, 15, 6, 0)) == ["agenda_pendientes_diaria"]
     assert due_automation_task_types(datetime(2026, 6, 16, 6, 14)) == ["agenda_pendientes_diaria"]
-    assert due_automation_task_types(datetime(2026, 6, 16, 7, 0)) == [
-        "agenda_pendientes_diaria",
-        "monitor_licitaciones",
-    ]
+    assert due_automation_task_types(datetime(2026, 6, 16, 7, 0)) == ["agenda_pendientes_diaria"]
     assert due_automation_task_types(datetime(2026, 6, 20, 13, 0)) == []
     assert due_automation_task_types(datetime(2026, 6, 21, 13, 0)) == []
 

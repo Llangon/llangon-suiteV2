@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime
 
+import pytest
+
 from webapp.infonalia_webapp import automation_orchestrator as orchestrator
 
 
@@ -61,6 +63,26 @@ def test_task_enabled_can_be_overridden() -> None:
     )
     conn.commit()
     assert orchestrator.task_enabled(conn, definition) is False
+
+
+def test_tender_monitor_cannot_be_automatically_enabled_even_by_legacy_override(tmp_path) -> None:
+    conn = memory_db()
+    definition = orchestrator.automation_by_key(orchestrator.TASK_TYPE_MONITOR_LICITACIONES)
+    assert definition is not None
+    conn.execute(
+        "INSERT OR REPLACE INTO automation_tasks (key, enabled) VALUES (?, 1)",
+        (orchestrator.TASK_TYPE_MONITOR_LICITACIONES,),
+    )
+    conn.commit()
+
+    assert orchestrator.task_enabled(conn, definition) is False
+    with pytest.raises(ValueError, match="permanece desactivada"):
+        orchestrator.set_task_enabled(
+            orchestrator.TASK_TYPE_MONITOR_LICITACIONES,
+            True,
+            db_path=tmp_path / "suite.db",
+            updated_by="admin",
+        )
 
 
 def test_daily_task_deduplicates_same_day_unless_manual() -> None:

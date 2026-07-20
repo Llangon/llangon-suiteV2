@@ -1,6 +1,8 @@
 import importlib.util
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,3 +45,42 @@ def test_launcher_routes_catalunya_to_its_downloader(monkeypatch: pytest.MonkeyP
 
     assert exc_info.value.code == 0
     assert calls == [("Descargar_Catalunya.py", [url], tmp_path)]
+
+
+def test_launcher_normal_download_persists_structured_monitor_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    launcher = load_launcher_module()
+    facade = tmp_path / "Descargar_PLACE.py"
+    facade.write_text("# fake", encoding="utf-8")
+    payload = {
+        "platform": "PLACE",
+        "source_url": "https://contrataciondelestado.es/wps/poc",
+        "started_at": "2026-07-20T09:00:00",
+        "finished_at": "2026-07-20T09:01:00",
+        "status": "success",
+        "capabilities": {"documents": True, "questions_and_answers": False},
+        "artifacts": [
+            {
+                "name": "acta.pdf",
+                "status": "created",
+                "source_url": "https://example.test/acta.pdf",
+                "path": "acta.pdf",
+                "sha256": "abc",
+                "role": "document",
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="RESULTADO_ESTRUCTURADO=" + json.dumps(payload) + "\n",
+            stderr="",
+        ),
+    )
+
+    assert launcher.ejecutar(str(facade), [payload["source_url"]], str(tmp_path)) == 0
+    assert (tmp_path / ".llangon-monitor" / "technical_snapshot.json").is_file()

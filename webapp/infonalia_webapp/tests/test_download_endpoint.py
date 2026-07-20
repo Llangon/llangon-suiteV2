@@ -285,6 +285,54 @@ def test_download_endpoint_success_updates_ruta_carpeta_with_mocked_subprocess()
         assert PRODUCTIVE_DB_PATH.stat().st_mtime_ns == stat_before
 
 
+def test_normal_download_endpoint_updates_monitor_baseline_without_batch_or_notice() -> None:
+    app = load_app_module()
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app)
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            document_path = Path(cwd, "acta.pdf")
+            document_path.write_bytes(b"acta")
+            structured = {
+                "platform": "PLACE",
+                "source_url": "https://example.test/licitacion/1",
+                "started_at": "2026-07-20T09:00:00",
+                "finished_at": "2026-07-20T09:01:00",
+                "status": "success",
+                "capabilities": {"documents": True, "questions_and_answers": False},
+                "tender_id": "TEST-DL-001",
+                "artifacts": [
+                    {
+                        "name": "acta.pdf",
+                        "path": str(document_path),
+                        "sha256": "hash-acta",
+                        "source_url": "https://example.test/docs/acta.pdf",
+                        "role": "document",
+                    }
+                ],
+            }
+            return SimpleNamespace(
+                returncode=0,
+                stdout="RESULTADO_ESTRUCTURADO=" + json.dumps(structured),
+                stderr="",
+            )
+
+        handler = make_download_handler(app, payload=confirmed_download_payload(app, licitacion_id))
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+        destination = Path(handler.responses[-1][1]["carpeta"])
+        sidecar = destination / ".llangon-monitor" / "technical_snapshot.json"
+        sidecar_exists = sidecar.is_file()
+        with app.db_session() as conn:
+            batch_count = conn.execute("SELECT COUNT(*) FROM tender_monitor_batches").fetchone()[0]
+            notification_count = conn.execute("SELECT COUNT(*) FROM tender_monitor_notifications").fetchone()[0]
+
+    assert handler.responses[-1][0] == HTTPStatus.OK
+    assert sidecar_exists is True
+    assert batch_count == 0
+    assert notification_count == 0
+
+
 def test_download_endpoint_keeps_reviewed_day_closed() -> None:
     app = load_app_module()
     with temporary_download_app(app):
