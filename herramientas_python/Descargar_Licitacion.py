@@ -85,7 +85,29 @@ def ejecutar(script, argumentos, carpeta_destino):
         return 1
 
     comando = [sys.executable, script] + argumentos + ["--destino", carpeta_destino]
-    return subprocess.call(comando, cwd=carpeta_destino)
+    completed = subprocess.run(
+        comando,
+        cwd=carpeta_destino,
+        capture_output=True,
+        text=True,
+    )
+    if completed.stdout:
+        print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n", flush=True)
+    if completed.stderr:
+        print(completed.stderr, end="" if completed.stderr.endswith("\n") else "\n", file=sys.stderr, flush=True)
+    if completed.returncode == 0:
+        try:
+            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if repo_root not in sys.path:
+                sys.path.insert(0, repo_root)
+            from webapp.infonalia_webapp.monitor.snapshots import persist_normal_download_baseline
+
+            persist_normal_download_baseline(completed.stdout, carpeta_destino)
+        except Exception as exc:
+            # La descarga sigue siendo válida; el monitor reconstruirá una línea
+            # base segura si no pudo guardar esta memoria técnica auxiliar.
+            log(f"Aviso: no se pudo actualizar el estado técnico del monitor: {exc}")
+    return completed.returncode
 
 
 def main():

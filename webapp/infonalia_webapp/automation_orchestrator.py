@@ -31,6 +31,9 @@ try:
         localize_scheduler_datetime,
         run_automation_task,
     )
+    from .monitor.tender_repository import active_cycle as active_tender_cycle, create_cycle as create_tender_cycle
+    from .monitor.tender_schema import ensure_tender_monitor_schema
+    from .monitor.tender_worker_launcher import launch_tender_monitor_worker
     from .normalization import bool_text, clean_text
     from .operational_settings import effective_bool, effective_int
     from .dropbox_paths import preferred_dropbox_base_path
@@ -53,6 +56,9 @@ except ImportError:  # pragma: no cover
         localize_scheduler_datetime,
         run_automation_task,
     )
+    from monitor.tender_repository import active_cycle as active_tender_cycle, create_cycle as create_tender_cycle
+    from monitor.tender_schema import ensure_tender_monitor_schema
+    from monitor.tender_worker_launcher import launch_tender_monitor_worker
     from normalization import bool_text, clean_text
     from operational_settings import effective_bool, effective_int
     from dropbox_paths import preferred_dropbox_base_path
@@ -174,7 +180,7 @@ AUTOMATIONS: tuple[AutomationDefinition, ...] = (
         default_enabled=False,
         manual_allowed=True,
         priority=300,
-        env_enabled="MONITOR_LICITACIONES_SCHEDULE_ENABLED",
+        env_enabled=None,
     ),
     AutomationDefinition(
         key="telegram_status",
@@ -307,6 +313,8 @@ def task_override(conn: sqlite3.Connection, key: str) -> sqlite3.Row | None:
 
 
 def task_enabled(conn: sqlite3.Connection, definition: AutomationDefinition) -> bool:
+    if definition.key == TASK_TYPE_MONITOR_LICITACIONES:
+        return False
     row = task_override(conn, definition.key)
     if row and row["enabled"] is not None:
         return bool(row["enabled"])
@@ -684,7 +692,42 @@ def execute_task(
     if definition.key == "night_suspend":
         return run_night_suspend(conn, manual=(source == "manual"))
     if definition.key == TASK_TYPE_MONITOR_LICITACIONES:
-        return {"status": STATUS_SKIPPED, "summary": "Monitor licitaciones está desactivado por decisión operativa."}
+        if source != "manual":
+            return {"status": STATUS_SKIPPED, "summary": "La programación automática del monitor está desactivada."}
+        ensure_tender_monitor_schema(conn)
+        active = active_tender_cycle(conn)
+        if active:
+            return {
+                "status": STATUS_SKIPPED,
+                "summary": "El monitor ya tiene un ciclo activo.",
+                "cycle_id": active["id"],
+            }
+        cycle_id = create_tender_cycle(
+            conn,
+            origin="manual_automation_console",
+            requested_by=clean_text(triggered_by) or "admin",
+        )
+        conn.commit()
+        root = clean_text(os.environ.get("INFONALIA_MONITOR_ROOT")) or None
+        worker = launch_tender_monitor_worker(cycle_id, db_path=db_path, root=root)
+        if worker.get("ok") is False:
+            conn.execute(
+                "UPDATE tender_monitor_cycles SET status = 'failed', finished_at = ? WHERE id = ?",
+                (now_iso(current_dt), cycle_id),
+            )
+            conn.commit()
+            return {
+                "status": STATUS_FAILED,
+                "summary": "No se pudo iniciar el worker del monitor.",
+                "cycle_id": cycle_id,
+                "error": clean_text(worker.get("error")),
+            }
+        return {
+            "status": STATUS_COMPLETED,
+            "summary": "Ciclo manual del monitor encolado.",
+            "cycle_id": cycle_id,
+            "worker": worker,
+        }
     if definition.key == "telegram_status":
         return {"status": STATUS_COMPLETED, "summary": "Telegram está configurado." if env_bool("LLANGON_TELEGRAM_ENABLED", False) else "Telegram no está activo."}
     return {"status": STATUS_SKIPPED, "summary": "Automatización sin ejecutor asociado."}
@@ -778,6 +821,8 @@ def set_task_enabled(
 ) -> dict[str, object]:
     if not automation_by_key(key):
         raise ValueError(f"Automatización no reconocida: {key}")
+    if key == TASK_TYPE_MONITOR_LICITACIONES and enabled:
+        raise ValueError("La programación automática del monitor de licitaciones permanece desactivada.")
     conn = connect_db(db_path)
     conn.row_factory = sqlite3.Row
     ensure_automation_schema(conn)

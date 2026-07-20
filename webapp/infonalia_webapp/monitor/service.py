@@ -202,16 +202,8 @@ def active_monitor_automation_schedules() -> dict[str, dict[str, object]]:
             "time": os.environ.get("MONITOR_AGENDA_PENDING_DAILY_TIME", "06:00"),
             "weekdays_only": env_bool("MONITOR_AGENDA_PENDING_DAILY_WEEKDAYS_ONLY", True),
         }
-    if env_bool("MONITOR_LICITACIONES_SCHEDULE_ENABLED", False):
-        schedules[TASK_TYPE_MONITOR_LICITACIONES] = {
-            **DEFAULT_MONITOR_AUTOMATION_SCHEDULES[TASK_TYPE_MONITOR_LICITACIONES],
-            "times": [
-                os.environ.get("MONITOR_LICITACIONES_TIME_1", "07:00"),
-                os.environ.get("MONITOR_LICITACIONES_TIME_2", "12:30"),
-                os.environ.get("MONITOR_LICITACIONES_TIME_3", "17:30"),
-            ],
-            "real_enabled": env_bool("MONITOR_LICITACIONES_REAL_ENABLED", False),
-        }
+    # La futura programación reutilizará el mismo orquestador real, pero en esta
+    # fase no existe ninguna ruta (ni siquiera por variable de entorno) que la active.
     return schedules
 
 
