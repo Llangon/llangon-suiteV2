@@ -600,6 +600,12 @@ try:
     from .monitor.service import MonitorError, run_automation_task, run_monitor
     from .monitor.repository import ensure_monitor_schema, get_monitor_run, list_monitor_runs
     from .monitor.scheduler import monitor_scheduler_status, start_monitor_scheduler, stop_monitor_scheduler
+    from .monitor.tender_api import (
+        TenderMonitorAPIContext,
+        dispatch_get as dispatch_tender_monitor_get,
+        dispatch_patch as dispatch_tender_monitor_patch,
+        dispatch_post as dispatch_tender_monitor_post,
+    )
     from .automation_orchestrator import (
         automation_diagnostic,
         automation_runs_payload,
@@ -614,6 +620,12 @@ except ImportError:
     from monitor.service import MonitorError, run_automation_task, run_monitor
     from monitor.repository import ensure_monitor_schema, get_monitor_run, list_monitor_runs
     from monitor.scheduler import monitor_scheduler_status, start_monitor_scheduler, stop_monitor_scheduler
+    from monitor.tender_api import (
+        TenderMonitorAPIContext,
+        dispatch_get as dispatch_tender_monitor_get,
+        dispatch_patch as dispatch_tender_monitor_patch,
+        dispatch_post as dispatch_tender_monitor_post,
+    )
     from automation_orchestrator import (
         automation_diagnostic,
         automation_runs_payload,
@@ -3158,6 +3170,15 @@ def execute_download_for_destination(
         )
 
     try:
+        try:
+            from .monitor.snapshots import persist_normal_download_baseline
+        except ImportError:
+            from monitor.snapshots import persist_normal_download_baseline
+        persist_normal_download_baseline(completed.stdout, destino)
+    except Exception as exc:
+        LOGGER.warning("No se pudo actualizar el estado técnico del monitor tras la descarga normal: %s", exc)
+
+    try:
         folder_summary = scan_download_folder(destino)
         validate_download_folder_limits(
             folder_summary,
@@ -3988,6 +4009,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_admin_automation_diagnostic()
         elif path == "/api/admin/automation/windows-tasks":
             self.api_admin_automation_windows_tasks()
+        elif path.startswith("/api/tender-monitor"):
+            self.api_tender_monitor_get(path, parsed.query)
         elif path == "/api/monitor/runs":
             self.api_monitor_runs(parsed.query)
         elif path in {"/api/monitor/scheduler", "/api/monitor/scheduler/status"}:
@@ -4035,7 +4058,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if self.csrf_required_for_path("POST", path) and not self.require_csrf_token():
             return
 
-        if path == "/api/justificaciones-baja" or path.startswith("/api/justificaciones-baja/"):
+        if path.startswith("/api/tender-monitor"):
+            self.api_tender_monitor_post(path)
+        elif path == "/api/justificaciones-baja" or path.startswith("/api/justificaciones-baja/"):
             self.api_post_justificacion_baja(path)
         elif path == "/api/licitaciones":
             self.api_create_licitacion()
@@ -4306,7 +4331,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if self.csrf_required_for_path("PATCH", path) and not self.require_csrf_token():
             return
 
-        if path.startswith("/api/justificaciones-baja/"):
+        if path.startswith("/api/tender-monitor"):
+            self.api_tender_monitor_patch(path)
+        elif path.startswith("/api/justificaciones-baja/"):
             justification_id = path.removeprefix("/api/justificaciones-baja/").strip("/")
             if not justification_id.isdigit():
                 self.send_json({"error": "Id no válido"}, HTTPStatus.BAD_REQUEST)
@@ -4449,6 +4476,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
     def is_known_mutating_route(self, method: str, path: str) -> bool:
         method = method.upper()
         if method == "POST":
+            if path.startswith("/api/tender-monitor"):
+                return True
             if path == "/api/justificaciones-baja" or path.startswith("/api/justificaciones-baja/"):
                 return True
             if path in {
@@ -4545,7 +4574,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             return False
         if method == "PATCH":
             return (
-                path.startswith("/api/justificaciones-baja/")
+                path.startswith("/api/tender-monitor")
+                or path.startswith("/api/justificaciones-baja/")
                 or path.startswith("/api/comments/")
                 or path.startswith("/api/clientes/")
                 or path.startswith("/api/cliente-envios/")
@@ -4822,6 +4852,51 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 normalize_folder_path=lambda path: folder_path_for_storage(path, dropbox_root),
             )
         self.send_json(result)
+
+    def tender_monitor_api_context(self) -> TenderMonitorAPIContext:
+        settings = get_settings()
+        # Con None, load_monitor_config conserva el origen seguro de
+        # LLANGON_DROPBOX_BASE_PATH; INFONALIA_MONITOR_ROOT sigue permitiendo
+        # una réplica local explícita para pruebas controladas.
+        root = clean_text(os.environ.get("INFONALIA_MONITOR_ROOT")) or None
+        return TenderMonitorAPIContext(
+            db_path=DB_PATH,
+            user=self.current_user() or {},
+            root=root,
+            email_sender=lambda to, subject, body, html_body: send_monitor_email(
+                to,
+                subject,
+                body,
+                html_body,
+                settings=settings,
+            ),
+            telegram_sender=lambda user, message: send_telegram_user_message(
+                user,
+                message,
+                env=os.environ,
+            ),
+        )
+
+    def _send_tender_monitor_response(self, response: object | None) -> None:
+        if response is None:
+            self.send_json({"error": "Ruta del monitor no encontrada."}, HTTPStatus.NOT_FOUND)
+            return
+        self.send_json(response.payload, response.status)
+
+    def api_tender_monitor_get(self, path: str, query: str) -> None:
+        self._send_tender_monitor_response(
+            dispatch_tender_monitor_get(path, query, self.tender_monitor_api_context())
+        )
+
+    def api_tender_monitor_post(self, path: str) -> None:
+        self._send_tender_monitor_response(
+            dispatch_tender_monitor_post(path, self.read_json(), self.tender_monitor_api_context())
+        )
+
+    def api_tender_monitor_patch(self, path: str) -> None:
+        self._send_tender_monitor_response(
+            dispatch_tender_monitor_patch(path, self.read_json(), self.tender_monitor_api_context())
+        )
 
     def api_monitor_run(self) -> None:
         if not self.require_admin():

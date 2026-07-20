@@ -217,6 +217,40 @@ def create_follow_marker_for_licitacion(
     return create_marker_file(folder / FOLLOW_MARKER_NAME, folder_path=folder)
 
 
+def remove_follow_marker_for_licitacion(
+    row: sqlite3.Row | dict[str, object],
+    *,
+    allowed_roots: Iterable[Path | str],
+    dropbox_root: Path | None = None,
+) -> dict[str, object]:
+    """Remove only the real follow marker after validating its exact folder."""
+
+    folder, error = allowed_marker_folder(row, allowed_roots=allowed_roots, dropbox_root=dropbox_root)
+    if folder is None:
+        return {**_marker_result(error=error), "removed": False}
+    marker_path = folder / FOLLOW_MARKER_NAME
+    if marker_path.parent.resolve(strict=True) != folder.resolve(strict=True):
+        return {**_marker_result(path=marker_path, folder_path=folder, error="Ruta de marcador no segura."), "removed": False}
+    if not marker_path.exists():
+        return {
+            **_marker_result(ok=True, path=marker_path, folder_path=folder, message="El marcador no existía."),
+            "removed": False,
+        }
+    if not marker_path.is_file() or marker_path.is_symlink():
+        return {
+            **_marker_result(path=marker_path, folder_path=folder, error="El marcador no es un fichero normal."),
+            "removed": False,
+        }
+    try:
+        marker_path.unlink()
+    except OSError as exc:
+        return {**_marker_result(path=marker_path, folder_path=folder, error=str(exc)), "removed": False}
+    return {
+        **_marker_result(ok=True, path=marker_path, folder_path=folder, message="Seguimiento desactivado."),
+        "removed": True,
+    }
+
+
 def open_licitacion_folder(
     row: sqlite3.Row | dict[str, object],
     *,
