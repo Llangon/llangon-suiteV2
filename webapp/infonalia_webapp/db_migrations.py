@@ -34,6 +34,11 @@ except ImportError:
     from monitor.repository import ensure_monitor_schema as _ensure_monitor_schema
 
 try:
+    from .monitor.tender_schema import ensure_tender_monitor_schema as _ensure_tender_monitor_schema
+except ImportError:
+    from monitor.tender_schema import ensure_tender_monitor_schema as _ensure_tender_monitor_schema
+
+try:
     from .ai.queue import ensure_ai_schema as _ensure_ai_schema
 except ImportError:
     from ai.queue import ensure_ai_schema as _ensure_ai_schema
@@ -576,6 +581,12 @@ def _monitor_inventory_v05_schema(conn: sqlite3.Connection) -> None:
     _ensure_monitor_schema(conn)
 
 
+def _tender_monitor_e2e_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "licitaciones") or not _table_exists(conn, "usuarios"):
+        return
+    _ensure_tender_monitor_schema(conn)
+
+
 def _ai_analysis_phase1_schema(conn: sqlite3.Connection) -> None:
     if not _table_exists(conn, "licitaciones"):
         return
@@ -919,6 +930,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version="0029_justificaciones_baja",
         description="Borradores, versiones y documentos de justificaciones de baja",
         apply=_justificaciones_baja_schema,
+    ),
+    Migration(
+        version="0035_tender_monitor_e2e",
+        description="Ciclos, snapshots, lotes, IA, notificaciones e incidencias del monitor de licitaciones",
+        apply=_tender_monitor_e2e_schema,
     ),
 )
 
