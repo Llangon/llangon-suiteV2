@@ -40,15 +40,18 @@ class ApiEnvironment:
 
 
 @contextmanager
-def isolated_api_environment(app: ModuleType):
+def isolated_api_environment(
+    app: ModuleType,
+    monkeypatch: pytest.MonkeyPatch | None = None,
+):
     TEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    patcher = monkeypatch or pytest.MonkeyPatch()
+    owns_patcher = monkeypatch is None
     old_values = {
         "DATA_ROOT": app.DATA_ROOT,
         "DOWNLOAD_ROOT": app.DOWNLOAD_ROOT,
         "DB_PATH": app.DB_PATH,
         "PROJECT_ROOT": app.PROJECT_ROOT,
-        "validate_dropbox_base_path": app.validate_dropbox_base_path,
-        "resolve_licitacion_folder": app.resolve_licitacion_folder,
     }
     with tempfile.TemporaryDirectory(prefix="api_", dir=TEST_TEMP_ROOT) as directory:
         root = Path(directory)
@@ -107,8 +110,8 @@ def isolated_api_environment(app: ModuleType):
                 ).lastrowid
             )
 
-        app.validate_dropbox_base_path = lambda: dropbox_base
-        app.resolve_licitacion_folder = lambda row, dropbox_base=None, _base=dropbox_base: LicitacionFolderResolution(
+        patcher.setattr(app, "validate_dropbox_base_path", lambda: dropbox_base)
+        patcher.setattr(app, "resolve_licitacion_folder", lambda row, dropbox_base=None, _base=dropbox_base: LicitacionFolderResolution(
             ok=True,
             exists=True,
             inside_dropbox_base=True,
@@ -116,7 +119,7 @@ def isolated_api_environment(app: ModuleType):
             reason="ok",
             message="",
             base_path=str(dropbox_base or _base),
-        )
+        ))
         try:
             yield ApiEnvironment(
                 app=app,
@@ -129,12 +132,14 @@ def isolated_api_environment(app: ModuleType):
         finally:
             for name, value in old_values.items():
                 setattr(app, name, value)
+            if owns_patcher:
+                patcher.undo()
 
 
 @pytest.fixture
-def api_environment() -> ApiEnvironment:
+def api_environment(monkeypatch: pytest.MonkeyPatch) -> ApiEnvironment:
     app = load_app_module()
-    with isolated_api_environment(app) as environment:
+    with isolated_api_environment(app, monkeypatch) as environment:
         yield environment
 
 
