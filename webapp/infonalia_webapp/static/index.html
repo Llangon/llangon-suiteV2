@@ -6,6 +6,7 @@
   <title>Llangón Web App</title>
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/justificaciones_baja.css">
+  <link rel="stylesheet" href="/static/tender_monitor.css?v=20260720-e2e">
 </head>
 <body>
   <header class="mobile-topbar" aria-label="Cabecera móvil">
@@ -50,7 +51,7 @@
         <button id="news-admin-button" class="nav-item" data-nav-section="news-admin" data-admin-only hidden>Noticias</button>
 
         <p class="nav-group-title" data-admin-only hidden>Administración</p>
-        <button id="monitor-button" class="nav-item" data-nav-section="monitor" data-admin-only hidden>Automatizaciones</button>
+        <button id="monitor-button" class="nav-item" data-nav-section="monitor" data-admin-only hidden>Monitor de licitaciones</button>
         <button id="config-button" class="nav-item" data-nav-section="config" data-admin-only hidden>Configuración</button>
       </nav>
 
@@ -508,15 +509,73 @@
       <div class="section-head">
         <div>
           <p class="eyebrow">Administración</p>
-          <h2>Automatizaciones</h2>
+          <h2>Monitor de licitaciones</h2>
         </div>
         <div class="section-actions">
+          <button id="tender-monitor-run-global" class="primary" type="button">Revisar ahora</button>
+          <button id="tender-monitor-refresh" class="ghost" type="button">Actualizar</button>
+        </div>
+      </div>
+      <section id="tender-monitor-root" class="tender-monitor" aria-live="polite">
+        <div id="tender-monitor-banner" class="tender-monitor-banner">Cargando estado del monitor…</div>
+        <div id="tender-monitor-summary" class="tender-monitor-summary"></div>
+        <nav class="tender-monitor-tabs" aria-label="Secciones del monitor">
+          <button type="button" class="active" data-tender-monitor-tab="overview">Seguimiento</button>
+          <button type="button" data-tender-monitor-tab="history">Histórico</button>
+          <button type="button" data-tender-monitor-tab="settings">Configuración</button>
+        </nav>
+        <div id="tender-monitor-result" class="import-result"></div>
+        <section data-tender-monitor-panel="overview">
+          <div id="tender-monitor-followed" class="tender-monitor-table-wrap"></div>
+        </section>
+        <section data-tender-monitor-panel="history" hidden>
+          <form id="tender-monitor-history-filters" class="tender-monitor-filters">
+            <label>Estado
+              <select name="status">
+                <option value="">Todos</option>
+                <option value="completed">Completado</option>
+                <option value="completed_with_incidents">Con incidencias</option>
+                <option value="failed">Fallido</option>
+              </select>
+            </label>
+            <label>Licitación <input name="licitacion_id" inputmode="numeric" placeholder="Id"></label>
+            <label>Desde <input name="date_from" type="date"></label>
+            <label>Hasta <input name="date_to" type="date"></label>
+            <label>Plataforma
+              <select name="platform"><option value="">Todas</option><option>PLACE</option><option>CATALUNYA</option><option>NAVARRA</option><option>EUSKADI</option><option>MADRID</option><option>JUNTA_ANDALUCIA</option></select>
+            </label>
+            <label>Novedades
+              <select name="with_changes"><option value="">Todas</option><option value="1">Con novedades</option><option value="0">Sin novedades</option></select>
+            </label>
+            <label>Incidencias
+              <select name="with_incidents"><option value="">Todas</option><option value="1">Con incidencias</option><option value="0">Sin incidencias</option></select>
+            </label>
+            <label>IA
+              <select name="waiting_ai"><option value="">Todas</option><option value="1">Esperando IA</option><option value="0">Sin espera IA</option></select>
+            </label>
+            <label>Comunicación
+              <select name="notification_failed"><option value="">Todas</option><option value="1">Con fallo</option><option value="0">Sin fallo</option></select>
+            </label>
+            <button type="submit" class="secondary">Filtrar</button>
+          </form>
+          <div class="tender-monitor-history-layout">
+            <div id="tender-monitor-history" class="tender-monitor-table-wrap"></div>
+            <aside id="tender-monitor-cycle-detail" class="tender-monitor-detail"><div class="empty">Selecciona un ciclo.</div></aside>
+          </div>
+        </section>
+        <section data-tender-monitor-panel="settings" hidden>
+          <div id="tender-monitor-settings" class="tender-monitor-settings"><div class="empty">Cargando configuración…</div></div>
+        </section>
+      </section>
+
+      <details class="legacy-automation-console">
+        <summary>Automatizaciones internas y diagnóstico técnico</summary>
+        <div class="section-actions legacy-automation-actions">
           <button id="automation-run-tick" class="secondary">Ejecutar tick ahora</button>
           <button id="automation-copy-diagnostic" class="secondary">Copiar diagnóstico</button>
           <button id="monitor-send-agenda-daily" class="secondary">Enviar correo diario de Pendientes de prueba</button>
-          <button id="refresh-monitor-runs" class="ghost">Actualizar</button>
+          <button id="refresh-monitor-runs" class="ghost">Actualizar automatizaciones</button>
         </div>
-      </div>
       <div class="import-result" id="monitor-action-result"></div>
       <div class="monitor-scheduler-status" id="monitor-scheduler-status">Automatizaciones: comprobando...</div>
 
@@ -585,6 +644,7 @@
           <div class="empty">Selecciona una ejecución para ver el detalle.</div>
         </aside>
       </section>
+      </details>
     </section>
 
     <section id="config-section" hidden>
@@ -1444,6 +1504,7 @@
   </dialog>
 
   <script src="/static/justificaciones_baja.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260720-tender-monitor"></script>
+  <script src="/static/tender_monitor.js?v=20260720-e2e"></script>
 </body>
 </html>

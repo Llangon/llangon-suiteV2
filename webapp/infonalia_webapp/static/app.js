@@ -1940,7 +1940,7 @@ function showMonitorView() {
   if (!isAdmin()) return;
   appState.lastSection = "monitor";
   setActiveNav("monitor");
-  setPageHeader("Monitor", "Histórico de ejecuciones");
+  setPageHeader("Monitor de licitaciones", "Seguimiento de novedades oficiales");
   daysSection.hidden = true;
   licitacionesSection.hidden = true;
   calendarSection.hidden = true;
@@ -1951,6 +1951,7 @@ function showMonitorView() {
   newsAdminSection.hidden = true;
   monitorSection.hidden = false;
   configSection.hidden = true;
+  window.TenderMonitorUI?.show();
   loadMonitorRuns();
 }
 
@@ -7307,6 +7308,7 @@ function renderLicitacionTrackingSummary(item) {
       <div class="detail"><span>Última sincronización</span>${escapeHtml(seguimiento.ultima_sync || seguimiento.ultimo_check || "Pendiente")}</div>
     </div>
     ${renderLicitacionTracking(item)}
+    ${window.TenderMonitorUI?.renderTenderPanel?.(item) || ""}
   `;
 }
 
@@ -7983,6 +7985,12 @@ document.getElementById("notifications-menu-button")?.addEventListener("click", 
 document.getElementById("back-from-notifications").addEventListener("click", backFromNotifications);
 document.getElementById("news-admin-button").addEventListener("click", showNewsAdminView);
 document.getElementById("monitor-button").addEventListener("click", showMonitorView);
+window.addEventListener("tender-monitor:open-licitacion", async (event) => {
+  const id = event.detail?.id;
+  if (!id) return;
+  showLicitacionesView({ view: "all" });
+  await openLicitacionDetail(id);
+});
 document.getElementById("config-button").addEventListener("click", showConfigView);
 document.getElementById("back-from-config").addEventListener("click", backFromConfig);
 configHelpOpenButton?.addEventListener("click", openConfigHelpManual);
