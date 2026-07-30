@@ -37,8 +37,14 @@ def test_folder_text_normalizes_accents_symbols_and_ampersand() -> None:
     assert folder_text(None) == ""
 
 
-def test_expediente_folder_text_preserves_existing_rules() -> None:
-    assert expediente_folder_text("EXP. 12/2026-A") == "EXP 122026A"
+def test_expediente_folder_text_preserves_windows_compatible_characters() -> None:
+    assert expediente_folder_text("SAS_Z3_2027_PA_011") == "SAS_Z3_2027_PA_011"
+    assert expediente_folder_text("Exp. (Niñez)-12.2026 & lote_A") == "EXP. (NINEZ)-12.2026 & LOTE_A"
+
+
+def test_expediente_folder_text_replaces_only_windows_forbidden_characters() -> None:
+    assert expediente_folder_text('EXP/12:2026*?"<>|A') == "EXP 12 2026 A"
+    assert expediente_folder_text("EXP-7.") == "EXP-7"
 
 
 def test_short_folder_phrase_limits_words_after_normalization() -> None:

@@ -77,6 +77,11 @@ try:
 except ImportError:
     from clientes_envios import ensure_client_shipments_schema as _ensure_client_shipments_schema
 
+try:
+    from .infonalia_history import ensure_infonalia_history_schema as _ensure_infonalia_history_schema
+except ImportError:
+    from infonalia_history import ensure_infonalia_history_schema as _ensure_infonalia_history_schema
+
 
 MIGRATIONS_TABLE = "schema_migrations"
 
@@ -238,6 +243,7 @@ def _create_actuaciones_multilicitacion_tables(conn: sqlite3.Connection) -> None
         """
         CREATE TABLE IF NOT EXISTS actuaciones (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cliente_id INTEGER,
             tipo TEXT NOT NULL,
             titulo TEXT NOT NULL,
             descripcion TEXT,
@@ -249,7 +255,8 @@ def _create_actuaciones_multilicitacion_tables(conn: sqlite3.Connection) -> None
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             closed_at TEXT,
-            closed_by TEXT
+            closed_by TEXT,
+            FOREIGN KEY (cliente_id) REFERENCES clientes(id)
         )
         """
     )
@@ -682,11 +689,53 @@ def _email_action_events_telegram_schema(conn: sqlite3.Connection) -> None:
     _ensure_email_action_schema(conn)
 
 
+def _email_action_terminal_notifications_schema(conn: sqlite3.Connection) -> None:
+    _ensure_email_action_schema(conn)
+    if not _table_exists(conn, "email_action_events"):
+        return
+    if _table_exists(conn, "download_jobs"):
+        conn.execute(
+            """
+            UPDATE email_action_events
+            SET download_job_id = (
+                SELECT jobs.id
+                FROM download_jobs AS jobs
+                WHERE jobs.licitacion_id = email_action_events.licitacion_id
+                  AND COALESCE(jobs.request_message_id, '') = COALESCE(email_action_events.source_message_id, '')
+                  AND COALESCE(jobs.request_message_id, '') <> ''
+                ORDER BY jobs.id DESC
+                LIMIT 1
+            )
+            WHERE download_job_id IS NULL
+              AND EXISTS (
+                  SELECT 1
+                  FROM download_jobs AS jobs
+                  WHERE jobs.licitacion_id = email_action_events.licitacion_id
+                    AND COALESCE(jobs.request_message_id, '') = COALESCE(email_action_events.source_message_id, '')
+                    AND COALESCE(jobs.request_message_id, '') <> ''
+              )
+            """
+        )
+    # Existing rows predate terminal-state notifications. Keep them visible in
+    # history without emitting retrospective Telegram messages on migration.
+    conn.execute(
+        """
+        UPDATE email_action_events
+        SET execution_status = 'legacy'
+        WHERE COALESCE(execution_status, '') = ''
+        """
+    )
+
+
 def _infonalia_email_imports_schema(conn: sqlite3.Connection) -> None:
     _ensure_infonalia_email_import_schema(conn)
 
 
 def _infonalia_email_imports_telegram_schema(conn: sqlite3.Connection) -> None:
+    _ensure_infonalia_email_import_schema(conn)
+
+
+def _infonalia_email_import_claims_schema(conn: sqlite3.Connection) -> None:
     _ensure_infonalia_email_import_schema(conn)
 
 
@@ -783,6 +832,22 @@ def _licitacion_publication_type_schema(conn: sqlite3.Connection) -> None:
 
 def _justificaciones_baja_schema(conn: sqlite3.Connection) -> None:
     _ensure_justificaciones_baja_schema(conn)
+
+
+def _actuaciones_cliente_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "actuaciones"):
+        return
+    if not _column_exists(conn, "actuaciones", "cliente_id"):
+        conn.execute("ALTER TABLE actuaciones ADD COLUMN cliente_id INTEGER")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_actuaciones_cliente ON actuaciones(cliente_id)")
+
+
+def _infonalia_history_schema(conn: sqlite3.Connection) -> None:
+    _ensure_infonalia_history_schema(conn)
+
+
+def _clientes_active_schema(conn: sqlite3.Connection) -> None:
+    _ensure_client_shipments_schema(conn)
 
 
 MIGRATIONS: tuple[Migration, ...] = (
@@ -932,8 +997,38 @@ MIGRATIONS: tuple[Migration, ...] = (
         apply=_justificaciones_baja_schema,
     ),
     Migration(
+        version="0030_actuaciones_cliente",
+        description="Cliente opcional vinculado a cada actuacion",
+        apply=_actuaciones_cliente_schema,
+    ),
+    Migration(
+        version="0031_infonalia_activity_history",
+        description="Historico operativo general de Dias Infonalia",
+        apply=_infonalia_history_schema,
+    ),
+    Migration(
+        version="0032_clientes_activos",
+        description="Baja logica reversible para clientes",
+        apply=_clientes_active_schema,
+    ),
+    Migration(
+        version="0033_infonalia_email_import_claims",
+        description="Reservas idempotentes para evitar importaciones y avisos duplicados",
+        apply=_infonalia_email_import_claims_schema,
+    ),
+    Migration(
+        version="0034_email_action_terminal_notifications",
+        description="Avisos persistentes de éxito o fallo para órdenes de Nuria",
+        apply=_email_action_terminal_notifications_schema,
+    ),
+    Migration(
         version="0035_tender_monitor_e2e",
         description="Ciclos, snapshots, lotes, IA, notificaciones e incidencias del monitor de licitaciones",
+        apply=_tender_monitor_e2e_schema,
+    ),
+    Migration(
+        version="0036_tender_monitor_baseline_ownership",
+        description="Baseline explícito y exclusivo del monitor de licitaciones",
         apply=_tender_monitor_e2e_schema,
     ),
 )

@@ -58,6 +58,8 @@ CLIENTE_ENVIO_PANEL_TITLES = {
     "incidents": "Envíos con incidencia",
 }
 
+CLIENTE_ESTADOS = {"activos", "inactivos", "todos"}
+
 CORREOS_PREPARADOS_FOLDER = "Correos preparados"
 TEMPORARY_FILE_PREFIXES = ("~$",)
 EXCLUDED_ATTACHMENT_FOLDER_NAMES = {CORREOS_PREPARADOS_FOLDER.lower()}
@@ -113,6 +115,9 @@ CLIENT_COLUMN_DEFINITIONS = {
     "tipo_cliente": "TEXT",
     "forma_facturacion": "TEXT",
     "plantilla_contractual": "TEXT",
+    "activo": "INTEGER NOT NULL DEFAULT 1",
+    "desactivado_at": "TEXT",
+    "desactivado_by": "TEXT",
     "created_at": "TEXT NOT NULL DEFAULT ''",
     "updated_at": "TEXT NOT NULL DEFAULT ''",
 }
@@ -208,6 +213,9 @@ def ensure_client_shipments_schema(conn: sqlite3.Connection) -> None:
             tipo_cliente TEXT,
             forma_facturacion TEXT,
             plantilla_contractual TEXT,
+            activo INTEGER NOT NULL DEFAULT 1,
+            desactivado_at TEXT,
+            desactivado_by TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -283,6 +291,7 @@ def ensure_client_shipments_schema(conn: sqlite3.Connection) -> None:
     _ensure_columns(conn, "cliente_envio_eventos", CLIENTE_ENVIO_EVENTO_COLUMN_DEFINITIONS)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_clientes_nombre ON clientes(razon_social, nombre_comercial)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_clientes_nif ON clientes(nif_cif)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_clientes_activo_nombre ON clientes(activo, razon_social, nombre_comercial)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cliente_envios_cliente ON cliente_envios(cliente_id, created_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cliente_envios_licitacion ON cliente_envios(licitacion_id, created_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cliente_envios_actuacion ON cliente_envios(actuacion_id, created_at DESC)")
@@ -339,6 +348,9 @@ def cliente_row_to_dict(row: sqlite3.Row | dict[str, object]) -> dict[str, objec
     return {
         "id": int(_row_value(row, "id") or 0),
         **{field: clean_text(_row_value(row, field)) for field in CLIENT_FIELDS},
+        "activo": bool(int(_row_value(row, "activo") or 0)),
+        "desactivado_at": clean_text(_row_value(row, "desactivado_at")),
+        "desactivado_by": clean_text(_row_value(row, "desactivado_by")),
         "display_name": cliente_display_name(row),
         "created_at": clean_text(_row_value(row, "created_at")),
         "updated_at": clean_text(_row_value(row, "updated_at")),
@@ -404,6 +416,7 @@ def _envio_join_sql(where_sql: str = "") -> str:
             c.razon_social AS cliente_razon_social,
             c.nombre_comercial AS cliente_nombre_comercial,
             c.email_principal AS cliente_email_principal,
+            c.activo AS cliente_activo,
             l.expediente AS licitacion_expediente,
             l.objeto AS licitacion_objeto,
             l.organismo AS licitacion_organismo,
@@ -440,6 +453,7 @@ def cliente_envio_row_to_dict(
         "id": int(_row_value(row, "id") or 0),
         "cliente_id": int(_row_value(row, "cliente_id") or 0),
         "cliente_nombre": cliente_nombre or "Cliente sin nombre",
+        "cliente_activo": bool(int(_row_value(row, "cliente_activo") or 0)),
         "licitacion_id": int(_row_value(row, "licitacion_id") or 0),
         "licitacion_expediente": clean_text(_row_value(row, "licitacion_expediente")),
         "licitacion_objeto": clean_text(_row_value(row, "licitacion_objeto")),
@@ -497,6 +511,20 @@ def _require_existing_row(conn: sqlite3.Connection, table: str, row_id: int) -> 
     row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (row_id,)).fetchone()
     if not row:
         raise ValueError(f"No existe el registro solicitado en {table}.")
+    return row
+
+
+def require_operational_cliente(
+    conn: sqlite3.Connection,
+    cliente_id: int,
+    *,
+    current_cliente_id: int | None = None,
+) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM clientes WHERE id = ?", (cliente_id,)).fetchone()
+    if not row:
+        raise ValueError("Cliente no encontrado.")
+    if not bool(int(_row_value(row, "activo") or 0)) and int(current_cliente_id or 0) != cliente_id:
+        raise ValueError("El cliente esta desactivado. Reactivalo antes de usarlo en una operacion nueva.")
     return row
 
 
@@ -769,21 +797,70 @@ def update_cliente(conn: sqlite3.Connection, cliente_id: int, data: dict[str, ob
     return cliente_row_to_dict(updated)
 
 
-def list_clientes(conn: sqlite3.Connection, *, search: str = "") -> list[dict[str, object]]:
-    where = ""
+def set_cliente_active(
+    conn: sqlite3.Connection,
+    cliente_id: int,
+    *,
+    active: bool,
+    user_id: object,
+    timestamp: str,
+) -> dict[str, object]:
+    row = _require_existing_row(conn, "clientes", cliente_id)
+    if bool(int(_row_value(row, "activo") or 0)) == bool(active):
+        return cliente_row_to_dict(row)
+    conn.execute(
+        """
+        UPDATE clientes
+        SET activo = ?, desactivado_at = ?, desactivado_by = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            1 if active else 0,
+            None if active else timestamp,
+            None if active else clean_text(user_id),
+            timestamp,
+            cliente_id,
+        ),
+    )
+    updated = conn.execute("SELECT * FROM clientes WHERE id = ?", (cliente_id,)).fetchone()
+    return cliente_row_to_dict(updated)
+
+
+def normalize_cliente_estado(value: object, *, default: str = "activos") -> str:
+    estado = clean_text(value).lower()
+    return estado if estado in CLIENTE_ESTADOS else default
+
+
+def list_clientes(
+    conn: sqlite3.Connection,
+    *,
+    search: str = "",
+    estado: str = "activos",
+) -> list[dict[str, object]]:
+    where: list[str] = []
     params: list[object] = []
+    normalized_estado = normalize_cliente_estado(estado)
+    if normalized_estado == "activos":
+        where.append("activo = 1")
+    elif normalized_estado == "inactivos":
+        where.append("activo = 0")
     q = clean_text(search)
     if q:
         like = f"%{q}%"
-        where = """
-            WHERE razon_social LIKE ? OR nombre_comercial LIKE ? OR nif_cif LIKE ?
-               OR email_principal LIKE ? OR persona_contacto_operativa LIKE ?
-        """
+        where.append(
+            """
+            (
+                razon_social LIKE ? OR nombre_comercial LIKE ? OR nif_cif LIKE ?
+                OR email_principal LIKE ? OR persona_contacto_operativa LIKE ?
+            )
+            """
+        )
         params.extend([like, like, like, like, like])
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
     rows = conn.execute(
         f"""
         SELECT * FROM clientes
-        {where}
+        {where_sql}
         ORDER BY lower(COALESCE(nombre_comercial, razon_social)), id ASC
         """,
         params,
@@ -844,7 +921,8 @@ def _shipment_payload(
         raise ValueError("Selecciona un cliente valido.")
     if licitacion_id <= 0:
         raise ValueError("Selecciona una licitacion valida.")
-    _require_existing_row(conn, "clientes", cliente_id)
+    current_cliente_id = int(current_row["cliente_id"] or 0) if current_row else None
+    require_operational_cliente(conn, cliente_id, current_cliente_id=current_cliente_id)
     _require_existing_row(conn, "licitaciones", licitacion_id)
     if actuacion_id is not None:
         _require_existing_row(conn, "actuaciones", actuacion_id)
@@ -1041,6 +1119,14 @@ def get_cliente_envio(
                 "error": str(exc),
             }
     return payload
+
+
+def delete_cliente_envio(conn: sqlite3.Connection, envio_id: int) -> dict[str, object] | None:
+    item = get_cliente_envio(conn, envio_id)
+    if not item:
+        return None
+    conn.execute("DELETE FROM cliente_envios WHERE id = ?", (envio_id,))
+    return item
 
 
 def _draft_attachment_objects(attachments: Sequence[dict[str, object]], folder_path: Path) -> list[DraftAttachment]:

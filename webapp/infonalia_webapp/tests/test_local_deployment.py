@@ -129,6 +129,9 @@ def test_windows_deployment_scripts_are_relative_and_documented() -> None:
     assert "webapp.infonalia_webapp.serve" in start_web
     assert "Ejecutando proceso web en primer plano" in start_web
     assert "Start-Process" not in start_web
+    assert '$ErrorActionPreference = "Continue"' in start_web
+    assert "$PSNativeCommandUseErrorActionPreference = $false" in start_web
+    assert "$ErrorActionPreference = $PreviousErrorActionPreference" in start_web
     hidden_runner = (scripts_root / "run_powershell_hidden.vbs").read_text(encoding="utf-8")
     clean_installer = (scripts_root / "install_clean_automation_schedule.ps1").read_text(encoding="utf-8")
     assert "shell.Run(command, 0, True)" in hidden_runner

@@ -148,6 +148,95 @@ def test_create_actuacion_without_licitacion_and_filter() -> None:
         assert foreign_key_check_rows(app) == []
 
 
+def test_actuacion_can_assign_change_and_clear_optional_cliente() -> None:
+    app = load_app_module()
+    with temporary_app_database(app):
+        timestamp = "2026-07-15T12:00:00"
+        with app.db_session() as conn:
+            cur = conn.execute(
+                "INSERT INTO clientes (razon_social, nombre_comercial, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                ("Salvador Legal SL", "SALVADOR", timestamp, timestamp),
+            )
+            cliente_id = int(cur.lastrowid)
+
+        item = create_actuacion(app, None, cliente_id=cliente_id)
+        assert item["cliente_id"] == cliente_id
+        assert item["cliente"]["display_name"] == "SALVADOR"
+
+        clear = make_handler(app, "PATCH", f"/api/actuaciones/{item['id']}", {"cliente_id": None})
+        dispatch(clear, "PATCH")
+        assert clear.responses[-1][0] == HTTPStatus.OK
+        assert clear.responses[-1][1]["item"]["cliente_id"] == 0
+        assert clear.responses[-1][1]["item"]["cliente"] is None
+
+
+def test_actuacion_rejects_unknown_optional_cliente() -> None:
+    app = load_app_module()
+    with temporary_app_database(app):
+        handler = make_handler(
+            app,
+            "POST",
+            "/api/actuaciones",
+            {
+                "tipo": "requerimiento",
+                "titulo": "Cliente inexistente",
+                "cliente_id": 999999,
+                "licitacion_ids": [],
+            },
+        )
+        dispatch(handler, "POST")
+
+        assert handler.responses[-1] == (HTTPStatus.BAD_REQUEST, {"error": "Cliente no encontrado."})
+
+
+def test_inactive_cliente_is_blocked_for_new_actuacion_but_existing_link_is_preserved() -> None:
+    app = load_app_module()
+    with temporary_app_database(app):
+        with app.db_session() as conn:
+            cur = conn.execute(
+                "INSERT INTO clientes (razon_social, nombre_comercial, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                ("Cliente Inactivo SL", "INACTIVO", "2026-07-16T10:00:00", "2026-07-16T10:00:00"),
+            )
+            cliente_id = int(cur.lastrowid)
+
+        item = create_actuacion(app, None, cliente_id=cliente_id)
+        with app.db_session() as conn:
+            app.set_cliente_active(
+                conn,
+                cliente_id,
+                active=False,
+                user_id="admin_test",
+                timestamp="2026-07-16T10:30:00",
+            )
+
+        rejected = make_handler(
+            app,
+            "POST",
+            "/api/actuaciones",
+            {
+                "tipo": "otro",
+                "titulo": "Nueva actuación inactiva",
+                "cliente_id": cliente_id,
+                "licitacion_ids": [],
+            },
+        )
+        dispatch(rejected, "POST")
+
+        update = make_handler(
+            app,
+            "PATCH",
+            f"/api/actuaciones/{item['id']}",
+            {"titulo": "Actuación existente actualizada", "cliente_id": cliente_id},
+        )
+        dispatch(update, "PATCH")
+
+    assert rejected.responses[-1][0] == HTTPStatus.BAD_REQUEST
+    assert "desactivado" in rejected.responses[-1][1]["error"]
+    assert update.responses[-1][0] == HTTPStatus.OK
+    assert update.responses[-1][1]["item"]["cliente_id"] == cliente_id
+    assert update.responses[-1][1]["item"]["cliente"]["activo"] is False
+
+
 def test_create_actuacion_with_one_and_multiple_licitaciones() -> None:
     app = load_app_module()
     with temporary_app_database(app):

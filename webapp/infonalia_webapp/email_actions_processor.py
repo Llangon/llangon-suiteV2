@@ -6,6 +6,7 @@ import imaplib
 import logging
 import os
 import pprint
+from collections.abc import Mapping
 from dataclasses import dataclass
 from email.header import decode_header, make_header
 from email.message import Message
@@ -14,6 +15,7 @@ from typing import Any
 try:
     from .email_actions import (
         action_notify_email,
+        build_late_decision_notification_email,
         check_action_code,
         extract_action_code,
         process_email_action,
@@ -21,9 +23,11 @@ try:
     )
     from .normalization import clean_text
     from .operational_settings import effective_text
+    from .infonalia_history import SEVERITY_CRITICAL, record_infonalia_activity
 except ImportError:
     from email_actions import (
         action_notify_email,
+        build_late_decision_notification_email,
         check_action_code,
         extract_action_code,
         process_email_action,
@@ -31,6 +35,7 @@ except ImportError:
     )
     from normalization import clean_text
     from operational_settings import effective_text
+    from infonalia_history import SEVERITY_CRITICAL, record_infonalia_activity
 
 
 LOGGER = logging.getLogger(__name__)
@@ -140,6 +145,8 @@ def _initial_summary(config: MailboxConfig, *, mode: str) -> dict[str, Any]:
         "total_valid_pending_codes": 0,
         "total_duplicate_codes": 0,
         "total_unauthorized_senders": 0,
+        "late_change_notifications": 0,
+        "late_change_notification_errors": 0,
     }
 
 
@@ -278,6 +285,42 @@ def process_mailbox_once(
 
             result_status = clean_text(result.get("status"))
             reason = clean_text(result.get("error_code") or result.get("message"))
+            if result_status == "processed" and result.get("review_was_closed") and result.get("changed"):
+                notify_subject, notify_body, notify_html = build_late_decision_notification_email(result)
+                notification_error = ""
+                try:
+                    delivery = notification_sender(config.notify_email, notify_subject, notify_body, notify_html)
+                    if isinstance(delivery, Mapping):
+                        notification_error = clean_text(delivery.get("error"))
+                    elif isinstance(delivery, tuple) and len(delivery) > 1:
+                        notification_error = clean_text(delivery[1])
+                except Exception as exc:
+                    notification_error = clean_text(exc) or exc.__class__.__name__
+                summary["late_change_notifications"] += 1
+                if notification_error:
+                    summary["late_change_notification_errors"] += 1
+                    LOGGER.warning(
+                        "No se pudo avisar del cambio de decisión posterior al cierre: %s",
+                        notification_error,
+                    )
+                    with db_session_factory() as conn:
+                        record_infonalia_activity(
+                            conn,
+                            category="system",
+                            event_type="late_decision_notification_failed",
+                            source="email_processor",
+                            actor=sender,
+                            result="error",
+                            title="Falló el aviso de un cambio posterior al cierre",
+                            detail=notification_error,
+                            day_id=int(result.get("review_id") or 0) or None,
+                            licitacion_id=int(result.get("licitacion_id") or 0) or None,
+                            old_value=result.get("old_state"),
+                            new_value=result.get("new_state"),
+                            severity=SEVERITY_CRITICAL,
+                            metadata={"source_message_id": source_message_id, "code": code},
+                            dedupe_key=f"late_notification_failure:{source_message_id}:{code}",
+                        )
             if verbose:
                 LOGGER.info(
                     "Candidato LLANGON_CMD: from=%s subject=%s code=%s result=%s reason=%s",
@@ -295,11 +338,10 @@ def process_mailbox_once(
                 _counter_increment(summary["ignored_by_reason"], "dry-run")
             elif result_status == "ignored":
                 _counter_increment(summary["ignored_by_reason"], reason or "ignorado")
-                if result.get("error_code") in {"DUPLICATE_EMAIL_ACTION", "AI_SUMMARY_DISABLED"}:
-                    if result.get("error_code") == "DUPLICATE_EMAIL_ACTION":
-                        summary["total_duplicate_codes"] += 1
-                    if not dry_run:
-                        client.uid("STORE", uid, "+FLAGS", "\\Seen")
+                if result.get("error_code") == "DUPLICATE_EMAIL_ACTION":
+                    summary["total_duplicate_codes"] += 1
+                if not dry_run:
+                    client.uid("STORE", uid, "+FLAGS", "\\Seen")
             else:
                 summary["errors"] += 1
                 _counter_increment(summary["errors_by_reason"], reason or "error")
@@ -388,12 +430,13 @@ def main(argv: list[str] | None = None) -> int:
         pprint.pp(payload)
         return 0 if payload.get("status") in {"processed", "dry_run", "ignored"} else 1
 
-    def sender(to_email: str, subject: str, body: str, html_body: str) -> None:
+    def sender(to_email: str, subject: str, body: str, html_body: str) -> dict[str, str | None]:
         sent_at, error = app.send_monitor_email(to_email, subject, body, html_body, settings=settings)
         if error:
             LOGGER.warning("No se pudo enviar confirmación de orden por correo: %s", error)
         else:
             LOGGER.info("Confirmación de orden enviada a %s en %s", to_email, sent_at)
+        return {"sent_at": sent_at, "error": error}
 
     result = process_mailbox_once(
         db_session_factory=app.db_session,
@@ -406,6 +449,18 @@ def main(argv: list[str] | None = None) -> int:
         scan_all=args.scan_all,
         mark_invalid_read=args.mark_invalid_read,
     )
+    if not args.dry_run:
+        try:
+            result["telegram_notifications"] = app.notify_pending_email_action_telegram_events()
+        except Exception as exc:
+            LOGGER.exception("No se pudieron procesar los avisos Telegram pendientes: %s", exc)
+            result["telegram_notifications"] = {
+                "checked": 0,
+                "sent": 0,
+                "failed": 1,
+                "items": [],
+                "error": str(exc),
+            }
     pprint.pp(result)
     return 0 if not result.get("errors") else 1
 

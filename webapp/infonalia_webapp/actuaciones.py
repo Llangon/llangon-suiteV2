@@ -109,6 +109,15 @@ def normalize_deadline(value: object) -> str | None:
     return parsed.replace(second=0, microsecond=0).isoformat()
 
 
+def normalize_optional_id(value: object, field_label: str) -> int | None:
+    text = clean_value(value)
+    if not text:
+        return None
+    if not text.isdigit() or int(text) <= 0:
+        raise ValueError(f"{field_label} no válido.")
+    return int(text)
+
+
 def parse_datetime(value: object) -> datetime | None:
     text = clean_value(value)
     if not text:
@@ -166,6 +175,8 @@ def actuacion_payload(
         payload["deadline_at"] = normalize_deadline(data.get("deadline_at"))
     if not partial or "recordatorio_email" in data:
         payload["recordatorio_email"] = bool_int(data.get("recordatorio_email"), default=True)
+    if not partial or "cliente_id" in data:
+        payload["cliente_id"] = normalize_optional_id(data.get("cliente_id"), "Cliente")
     if not partial or "origen" in data:
         payload["origen"] = clean_value(data.get("origen")) or "manual"
     estado = normalize_actuacion_estado(payload.get("estado", existing["estado"] if existing else "pendiente"))
@@ -196,6 +207,14 @@ def actuacion_to_dict(
         "estado_visual": visual_state(row, now=now),
         "deadline_at": row["deadline_at"] or "",
         "recordatorio_email": bool(row["recordatorio_email"]),
+        "cliente_id": int(row["cliente_id"] or 0) if "cliente_id" in row.keys() else 0,
+        "cliente": {
+            "id": int(row["cliente_id"] or 0),
+            "nombre_comercial": row["cliente_nombre_comercial"] or "",
+            "razon_social": row["cliente_razon_social"] or "",
+            "display_name": row["cliente_nombre_comercial"] or row["cliente_razon_social"] or "",
+            "activo": bool(row["cliente_activo"]) if "cliente_activo" in row.keys() else True,
+        } if "cliente_nombre_comercial" in row.keys() and row["cliente_id"] else None,
         "origen": row["origen"],
         "created_by": row["created_by"] or "",
         "created_at": row["created_at"],

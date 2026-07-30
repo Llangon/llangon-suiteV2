@@ -36,6 +36,7 @@ from .tender_repository import (
     record_incident,
     save_settings,
     settings_payload,
+    monitor_automation_state,
 )
 from .tender_schema import ensure_tender_monitor_schema
 from .tender_worker_launcher import launch_tender_monitor_worker
@@ -90,6 +91,14 @@ def _root_config(context: TenderMonitorAPIContext):
     return load_monitor_config(context.root)
 
 
+def _baseline_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
+    if not row:
+        return None
+    item = dict(row)
+    item["completeness"] = json_load(item.pop("completeness_json", "{}"), {})
+    return item
+
+
 def _followed_rows(conn: sqlite3.Connection, context: TenderMonitorAPIContext) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     config = _root_config(context)
     markers, scan = discover_followed(config.root_path, config.year_min, config.year_max)
@@ -98,7 +107,13 @@ def _followed_rows(conn: sqlite3.Connection, context: TenderMonitorAPIContext) -
         row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (marker.licitacion_id,)).fetchone()
         if not row:
             continue
-        prep = preparation_for_row(row, root=config.root_path, marker=marker)
+        prep = preparation_for_row(
+            row,
+            root=config.root_path,
+            marker=marker,
+            year_min=config.year_min,
+            year_max=config.year_max,
+        )
         latest = conn.execute(
             """
             SELECT e.status, e.finished_at, e.ai_status, e.notification_status,
@@ -106,6 +121,16 @@ def _followed_rows(conn: sqlite3.Connection, context: TenderMonitorAPIContext) -
             FROM tender_monitor_executions AS e
             LEFT JOIN tender_monitor_batches AS b ON b.id = e.batch_id
             WHERE e.licitacion_id = ? ORDER BY e.id DESC LIMIT 1
+            """,
+            (marker.licitacion_id,),
+        ).fetchone()
+        baseline = conn.execute(
+            """
+            SELECT b.snapshot_id, b.execution_id, b.reason, b.updated_at,
+                   s.fingerprint, s.completeness_json
+            FROM tender_monitor_baselines AS b
+            JOIN tender_monitor_snapshots AS s ON s.id = b.snapshot_id
+            WHERE b.licitacion_id = ?
             """,
             (marker.licitacion_id,),
         ).fetchone()
@@ -124,6 +149,7 @@ def _followed_rows(conn: sqlite3.Connection, context: TenderMonitorAPIContext) -
             "last_change": latest["last_change_at"] if latest else "",
             "ai_status": latest["ai_status"] if latest else "not_required",
             "notification_status": latest["notification_status"] if latest else "not_required",
+            "baseline": _baseline_payload(baseline),
         }
         items.append(item)
     issues = [issue.to_dict() for issue in [*scan.conflicts, *scan.warnings]]
@@ -140,8 +166,7 @@ def summary_payload(conn: sqlite3.Connection, context: TenderMonitorAPIContext) 
     last = conn.execute("SELECT * FROM tender_monitor_cycles ORDER BY id DESC LIMIT 1").fetchone()
     prepared = sum(1 for item in followed if item["prepared"])
     return {
-        "automatic_enabled": False,
-        "automatic_message": "Ejecución automática desactivada. El monitor solo se ejecuta manualmente.",
+        **monitor_automation_state(conn),
         "config_error": config_error,
         "active_cycle": dict(active) if active else None,
         "last_cycle": dict(last) if last else None,
@@ -159,20 +184,42 @@ def tender_detail_payload(conn: sqlite3.Connection, licitacion_id: int, context:
     if not row:
         return None
     config = _root_config(context)
-    prep = preparation_for_row(row, root=config.root_path)
+    prep = preparation_for_row(
+        row,
+        root=config.root_path,
+        year_min=config.year_min,
+        year_max=config.year_max,
+    )
     executions = conn.execute(
         """
         SELECT id, cycle_id, status, preparation_status, preparation_reason,
-               ai_status, notification_status, started_at, finished_at, batch_id
+               previous_snapshot_id, current_snapshot_id, batch_id, attempt_count,
+               ai_status, notification_status, started_at, finished_at,
+               error_phase, error_code, error_message, log_json
         FROM tender_monitor_executions
         WHERE licitacion_id = ? ORDER BY id DESC LIMIT 20
         """,
         (licitacion_id,),
     ).fetchall()
+    baseline = conn.execute(
+        """
+        SELECT b.*, s.platform, s.fingerprint, s.completeness_json,
+               s.confirmed_at, s.source
+        FROM tender_monitor_baselines AS b
+        JOIN tender_monitor_snapshots AS s ON s.id = b.snapshot_id
+        WHERE b.licitacion_id = ?
+        """,
+        (licitacion_id,),
+    ).fetchone()
+    execution_items = []
+    for execution in executions:
+        item = dict(execution)
+        item["log"] = json_load(item.pop("log_json", "[]"), [])
+        execution_items.append(item)
     return {
         "licitacion": {"id": row["id"], "expediente": row["expediente"], "title": row["objeto"]},
-        "monitor": prep.to_dict(),
-        "executions": [dict(item) for item in executions],
+        "monitor": {**prep.to_dict(), "baseline": _baseline_payload(baseline)},
+        "executions": execution_items,
     }
 
 

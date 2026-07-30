@@ -31,6 +31,7 @@ firebase-adminsdk*.json
 *.sqlite
 *.sqlite3
 *.msg
+!webapp/infonalia_webapp/tests/fixtures/infonalia/corpus_real_20260720/*.msg
 *.pdf
 *.txt
 !**/requirements.txt
@@ -43,6 +44,7 @@ webapp/infonalia_webapp/data/*
 .firebase/
 firebase/public_firebase/.firebaserc
 !firebase/public_firebase/.firebaserc.example
+/.firebaserc
 
 # Temporales, logs y copias
 *.log

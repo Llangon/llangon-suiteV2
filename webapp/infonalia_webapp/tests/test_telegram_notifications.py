@@ -45,6 +45,20 @@ def test_send_telegram_group_message_returns_disabled_when_global_flag_is_off() 
     assert result.message == "Telegram deshabilitado"
 
 
+def test_testing_mode_blocks_real_telegram_even_when_production_values_are_present() -> None:
+    sender_calls: list[str] = []
+
+    result = send_telegram_group_message(
+        "no debe salir",
+        env=telegram_env(LLANGON_TESTING="1"),
+        sender=lambda url, _payload, _timeout: sender_calls.append(url) or {"ok": True},
+    )
+
+    assert result.ok is False
+    assert result.error_code == "TELEGRAM_DISABLED"
+    assert sender_calls == []
+
+
 def test_send_telegram_group_message_requires_token() -> None:
     result = send_telegram_group_message("hola", env=telegram_env(LLANGON_TELEGRAM_BOT_TOKEN=""))
 

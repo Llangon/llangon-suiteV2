@@ -240,7 +240,9 @@ def test_sync_updates_follow_cache_without_inventory_by_default(tmp_path: Path) 
     assert row[1] == str(follow_marker)
     conn = sqlite3.connect(db_path)
     try:
-        inventory_rows = conn.execute("SELECT * FROM licitacion_file_inventory WHERE licitacion_id = 33").fetchall()
+        inventory_table_count = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'licitacion_file_inventory'"
+        ).fetchone()[0]
         run_row = conn.execute(
             """
             SELECT task_type, mode, status, followed_count, folders_checked_count, processed_items_count,
@@ -252,7 +254,7 @@ def test_sync_updates_follow_cache_without_inventory_by_default(tmp_path: Path) 
         ).fetchone()
     finally:
         conn.close()
-    assert inventory_rows == []
+    assert inventory_table_count == 0
     assert run_row == ("licitaciones", "sync", "completed", 1, 1, 1, 0, 0, 0, 0)
 
 
@@ -349,6 +351,80 @@ def test_monitor_history_endpoint_is_admin_only_and_lists_runs(tmp_path: Path, m
     assert payload["items"][0]["mode"] == "sync"
     assert payload["items"][0]["folders_checked_count"] == 1
     assert payload["items"][0]["changes_detected_count"] == 0
+
+
+def test_manual_file_inventory_is_launched_in_an_isolated_worker(monkeypatch) -> None:
+    app = load_app_module()
+    calls: list[dict[str, object]] = []
+
+    def fake_launcher(task_key: str, **kwargs):
+        calls.append({"task_key": task_key, **kwargs})
+        return {"ok": True, "pid": 4321, "task_key": task_key}
+
+    monkeypatch.setattr(app, "launch_internal_automation_task_worker", fake_launcher)
+    monkeypatch.setattr(
+        app,
+        "run_internal_automation_task",
+        lambda *_args, **_kwargs: pytest.fail("the inventory must not run in the web process"),
+    )
+    handler = make_handler(
+        app,
+        b"",
+        "application/json",
+        path="/api/admin/automation/tasks/file_inventory/run",
+        csrf_token=VALID_CSRF_TOKEN,
+    )
+
+    handler.do_POST()
+
+    status, payload = handler.responses[-1]
+    assert status == HTTPStatus.ACCEPTED
+    assert payload["ok"] is True
+    assert payload["status"] == "queued"
+    assert payload["worker"]["pid"] == 4321
+    assert calls[0]["task_key"] == "file_inventory"
+    assert calls[0]["source"] == "manual_worker"
+    assert calls[0]["triggered_by"] == "admin_test"
+
+
+def test_pc_restart_endpoint_requires_confirmation_and_dispatches_only_afterwards(monkeypatch) -> None:
+    app = load_app_module()
+    calls: list[dict[str, object]] = []
+
+    def fake_run(task_key: str, **kwargs):
+        calls.append({"task_key": task_key, **kwargs})
+        return {"status": "completed", "summary": "Reinicio remoto programado."}
+
+    monkeypatch.setattr(app, "run_internal_automation_task", fake_run)
+    rejected = make_handler(
+        app,
+        b'{"confirmation":"NO"}',
+        "application/json",
+        path="/api/admin/automation/tasks/pc_restart/run",
+        csrf_token=VALID_CSRF_TOKEN,
+    )
+    rejected.do_POST()
+
+    rejected_status, rejected_payload = rejected.responses[-1]
+    assert rejected_status == HTTPStatus.BAD_REQUEST
+    assert "REINICIAR" in rejected_payload["error"]
+    assert calls == []
+
+    accepted = make_handler(
+        app,
+        b'{"confirmation":"REINICIAR"}',
+        "application/json",
+        path="/api/admin/automation/tasks/pc_restart/run",
+        csrf_token=VALID_CSRF_TOKEN,
+    )
+    accepted.do_POST()
+
+    accepted_status, accepted_payload = accepted.responses[-1]
+    assert accepted_status == HTTPStatus.OK
+    assert accepted_payload["ok"] is True
+    assert calls[0]["task_key"] == "pc_restart"
+    assert calls[0]["source"] == "manual"
+    assert calls[0]["triggered_by"] == "admin_test"
 
 
 def test_monitor_history_endpoint_filters_by_task_type_and_agenda_summary_skeleton(tmp_path: Path) -> None:

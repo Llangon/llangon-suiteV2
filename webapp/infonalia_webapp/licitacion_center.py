@@ -5,11 +5,9 @@ from pathlib import Path
 
 try:
     from .download_safety import INTERNAL_DOWNLOAD_FILENAMES, INTERNAL_DOWNLOAD_PREFIXES
-    from .monitor.document_summary import document_payload_for_licitacion
     from .normalization import bool_text, clean_text
 except ImportError:
     from download_safety import INTERNAL_DOWNLOAD_FILENAMES, INTERNAL_DOWNLOAD_PREFIXES
-    from monitor.document_summary import document_payload_for_licitacion
     from normalization import bool_text, clean_text
 
 
@@ -209,9 +207,6 @@ def build_licitacion_center_detail(
 ) -> dict[str, object]:
     licitacion_id = int(item["id"])
     documents = licitacion_documents(item)
-    inventory_payload = document_payload_for_licitacion(conn, licitacion_id)
-    if inventory_payload.get("has_inventory"):
-        documents = inventory_payload["documents"]
     download = fetch_licitacion_download_indicators(conn, [licitacion_id]).get(licitacion_id, {})
     novedades = seguimiento_novedades(conn, licitacion_id)
     item["revisada"] = bool(clean_text(item.get("reviewed_at")))
@@ -221,16 +216,11 @@ def build_licitacion_center_detail(
     item["descarga_fallida"] = bool(download.get("descarga_fallida"))
     item["download_error"] = download.get("download_error") or ""
     item["documentos"] = documents
-    item["document_summary"] = inventory_payload["summary"]
-    item["document_groups"] = inventory_payload["groups"]
     item["documentacion"] = {
         "folder_path": clean_text(item.get("ruta_carpeta")),
         "downloaded": item["documentacion_descargada"],
         "count": len(documents),
         "documents": documents,
-        "summary": inventory_payload["summary"],
-        "groups": inventory_payload["groups"],
-        "from_inventory": bool(inventory_payload.get("has_inventory")),
     }
     item["actuaciones"] = actuaciones
     item["seguimiento"] = {

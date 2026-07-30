@@ -9,10 +9,14 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Sequence
 
 from herramientas_python.descargadores import run_downloader
 from herramientas_python.descargadores.common.run_result import DownloadRunResult
+from herramientas_python.descargadores.common.destination_lock import (
+    DestinationBusyError,
+    destination_lock,
+)
 
 try:
     from ..ai.service import request_ai_analysis
@@ -27,14 +31,20 @@ from .comparison import compare_snapshots, difference_fingerprint, merge_valid_b
 from .config import load_monitor_config
 from .snapshots import (
     normalize_text,
-    read_technical_snapshot,
+    read_technical_sidecar,
+    snapshot_completeness,
     snapshot_from_result,
-    write_technical_snapshot,
+    write_monitor_sidecar_cache,
 )
 from .tender_messages import (
     build_incident_report,
     build_notification_content,
     differences_summary,
+)
+from .tender_email_assets import (
+    DEFAULT_EMAIL_ATTACHMENT_LIMIT_BYTES,
+    notification_files_and_differences,
+    select_email_attachments,
 )
 from .tender_preparation import TenderPreparation, discover_followed, preparation_for_row
 from .tender_repository import (
@@ -49,20 +59,21 @@ from .tender_repository import (
     increment_cycle,
     json_dump,
     json_load,
-    latest_snapshot,
+    load_monitor_baseline,
     notification_recipients,
     now_iso,
     record_incident,
     refresh_lease,
     release_lease,
     save_snapshot,
+    set_monitor_baseline,
     start_cycle,
 )
 from .tender_rules import mark_ai_candidates, selected_document_paths
 from .tender_schema import ensure_tender_monitor_schema
 
 
-EmailSender = Callable[[str, str, str, str], tuple[str | None, str | None]]
+EmailSender = Callable[..., tuple[str | None, str | None]]
 TelegramSender = Callable[[Mapping[str, object], str], object]
 Downloader = Callable[..., DownloadRunResult]
 AIRequester = Callable[[sqlite3.Connection, int, list[str], str], dict[str, object]]
@@ -79,7 +90,9 @@ class TenderMonitorDependencies:
     sleep: Callable[[float], None] = time.sleep
     now: Callable[[], datetime] = datetime.now
     suite_base_url: str = ""
+    email_attachment_limit_bytes: int = DEFAULT_EMAIL_ATTACHMENT_LIMIT_BYTES
     env: Mapping[str, object] | None = None
+    logger: Callable[[str], None] = print
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
@@ -122,6 +135,17 @@ def _transient_error(exc: BaseException) -> bool:
     )
 
 
+def _transient_failed_result(result: DownloadRunResult) -> bool:
+    if normalize_text(result.status).casefold() != "failed":
+        return False
+    if result.retryable:
+        return True
+    message = normalize_text(result.error) or "; ".join(
+        normalize_text(item) for item in result.recoverable_issues if normalize_text(item)
+    )
+    return bool(message) and _transient_error(RuntimeError(message))
+
+
 def _run_downloader(
     deps: TenderMonitorDependencies,
     prep: TenderPreparation,
@@ -131,13 +155,27 @@ def _run_downloader(
 ) -> tuple[DownloadRunResult, int]:
     last_error: BaseException | None = None
     for attempt in range(1, max(1, attempts) + 1):
+        deps.logger(f"Descargador {prep.platform}: intento {attempt}/{max(1, attempts)}.")
         try:
             options = {"db_path": db_path} if prep.platform == "PLACE" else {}
-            return deps.downloader(prep.platform, prep.source_url, prep.destination, **options), attempt
+            result = deps.downloader(prep.platform, prep.source_url, prep.destination, **options)
+            if attempt < attempts and _transient_failed_result(result):
+                message = normalize_text(result.error) or "; ".join(result.recoverable_issues)
+                deps.logger(
+                    f"Descargador {prep.platform}: fallo transitorio en intento {attempt}; "
+                    f"se abrirá una ejecución nueva ({message})."
+                )
+                deps.sleep(min(2**attempt, 5))
+                continue
+            return result, attempt
         except BaseException as exc:
             last_error = exc
             if attempt >= attempts or not _transient_error(exc):
                 raise
+            deps.logger(
+                f"Descargador {prep.platform}: excepción transitoria en intento {attempt}; "
+                f"se reintentará ({type(exc).__name__}: {exc})."
+            )
             deps.sleep(min(2**attempt, 5))
     raise RuntimeError(str(last_error or "Error desconocido del descargador"))
 
@@ -146,29 +184,93 @@ def _choose_previous_snapshot(
     conn: sqlite3.Connection,
     *,
     prep: TenderPreparation,
+    cycle_id: int,
     execution_id: int,
     timestamp: str,
 ) -> tuple[int | None, dict[str, object] | None]:
-    db_id, db_snapshot = latest_snapshot(conn, prep.licitacion_id)
-    sidecar = read_technical_snapshot(prep.destination) if prep.destination else None
+    baseline_id, baseline = load_monitor_baseline(conn, prep.licitacion_id)
+    sidecar = read_technical_sidecar(prep.destination) if prep.destination else None
     if not sidecar:
-        return db_id, db_snapshot
-    if db_snapshot and db_snapshot.get("fingerprint") == sidecar.get("fingerprint"):
-        return db_id, db_snapshot
-    db_captured = normalize_text(db_snapshot.get("captured_at")) if db_snapshot else ""
-    sidecar_captured = normalize_text(sidecar.get("captured_at"))
-    if db_snapshot and db_captured and sidecar_captured and db_captured > sidecar_captured:
-        return db_id, db_snapshot
-    sidecar_id = save_snapshot(
-        conn,
-        licitacion_id=prep.licitacion_id,
-        platform=prep.platform,
-        snapshot=sidecar,
-        source="normal_download_import",
-        execution_id=execution_id,
-        timestamp=timestamp,
+        return baseline_id, baseline
+    sidecar_fingerprint = normalize_text(sidecar.get("fingerprint"))
+    baseline_fingerprint = normalize_text(baseline.get("fingerprint")) if baseline else ""
+    sidecar_snapshot_id = sidecar.get("snapshot_id")
+    try:
+        sidecar_snapshot_id_value = int(sidecar_snapshot_id)
+    except (TypeError, ValueError):
+        sidecar_snapshot_id_value = None
+    is_current_cache = bool(
+        baseline_id
+        and sidecar.get("writer") == "monitor"
+        and sidecar_fingerprint == baseline_fingerprint
+        and sidecar_snapshot_id_value == int(baseline_id)
     )
-    return sidecar_id, sidecar
+    legacy_matches_baseline = bool(
+        baseline_id
+        and sidecar.get("legacy")
+        and sidecar_fingerprint
+        and sidecar_fingerprint == baseline_fingerprint
+    )
+    # Without an authoritative SQLite baseline there is nothing that a cache
+    # can diverge from. The first complete remote review will create the
+    # baseline and replace any orphaned/legacy sidecar silently.
+    if baseline_id and not is_current_cache and not legacy_matches_baseline:
+        code = "LEGACY_SIDECAR_IGNORED" if sidecar.get("legacy") else "SIDECAR_DIVERGENT"
+        record_incident(
+            conn,
+            cycle_id=cycle_id,
+            execution_id=execution_id,
+            licitacion_id=prep.licitacion_id,
+            phase="baseline",
+            code=code,
+            summary="El estado técnico de carpeta no se usó como baseline; SQLite conserva la autoridad.",
+            technical_detail=json_dump(
+                {
+                    "baseline_snapshot_id": baseline_id,
+                    "baseline_fingerprint": baseline_fingerprint,
+                    "sidecar_snapshot_id": sidecar_snapshot_id,
+                    "sidecar_fingerprint": sidecar_fingerprint,
+                    "sidecar_writer": sidecar.get("writer"),
+                }
+            ),
+            outcome="cache_repair_pending",
+            timestamp=timestamp,
+        )
+    return baseline_id, baseline
+
+
+def _write_sidecar_after_commit(
+    conn: sqlite3.Connection,
+    *,
+    cycle_id: int,
+    execution_id: int,
+    prep: TenderPreparation,
+    snapshot_id: int,
+    snapshot: Mapping[str, object],
+    timestamp: str,
+) -> None:
+    try:
+        write_monitor_sidecar_cache(
+            prep.destination,
+            snapshot,
+            licitacion_id=prep.licitacion_id,
+            snapshot_id=snapshot_id,
+            execution_id=execution_id,
+        )
+    except (OSError, ValueError, TypeError) as exc:
+        record_incident(
+            conn,
+            cycle_id=cycle_id,
+            execution_id=execution_id,
+            licitacion_id=prep.licitacion_id,
+            phase="sidecar",
+            code="SIDECAR_WRITE_FAILED",
+            summary="El baseline quedó confirmado en SQLite, pero falló su copia técnica de carpeta.",
+            technical_detail=str(exc),
+            outcome="cache_repair_pending",
+            timestamp=timestamp,
+        )
+        conn.commit()
 
 
 def _record_partial_incident(
@@ -201,6 +303,32 @@ def _result_is_usable(result: DownloadRunResult) -> bool:
     return result.status in {"success", "success_with_warnings", "partial"}
 
 
+def _observation_log(
+    result: DownloadRunResult,
+    snapshot: Mapping[str, object],
+    *,
+    previous_snapshot_id: int | None,
+    current_snapshot_id: int | None = None,
+    differences: list[Mapping[str, object]] | None = None,
+) -> list[dict[str, object]]:
+    statuses: dict[str, int] = {}
+    for artifact in result.artifacts:
+        key = normalize_text(artifact.status).casefold() or "unknown"
+        statuses[key] = statuses.get(key, 0) + 1
+    return [
+        {
+            "event": "remote_inventory",
+            "result_status": result.status,
+            "previous_snapshot_id": previous_snapshot_id,
+            "current_snapshot_id": current_snapshot_id,
+            "documents_observed": len(result.artifacts),
+            "artifact_status_counts": statuses,
+            "block_completeness": snapshot_completeness(snapshot),
+            "difference_count": len(differences or []),
+        }
+    ]
+
+
 def _batch_differences(conn: sqlite3.Connection, batch_id: int) -> list[dict[str, object]]:
     rows = conn.execute(
         "SELECT * FROM tender_monitor_differences WHERE batch_id = ? ORDER BY id", (batch_id,)
@@ -215,6 +343,21 @@ def _batch_differences(conn: sqlite3.Connection, batch_id: int) -> list[dict[str
         }
         for row in rows
     ]
+
+
+def _send_email(
+    sender: EmailSender | None,
+    destination: str,
+    content: Mapping[str, str],
+    attachments: Sequence[Path],
+) -> tuple[str | None, str | None]:
+    if not sender:
+        return None, "Correo no configurado"
+    try:
+        return sender(destination, content["subject"], content["text"], content["html"], attachments)
+    except TypeError:
+        # Compatibility with injected four-argument senders used by older jobs/tests.
+        return sender(destination, content["subject"], content["text"], content["html"])
 
 
 def _ai_request_default(conn: sqlite3.Connection, licitacion_id: int, paths: list[str], requested_by: str) -> dict[str, object]:
@@ -410,6 +553,12 @@ def send_batch_notifications(
     ai_failed: bool,
 ) -> str:
     differences = _batch_differences(conn, batch_id)
+    attachments, differences = notification_files_and_differences(
+        licitacion.get("ruta_carpeta"), differences
+    )
+    attachments, omitted_attachments = select_email_attachments(
+        attachments, limit_bytes=deps.email_attachment_limit_bytes
+    )
     suite_url = ""
     if deps.suite_base_url:
         suite_url = deps.suite_base_url.rstrip("/") + f"/app/licitaciones/{licitacion.get('id')}"
@@ -421,6 +570,8 @@ def send_batch_notifications(
         ai_summary=ai_summary,
         ai_failed=ai_failed,
         suite_url=suite_url,
+        attachment_names=[path.name for path in attachments],
+        omitted_attachments=omitted_attachments,
     )
     recipients = notification_recipients(conn)
     email_rows = [row for row in recipients if bool(row["email_enabled"]) and normalize_text(row["email"])]
@@ -463,7 +614,7 @@ def send_batch_notifications(
             attempts_used = 0
             for attempt in range(1, notification_attempts + 1):
                 attempts_used = attempt
-                sent_at, error = deps.email_sender(destination, content["subject"], content["text"], content["html"]) if deps.email_sender else (None, "Correo no configurado")
+                sent_at, error = _send_email(deps.email_sender, destination, content, attachments)
                 if sent_at and not error:
                     break
                 if attempt < notification_attempts:
@@ -654,6 +805,13 @@ def retry_notification(
     batch, execution, cycle, licitacion = context
     timestamp = now_iso(deps.now())
     differences = _batch_differences(conn, int(batch["id"]))
+    attachments, differences = notification_files_and_differences(
+        licitacion["ruta_carpeta"] if "ruta_carpeta" in licitacion.keys() else "",
+        differences,
+    )
+    attachments, omitted_attachments = select_email_attachments(
+        attachments, limit_bytes=deps.email_attachment_limit_bytes
+    )
     link = conn.execute(
         """
         SELECT l.status, l.ai_job_id, s.summary_text, s.summary_json
@@ -678,18 +836,20 @@ def retry_notification(
             if deps.suite_base_url
             else ""
         ),
+        attachment_names=[path.name for path in attachments],
+        omitted_attachments=omitted_attachments,
     )
     channel = normalize_text(notification["channel"])
     error = ""
     external_id = ""
     sent_at = ""
     if channel == "email":
-        result = deps.email_sender(
+        result = _send_email(
+            deps.email_sender,
             normalize_text(notification["destination"]),
-            content["subject"],
-            content["text"],
-            content["html"],
-        ) if deps.email_sender else (None, "Correo no configurado")
+            content,
+            attachments,
+        )
         raw_sent_at, raw_error = result
         sent_at, error = normalize_text(raw_sent_at), normalize_text(raw_error)
         ok = bool(sent_at and not error)
@@ -838,6 +998,7 @@ def _process_tender(
         )
         return "not_followed"
     if not prep.prepared:
+        incident_code = prep.preparation_code or "NOT_PREPARED"
         finish_execution(
             conn,
             execution_id,
@@ -845,6 +1006,9 @@ def _process_tender(
             timestamp=timestamp,
             preparation_status="not_prepared",
             preparation_reason=prep.reason,
+            error_phase="preparation",
+            error_code=incident_code,
+            error_message=prep.reason,
         )
         increment_cycle(conn, cycle_id, processed_count=1, error_count=1)
         record_incident(
@@ -853,7 +1017,7 @@ def _process_tender(
             execution_id=execution_id,
             licitacion_id=prep.licitacion_id,
             phase="preparation",
-            code="NOT_PREPARED",
+            code=incident_code,
             summary=prep.reason,
             outcome="skipped",
             timestamp=timestamp,
@@ -861,7 +1025,7 @@ def _process_tender(
         return "not_prepared"
 
     lease_minutes = _setting_int(conn, "lease_minutes", 60, minimum=5, maximum=1440)
-    lease_key = f"tender-monitor:licitacion:{prep.licitacion_id}"
+    lease_key = f"tender-io:licitacion:{prep.licitacion_id}"
     acquired, existing = acquire_lease(
         conn,
         lease_key=lease_key,
@@ -871,21 +1035,43 @@ def _process_tender(
         metadata={"cycle_id": cycle_id, "execution_id": execution_id},
     )
     if not acquired:
-        reason = f"La licitación ya se está procesando ({existing.get('owner') if existing else 'otro ciclo'})."
+        reason = f"La licitación ya se está procesando ({existing.get('owner') if existing else 'otra operación'})."
         finish_execution(
             conn,
             execution_id,
-            status="error",
+            status="deferred_busy",
             timestamp=timestamp,
             preparation_status="prepared",
             error_phase="lock",
-            error_code="ALREADY_RUNNING",
+            error_code="TENDER_OPERATION_BUSY",
             error_message=reason,
         )
-        increment_cycle(conn, cycle_id, processed_count=1, error_count=1)
-        return "error"
+        increment_cycle(conn, cycle_id, processed_count=1)
+        return "deferred_busy"
     conn.commit()
 
+    path_lock = destination_lock(
+        prep.destination,
+        owner=f"monitor:{cycle_id}:{execution_id}:{owner}",
+    )
+    try:
+        path_lock.__enter__()
+    except DestinationBusyError as exc:
+        finish_execution(
+            conn,
+            execution_id,
+            status="deferred_busy",
+            timestamp=timestamp,
+            preparation_status="prepared",
+            error_phase="lock",
+            error_code="DESTINATION_BUSY",
+            error_message=str(exc),
+        )
+        increment_cycle(conn, cycle_id, processed_count=1)
+        release_lease(conn, lease_key=lease_key, owner=owner)
+        conn.commit()
+        return "deferred_busy"
+    path_lock_active = True
     try:
         cycle_metadata = json_load(cycle["metadata_json"], {})
         force_baseline = bool(
@@ -897,6 +1083,7 @@ def _process_tender(
             previous_id, previous = _choose_previous_snapshot(
                 conn,
                 prep=prep,
+                cycle_id=cycle_id,
                 execution_id=execution_id,
                 timestamp=timestamp,
             )
@@ -932,6 +1119,10 @@ def _process_tender(
                 timestamp=finished,
             )
             return "error"
+        conn.execute(
+            "UPDATE tender_monitor_executions SET attempt_count = ? WHERE id = ?",
+            (attempt_count, execution_id),
+        )
         finished = now_iso(deps.now())
         if not _result_is_usable(result):
             message = result.error or "; ".join(result.recoverable_issues) or "El descargador no devolvió un estado utilizable."
@@ -978,12 +1169,17 @@ def _process_tender(
                 finish_execution(
                     conn,
                     execution_id,
-                    status="partial",
-                    timestamp=finished,
-                    preparation_status="prepared",
-                    error_phase="baseline",
+                status="partial",
+                timestamp=finished,
+                preparation_status="prepared",
+                error_phase="baseline",
                     error_code="BASELINE_INCOMPLETE",
                     error_message="No se confirmó una línea base a partir de una respuesta parcial.",
+                    log=_observation_log(
+                        result,
+                        current_raw,
+                        previous_snapshot_id=None,
+                    ),
                 )
                 increment_cycle(conn, cycle_id, processed_count=1, error_count=1)
                 return "partial"
@@ -996,6 +1192,14 @@ def _process_tender(
                 execution_id=execution_id,
                 timestamp=finished,
             )
+            set_monitor_baseline(
+                conn,
+                licitacion_id=prep.licitacion_id,
+                snapshot_id=current_id,
+                execution_id=execution_id,
+                reason="manual_rebuild" if force_baseline else "initial",
+                timestamp=finished,
+            )
             finish_execution(
                 conn,
                 execution_id,
@@ -1003,10 +1207,24 @@ def _process_tender(
                 timestamp=finished,
                 preparation_status="prepared",
                 current_snapshot_id=current_id,
+                log=_observation_log(
+                    result,
+                    current_raw,
+                    previous_snapshot_id=None,
+                    current_snapshot_id=current_id,
+                ),
             )
             increment_cycle(conn, cycle_id, processed_count=1, baseline_count=1)
             conn.commit()
-            write_technical_snapshot(prep.destination, current_raw)
+            _write_sidecar_after_commit(
+                conn,
+                cycle_id=cycle_id,
+                execution_id=execution_id,
+                prep=prep,
+                snapshot_id=current_id,
+                snapshot=current_raw,
+                timestamp=finished,
+            )
             return "baseline_rebuilt"
 
         differences = compare_snapshots(previous, current_raw)
@@ -1022,6 +1240,14 @@ def _process_tender(
             execution_id=execution_id,
             timestamp=finished,
         )
+        set_monitor_baseline(
+            conn,
+            licitacion_id=prep.licitacion_id,
+            snapshot_id=current_id,
+            execution_id=execution_id,
+            reason="monitor_review",
+            timestamp=finished,
+        )
         if not differences:
             finish_execution(
                 conn,
@@ -1031,10 +1257,25 @@ def _process_tender(
                 preparation_status="prepared",
                 previous_snapshot_id=previous_id,
                 current_snapshot_id=current_id,
+                log=_observation_log(
+                    result,
+                    confirmed,
+                    previous_snapshot_id=previous_id,
+                    current_snapshot_id=current_id,
+                    differences=differences,
+                ),
             )
             increment_cycle(conn, cycle_id, processed_count=1, no_changes_count=1)
             conn.commit()
-            write_technical_snapshot(prep.destination, confirmed)
+            _write_sidecar_after_commit(
+                conn,
+                cycle_id=cycle_id,
+                execution_id=execution_id,
+                prep=prep,
+                snapshot_id=current_id,
+                snapshot=confirmed,
+                timestamp=finished,
+            )
             return "no_changes"
 
         batch_id, created = create_batch(
@@ -1061,10 +1302,27 @@ def _process_tender(
             batch_id=batch_id,
             ai_status="pending" if created else "already_processed",
             notification_status="pending" if created else "already_processed",
+            log=_observation_log(
+                result,
+                confirmed,
+                previous_snapshot_id=previous_id,
+                current_snapshot_id=current_id,
+                differences=differences,
+            ),
         )
         increment_cycle(conn, cycle_id, processed_count=1, **({"changes_count": 1} if created else {"no_changes_count": 1}))
         conn.commit()
-        write_technical_snapshot(prep.destination, confirmed)
+        _write_sidecar_after_commit(
+            conn,
+            cycle_id=cycle_id,
+            execution_id=execution_id,
+            prep=prep,
+            snapshot_id=current_id,
+            snapshot=confirmed,
+            timestamp=finished,
+        )
+        path_lock.__exit__(None, None, None)
+        path_lock_active = False
         if not created:
             return "no_changes"
         ai_status, ai_summary, ai_failed = _process_ai(
@@ -1099,7 +1357,15 @@ def _process_tender(
         elif notification_status == "notification_failed":
             increment_cycle(conn, cycle_id, error_count=1)
         return notification_status
+    except BaseException:
+        # Never let the lease-release commit confirm a half-built review. Commits
+        # performed earlier (baseline + batch) remain durable, while any pending
+        # transaction from the failing phase is discarded.
+        conn.rollback()
+        raise
     finally:
+        if path_lock_active:
+            path_lock.__exit__(None, None, None)
         release_lease(conn, lease_key=lease_key, owner=owner)
         conn.commit()
 
@@ -1237,13 +1503,13 @@ def run_tender_monitor_cycle(
         return {"cycle_id": cycle_id, "status": "failed", "message": "Ya existe un ciclo activo."}
 
     try:
-        markers_by_id = {}
-        scan_result = None
+        markers, discovered = discover_followed(config.root_path, config.year_min, config.year_max)
+        markers_by_id = {marker.licitacion_id: marker for marker in markers}
         if cycle["requested_licitacion_id"]:
             target_ids = [int(cycle["requested_licitacion_id"])]
+            scan_result = None
         else:
-            markers, scan_result = discover_followed(config.root_path, config.year_min, config.year_max)
-            markers_by_id = {marker.licitacion_id: marker for marker in markers}
+            scan_result = discovered
             target_ids = sorted(markers_by_id)
         started = now_iso(deps.now())
         if not start_cycle(conn, cycle_id, total_count=len(target_ids), timestamp=started):
@@ -1291,7 +1557,13 @@ def run_tender_monitor_cycle(
                 increment_cycle(conn, cycle_id, processed_count=1, error_count=1)
                 conn.commit()
                 continue
-            prep = preparation_for_row(row, root=config.root_path, marker=markers_by_id.get(licitacion_id))
+            prep = preparation_for_row(
+                row,
+                root=config.root_path,
+                marker=markers_by_id.get(licitacion_id),
+                year_min=config.year_min,
+                year_max=config.year_max,
+            )
             try:
                 status = _process_tender(
                     conn,

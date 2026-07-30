@@ -119,6 +119,22 @@ def test_agenda_today_returns_open_overdue_and_today_events() -> None:
         now = datetime.now().replace(microsecond=0)
         set_licitacion_deadline(app, licitacion_open, fecha=now.date().isoformat(), hora="23:00", estado="Preparar ficha")
         set_licitacion_deadline(app, licitacion_closed, fecha=now.date().isoformat(), hora="23:00", estado="Descartada")
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                UPDATE licitaciones
+                SET tipo = ?, presupuesto = ?, enlace_perfil = ?, enlace_infonalia = ?, ruta_carpeta = ?
+                WHERE id = ?
+                """,
+                (
+                    "Suministro",
+                    125000.0,
+                    "https://perfil.example.test/agenda",
+                    "https://infonalia.example.test/agenda",
+                    "2026\\07 JULIO\\AGENDA-LIC-HOY",
+                    licitacion_open,
+                ),
+            )
         create_actuacion(app, None, titulo="Actuación hoy", deadline_at=f"{now.date().isoformat()}T23:30:00")
         create_actuacion(app, None, titulo="Actuación cerrada", estado="cerrada", deadline_at=f"{now.date().isoformat()}T23:30:00")
         create_internal_event(app, titulo="Interno vencido", starts_at=(now - timedelta(hours=1)).isoformat())
@@ -133,6 +149,12 @@ def test_agenda_today_returns_open_overdue_and_today_events() -> None:
     assert "Actuación cerrada" not in event_titles
     assert "AGENDA-LIC-DESC" not in event_titles
     assert "Interno cerrado" not in event_titles
+    licitacion_event = next(event for event in data["events"] if event["title"] == "AGENDA-LIC-HOY")
+    licitacion_card_data = licitacion_event["linked_licitaciones"][0]
+    assert licitacion_card_data["tipo"] == "Suministro"
+    assert licitacion_card_data["presupuesto"] == 125000.0
+    assert licitacion_card_data["enlace_perfil"] == "https://perfil.example.test/agenda"
+    assert licitacion_card_data["ruta_carpeta"] == "2026\\07 JULIO\\AGENDA-LIC-HOY"
     overdue = [event for event in data["events"] if event["title"] == "Interno vencido"][0]
     assert overdue["color_type"] == "vencido"
     assert overdue["is_overdue"] is True

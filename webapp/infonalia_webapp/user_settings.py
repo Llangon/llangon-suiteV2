@@ -52,6 +52,7 @@ SETTINGS_UPDATE_KEYS = {
     "gemini_max_file_mb",
     "gemini_timeout_seconds",
     "gemini_input_mode",
+    "place_username",
 }
 BOOLEAN_SETTINGS = {
     "maintenance_mode",
@@ -232,6 +233,8 @@ def public_settings_payload(settings: Mapping[str, object]) -> dict[str, object]
         "monitor_test_email": settings.get("monitor_test_email", ""),
         "monitor_agenda_pending_email_to": settings.get("monitor_agenda_pending_email_to", ""),
         "smtp_password_set": bool(clean_text(settings.get("smtp_password"))),
+        "place_username": settings.get("place_username", ""),
+        "place_password_set": bool(clean_text(settings.get("place_password"))),
     }
     for key in SETTING_DEFINITIONS:
         payload[key] = settings.get(key, "")
@@ -287,6 +290,12 @@ def settings_update_payload(
         updates["smtp_password"] = clean_text(data.get("smtp_password"))
     elif data.get("clear_smtp_password"):
         updates["smtp_password"] = ""
+    if "place_username" in updates:
+        updates["place_username"] = clean_text(updates["place_username"])
+    if clean_text(data.get("place_password")):
+        updates["place_password"] = clean_text(data.get("place_password"))
+    elif data.get("clear_place_password"):
+        updates["place_password"] = ""
     env = environ or {}
     effective_updates = {**(current_settings or {}), **updates}
     if bool_text(_setting_value("email_actions_enabled", effective_updates, current_settings, env)):

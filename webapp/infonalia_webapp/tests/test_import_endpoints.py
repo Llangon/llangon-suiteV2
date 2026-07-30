@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import io
 import os
+import shutil
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -15,6 +16,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 APP_MODULE_NAME = "webapp.infonalia_webapp.app"
 PRODUCTIVE_DB_PATH = REPOSITORY_ROOT / "webapp" / "infonalia_webapp" / "data" / "infonalia.db"
 VALID_CSRF_TOKEN = "csrf-test-token"
+_DATABASE_TEMPLATES: dict[str, tuple[object, Path]] = {}
 
 
 def load_app_module() -> ModuleType:
@@ -27,8 +29,40 @@ def load_app_module() -> ModuleType:
     return importlib.import_module(APP_MODULE_NAME)
 
 
+def _database_template(app: ModuleType) -> Path:
+    configuration_key = repr((app.USERS, app.DEFAULT_SETTINGS))
+    cached = _DATABASE_TEMPLATES.get(configuration_key)
+    if cached is not None and cached[1].is_file():
+        return cached[1]
+
+    template_directory = tempfile.TemporaryDirectory(prefix="llangon-test-db-template-")
+    template_root = Path(template_directory.name)
+    old_data_root = app.DATA_ROOT
+    old_download_root = app.DOWNLOAD_ROOT
+    old_db_path = app.DB_PATH
+    try:
+        app.DATA_ROOT = template_root / "data"
+        app.DOWNLOAD_ROOT = app.DATA_ROOT / "descargas"
+        app.DB_PATH = app.DATA_ROOT / "infonalia.db"
+        app.init_db()
+        if not app.DB_PATH.is_file():
+            raise AssertionError("init_db no creó la plantilla SQLite de pruebas.")
+        template_path = app.DB_PATH
+    except Exception:
+        template_directory.cleanup()
+        raise
+    finally:
+        app.DATA_ROOT = old_data_root
+        app.DOWNLOAD_ROOT = old_download_root
+        app.DB_PATH = old_db_path
+
+    _DATABASE_TEMPLATES[configuration_key] = (template_directory, template_path)
+    return template_path
+
+
 @contextmanager
 def temporary_app_database(app: ModuleType):
+    template_path = _database_template(app)
     old_data_root = app.DATA_ROOT
     old_download_root = app.DOWNLOAD_ROOT
     old_db_path = app.DB_PATH
@@ -38,8 +72,9 @@ def temporary_app_database(app: ModuleType):
         app.DATA_ROOT = tmp_root / "data"
         app.DOWNLOAD_ROOT = app.DATA_ROOT / "descargas"
         app.DB_PATH = app.DATA_ROOT / "infonalia.db"
-        app.init_db()
         try:
+            app.DOWNLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(template_path, app.DB_PATH)
             yield app.DB_PATH
         finally:
             app.DATA_ROOT = old_data_root

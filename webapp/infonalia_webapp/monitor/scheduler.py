@@ -164,7 +164,7 @@ def file_inventory_config_status() -> dict[str, object]:
         "root_path": str(config.root_path),
         "root_source": config.root_source,
         "config_ok": config.root_path.exists() and config.root_path.is_dir(),
-        "config_error": "" if config.root_path.exists() and config.root_path.is_dir() else "La raíz de inventario no existe.",
+        "config_error": "" if config.root_path.exists() and config.root_path.is_dir() else "La raíz de reconciliación no existe.",
     }
 
 
@@ -264,7 +264,15 @@ def _interval_error_message(result: dict[str, object]) -> str:
     return ""
 
 
-def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: bool) -> list[dict[str, object]]:
+def _run_mail_interval_jobs(
+    *,
+    db_path: str | Path,
+    current: datetime,
+    dry_run: bool,
+    task_types: set[str] | None = None,
+    force_selected: bool = False,
+    automation_run_id: int | None = None,
+) -> list[dict[str, object]]:
     reports: list[dict[str, object]] = []
     db_file = Path(db_path)
     conn = connect_db(db_file)
@@ -291,12 +299,18 @@ def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: 
             (task_type, enabled_var, interval)
             for task_type, enabled_var, interval in jobs
             if (
-                (
-                    env_bool(enabled_var, False)
-                    if enabled_var.startswith("LLANGON_")
-                    else operational_enabled(enabled_var, db_path=db_file)
+                (task_types is None or task_type in task_types)
+                and (
+                    force_selected
+                    or (
+                        (
+                            env_bool(enabled_var, False)
+                            if enabled_var.startswith("LLANGON_")
+                            else operational_enabled(enabled_var, db_path=db_file)
+                        )
+                        and _interval_task_due(conn, task_type=task_type, current=current, interval_minutes=interval)
+                    )
                 )
-                and _interval_task_due(conn, task_type=task_type, current=current, interval_minutes=interval)
             )
         ]
     finally:
@@ -305,22 +319,31 @@ def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: 
     if not due_jobs:
         return reports
 
-    try:
-        from .. import app
-        from ..email_actions_processor import process_mailbox_once as process_action_mailbox_once
-        from ..infonalia_mail_importer import process_mailbox_once as process_infonalia_mailbox_once
-    except ImportError:
-        import app  # type: ignore
-        from email_actions_processor import process_mailbox_once as process_action_mailbox_once
-        from infonalia_mail_importer import process_mailbox_once as process_infonalia_mailbox_once
+    app = None
+    process_action_mailbox_once = None
+    process_infonalia_mailbox_once = None
+    settings: dict[str, object] = {}
+    if any(
+        task_type in {TASK_TYPE_INFONALIA_MAIL_IMPORT, TASK_TYPE_EMAIL_ACTIONS_PROCESSOR}
+        for task_type, _enabled_var, _interval in due_jobs
+    ):
+        try:
+            from .. import app
+            from ..email_actions_processor import process_mailbox_once as process_action_mailbox_once
+            from ..infonalia_mail_importer import process_mailbox_once as process_infonalia_mailbox_once
+        except ImportError:
+            import app  # type: ignore
+            from email_actions_processor import process_mailbox_once as process_action_mailbox_once
+            from infonalia_mail_importer import process_mailbox_once as process_infonalia_mailbox_once
 
-    settings = app.get_settings()
+        settings = app.get_settings()
 
     for task_type, _enabled_var, _interval in due_jobs:
         started_at = scheduler_now_iso(current)
         error_message = ""
         try:
             if task_type == TASK_TYPE_INFONALIA_MAIL_IMPORT:
+                assert app is not None and process_infonalia_mailbox_once is not None
                 result = process_infonalia_mailbox_once(
                     dry_run=dry_run,
                     settings=settings,
@@ -330,24 +353,45 @@ def _run_mail_interval_jobs(*, db_path: str | Path, current: datetime, dry_run: 
                 emails_sent = int(result.get("notified", 0) or 0)
                 inventory_count = 0
                 route_updates = 0
-                conflicts = 0
+                conflicts = int(result.get("conflicts", 0) or 0) + int(result.get("quarantined", 0) or 0)
             elif task_type == TASK_TYPE_EMAIL_ACTIONS_PROCESSOR:
+                assert app is not None and process_action_mailbox_once is not None
                 result = process_action_mailbox_once(
                     db_session_factory=app.db_session,
                     notification_sender=lambda to, subject, body, html: app.send_monitor_email(to, subject, body, html, settings=settings),
                     settings=settings,
                     dry_run=dry_run,
                 )
+                if not dry_run:
+                    try:
+                        result["telegram_notifications"] = app.notify_pending_email_action_telegram_events()
+                    except Exception as exc:
+                        result["telegram_notifications"] = {
+                            "checked": 0,
+                            "sent": 0,
+                            "failed": 1,
+                            "items": [],
+                            "error": str(exc),
+                        }
                 processed = int(result.get("processed", 0) or 0)
                 emails_sent = 0
                 inventory_count = 0
                 route_updates = 0
                 conflicts = 0
             else:
-                result = run_monitor("inventory", db_path=db_file, dry_run=dry_run)
-                processed = int(result.get("inventory_files_count", 0) or 0)
+                result = run_monitor(
+                    "repair-routes",
+                    db_path=db_file,
+                    dry_run=dry_run,
+                    schedule_key=(
+                        f"automation_run:{automation_run_id}"
+                        if automation_run_id is not None
+                        else ""
+                    ),
+                )
+                processed = int(result.get("processed_items_count", 0) or 0)
                 emails_sent = 0
-                inventory_count = int(result.get("inventory_files_count", 0) or 0)
+                inventory_count = 0
                 route_updates = int(result.get("route_updates_count", 0) or 0)
                 conflicts = len(result.get("conflicts", []) or [])
             status = "failed" if result.get("errors") else "completed"
@@ -469,8 +513,8 @@ def monitor_scheduler_status(db_path: str | Path | None = None) -> dict[str, obj
         "next": next_schedule_preview(),
         "schedules": schedules,
         "agenda_pending_recipients": configured_agenda_pending_recipients(db_path),
-        "monitor_licitaciones_schedule_enabled": "monitor_licitaciones" in schedules,
-        "monitor_licitaciones_real_enabled": env_bool("MONITOR_LICITACIONES_REAL_ENABLED", False),
+        "monitor_licitaciones_schedule_enabled": False,
+        "monitor_licitaciones_real_enabled": False,
         "infonalia_mail_importer": {
             "enabled": operational_enabled("infonalia_import_enabled", db_path=db_file),
             "interval_minutes": operational_minutes("infonalia_import_poll_minutes", 30, db_path=db_file),
@@ -484,9 +528,6 @@ def monitor_scheduler_status(db_path: str | Path | None = None) -> dict[str, obj
         "file_inventory": {
             "enabled": env_bool("LLANGON_FILE_INVENTORY_ENABLED", False),
             "interval_minutes": env_minutes("LLANGON_FILE_INVENTORY_POLL_MINUTES", 60),
-            "max_files_per_run": env_minutes("LLANGON_FILE_INVENTORY_MAX_FILES_PER_RUN", 1000),
-            "max_depth": env_minutes("LLANGON_FILE_INVENTORY_MAX_DEPTH", 8),
-            "reconcile_paths": env_bool("LLANGON_FILE_INVENTORY_RECONCILE_PATHS", True),
             "last_run": None,
             **file_inventory_config_status(),
         },
@@ -495,6 +536,12 @@ def monitor_scheduler_status(db_path: str | Path | None = None) -> dict[str, obj
     try:
         conn = connect_db(db_file)
         ensure_monitor_schema(conn)
+        monitor_task = conn.execute(
+            "SELECT enabled FROM automation_tasks WHERE key = 'monitor_licitaciones'"
+        ).fetchone()
+        monitor_enabled = bool(monitor_task and int(monitor_task["enabled"] or 0) == 1)
+        status["monitor_licitaciones_schedule_enabled"] = monitor_enabled
+        status["monitor_licitaciones_real_enabled"] = monitor_enabled
         row = conn.execute("SELECT * FROM monitor_scheduler_heartbeat WHERE id = 1").fetchone()
         if row:
             heartbeat_next_task = row["next_task"] or ""

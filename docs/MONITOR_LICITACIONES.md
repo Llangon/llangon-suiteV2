@@ -2,11 +2,13 @@
 
 ## Alcance
 
-El monitor consulta las plataformas oficiales mediante los seis descargadores registrados en `herramientas_python.descargadores`. No deduce novedades examinando el árbol de Dropbox: compara snapshots técnicos normalizados producidos por los descargadores.
+El monitor consulta las plataformas oficiales mediante los siete descargadores registrados en `herramientas_python.descargadores`. No deduce novedades examinando el árbol de Dropbox: compara snapshots técnicos normalizados producidos por los descargadores.
 
 El seguimiento tiene una única fuente de verdad: el fichero físico `EnSeguimiento.llangon` dentro de la carpeta de la licitación. Las tablas `tender_monitor_*` guardan ejecución, estado técnico, diferencias, IA, notificaciones e incidencias; no guardan un segundo flag de seguimiento.
 
-La programación automática está desactivada. Ni las variables de entorno antiguas ni la consola de automatizaciones pueden activarla. Las ejecuciones disponibles son manuales:
+La programación automática usa el orquestador interno único de la suite y está configurada todos los días a las **08:00, 13:00 y 18:00**. El tick existente comprueba el vencimiento cada cinco minutos. Si el PC estaba suspendido, al reanudarse ejecuta una sola vez la última franja vencida del día; una franja ya completada no se repite.
+
+También siguen disponibles las ejecuciones manuales:
 
 - global, solo para administración;
 - individual, para administración y revisión desde la ficha de una licitación.
@@ -14,17 +16,19 @@ La programación automática está desactivada. Ni las variables de entorno anti
 ## Flujo técnico
 
 1. Se descubren los marcadores físicos y se valida cada licitación: carpeta, URL oficial, plataforma y descargador registrado.
-2. Se obtiene el último snapshot confirmado de SQLite o del sidecar `.llangon-monitor/technical_snapshot.json`.
+2. Se obtiene el snapshot confirmado al que apunta `tender_monitor_baselines` en SQLite. El sidecar `.llangon-monitor/technical_snapshot.json` es solo una caché diagnóstica y nunca sustituye esa autoridad.
 3. Se ejecuta el descargador neutral de la plataforma.
 4. Se normalizan datos generales, fechas relevantes, documentos oficiales y, cuando la plataforma lo soporta, preguntas y respuestas.
+   Un hash solo puede acreditar una modificación cuando procede de los bytes observados en la plataforma; el hash de una copia local reutilizada nunca constituye una novedad oficial.
 5. Una respuesta parcial conserva los bloques anteriores y nunca convierte ausencias en retiradas.
 6. Si no existe línea base y la respuesta documental es completa, se reconstruye la línea base sin generar novedad, IA ni aviso.
+   Un sidecar heredado u huérfano tampoco genera incidencia en esta primera revisión: se sustituye por la caché del nuevo baseline. Solo se informa de divergencia cuando ya existe un baseline autoritativo en SQLite.
 7. Las diferencias reales se agrupan en un único lote idempotente por licitación.
 8. Los documentos nuevos o modificados de categorías configuradas pueden usar la cola IA existente. Preguntas y respuestas nunca activan IA.
 9. Se envía un correo agrupado por licitación y un Telegram corto por destinatario configurado. Los canales son independientes.
 10. Las incidencias del ciclo se consolidan en un único correo al administrador de incidencias.
 
-Las descargas normales de la aplicación, las acciones por correo y el BAT central actualizan el sidecar técnico cuando el resultado estructurado termina correctamente. Esa actualización no crea lotes ni envía notificaciones.
+Las descargas normales de la aplicación, las acciones por correo y el BAT central descargan ficheros, pero no escriben el baseline ni el sidecar técnico del monitor. Cuando el monitor revise después la licitación, comparará la plataforma contra su baseline anterior, registrará el snapshot nuevo y notificará la novedad aunque el fichero ya exista físicamente; en ese caso el descargador lo reutiliza en vez de volver a copiarlo.
 
 ## Estados importantes
 
@@ -45,7 +49,7 @@ En **Monitor de licitaciones**:
 
 - **Seguimiento** muestra licitaciones preparadas, último resultado, IA y avisos. **Revisar ahora** inicia un ciclo global manual.
 - **Histórico** permite filtrar por estado, licitación, novedades e incidencias. El detalle muestra diferencias, canales, IA y reintentos.
-- **Configuración** gestiona tiempos máximos, reintentos, categorías IA y destinatarios globales. La programación aparece bloqueada como desactivada.
+- **Configuración** gestiona tiempos máximos, reintentos, categorías IA y destinatarios globales. La programación muestra su estado y las tres franjas; su activación se administra desde la consola general de automatizaciones.
 
 Los reintentos son selectivos:
 
@@ -62,9 +66,9 @@ La aplicación usa `LLANGON_DROPBOX_BASE_PATH` como raíz normal. Para una prueb
 
 No se deben copiar secretos al histórico, a capturas ni a incidencias. Las credenciales siguen perteneciendo a los descargadores y servicios existentes. El detalle técnico de incidencias se oculta a usuarios no administradores.
 
-## Prueba manual controlada
+## Prueba manual controlada en desarrollo
 
-Esta implementación no ha ejecutado descargas, correo, Telegram ni tareas Windows reales. Antes de la primera comprobación real:
+Para reproducir el comportamiento sin tocar datos reales:
 
 1. Crear una réplica local fuera de la carpeta productiva y asignarla temporalmente a `INFONALIA_MONITOR_ROOT`.
 2. Copiar solo una estructura mínima de licitación de prueba, con `{id}.llangon` y `EnSeguimiento.llangon`; no copiar credenciales ni datos sensibles innecesarios.
@@ -87,14 +91,14 @@ Cuando exista autorización para usar datos y canales reales:
 2. En la configuración de usuarios, confirmar el correo y el chat de Telegram del administrador y que Telegram está habilitado para ese usuario.
 3. En **Monitor de licitaciones > Configuración**, activar correo y Telegram solo para el administrador, marcarlo como responsable de incidencias y dejar a Nuria sin canales.
 4. Usar los botones de prueba de correo y Telegram y verificar su resultado antes de revisar licitaciones.
-5. Confirmar que la cabecera indica **Ejecución automática desactivada**.
+5. Confirmar que la cabecera indica **Ejecución automática activa** y las franjas 08:00, 13:00 y 18:00.
 6. Verificar el marcador físico `EnSeguimiento.llangon` de la licitación elegida.
 7. Desde la ficha avanzada, pulsar **Revisar ahora** y comprobar descarga, comparación, lote, IA cuando corresponda, correo, Telegram e histórico.
 8. Repetir la revisión sin cambios y confirmar que no aparecen otro lote, otra IA ni otro aviso.
 9. En una carpeta controlada, añadir o renombrar un fichero manual y repetir: no debe producir una novedad oficial.
 10. Simular cualquier error únicamente en un entorno protegido y comprobar que el ciclo conserva el estado anterior y genera un solo informe consolidado.
 11. Tras validar ejecuciones individuales, ejecutar un ciclo global pequeño.
-12. Volver a confirmar que la tarea interna sigue desactivada y que no existe ninguna tarea Windows nueva.
+12. Confirmar que la tarea interna conserva las tres franjas, que no ha repetido una franja completada y que no existe ninguna tarea Windows nueva específica del monitor.
 
 ## Activar a Nuria posteriormente
 
@@ -107,9 +111,11 @@ No requiere cambios de código:
 
 Los destinatarios siguen siendo globales; no se crea ninguna excepción por licitación.
 
-## Futura programación automática
+## Programación automática
 
-La tarea `monitor_licitaciones` ya está registrada como manual y forzosamente desactivada. La fase futura deberá añadir la regla de vencimiento y el control de activación en el reloj interno, usando el mismo worker y el mismo orquestador de ciclos. También deberá definir periodicidad/ventana y pruebas de deduplicación del tick. No debe crear un scheduler, servicio o tarea Windows independiente.
+La tarea `monitor_licitaciones` usa el mismo worker y el mismo orquestador de ciclos que la ejecución manual. Sus franjas son `08:00,13:00,18:00`. `LlangonSuite-KeeperTick` la comprueba con el reloj interno mientras el equipo está activo y `LlangonSuite-WakeTick` garantiza el tick de reanudación previsto por la suite. La fecha de activación impide recuperar franjas anteriores al momento de habilitarla y el histórico de `automation_runs` deduplica cada franja completada.
+
+No existe un scheduler, servicio ni tarea Windows independiente para el monitor.
 
 ## Validación de desarrollo
 
@@ -124,4 +130,4 @@ node --check webapp/infonalia_webapp/static/login.js
 node --check firebase/public_firebase/static/public.js
 ```
 
-La migración aditiva es `0035_tender_monitor_e2e`. No elimina tablas ni modifica datos SQLite reales durante las pruebas del repositorio.
+Las migraciones aditivas son `0035_tender_monitor_e2e` y `0036_tender_monitor_baseline_ownership`. La segunda crea el puntero de baseline exclusivo del monitor y migra de forma compatible los snapshots anteriores.

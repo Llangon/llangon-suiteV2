@@ -4,9 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Llangón Web App</title>
-  <link rel="stylesheet" href="/static/styles.css">
-  <link rel="stylesheet" href="/static/justificaciones_baja.css">
-  <link rel="stylesheet" href="/static/tender_monitor.css?v=20260720-e2e">
+  <link rel="stylesheet" href="/static/styles.css?v=20260716-client-management">
+  <link rel="stylesheet" href="/static/tender_monitor.css?v=20260723-detail-priority">
 </head>
 <body>
   <header class="mobile-topbar" aria-label="Cabecera móvil">
@@ -39,7 +38,6 @@
         <button id="days-button" class="nav-item" data-nav-section="days">Infonalia</button>
         <button id="list-button" class="nav-item" data-nav-section="licitaciones">Centro de licitaciones</button>
         <button id="actuaciones-button" class="nav-item" data-nav-section="actuaciones">Actuaciones</button>
-        <button id="justificaciones-baja-button" class="nav-item" data-nav-section="justificaciones-baja">Justificaciones de baja</button>
 
         <p class="nav-group-title" data-admin-only hidden>Clientes</p>
         <button id="clients-button" class="nav-item" data-nav-section="clients" data-admin-only hidden>Clientes</button>
@@ -48,10 +46,11 @@
         <p class="nav-group-title">IA y comunicaciones</p>
         <button id="ai-queue-menu-button" class="nav-item" type="button">Cola IA</button>
         <button id="notifications-menu-button" class="nav-item" data-nav-section="notifications">Buzón</button>
-        <button id="news-admin-button" class="nav-item" data-nav-section="news-admin" data-admin-only hidden>Noticias</button>
+        <button id="news-admin-button" class="nav-item" data-nav-section="news-admin" data-admin-only data-feature-disabled hidden>Noticias</button>
 
         <p class="nav-group-title" data-admin-only hidden>Administración</p>
         <button id="monitor-button" class="nav-item" data-nav-section="monitor" data-admin-only hidden>Monitor de licitaciones</button>
+        <button id="automation-button" class="nav-item" data-nav-section="automation" data-admin-only hidden>Automatizaciones</button>
         <button id="config-button" class="nav-item" data-nav-section="config" data-admin-only hidden>Configuración</button>
       </nav>
 
@@ -90,21 +89,83 @@
       <section id="nuria-days-tabs" class="segmented" hidden>
         <button type="button" data-nuria-days-view="pending" class="active">Pendientes de revisión</button>
         <button type="button" data-nuria-days-view="reviewed">Revisados</button>
+        <button type="button" data-nuria-days-view="history" data-admin-only hidden>
+          Histórico <span id="infonalia-history-tab-badge" class="history-tab-badge" hidden></span>
+        </button>
       </section>
-      <section class="summary" id="days-summary"></section>
       <section class="days-board" id="days-board"></section>
+      <section id="infonalia-history" class="infonalia-history" data-admin-only hidden>
+        <form id="infonalia-history-filters" class="history-filters">
+          <label>Día Infonalia
+            <select id="infonalia-history-day"><option value="">Todos los días</option></select>
+          </label>
+          <label>Desde
+            <input id="infonalia-history-date-from" type="date">
+          </label>
+          <label>Hasta
+            <input id="infonalia-history-date-to" type="date">
+          </label>
+          <label>Categoría
+            <select id="infonalia-history-category">
+              <option value="">Todas</option>
+              <option value="import">Importaciones</option>
+              <option value="internal_review">Gestión interna</option>
+              <option value="nuria_delivery">Envíos a Nuria</option>
+              <option value="nuria_action">Decisiones de Nuria</option>
+              <option value="closure">Cierres y reaperturas</option>
+              <option value="download_ai">Descargas e IA</option>
+              <option value="comment">Comentarios</option>
+              <option value="system">Sistema</option>
+            </select>
+          </label>
+          <label>Nivel
+            <select id="infonalia-history-severity">
+              <option value="">Todos</option>
+              <option value="critical">Crítico</option>
+              <option value="attention">Atención</option>
+              <option value="normal">Normal</option>
+            </select>
+          </label>
+          <label>Revisión
+            <select id="infonalia-history-review-state">
+              <option value="">Todos</option>
+              <option value="pending">Pendientes</option>
+              <option value="reviewed">Revisados</option>
+              <option value="normal">Sin incidencia</option>
+            </select>
+          </label>
+          <label>Resultado
+            <select id="infonalia-history-result">
+              <option value="">Todos</option>
+              <option value="processed">Procesado</option>
+              <option value="ignored">Ignorado</option>
+              <option value="error">Error</option>
+            </select>
+          </label>
+          <label>Origen
+            <input id="infonalia-history-source" type="search" placeholder="Pulsa Enter">
+          </label>
+          <label>Actor
+            <input id="infonalia-history-actor" type="search" placeholder="Pulsa Enter">
+          </label>
+          <label class="history-search">Buscar
+            <input id="infonalia-history-query" type="search" placeholder="Expediente, organismo o texto · Enter">
+          </label>
+        </form>
+        <div id="infonalia-history-summary" class="history-summary"></div>
+        <div class="history-actions">
+          <button id="infonalia-history-ack-filtered" type="button" class="secondary" disabled>Marcar incidencias filtradas como revisadas</button>
+        </div>
+        <div id="infonalia-history-list" class="history-list"></div>
+        <button id="infonalia-history-more" type="button" class="secondary history-more" hidden>Cargar 50 más</button>
+      </section>
     </section>
 
     <section id="licitaciones-section" hidden>
       <div class="section-head">
-        <div class="section-title-block">
-          <p class="eyebrow">Detalle</p>
-          <h2 id="current-day-title">Licitaciones</h2>
-        </div>
         <div class="section-actions">
           <button id="send-nuria-button" class="secondary" data-admin-only hidden>Enviar a revisión</button>
           <button id="review-day-button" class="primary" disabled>Marcar como revisado</button>
-          <button id="back-to-days" class="ghost">Volver a días</button>
         </div>
       </div>
 
@@ -112,6 +173,7 @@
         <button type="button" data-licitaciones-view="live" class="active">En Plazo</button>
         <button type="button" data-licitaciones-view="managed">Gestionadas</button>
         <button type="button" data-licitaciones-view="all">Todas</button>
+        <button type="button" data-licitaciones-view="previous">Anuncios previos</button>
       </section>
 
       <section id="licitaciones-date-filters" class="licitation-date-filters" hidden>
@@ -136,14 +198,6 @@
           Estado
           <select id="state-filter">
             <option>Todos</option>
-          </select>
-        </label>
-        <label>
-          Tipo publicación
-          <select id="publication-type-filter">
-            <option value="licitacion">Licitaciones</option>
-            <option value="anuncio_previo">Anuncios previos</option>
-            <option value="all">Todas</option>
           </select>
         </label>
         <label hidden>
@@ -187,14 +241,13 @@
           <p class="eyebrow">Detalle de trabajo</p>
           <h2 id="licitacion-detail-title">Ficha de licitación</h2>
         </div>
-        <button type="button" class="ghost no-print detail-back-button" id="close-licitacion-detail">Volver</button>
+        <div class="detail-dialog-actions no-print">
+          <div id="licitacion-detail-actions"></div>
+          <button type="button" class="ghost detail-back-button" id="close-licitacion-detail">Volver</button>
+        </div>
       </div>
       <section id="licitacion-detail-content" class="licitacion-detail-view"></section>
     </dialog>
-
-    <section id="justificaciones-baja-section" hidden>
-      <div id="justificaciones-baja-root"></div>
-    </section>
 
     <section id="calendar-section" hidden>
       <div class="section-head">
@@ -202,49 +255,14 @@
           <p class="eyebrow">Agenda</p>
           <h2 id="calendar-month-title">Hoy</h2>
         </div>
-        <div class="section-actions">
-          <button id="calendar-prev" class="ghost">Anterior</button>
-          <button id="calendar-today" class="secondary">Hoy</button>
-          <button id="calendar-next" class="ghost">Siguiente</button>
-          <button id="agenda-email-summary-button" class="secondary">Enviar resumen por email</button>
-          <button id="new-agenda-event-button" class="primary">Nuevo evento interno</button>
-        </div>
       </div>
 
-      <section class="toolbar calendar-toolbar">
-        <label>
-          Vista
-          <div class="segmented compact">
-            <button type="button" data-agenda-view="pending" data-admin-only hidden>Tareas pendientes</button>
-            <button type="button" data-agenda-view="day" class="active">Hoy</button>
-            <button type="button" data-agenda-view="week">Semana</button>
-            <button type="button" data-agenda-view="month">Calendario</button>
-            <button type="button" data-agenda-view="all">Todo</button>
-          </div>
-        </label>
-        <label>
-          Buscar
-          <input id="calendar-search" placeholder="Título, expediente, organismo...">
-        </label>
-        <label>
-          Tipo
-          <select id="calendar-state-filter">
-            <option value="all">Todos</option>
-            <option value="actuacion">Actuaciones</option>
-            <option value="licitacion">Licitaciones</option>
-            <option value="interno">Internos</option>
-            <option value="vencido">Vencidos</option>
-            <option value="sin_fecha">Sin fecha</option>
-          </select>
+      <section class="toolbar calendar-toolbar agenda-unified-toolbar">
+        <label class="agenda-search-field">
+          <span>Buscar en pendientes</span>
+          <input id="calendar-search" type="search" placeholder="Título, expediente, organismo...">
         </label>
       </section>
-      <section class="agenda-legend">
-        <span><b class="legend-dot agenda-dot--actuacion"></b> Actuación</span>
-        <span><b class="legend-dot agenda-dot--licitacion"></b> Licitación</span>
-        <span><b class="legend-dot agenda-dot--interno"></b> Interno</span>
-        <span><b class="legend-dot agenda-dot--vencido"></b> Vencido</span>
-      </section>
-
       <section class="agenda-workbench" id="agenda-workbench" hidden></section>
       <section class="summary" id="calendar-summary"></section>
       <section class="calendar-radar" id="calendar-radar"></section>
@@ -289,7 +307,6 @@
           </select>
         </label>
       </section>
-      <section class="summary" id="actuaciones-summary"></section>
       <section class="board" id="actuaciones-board"></section>
     </section>
 
@@ -310,77 +327,85 @@
           Buscar
           <input id="clients-search" placeholder="Razón social, nombre comercial, NIF, email...">
         </label>
+        <label>
+          Estado
+          <select id="clients-state-filter">
+            <option value="activos">Activos</option>
+            <option value="inactivos">Inactivos</option>
+            <option value="todos">Todos</option>
+          </select>
+        </label>
       </section>
 
-      <section class="config-grid clients-grid">
-        <article class="config-panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Ficha fiscal</p>
-              <h3 id="client-form-title">Nuevo cliente</h3>
-            </div>
-          </div>
-          <form id="client-form" class="config-form">
-            <input type="hidden" name="id">
-            <fieldset class="config-fieldset">
-              <legend>Datos fiscales y operativos</legend>
-              <label>Razón social<input name="razon_social" required></label>
-              <label>Nombre comercial<input name="nombre_comercial"></label>
-              <label>NIF/CIF<input name="nif_cif"></label>
-              <label>Domicilio fiscal<input name="domicilio_fiscal"></label>
-              <label>Código postal<input name="codigo_postal"></label>
-              <label>Municipio<input name="municipio"></label>
-              <label>Provincia<input name="provincia"></label>
-              <label>País<input name="pais" value="España"></label>
-              <label>Teléfono principal<input name="telefono_principal"></label>
-              <label>Email principal<input name="email_principal" type="email"></label>
-              <label>Email alternativo<input name="email_alternativo" type="email"></label>
-              <label>Persona de contacto operativa<input name="persona_contacto_operativa"></label>
-              <label>Observaciones internas<textarea name="observaciones_internas" rows="3"></textarea></label>
-            </fieldset>
-            <fieldset class="config-fieldset">
-              <legend>Representante legal</legend>
-              <label>Nombre completo<input name="representante_nombre"></label>
-              <label>DNI/NIF<input name="representante_nif"></label>
-              <label>Cargo<input name="representante_cargo"></label>
-              <label>Email<input name="representante_email" type="email"></label>
-              <label>Teléfono<input name="representante_telefono"></label>
-            </fieldset>
-            <fieldset class="config-fieldset">
-              <legend>Otros datos</legend>
-              <label>Condiciones particulares<textarea name="condiciones_particulares" rows="2"></textarea></label>
-              <label>Tipo de cliente<input name="tipo_cliente"></label>
-              <label>Forma de facturación<input name="forma_facturacion"></label>
-              <label>Plantilla contractual aplicable<input name="plantilla_contractual"></label>
-            </fieldset>
-            <div class="dialog-actions">
-              <button type="button" class="ghost" id="reset-client-form">Limpiar</button>
-              <button type="submit" class="primary">Guardar cliente</button>
-            </div>
-            <div class="import-result" id="client-form-result"></div>
-          </form>
-        </article>
-
-        <article class="config-panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Listado</p>
-              <h3>Clientes dados de alta</h3>
-            </div>
-          </div>
-          <div id="clients-board" class="users-board"></div>
-          <section class="history-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Historial simple</p>
-                <h3 id="client-history-title">Envíos del cliente</h3>
-              </div>
-            </div>
-            <div id="client-history-board" class="users-board"></div>
-          </section>
-        </article>
+      <div class="import-result" id="clients-result"></div>
+      <section class="config-panel clients-management-panel">
+        <div class="clients-table-wrap">
+          <table class="clients-table">
+            <thead>
+              <tr>
+                <th>NIF/CIF</th>
+                <th>Razón social</th>
+                <th>Nombre comercial</th>
+                <th>Teléfono</th>
+                <th>Email</th>
+                <th>Estado</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="clients-board"></tbody>
+          </table>
+        </div>
       </section>
     </section>
+
+    <dialog id="client-dialog" class="client-dialog wide-dialog">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">Ficha fiscal</p>
+          <h2 id="client-form-title">Nuevo cliente</h2>
+        </div>
+        <button type="button" class="icon-button" id="close-client-dialog" aria-label="Cerrar">×</button>
+      </div>
+      <form id="client-form" class="config-form">
+        <input type="hidden" name="id">
+        <fieldset class="config-fieldset">
+          <legend>Datos fiscales y operativos</legend>
+          <label>Razón social<input name="razon_social" required></label>
+          <label>Nombre comercial<input name="nombre_comercial"></label>
+          <label>NIF/CIF<input name="nif_cif"></label>
+          <label>Domicilio fiscal<input name="domicilio_fiscal"></label>
+          <label>Código postal<input name="codigo_postal"></label>
+          <label>Municipio<input name="municipio"></label>
+          <label>Provincia<input name="provincia"></label>
+          <label>País<input name="pais" value="España"></label>
+          <label>Teléfono principal<input name="telefono_principal"></label>
+          <label>Email principal<input name="email_principal" type="email"></label>
+          <label>Email alternativo<input name="email_alternativo" type="email"></label>
+          <label>Persona de contacto operativa<input name="persona_contacto_operativa"></label>
+          <label>Observaciones internas<textarea name="observaciones_internas" rows="3"></textarea></label>
+        </fieldset>
+        <fieldset class="config-fieldset">
+          <legend>Representante legal</legend>
+          <label>Nombre completo<input name="representante_nombre"></label>
+          <label>DNI/NIF<input name="representante_nif"></label>
+          <label>Cargo<input name="representante_cargo"></label>
+          <label>Email<input name="representante_email" type="email"></label>
+          <label>Teléfono<input name="representante_telefono"></label>
+        </fieldset>
+        <fieldset class="config-fieldset">
+          <legend>Otros datos</legend>
+          <label>Condiciones particulares<textarea name="condiciones_particulares" rows="2"></textarea></label>
+          <label>Tipo de cliente<input name="tipo_cliente"></label>
+          <label>Forma de facturación<input name="forma_facturacion"></label>
+          <label>Plantilla contractual aplicable<input name="plantilla_contractual"></label>
+        </fieldset>
+        <div class="dialog-actions">
+          <button type="button" class="ghost" id="cancel-client-dialog">Cancelar</button>
+          <button type="submit" class="primary">Guardar cliente</button>
+        </div>
+        <div class="import-result" id="client-form-result"></div>
+      </form>
+    </dialog>
 
     <section id="cliente-envios-section" hidden>
       <div class="section-head">
@@ -519,6 +544,10 @@
       <section id="tender-monitor-root" class="tender-monitor" aria-live="polite">
         <div id="tender-monitor-banner" class="tender-monitor-banner">Cargando estado del monitor…</div>
         <div id="tender-monitor-summary" class="tender-monitor-summary"></div>
+        <label class="tender-monitor-search" for="tender-monitor-search">
+          <span class="sr-only">Buscar en el Monitor de licitaciones</span>
+          <input id="tender-monitor-search" type="search" placeholder="Buscar licitaciones…" autocomplete="off">
+        </label>
         <nav class="tender-monitor-tabs" aria-label="Secciones del monitor">
           <button type="button" class="active" data-tender-monitor-tab="overview">Seguimiento</button>
           <button type="button" data-tender-monitor-tab="history">Histórico</button>
@@ -568,14 +597,21 @@
         </section>
       </section>
 
-      <details class="legacy-automation-console">
-        <summary>Automatizaciones internas y diagnóstico técnico</summary>
-        <div class="section-actions legacy-automation-actions">
+    </section>
+
+    <section id="automation-section" hidden>
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Administración</p>
+          <h2>Automatizaciones</h2>
+        </div>
+        <div class="section-actions">
           <button id="automation-run-tick" class="secondary">Ejecutar tick ahora</button>
           <button id="automation-copy-diagnostic" class="secondary">Copiar diagnóstico</button>
           <button id="monitor-send-agenda-daily" class="secondary">Enviar correo diario de Pendientes de prueba</button>
           <button id="refresh-monitor-runs" class="ghost">Actualizar automatizaciones</button>
         </div>
+      </div>
       <div class="import-result" id="monitor-action-result"></div>
       <div class="monitor-scheduler-status" id="monitor-scheduler-status">Automatizaciones: comprobando...</div>
 
@@ -644,7 +680,6 @@
           <div class="empty">Selecciona una ejecución para ver el detalle.</div>
         </aside>
       </section>
-      </details>
     </section>
 
     <section id="config-section" hidden>
@@ -665,6 +700,7 @@
         <button type="button" data-config-tab="mail">Correos y notificaciones</button>
         <button type="button" data-config-tab="mailboxes">Buzones automáticos</button>
         <button type="button" data-config-tab="storage">Almacenamiento / Dropbox</button>
+        <button type="button" data-config-tab="platforms">Plataformas</button>
         <button type="button" data-config-tab="ai">IA documental</button>
         <button type="button" data-config-tab="automation">Automatismos</button>
         <button type="button" data-config-tab="advanced">Avanzado / diagnóstico</button>
@@ -911,6 +947,35 @@
         </article>
       </section>
 
+      <section class="config-tab-panel" id="config-tab-platforms" data-config-panel="platforms" hidden>
+        <article class="config-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Plataformas de contratación</p>
+              <h3>Cuenta de PLACE</h3>
+            </div>
+          </div>
+          <p class="config-help">Esta cuenta permite que los descargadores consulten las preguntas y respuestas publicadas. Se configura una sola vez y los usuarios no tienen que introducirla al ejecutar el BAT.</p>
+          <form id="place-settings-form" class="config-form">
+            <fieldset class="config-fieldset">
+              <legend>Plataforma de Contratación del Sector Público</legend>
+              <label>Usuario PLACE<input name="place_username" autocomplete="off"></label>
+              <label>Contraseña PLACE<input name="place_password" type="password" autocomplete="new-password" placeholder="Dejar vacío para no cambiar"></label>
+              <p class="config-help" id="place-password-status">La contraseña nunca se devuelve ni se muestra en claro.</p>
+              <label class="check-field">
+                <input name="clear_place_password" type="checkbox">
+                Borrar contraseña PLACE guardada
+              </label>
+            </fieldset>
+            <div class="dialog-actions">
+              <button type="submit" class="primary">Guardar cuenta PLACE</button>
+            </div>
+            <div class="import-result" id="place-settings-result"></div>
+          </form>
+          <div id="place-status-board" class="storage-status-board"></div>
+        </article>
+      </section>
+
       <section class="config-tab-panel" id="config-tab-ai" data-config-panel="ai" hidden>
         <article class="config-panel">
           <div class="panel-head">
@@ -982,11 +1047,11 @@
           <article class="config-panel">
             <div class="panel-head">
               <div>
-                <p class="eyebrow">Inventario</p>
+                <p class="eyebrow">Rutas Dropbox</p>
                 <h3>Revisión interna de carpetas</h3>
               </div>
             </div>
-            <p class="config-help">El inventario interno revisa carpetas y rutas. La reconciliación intenta corregir rutas rotas cuando encuentra carpetas reales.</p>
+            <p class="config-help">La reconciliación localiza carpetas mediante el marcador {id}.llangon y corrige rutas rotas cuando encuentra una coincidencia única.</p>
             <div id="inventory-status-board" class="storage-status-board"></div>
           </article>
         </section>
@@ -1327,6 +1392,11 @@
             <option value="cancelado">Cancelado</option>
           </select>
         </label>
+        <label>Cliente (opcional)
+          <select name="cliente_id">
+            <option value="">Sin cliente</option>
+          </select>
+        </label>
         <label class="actuacion-deadline-field">Fecha/hora límite<input name="deadline_at" type="datetime-local"></label>
         <p class="form-warning" id="actuacion-date-warning" hidden></p>
         <label class="check-field actuacion-reminder-field">
@@ -1503,8 +1573,7 @@
     </form>
   </dialog>
 
-  <script src="/static/justificaciones_baja.js"></script>
-  <script src="/static/app.js?v=20260720-tender-monitor"></script>
-  <script src="/static/tender_monitor.js?v=20260720-e2e"></script>
+  <script src="/static/app.js?v=20260730-pc-restart"></script>
+  <script src="/static/tender_monitor.js?v=20260723-detail-priority"></script>
 </body>
 </html>

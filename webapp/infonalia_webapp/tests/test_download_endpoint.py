@@ -285,7 +285,7 @@ def test_download_endpoint_success_updates_ruta_carpeta_with_mocked_subprocess()
         assert PRODUCTIVE_DB_PATH.stat().st_mtime_ns == stat_before
 
 
-def test_normal_download_endpoint_updates_monitor_baseline_without_batch_or_notice() -> None:
+def test_normal_download_endpoint_does_not_update_monitor_baseline_or_notify() -> None:
     app = load_app_module()
     with temporary_download_app(app):
         licitacion_id = insert_fake_licitacion(app)
@@ -324,13 +324,81 @@ def test_normal_download_endpoint_updates_monitor_baseline_without_batch_or_noti
         sidecar = destination / ".llangon-monitor" / "technical_snapshot.json"
         sidecar_exists = sidecar.is_file()
         with app.db_session() as conn:
+            baseline_count = conn.execute("SELECT COUNT(*) FROM tender_monitor_baselines").fetchone()[0]
+            snapshot_count = conn.execute("SELECT COUNT(*) FROM tender_monitor_snapshots").fetchone()[0]
             batch_count = conn.execute("SELECT COUNT(*) FROM tender_monitor_batches").fetchone()[0]
             notification_count = conn.execute("SELECT COUNT(*) FROM tender_monitor_notifications").fetchone()[0]
 
     assert handler.responses[-1][0] == HTTPStatus.OK
-    assert sidecar_exists is True
+    assert sidecar_exists is False
+    assert baseline_count == 0
+    assert snapshot_count == 0
     assert batch_count == 0
     assert notification_count == 0
+
+
+def test_manual_download_returns_conflict_when_monitor_holds_shared_lease() -> None:
+    app = load_app_module()
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app)
+        with app.db_session() as conn:
+            conn.execute(
+                """
+                INSERT INTO tender_monitor_leases (
+                    lease_key, owner, acquired_at, heartbeat_at, expires_at, metadata_json
+                ) VALUES (?, 'monitor:test', '2026-07-22T10:00:00', '2026-07-22T10:00:00',
+                          '2999-01-01T00:00:00', '{}')
+                """,
+                (f"tender-io:licitacion:{licitacion_id}",),
+            )
+        handler = make_download_handler(
+            app,
+            payload=confirmed_download_payload(app, licitacion_id),
+        )
+
+        handler.api_download_licitacion(licitacion_id)
+
+        jobs = get_download_jobs(app, licitacion_id)
+        with app.db_session() as conn:
+            baseline_count = conn.execute("SELECT COUNT(*) FROM tender_monitor_baselines").fetchone()[0]
+
+    assert handler.responses[-1][0] == HTTPStatus.CONFLICT
+    assert handler.responses[-1][1]["deferred"] is False
+    assert jobs[0]["status"] == "failed"
+    assert baseline_count == 0
+
+
+def test_email_download_job_is_requeued_when_monitor_holds_shared_lease() -> None:
+    app = load_app_module()
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app)
+        with app.db_session() as conn:
+            request = app.create_download_job_request(
+                conn,
+                licitacion_id,
+                timestamp=app.now_iso(),
+                request_source="email",
+                request_action="02",
+                request_message_id="<busy-test>",
+                requested_by="nuria",
+            )
+            job_id = int(request["job_id"])
+            conn.execute(
+                """
+                INSERT INTO tender_monitor_leases (
+                    lease_key, owner, acquired_at, heartbeat_at, expires_at, metadata_json
+                ) VALUES (?, 'monitor:test', '2026-07-22T10:00:00', '2026-07-22T10:00:00',
+                          '2999-01-01T00:00:00', '{}')
+                """,
+                (f"tender-io:licitacion:{licitacion_id}",),
+            )
+
+        result = app.process_download_job(job_id)
+        jobs = get_download_jobs(app, licitacion_id)
+
+    assert result["ok"] is True
+    assert result["status"] == "pending"
+    assert jobs[0]["status"] == "pending"
 
 
 def test_download_endpoint_keeps_reviewed_day_closed() -> None:
@@ -482,6 +550,44 @@ def test_download_existing_folder_does_not_request_confirmation() -> None:
     assert calls == [str(destination)]
 
 
+@pytest.mark.parametrize("stale_confirmation", [False, True])
+def test_download_reuses_folder_found_by_unique_id_marker(stale_confirmation: bool, tmp_path: Path) -> None:
+    app = load_app_module()
+    dropbox_root = tmp_path / "00000 LLANGON"
+    marker_folder = dropbox_root / "2026" / "07 JULIO" / "24 JULIO 1400 BARCELONA HOSP BELLVITGE"
+    marker_folder.mkdir(parents=True)
+
+    with temporary_download_app(app):
+        app.find_dropbox_root = lambda: dropbox_root
+        licitacion_id = insert_fake_licitacion(
+            app,
+            ruta_carpeta=r"2026\07 JULIO\BARCELONA HOSP BELLVITGE CARPETA ANTIGUA",
+        )
+        (marker_folder / f"{licitacion_id}.llangon").write_text("", encoding="utf-8")
+        calls = []
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            calls.append(Path(cwd))
+            Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
+            return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
+
+        payload = {"folder_name_confirmed": "CARPETA DUPLICADA"} if stale_confirmation else None
+        handler = make_download_handler(app, payload=payload)
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        status, result = handler.responses[-1]
+        ruta_carpeta = get_ruta_carpeta(app, licitacion_id)
+
+    assert status == HTTPStatus.OK
+    assert result["ok"] is True
+    assert "needs_folder_confirmation" not in result
+    assert calls == [marker_folder]
+    assert Path(result["carpeta"]) == marker_folder
+    assert Path(ruta_carpeta).parts == ("2026", "07 JULIO", marker_folder.name)
+    assert not (marker_folder.parent / "CARPETA DUPLICADA").exists()
+
+
 def test_download_missing_folder_returns_confirmation_without_creating_folder() -> None:
     app = load_app_module()
     with temporary_download_app(app):
@@ -552,6 +658,65 @@ def test_download_confirmed_folder_name_creates_edited_folder_and_runs_download(
     assert edited_exists
     assert calls == [edited_destination]
     assert ruta_carpeta.endswith(edited_name)
+
+
+def test_manual_download_persists_an_immediately_resolvable_folder(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    app = load_app_module()
+    dropbox_root = tmp_path / "00000 LLANGON"
+    dropbox_root.mkdir()
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(dropbox_root))
+
+    with temporary_download_app(app):
+        app.find_dropbox_root = lambda: dropbox_root
+        licitacion_id = insert_fake_licitacion(app)
+        default_destination = default_download_destination(app, licitacion_id)
+        confirmed_name = "30 JUNIO 1200  MADRID NOMBRE EDITADO TEST"
+        canonical_name = "30 JUNIO 1200 MADRID NOMBRE EDITADO TEST"
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
+            return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
+
+        handler = make_download_handler(
+            app,
+            payload={"folder_name_confirmed": confirmed_name},
+        )
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        status, payload = handler.responses[-1]
+        expected_destination = default_destination.parent / canonical_name
+        with app.db_session() as conn:
+            row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+        item = app.row_to_dict(row)
+        marker_status = app.get_marker_status_for_licitacion(item, dropbox_root)
+
+        assert status == HTTPStatus.OK
+        assert payload["ok"] is True
+        assert Path(payload["carpeta"]).resolve() == expected_destination.resolve()
+        assert item["folder_status"]["exists"] is True
+        assert Path(item["folder_status"]["path"]).resolve() == expected_destination.resolve()
+        assert marker_status["folder_exists"] is True
+        assert marker_status["id_marker_exists"] is True
+
+
+def test_manual_download_frontend_refreshes_the_open_detail_without_touching_email_worker() -> None:
+    script = Path("webapp/infonalia_webapp/static/app.js").read_text(encoding="utf-8")
+    finish_download = script.split("async function finishDownload", 1)[1].split("async function downloadLicitacion", 1)[0]
+    manual_download = script.split("async function downloadLicitacion", 1)[1].split("async function confirmDownloadFolder", 1)[0]
+    confirmed_download = script.split("async function confirmDownloadFolder", 1)[1].split("async function toggleDetails", 1)[0]
+
+    assert "await refreshLicitacionDetail(id);" in finish_download
+    assert "activateDetailTabByName(activeTab);" in finish_download
+    assert "await finishDownload(result, id);" in manual_download
+    assert "await finishDownload(result, pending.id);" in confirmed_download
+
+    app = load_app_module()
+    worker_source = Path(app.__file__).read_text(encoding="utf-8").split("def process_download_job", 1)[1].split("def repair_internal_download_routes", 1)[0]
+    assert "manual_download_folder_path_for_storage" not in worker_source
 
 
 @pytest.mark.parametrize(

@@ -302,6 +302,19 @@ def test_config_payload_combines_users_and_public_settings_without_password() ->
     assert "email_actions_poll_minutes" in payload["settings"]
 
 
+def test_place_credentials_are_write_only_in_public_settings() -> None:
+    payload = public_settings_payload(
+        {
+            "place_username": "cuenta-place",
+            "place_password": "clave-no-publica",
+        }
+    )
+
+    assert payload["place_username"] == "cuenta-place"
+    assert payload["place_password_set"] is True
+    assert "place_password" not in payload
+
+
 def test_new_user_payload_rejects_invalid_telegram_chat_id() -> None:
     try:
         new_user_payload({"username": "valid-user", "password": "x", "telegram_chat_id": "abc"})
@@ -343,6 +356,19 @@ def test_settings_update_payload_preserves_password_clear_rule() -> None:
     assert settings_update_payload({"smtp_password": " nuevo ", "clear_smtp_password": True}) == {
         "smtp_password": "nuevo"
     }
+
+
+def test_settings_update_payload_saves_and_clears_place_credentials() -> None:
+    assert settings_update_payload(
+        {
+            "place_username": " cuenta-place ",
+            "place_password": " clave-prueba ",
+        }
+    ) == {
+        "place_username": "cuenta-place",
+        "place_password": "clave-prueba",
+    }
+    assert settings_update_payload({"clear_place_password": True}) == {"place_password": ""}
 
 
 def test_settings_update_payload_rejects_invalid_smtp_port() -> None:

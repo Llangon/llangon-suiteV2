@@ -60,4 +60,8 @@ def detectar_plataforma(url: str) -> str:
         return "Euskadi"
     if host == "contractaciopublica.cat" or host.endswith(".contractaciopublica.cat") or "contractaciopublica.cat" in full_url:
         return "Catalunya"
+    if host in {"hacienda.navarra.es", "licitacionelectronica.navarra.es"}:
+        return "Navarra"
+    if host == "contratosdegalicia.gal" or host.endswith(".contratosdegalicia.gal"):
+        return "Xunta de Galicia"
     return ""

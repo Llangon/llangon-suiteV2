@@ -1,20 +1,26 @@
 from __future__ import annotations
 
 import imaplib
+from datetime import datetime
 from email.headerregistry import Address
 from email.message import EmailMessage
 from pathlib import Path
+
+import pytest
 
 from webapp.infonalia_webapp.infonalia_mail_importer import (
     EXPECTED_FROM,
     EXPECTED_SUBJECT,
     InfonaliaImportConfig,
+    body_hash_for_raw,
+    claim_import_attempt,
     config_from_env,
     ensure_infonalia_email_import_schema,
     import_parsed_email,
     INCLUDE_SEEN_UID_LIMIT,
     imap_search_criteria,
     is_expected_infonalia_message,
+    message_is_within_lookback,
     parse_infonalia_email,
     process_mailbox_once,
 )
@@ -211,7 +217,7 @@ class BadSearchIMAP(FakeIMAP):
         return super().uid(command, *args)
 
 
-def fake_config(*, enabled: bool = True) -> InfonaliaImportConfig:
+def fake_config(*, enabled: bool = True, lookback_hours: int = 24 * 365) -> InfonaliaImportConfig:
     return InfonaliaImportConfig(
         enabled=enabled,
         host="imap.example.test",
@@ -224,7 +230,7 @@ def fake_config(*, enabled: bool = True) -> InfonaliaImportConfig:
         notify_email="info3@llangon.com",
         mark_read_on_success=True,
         test_forwarders=[],
-        lookback_hours=48,
+        lookback_hours=lookback_hours,
     )
 
 
@@ -354,6 +360,102 @@ def test_import_from_parsed_email_is_idempotent_and_notifies_once() -> None:
     assert licitaciones == 2
     assert imports == 2
     assert len(sent) == 1
+
+
+def test_import_claim_prevents_second_execution_from_notifying() -> None:
+    app = load_app_module()
+    raw = make_infonalia_message(message_id="<concurrent@example.test>")
+    parsed = parse_infonalia_email(raw)
+    sent: list[str] = []
+
+    with temporary_app_database(app):
+        claim = claim_import_attempt(
+            app,
+            message_id="<concurrent@example.test>",
+            body_hash=body_hash_for_raw(raw),
+            timestamp=datetime.now().replace(microsecond=0).isoformat(),
+        )
+        result = import_parsed_email(
+            parsed,
+            raw_bytes=raw,
+            notification_sender=lambda *_args: sent.append("sent") or ("2026-06-05T12:35:00", None),
+        )
+        with app.db_session() as conn:
+            active_claims = conn.execute(
+                "SELECT COUNT(*) FROM infonalia_email_import_claims WHERE status = 'processing'"
+            ).fetchone()[0]
+
+    assert claim["status"] == "claimed"
+    assert result["status"] == "in_progress"
+    assert active_claims == 2
+    assert sent == []
+
+
+def test_import_is_committed_before_external_notification() -> None:
+    app = load_app_module()
+    raw = make_infonalia_message(message_id="<commit-before-notify@example.test>")
+    parsed = parse_infonalia_email(raw)
+    observed_statuses: list[str] = []
+
+    def notification_sender(*_args):
+        with app.db_session() as conn:
+            row = conn.execute(
+                "SELECT status FROM infonalia_email_imports WHERE message_id = ?",
+                ("<commit-before-notify@example.test>",),
+            ).fetchone()
+            observed_statuses.append(row["status"] if row else "missing")
+        return "2026-06-05T12:35:00", None
+
+    with temporary_app_database(app):
+        result = import_parsed_email(
+            parsed,
+            raw_bytes=raw,
+            notification_sender=notification_sender,
+        )
+
+    assert result["status"] == "imported"
+    assert observed_statuses == ["imported"]
+
+
+def test_failed_import_releases_claim_for_safe_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = load_app_module()
+    raw = make_infonalia_message(message_id="<failed-claim@example.test>")
+    parsed = parse_infonalia_email(raw)
+    sent: list[str] = []
+    original_recorder = app.record_infonalia_activity
+
+    def fail_activity_record(*_args, **_kwargs):
+        raise RuntimeError("forced activity failure")
+
+    with temporary_app_database(app):
+        monkeypatch.setattr(app, "record_infonalia_activity", fail_activity_record)
+        with pytest.raises(RuntimeError, match="forced activity failure"):
+            import_parsed_email(
+                parsed,
+                raw_bytes=raw,
+                notification_sender=lambda *_args: sent.append("sent") or ("2026-06-05T12:35:00", None),
+            )
+
+        with app.db_session() as conn:
+            claim_statuses = [
+                row["status"]
+                for row in conn.execute(
+                    "SELECT status FROM infonalia_email_import_claims ORDER BY dedupe_key"
+                ).fetchall()
+            ]
+            import_count = conn.execute("SELECT COUNT(*) FROM infonalia_email_imports").fetchone()[0]
+
+        monkeypatch.setattr(app, "record_infonalia_activity", original_recorder)
+        retried = import_parsed_email(
+            parsed,
+            raw_bytes=raw,
+            notification_sender=lambda *_args: sent.append("sent") or ("2026-06-05T12:35:00", None),
+        )
+
+    assert claim_statuses == ["failed", "failed"]
+    assert import_count == 0
+    assert retried["status"] == "imported"
+    assert sent == ["sent"]
 
 
 def test_import_marks_previous_notice_only_when_text_indicates_it_and_no_deadline() -> None:
@@ -758,33 +860,54 @@ def test_mailbox_uses_body_peek_and_marks_only_successful_candidate() -> None:
     select_calls = [args for command, args in fake.calls if command == "SELECT"]
     assert select_calls == [("LLANGON_INFONALIA",)]
     search_calls = [args for command, args in fake.calls if command == "SEARCH"]
-    assert search_calls == [("UNSEEN",)]
+    assert len(search_calls) == 1
+    assert search_calls[0][:2] == ("UNSEEN", "SINCE")
     assert all(None not in args for args in search_calls)
     assert all("BODY.PEEK" in query for _uid, query in fake.fetch_calls)
 
 
-def test_mailbox_search_uses_simple_unseen_without_headers_or_since() -> None:
-    config = fake_config()
-    criteria = imap_search_criteria(config)
+def test_mailbox_search_limits_unseen_messages_to_configured_lookback() -> None:
+    config = fake_config(lookback_hours=48)
+    criteria = imap_search_criteria(config, current=datetime(2026, 6, 5, 12, 0))
 
-    assert criteria == ("UNSEEN",)
+    assert criteria == ("UNSEEN", "SINCE", "03-Jun-2026")
     assert "SUBJECT" not in {str(item).upper() for item in criteria}
     assert "FROM" not in {str(item).upper() for item in criteria}
-    assert "SINCE" not in {str(item).upper() for item in criteria}
+    assert "SINCE" in {str(item).upper() for item in criteria}
     assert config.expected_subject not in criteria
     for item in criteria:
         if isinstance(item, str):
             item.encode("ascii")
 
 
-def test_mailbox_include_seen_uses_simple_all_without_headers_or_since() -> None:
-    config = fake_config()
-    criteria = imap_search_criteria(config, include_seen=True)
+def test_mailbox_include_seen_also_respects_configured_lookback() -> None:
+    config = fake_config(lookback_hours=48)
+    criteria = imap_search_criteria(
+        config,
+        include_seen=True,
+        current=datetime(2026, 6, 5, 12, 0),
+    )
 
-    assert criteria == ("ALL",)
+    assert criteria == ("ALL", "SINCE", "03-Jun-2026")
     assert "SUBJECT" not in {str(item).upper() for item in criteria}
     assert "FROM" not in {str(item).upper() for item in criteria}
-    assert "SINCE" not in {str(item).upper() for item in criteria}
+    assert "SINCE" in {str(item).upper() for item in criteria}
+
+
+def test_exact_lookback_rejects_old_message_even_if_imap_since_returns_it() -> None:
+    parsed = parse_infonalia_email(make_infonalia_message())
+    config = fake_config(lookback_hours=48)
+
+    assert message_is_within_lookback(
+        parsed,
+        config,
+        current=datetime.fromisoformat("2026-06-07T12:32:59+02:00"),
+    ) is True
+    assert message_is_within_lookback(
+        parsed,
+        config,
+        current=datetime.fromisoformat("2026-06-07T12:33:01+02:00"),
+    ) is False
 
 
 def test_mailbox_include_seen_limits_uid_scan_to_recent_tail() -> None:
@@ -848,6 +971,23 @@ def test_mailbox_invalid_labeled_message_is_not_imported_or_marked_read() -> Non
     assert result["last_ignored_reason"] == "Correo sin estructura válida de LICITACIONES Infonalia."
     assert fake.messages[b"1"]["seen"] is False
     assert fake.store_calls == []
+
+
+def test_mailbox_marks_structured_message_read_when_it_is_outside_lookback() -> None:
+    fake = FakeIMAP({b"2": {"seen": False, "raw": make_infonalia_message()}})
+    notifications: list[str] = []
+
+    result = process_mailbox_once(
+        config=fake_config(lookback_hours=48),
+        imap_factory=lambda *_args, **_kwargs: fake,
+        current=datetime.fromisoformat("2026-06-08T12:33:00+02:00"),
+        notification_sender=lambda *_args: notifications.append("sent") or ("", None),
+    )
+
+    assert result["candidates_seen"] == 0
+    assert result["stale_ignored"] == 1
+    assert fake.messages[b"2"]["seen"] is True
+    assert notifications == []
 
 
 def test_mailbox_keeps_candidate_unread_if_import_fails(monkeypatch) -> None:

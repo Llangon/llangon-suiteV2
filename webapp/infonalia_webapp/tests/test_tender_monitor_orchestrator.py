@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+
+import pytest
 
 import webapp.infonalia_webapp.monitor.tender_orchestrator as tender_orchestrator
 
@@ -13,7 +16,8 @@ from herramientas_python.descargadores.common.run_result import (
 )
 from webapp.infonalia_webapp.ai.queue import ensure_ai_schema
 from webapp.infonalia_webapp.monitor.markers import FOLLOW_MARKER_NAME
-from webapp.infonalia_webapp.monitor.snapshots import snapshot_from_result, write_technical_snapshot
+from webapp.infonalia_webapp.monitor.snapshots import read_technical_sidecar, snapshot_from_result
+from webapp.infonalia_webapp.monitor.tender_api import TenderMonitorAPIContext, dispatch_get
 from webapp.infonalia_webapp.monitor.tender_orchestrator import (
     TenderMonitorDependencies,
     retry_batch_ai,
@@ -21,7 +25,11 @@ from webapp.infonalia_webapp.monitor.tender_orchestrator import (
     run_tender_monitor_cycle,
     send_consolidated_incident_report,
 )
-from webapp.infonalia_webapp.monitor.tender_repository import create_cycle
+from webapp.infonalia_webapp.monitor.tender_repository import (
+    create_cycle,
+    save_snapshot,
+    set_monitor_baseline,
+)
 from webapp.infonalia_webapp.monitor.tender_schema import ensure_tender_monitor_schema
 
 
@@ -53,6 +61,49 @@ def make_result(*names: str, status: str = "success", hashes: dict[str, str] | N
         documents_found=len(artifacts),
         documents_downloaded=len(artifacts),
         documents_new=len(artifacts),
+    )
+
+
+def make_xunta_result(*names: str, status: str = "success") -> DownloadRunResult:
+    artifacts = [
+        DownloadArtifact(
+            name=name,
+            status="reused",
+            source_url=f"https://www.contratosdegalicia.gal/descargaG?N=827794&T={index}",
+            path=name,
+            sha256=f"xunta-hash-{index}",
+        )
+        for index, name in enumerate(names, 1)
+    ]
+    return DownloadRunResult(
+        platform="XUNTA_DE_GALICIA",
+        source_url="https://www.contratosdegalicia.gal/licitacion?N=827794",
+        started_at="2026-07-20T09:00:00",
+        finished_at="2026-07-20T09:01:00",
+        status=status,
+        capabilities=CAPABILITIES,
+        tender_id="827794",
+        artifacts=artifacts,
+        documents_found=len(artifacts),
+        recoverable_issues=(
+            ["XUNTA_RECAPTCHA_BLOCKED: reto interactivo"] if status == "partial" else []
+        ),
+    )
+
+
+def make_question_result(platform: str, state_path: Path) -> DownloadRunResult:
+    return DownloadRunResult(
+        platform=platform,
+        source_url="https://example.test/tender/questions",
+        started_at="2026-07-20T09:00:00",
+        finished_at="2026-07-20T09:01:00",
+        status="success",
+        capabilities=PlatformCapabilities(documents=True, questions_and_answers=True),
+        tender_id="EXP-Q-1",
+        changes_detected=False,
+        state_path=str(state_path),
+        questions={"query_successful": True, "snapshot_complete": True, "no_changes": True},
+        block_completeness={"documents": "complete", "questions": "complete"},
     )
 
 
@@ -150,6 +201,39 @@ def create_monitor_cycle(
     return cycle_id
 
 
+def seed_monitor_baseline(
+    db_path: Path,
+    folder: Path,
+    result: DownloadRunResult,
+    *,
+    licitacion_id: int = 1,
+) -> int:
+    snapshot = snapshot_from_result(result, destination=folder, captured_at="2026-07-20T08:00:00")
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    snapshot_id = save_snapshot(
+        conn,
+        licitacion_id=licitacion_id,
+        platform=result.platform,
+        snapshot=snapshot,
+        source="monitor",
+        execution_id=None,
+        timestamp="2026-07-20T08:00:00",
+    )
+    set_monitor_baseline(
+        conn,
+        licitacion_id=licitacion_id,
+        snapshot_id=snapshot_id,
+        execution_id=None,
+        reason="migration",
+        timestamp="2026-07-20T08:00:00",
+    )
+    conn.commit()
+    conn.close()
+    return snapshot_id
+
+
 def dependencies(downloader, sent_email: list, sent_telegram: list, *, email_fails: bool = False):
     def email_sender(to, subject, text, html):
         sent_email.append((to, subject, text, html))
@@ -195,14 +279,79 @@ def test_old_tender_without_state_rebuilds_baseline_without_ai_or_notifications(
     assert conn.execute("SELECT COUNT(*) FROM tender_monitor_batches").fetchone()[0] == 0
 
 
-def test_monitor_does_not_renotify_state_already_known_by_normal_download(tmp_path: Path) -> None:
+def test_individual_cycle_uses_same_canonical_folder_as_followed_listing(tmp_path: Path) -> None:
+    db_path = tmp_path / "db.sqlite"
+    root = tmp_path / "replica"
+    stale_folder = root / "2026" / "07 JULIO" / "carpeta antigua"
+    canonical_folder = root / "2026" / "07 JULIO" / "licitacion real"
+    stale_folder.mkdir(parents=True)
+    canonical_folder.mkdir(parents=True)
+    (canonical_folder / "335.llangon").write_text("", encoding="utf-8")
+    (canonical_folder / FOLLOW_MARKER_NAME).write_text("", encoding="utf-8")
+    prepare_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        INSERT INTO licitaciones (id, expediente, objeto, plataforma, enlace_perfil, ruta_carpeta)
+        VALUES (335, ?, 'Servicio de prueba', 'PLACE',
+                'https://contrataciondelestado.es/tender/335', ?)
+        """,
+        ("CS/AH02/1101474371/27/AMUP", r"2026\07 JULIO\carpeta antigua"),
+    )
+    conn.commit()
+    conn.close()
+
+    listing = dispatch_get(
+        "/api/tender-monitor/followed",
+        "",
+        TenderMonitorAPIContext(
+            db_path=db_path,
+            user={"username": "admin", "role": "admin"},
+            root=root,
+        ),
+    )
+    assert listing is not None
+    assert listing.payload["items"][0]["id"] == 335
+    listed_folder = Path(listing.payload["items"][0]["folder_path"]).resolve(strict=True)
+    assert listed_folder == canonical_folder.resolve(strict=True)
+
+    downloaded_to: list[Path] = []
+
+    def fake_downloader(_platform, _url, destination, **_options):
+        downloaded_to.append(Path(destination).resolve(strict=True))
+        return make_result("pliego.pdf")
+
+    report = run_tender_monitor_cycle(
+        create_monitor_cycle(db_path, licitacion_id=335),
+        db_path=db_path,
+        root=root,
+        dependencies=dependencies(fake_downloader, [], []),
+    )
+
+    assert report["results"] == [{"licitacion_id": 335, "status": "baseline_rebuilt"}]
+    assert downloaded_to == [listed_folder]
+    conn = sqlite3.connect(db_path)
+    execution = conn.execute(
+        "SELECT status, preparation_status, preparation_reason FROM tender_monitor_executions"
+    ).fetchone()
+    assert execution == ("baseline_rebuilt", "prepared", None)
+
+
+def test_monitor_notifies_remote_novelty_even_when_normal_download_already_reused_file(tmp_path: Path) -> None:
     db_path = tmp_path / "db.sqlite"
     root = tmp_path / "replica"
     prepare_db(db_path)
     folder = create_followed_tender(db_path, root)
     add_recipient(db_path)
+    seed_monitor_baseline(db_path, folder, make_result("pliego.pdf"))
     known = make_result("pliego.pdf", "acta.pdf")
-    write_technical_snapshot(folder, snapshot_from_result(known, destination=folder))
+    known.artifacts[1] = DownloadArtifact(
+        name="acta.pdf",
+        status="reused",
+        source_url="https://example.test/docs/acta.pdf",
+        path="acta.pdf",
+        sha256="hash-acta.pdf",
+    )
     emails: list = []
     telegram: list = []
 
@@ -213,10 +362,312 @@ def test_monitor_does_not_renotify_state_already_known_by_normal_download(tmp_pa
         dependencies=dependencies(lambda *_args, **_kwargs: known, emails, telegram),
     )
 
-    assert report["results"] == [{"licitacion_id": 1, "status": "no_changes"}]
-    assert emails == [] and telegram == []
+    assert report["results"] == [{"licitacion_id": 1, "status": "notified"}]
+    assert len(emails) == 1 and len(telegram) == 1
     conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT COUNT(*) FROM tender_monitor_batches").fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT change_type FROM tender_monitor_differences"
+    ).fetchone()[0] == "document_new"
+
+
+def test_legacy_sidecar_ahead_is_ignored_and_replaced_after_confirmed_review(tmp_path: Path) -> None:
+    db_path = tmp_path / "db.sqlite"
+    root = tmp_path / "replica"
+    prepare_db(db_path)
+    folder = create_followed_tender(db_path, root)
+    add_recipient(db_path, telegram=False, incident_admin=False)
+    seed_monitor_baseline(db_path, folder, make_result("pliego.pdf"))
+    legacy = snapshot_from_result(make_result("pliego.pdf", "acta.pdf"), destination=folder)
+    sidecar_path = folder / ".llangon-monitor" / "technical_snapshot.json"
+    sidecar_path.parent.mkdir(parents=True)
+    sidecar_path.write_text(json.dumps(legacy), encoding="utf-8")
+    emails: list = []
+
+    report = run_tender_monitor_cycle(
+        create_monitor_cycle(db_path),
+        db_path=db_path,
+        root=root,
+        dependencies=dependencies(
+            lambda *_args, **_kwargs: make_result("pliego.pdf", "acta.pdf"),
+            emails,
+            [],
+        ),
+    )
+
+    assert report["results"] == [{"licitacion_id": 1, "status": "notified"}]
+    assert len(emails) == 1
+    conn = sqlite3.connect(db_path)
+    assert conn.execute(
+        "SELECT code FROM tender_monitor_incidents WHERE phase = 'baseline'"
+    ).fetchone()[0] == "LEGACY_SIDECAR_IGNORED"
+    sidecar = read_technical_sidecar(folder)
+    assert sidecar is not None and sidecar["writer"] == "monitor"
+    assert sidecar["snapshot_id"] == conn.execute(
+        "SELECT snapshot_id FROM tender_monitor_baselines WHERE licitacion_id = 1"
+    ).fetchone()[0]
+
+
+def test_legacy_sidecar_equal_to_sqlite_baseline_is_repaired_without_incident(tmp_path: Path) -> None:
+    db_path = tmp_path / "db.sqlite"
+    root = tmp_path / "replica"
+    prepare_db(db_path)
+    folder = create_followed_tender(db_path, root)
+    baseline_result = make_result("pliego.pdf")
+    seed_monitor_baseline(db_path, folder, baseline_result)
+    legacy = snapshot_from_result(baseline_result, destination=folder)
+    sidecar_path = folder / ".llangon-monitor" / "technical_snapshot.json"
+    sidecar_path.parent.mkdir(parents=True)
+    sidecar_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    report = run_tender_monitor_cycle(
+        create_monitor_cycle(db_path),
+        db_path=db_path,
+        root=root,
+        dependencies=dependencies(lambda *_args, **_kwargs: baseline_result, [], []),
+    )
+
+    assert report["status"] == "completed"
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT COUNT(*) FROM tender_monitor_incidents").fetchone()[0] == 0
+    sidecar = read_technical_sidecar(folder)
+    assert sidecar is not None and sidecar["writer"] == "monitor"
+
+
+def test_orphaned_legacy_sidecar_without_sqlite_baseline_is_silently_replaced(tmp_path: Path) -> None:
+    db_path = tmp_path / "db.sqlite"
+    root = tmp_path / "replica"
+    prepare_db(db_path)
+    folder = create_followed_tender(db_path, root)
+    legacy = snapshot_from_result(make_result("antiguo.pdf"), destination=folder)
+    sidecar_path = folder / ".llangon-monitor" / "technical_snapshot.json"
+    sidecar_path.parent.mkdir(parents=True)
+    sidecar_path.write_text(json.dumps(legacy), encoding="utf-8")
+    current = make_result("oficial.pdf")
+
+    report = run_tender_monitor_cycle(
+        create_monitor_cycle(db_path),
+        db_path=db_path,
+        root=root,
+        dependencies=dependencies(lambda *_args, **_kwargs: current, [], []),
+    )
+
+    assert report["status"] == "completed"
+    assert report["results"] == [{"licitacion_id": 1, "status": "baseline_rebuilt"}]
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT COUNT(*) FROM tender_monitor_incidents").fetchone()[0] == 0
+    baseline_id = conn.execute(
+        "SELECT snapshot_id FROM tender_monitor_baselines WHERE licitacion_id = 1"
+    ).fetchone()[0]
+    sidecar = read_technical_sidecar(folder)
+    assert sidecar is not None and sidecar["writer"] == "monitor"
+    assert sidecar["snapshot_id"] == baseline_id
+
+
+@pytest.mark.parametrize(
+    "invalid_sidecar",
+    (
+        {"schema_version": "invalid"},
+        {
+            "schema_version": 2,
+            "writer": "monitor",
+            "snapshot_id": "invalid",
+            "fingerprint": "not-the-baseline",
+            "snapshot": {},
+        },
+    ),
+)
+def test_malformed_sidecar_never_blocks_sqlite_baseline_review(
+    tmp_path: Path,
+    invalid_sidecar: dict[str, object],
+) -> None:
+    db_path = tmp_path / "db.sqlite"
+    root = tmp_path / "replica"
+    prepare_db(db_path)
+    folder = create_followed_tender(db_path, root)
+    seed_monitor_baseline(db_path, folder, make_result("pliego.pdf"))
+    sidecar_path = folder / ".llangon-monitor" / "technical_snapshot.json"
+    sidecar_path.parent.mkdir(parents=True)
+    sidecar_path.write_text(json.dumps(invalid_sidecar), encoding="utf-8")
+
+    report = run_tender_monitor_cycle(
+        create_monitor_cycle(db_path),
+        db_path=db_path,
+        root=root,
+        dependencies=dependencies(
+            lambda *_args, **_kwargs: make_result("pliego.pdf", "acta.pdf"),
+            [],
+            [],
+        ),
+    )
+
+    assert report["results"] == [{"licitacion_id": 1, "status": "no_recipients"}]
+    sidecar = read_technical_sidecar(folder)
+    assert sidecar is not None and sidecar["writer"] == "monitor"
+
+
+def test_monitor_defers_when_direct_download_holds_shared_tender_lease(tmp_path: Path) -> None:
+    db_path = tmp_path / "db.sqlite"
+    root = tmp_path / "replica"
+    prepare_db(db_path)
+    create_followed_tender(db_path, root)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        INSERT INTO tender_monitor_leases (
+            lease_key, owner, acquired_at, heartbeat_at, expires_at, metadata_json
+        ) VALUES ('tender-io:licitacion:1', 'download-job:9', '2026-07-20T09:00:00',
+                  '2026-07-20T09:00:00', '2026-07-20T10:00:00', '{}')
+        """
+    )
+    conn.commit()
+    conn.close()
+    calls = 0
+
+    def downloader(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return make_result("pliego.pdf")
+
+    report = run_tender_monitor_cycle(
+        create_monitor_cycle(db_path),
+        db_path=db_path,
+        root=root,
+        dependencies=dependencies(downloader, [], []),
+    )
+
+    assert report["results"] == [{"licitacion_id": 1, "status": "deferred_busy"}]
+    assert calls == 0
+    conn = sqlite3.connect(db_path)
+    execution = conn.execute(
+        "SELECT status, error_code FROM tender_monitor_executions"
+    ).fetchone()
+    assert execution == ("deferred_busy", "TENDER_OPERATION_BUSY")
+    assert conn.execute("SELECT COUNT(*) FROM tender_monitor_baselines").fetchone()[0] == 0
+
+
+def test_sidecar_write_failure_keeps_sqlite_baseline_confirmed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "db.sqlite"
+    root = tmp_path / "replica"
+    prepare_db(db_path)
+    create_followed_tender(db_path, root)
+    monkeypatch.setattr(
+        tender_orchestrator,
+        "write_monitor_sidecar_cache",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("fallo de sidecar simulado")),
+    )
+
+    report = run_tender_monitor_cycle(
+        create_monitor_cycle(db_path),
+        db_path=db_path,
+        root=root,
+        dependencies=dependencies(lambda *_args, **_kwargs: make_result("pliego.pdf"), [], []),
+    )
+
+    assert report["results"] == [{"licitacion_id": 1, "status": "baseline_rebuilt"}]
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT COUNT(*) FROM tender_monitor_baselines").fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT code FROM tender_monitor_incidents WHERE phase = 'sidecar'"
+    ).fetchone()[0] == "SIDECAR_WRITE_FAILED"
+
+
+def test_batch_persistence_failure_rolls_back_snapshot_and_baseline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "db.sqlite"
+    root = tmp_path / "replica"
+    prepare_db(db_path)
+    folder = create_followed_tender(db_path, root)
+    previous_snapshot_id = seed_monitor_baseline(db_path, folder, make_result("pliego.pdf"))
+    monkeypatch.setattr(
+        tender_orchestrator,
+        "create_batch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sqlite3.OperationalError("fallo de lote simulado")
+        ),
+    )
+
+    report = run_tender_monitor_cycle(
+        create_monitor_cycle(db_path),
+        db_path=db_path,
+        root=root,
+        dependencies=dependencies(
+            lambda *_args, **_kwargs: make_result("pliego.pdf", "acta.pdf"),
+            [],
+            [],
+        ),
+    )
+
+    assert report["results"] == [{"licitacion_id": 1, "status": "error"}]
+    conn = sqlite3.connect(db_path)
+    assert conn.execute(
+        "SELECT snapshot_id FROM tender_monitor_baselines WHERE licitacion_id = 1"
+    ).fetchone()[0] == previous_snapshot_id
+    assert conn.execute("SELECT COUNT(*) FROM tender_monitor_snapshots").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM tender_monitor_batches").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    ("platform", "state_directory"),
+    (("PLACE", ".llangon-place"), ("CATALUNYA", ".llangon-catalunya")),
+)
+def test_monitor_detects_question_recorded_by_direct_download_even_if_sync_says_no_changes(
+    tmp_path: Path,
+    platform: str,
+    state_directory: str,
+) -> None:
+    db_path = tmp_path / "db.sqlite"
+    root = tmp_path / "replica"
+    prepare_db(db_path)
+    folder = create_followed_tender(db_path, root)
+    add_recipient(db_path, telegram=False)
+    state_path = folder / state_directory / "questions_state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(json.dumps({"questions": {}}), encoding="utf-8")
+    baseline_result = make_question_result(platform, state_path)
+    seed_monitor_baseline(db_path, folder, baseline_result)
+    state_path.write_text(
+        json.dumps(
+            {
+                "questions": {
+                    "Q-1": {
+                        "stable_id": "Q-1",
+                        "number": 1,
+                        "question_hash": "question-hash",
+                        "answer_hash": "answer-hash",
+                        "attachments_hash": "attachments-hash",
+                        "status": "published",
+                        "versions": [{"fingerprint": "version-1"}],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    emails: list = []
+
+    report = run_tender_monitor_cycle(
+        create_monitor_cycle(db_path),
+        db_path=db_path,
+        root=root,
+        dependencies=dependencies(
+            lambda *_args, **_kwargs: make_question_result(platform, state_path),
+            emails,
+            [],
+        ),
+    )
+
+    assert report["results"] == [{"licitacion_id": 1, "status": "notified"}]
+    assert len(emails) == 1
+    conn = sqlite3.connect(db_path)
+    assert conn.execute(
+        "SELECT change_type FROM tender_monitor_differences"
+    ).fetchone()[0] == "question_new"
 
 
 def test_invalid_monitor_root_finishes_cycle_and_records_configuration_incident(tmp_path: Path) -> None:
@@ -247,7 +698,7 @@ def test_multiple_new_documents_create_one_batch_one_email_and_are_idempotent(tm
     prepare_db(db_path)
     folder = create_followed_tender(db_path, root)
     add_recipient(db_path)
-    write_technical_snapshot(folder, snapshot_from_result(make_result("pliego.pdf"), destination=folder))
+    seed_monitor_baseline(db_path, folder, make_result("pliego.pdf"))
     emails: list = []
     telegram: list = []
     current = make_result("pliego.pdf", "acta.pdf", "resolucion.pdf")
@@ -259,7 +710,7 @@ def test_multiple_new_documents_create_one_batch_one_email_and_are_idempotent(tm
     assert first["status"] == second["status"] == "completed"
     assert len(emails) == 1
     assert len(telegram) == 1
-    assert "2 novedad(es)" in emails[0][1]
+    assert emails[0][1] == "[Llangon Monitor] EXP-1"
     conn = sqlite3.connect(db_path)
     assert conn.execute("SELECT COUNT(*) FROM tender_monitor_batches").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM tender_monitor_differences").fetchone()[0] == 2
@@ -272,7 +723,7 @@ def test_email_failure_does_not_block_telegram_and_is_consolidated_once(tmp_path
     prepare_db(db_path)
     folder = create_followed_tender(db_path, root)
     add_recipient(db_path)
-    write_technical_snapshot(folder, snapshot_from_result(make_result("pliego.pdf"), destination=folder))
+    seed_monitor_baseline(db_path, folder, make_result("pliego.pdf"))
     emails: list = []
     telegram: list = []
 
@@ -307,7 +758,7 @@ def test_no_global_recipients_records_no_recipients_without_failing_cycle(tmp_pa
     root = tmp_path / "replica"
     prepare_db(db_path)
     folder = create_followed_tender(db_path, root)
-    write_technical_snapshot(folder, snapshot_from_result(make_result("pliego.pdf"), destination=folder))
+    seed_monitor_baseline(db_path, folder, make_result("pliego.pdf"))
 
     report = run_tender_monitor_cycle(
         create_monitor_cycle(db_path),
@@ -328,10 +779,7 @@ def test_partial_response_preserves_previous_documents_and_sends_one_incident_re
     prepare_db(db_path)
     folder = create_followed_tender(db_path, root)
     add_recipient(db_path, telegram=False)
-    write_technical_snapshot(
-        folder,
-        snapshot_from_result(make_result("uno.pdf", "dos.pdf"), destination=folder),
-    )
+    seed_monitor_baseline(db_path, folder, make_result("uno.pdf", "dos.pdf"))
     emails: list = []
 
     report = run_tender_monitor_cycle(
@@ -354,13 +802,110 @@ def test_partial_response_preserves_previous_documents_and_sends_one_incident_re
     assert "uno.pdf" in saved and "dos.pdf" in saved
 
 
+def test_partial_verified_document_notifies_but_failed_artifact_never_reaches_batch_or_baseline(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "db.sqlite"
+    root = tmp_path / "replica"
+    prepare_db(db_path)
+    folder = create_followed_tender(db_path, root)
+    add_recipient(db_path, telegram=False, incident_admin=False)
+    seed_monitor_baseline(db_path, folder, make_result("uno.pdf", "dos.pdf"))
+    current = make_result("uno.pdf", "acta-publicada.pdf", status="partial")
+    current.artifacts.append(
+        DownloadArtifact(
+            name="proteccion-javascript.html",
+            status="failed",
+            source_url="https://contrataciondelestado.es/documento/bloqueado",
+            path="proteccion-javascript.html",
+            sha256="html-blocked",
+            content_type="text/html",
+            size=5205,
+        )
+    )
+    emails: list = []
+
+    report = run_tender_monitor_cycle(
+        create_monitor_cycle(db_path),
+        db_path=db_path,
+        root=root,
+        dependencies=dependencies(lambda *_args, **_kwargs: current, emails, []),
+    )
+
+    assert report["status"] == "completed_with_incidents"
+    assert report["results"] == [{"licitacion_id": 1, "status": "notified"}]
+    assert len(emails) == 1
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT COUNT(*) FROM tender_monitor_batches").fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT change_type, title FROM tender_monitor_differences"
+    ).fetchall() == [("document_new", "acta-publicada.pdf")]
+    current_snapshot_id, saved = conn.execute(
+        "SELECT id, snapshot_json FROM tender_monitor_snapshots ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert conn.execute(
+        "SELECT snapshot_id FROM tender_monitor_baselines WHERE licitacion_id = 1"
+    ).fetchone()[0] == current_snapshot_id
+    saved_snapshot = json.loads(saved)
+    saved_items = saved_snapshot["blocks"]["documents"]["items"].values()
+    assert {item["name"] for item in saved_items} == {
+        "uno.pdf",
+        "dos.pdf",
+        "acta-publicada.pdf",
+    }
+
+
+def test_xunta_recaptcha_partial_uses_registry_name_and_preserves_monitor_baseline(tmp_path: Path) -> None:
+    db_path = tmp_path / "db.sqlite"
+    root = tmp_path / "replica"
+    prepare_db(db_path)
+    folder = create_followed_tender(db_path, root)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE licitaciones SET plataforma = ?, enlace_perfil = ? WHERE id = 1",
+        (
+            "Xunta de Galicia",
+            "https://www.contratosdegalicia.gal/licitacion?N=827794",
+        ),
+    )
+    conn.commit()
+    conn.close()
+    seed_monitor_baseline(db_path, folder, make_xunta_result("memoria.pdf"))
+    calls: list[tuple[str, str, Path]] = []
+
+    def downloader(platform, source_url, destination, **_options):
+        calls.append((platform, source_url, Path(destination)))
+        return make_xunta_result("memoria.pdf", status="partial")
+
+    report = run_tender_monitor_cycle(
+        create_monitor_cycle(db_path),
+        db_path=db_path,
+        root=root,
+        dependencies=dependencies(downloader, [], []),
+    )
+
+    assert calls == [
+        (
+            "XUNTA_DE_GALICIA",
+            "https://www.contratosdegalicia.gal/licitacion?N=827794",
+            folder,
+        )
+    ]
+    assert report["status"] == "completed_with_incidents"
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT COUNT(*) FROM tender_monitor_batches").fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT code FROM tender_monitor_incidents WHERE phase = 'download'"
+    ).fetchone()[0] == "PARTIAL_PLATFORM_RESPONSE"
+
+
 def test_ai_failure_notifies_without_analysis_and_records_incident(tmp_path: Path) -> None:
     db_path = tmp_path / "db.sqlite"
     root = tmp_path / "replica"
     prepare_db(db_path)
     folder = create_followed_tender(db_path, root)
     add_recipient(db_path, telegram=False)
-    write_technical_snapshot(folder, snapshot_from_result(make_result("pliego.pdf"), destination=folder))
+    seed_monitor_baseline(db_path, folder, make_result("pliego.pdf"))
     conn = sqlite3.connect(db_path)
     conn.execute("UPDATE tender_monitor_settings SET value = '1' WHERE key = 'ai_enabled'")
     conn.commit()
@@ -374,7 +919,7 @@ def test_ai_failure_notifies_without_analysis_and_records_incident(tmp_path: Pat
     )
 
     assert report["status"] == "completed_with_incidents"
-    assert "aviso se envía sin análisis" in emails[0][2]
+    assert "sin análisis" not in emails[0][2]
     conn = sqlite3.connect(db_path)
     assert conn.execute(
         "SELECT code FROM tender_monitor_incidents WHERE phase = 'ai'"
@@ -388,7 +933,7 @@ def test_ai_timeout_is_terminal_and_does_not_block_notification(tmp_path: Path, 
     prepare_db(db_path)
     folder = create_followed_tender(db_path, root)
     add_recipient(db_path, telegram=False)
-    write_technical_snapshot(folder, snapshot_from_result(make_result("pliego.pdf"), destination=folder))
+    seed_monitor_baseline(db_path, folder, make_result("pliego.pdf"))
     conn = sqlite3.connect(db_path)
     conn.execute("UPDATE tender_monitor_settings SET value = '1' WHERE key = 'ai_enabled'")
     conn.execute("UPDATE tender_monitor_settings SET value = '5' WHERE key = 'ai_timeout_seconds'")
@@ -419,7 +964,7 @@ def test_ai_timeout_is_terminal_and_does_not_block_notification(tmp_path: Path, 
     )
 
     assert report["status"] == "completed_with_incidents"
-    assert "sin análisis" in emails[0][2]
+    assert "sin análisis" not in emails[0][2]
     conn = sqlite3.connect(db_path)
     assert conn.execute("SELECT error_code FROM ai_analysis_jobs").fetchone()[0] == "MONITOR_AI_TIMEOUT"
     assert conn.execute("SELECT code FROM tender_monitor_incidents WHERE phase = 'ai'").fetchone()[0] == "AI_TIMEOUT"
@@ -431,7 +976,7 @@ def test_telegram_failure_does_not_block_email(tmp_path: Path) -> None:
     prepare_db(db_path)
     folder = create_followed_tender(db_path, root)
     add_recipient(db_path)
-    write_technical_snapshot(folder, snapshot_from_result(make_result("pliego.pdf"), destination=folder))
+    seed_monitor_baseline(db_path, folder, make_result("pliego.pdf"))
     emails: list = []
     telegram_attempts: list = []
     deps = dependencies(lambda *_args, **_kwargs: make_result("pliego.pdf", "nuevo.pdf"), emails, [])
@@ -447,7 +992,7 @@ def test_telegram_failure_does_not_block_email(tmp_path: Path) -> None:
 
     assert report["status"] == "completed_with_incidents"
     assert len(telegram_attempts) == 2
-    assert "1 novedad(es)" in emails[0][1]
+    assert emails[0][1] == "[Llangon Monitor] EXP-1"
     conn = sqlite3.connect(db_path)
     assert conn.execute(
         "SELECT status FROM tender_monitor_notifications WHERE channel = 'email'"
@@ -510,7 +1055,7 @@ def test_forced_baseline_rebuild_never_creates_batch_or_notification(tmp_path: P
     prepare_db(db_path)
     folder = create_followed_tender(db_path, root)
     add_recipient(db_path)
-    write_technical_snapshot(folder, snapshot_from_result(make_result("antiguo.pdf"), destination=folder))
+    seed_monitor_baseline(db_path, folder, make_result("antiguo.pdf"))
     emails: list = []
     telegram: list = []
 
@@ -536,8 +1081,8 @@ def test_failure_of_one_tender_does_not_stop_next_tender(tmp_path: Path) -> None
     prepare_db(db_path)
     first_folder = create_followed_tender(db_path, root, licitacion_id=1)
     second_folder = create_followed_tender(db_path, root, licitacion_id=2)
-    write_technical_snapshot(first_folder, snapshot_from_result(make_result("one.pdf"), destination=first_folder))
-    write_technical_snapshot(second_folder, snapshot_from_result(make_result("two.pdf"), destination=second_folder))
+    seed_monitor_baseline(db_path, first_folder, make_result("one.pdf"), licitacion_id=1)
+    seed_monitor_baseline(db_path, second_folder, make_result("two.pdf"), licitacion_id=2)
     calls = 0
 
     def downloader(*_args, **_kwargs):
@@ -560,13 +1105,92 @@ def test_failure_of_one_tender_does_not_stop_next_tender(tmp_path: Path) -> None
     assert [item["status"] for item in report["results"]] == ["error", "no_changes"]
 
 
+def test_transient_failed_result_is_retried_with_a_new_downloader_call(tmp_path: Path) -> None:
+    db_path = tmp_path / "db.sqlite"
+    root = tmp_path / "replica"
+    prepare_db(db_path)
+    folder = create_followed_tender(db_path, root)
+    baseline = make_result("estable.pdf")
+    seed_monitor_baseline(db_path, folder, baseline)
+    calls = 0
+    logs: list[str] = []
+
+    def downloader(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return DownloadRunResult.failed(
+                platform="PLACE",
+                source_url="https://contrataciondelestado.es/tender/1",
+                capabilities=CAPABILITIES,
+                error=TimeoutError("Connection timed out"),
+                started_at="2026-07-20T09:00:00",
+            )
+        return make_result("estable.pdf")
+
+    deps = dependencies(downloader, [], [])
+    deps.logger = logs.append
+    report = run_tender_monitor_cycle(
+        create_monitor_cycle(db_path),
+        db_path=db_path,
+        root=root,
+        dependencies=deps,
+    )
+
+    assert calls == 2
+    assert report["status"] == "completed"
+    assert report["results"] == [{"licitacion_id": 1, "status": "no_changes"}]
+    assert any("fallo transitorio en intento 1" in line for line in logs)
+    conn = sqlite3.connect(db_path)
+    assert conn.execute(
+        "SELECT attempt_count FROM tender_monitor_executions"
+    ).fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM tender_monitor_incidents").fetchone()[0] == 0
+    conn.close()
+
+
+def test_structured_retryable_failure_does_not_depend_on_error_wording(tmp_path: Path) -> None:
+    db_path = tmp_path / "db.sqlite"
+    root = tmp_path / "replica"
+    prepare_db(db_path)
+    folder = create_followed_tender(db_path, root)
+    seed_monitor_baseline(db_path, folder, make_result("estable.pdf"))
+    calls = 0
+
+    def downloader(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return DownloadRunResult.failed(
+                platform="JUNTA_ANDALUCIA",
+                source_url="https://www.juntadeandalucia.es/tender/1",
+                capabilities=CAPABILITIES,
+                error="La aplicación no produjo contenido",
+                error_code="JUNTA_EMPTY_RENDER",
+                retryable=True,
+                started_at="2026-07-24T12:00:00",
+            )
+        return make_result("estable.pdf")
+
+    report = run_tender_monitor_cycle(
+        create_monitor_cycle(db_path),
+        db_path=db_path,
+        root=root,
+        dependencies=dependencies(downloader, [], []),
+    )
+
+    assert calls == 2
+    assert report["status"] == "completed"
+    assert report["results"] == [{"licitacion_id": 1, "status": "no_changes"}]
+
+
 def test_new_acta_uses_existing_ai_queue_and_notification_waits_for_summary(tmp_path: Path) -> None:
     db_path = tmp_path / "db.sqlite"
     root = tmp_path / "replica"
     prepare_db(db_path)
     folder = create_followed_tender(db_path, root)
     add_recipient(db_path, telegram=False)
-    write_technical_snapshot(folder, snapshot_from_result(make_result("pliego.pdf"), destination=folder))
+    seed_monitor_baseline(db_path, folder, make_result("pliego.pdf"))
     conn = sqlite3.connect(db_path)
     conn.execute("UPDATE tender_monitor_settings SET value = '1' WHERE key = 'ai_enabled'")
     conn.commit()
@@ -619,7 +1243,7 @@ def test_failed_email_can_be_retried_without_downloading_again(tmp_path: Path) -
     prepare_db(db_path)
     folder = create_followed_tender(db_path, root)
     add_recipient(db_path, telegram=False, incident_admin=False)
-    write_technical_snapshot(folder, snapshot_from_result(make_result("pliego.pdf"), destination=folder))
+    seed_monitor_baseline(db_path, folder, make_result("pliego.pdf"))
     download_calls = 0
 
     def downloader(*_args, **_kwargs):
@@ -659,7 +1283,7 @@ def test_failed_ai_can_be_retried_on_same_batch_without_downloading(tmp_path: Pa
     root = tmp_path / "replica"
     prepare_db(db_path)
     folder = create_followed_tender(db_path, root)
-    write_technical_snapshot(folder, snapshot_from_result(make_result("pliego.pdf"), destination=folder))
+    seed_monitor_baseline(db_path, folder, make_result("pliego.pdf"))
     conn = sqlite3.connect(db_path)
     conn.execute("UPDATE tender_monitor_settings SET value = '1' WHERE key = 'ai_enabled'")
     conn.commit()

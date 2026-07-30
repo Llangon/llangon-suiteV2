@@ -62,7 +62,7 @@ def _configured_root_from_env() -> tuple[str, str]:
 def load_monitor_config(root_override: str | Path | None = None) -> MonitorConfig:
     raw_root, source = (str(root_override), "override") if root_override is not None else _configured_root_from_env()
     if not raw_root:
-        raise MonitorConfigError("Inventario no ejecutado: LLANGON_DROPBOX_BASE_PATH no configurada o ruta inexistente.")
+        raise MonitorConfigError("Reconciliación no ejecutada: LLANGON_DROPBOX_BASE_PATH no configurada o ruta inexistente.")
     root_path = Path(raw_root).expanduser()
     allow_real_dropbox = os.environ.get("INFONALIA_MONITOR_ALLOW_REAL_DROPBOX", "0") == "1"
     year_min = _env_int("INFONALIA_MONITOR_YEAR_MIN", DEFAULT_YEAR_MIN)
@@ -70,9 +70,9 @@ def load_monitor_config(root_override: str | Path | None = None) -> MonitorConfi
     if year_min > year_max:
         raise MonitorConfigError("INFONALIA_MONITOR_YEAR_MIN no puede ser mayor que INFONALIA_MONITOR_YEAR_MAX.")
     if source == DROPBOX_BASE_ENV and (not root_path.exists() or not root_path.is_dir()):
-        raise MonitorConfigError("Inventario no ejecutado: LLANGON_DROPBOX_BASE_PATH no configurada o ruta inexistente.")
+        raise MonitorConfigError("Reconciliación no ejecutada: LLANGON_DROPBOX_BASE_PATH no configurada o ruta inexistente.")
     if source == LEGACY_DROPBOX_ROOT_ENV and (not root_path.exists() or not root_path.is_dir()):
-        raise MonitorConfigError("Inventario no ejecutado: INFONALIA_DROPBOX_ROOT apunta a una ruta inexistente.")
+        raise MonitorConfigError("Reconciliación no ejecutada: INFONALIA_DROPBOX_ROOT apunta a una ruta inexistente.")
     if source not in {DROPBOX_BASE_ENV, LEGACY_DROPBOX_ROOT_ENV} and path_contains_dropbox(root_path) and not allow_real_dropbox:
         raise MonitorConfigError(REAL_DROPBOX_ERROR)
     return MonitorConfig(

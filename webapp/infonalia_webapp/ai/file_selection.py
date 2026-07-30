@@ -84,7 +84,17 @@ def _is_internal_or_hidden(path: Path, relative_path: str) -> bool:
     if path.name.startswith("."):
         return True
     upper = _clean_text(relative_path).upper()
-    return any(term in upper for term in ("INFONALIA_MANIFEST", "AI_WORK", "RUNTIME", "COMANDO_PYTHON"))
+    return any(
+        term in upper
+        for term in (
+            "INFONALIA_MANIFEST",
+            "AI_WORK",
+            "RUNTIME",
+            "COMANDO_PYTHON",
+            "PREGUNTAS Y RESPUESTAS",
+            "ADJUNTOS DE PREGUNTAS",
+        )
+    )
 
 
 def resolve_ai_source_folder(licitacion: sqlite3.Row | dict) -> tuple[Path, dict[str, object]]:
@@ -201,6 +211,10 @@ def resolve_selected_ai_files(
             raise AIFileSelectionError("La selección contiene un fichero fuera del expediente.") from exc
         if not path.is_file():
             raise AIFileSelectionError(f"No se encuentra el fichero seleccionado: {relative_path}")
+        if _is_internal_or_hidden(path, relative_path):
+            raise AIFileSelectionError(
+                f"El fichero pertenece al flujo de preguntas y respuestas y no puede enviarse a IA: {path.name}"
+            )
         suffix = path.suffix.lower()
         if suffix not in ALLOWED_EXTENSIONS or suffix in BLOCKED_EXTENSIONS:
             raise AIFileSelectionError(f"Tipo de fichero no permitido: {path.name}")

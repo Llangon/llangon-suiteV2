@@ -107,47 +107,6 @@ def ensure_monitor_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS licitacion_file_inventory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            licitacion_id INTEGER NOT NULL,
-            folder_path TEXT NOT NULL,
-            relative_path TEXT NOT NULL,
-            file_name TEXT NOT NULL,
-            extension TEXT,
-            file_type TEXT,
-            folder_type TEXT,
-            is_relevant INTEGER NOT NULL DEFAULT 1,
-            is_system_file INTEGER NOT NULL DEFAULT 0,
-            size_bytes INTEGER,
-            modified_at TEXT,
-            discovered_at TEXT NOT NULL,
-            last_seen_at TEXT NOT NULL,
-            checksum TEXT,
-            is_missing INTEGER NOT NULL DEFAULT 0,
-            missing_since TEXT,
-            source TEXT NOT NULL DEFAULT 'local_dropbox',
-            FOREIGN KEY (licitacion_id) REFERENCES licitaciones(id)
-        )
-        """
-    )
-    ensure_column(conn, "licitacion_file_inventory", "folder_type", "TEXT")
-    ensure_column(conn, "licitacion_file_inventory", "is_relevant", "INTEGER NOT NULL DEFAULT 1")
-    ensure_column(conn, "licitacion_file_inventory", "is_system_file", "INTEGER NOT NULL DEFAULT 0")
-    ensure_column(conn, "licitacion_file_inventory", "missing_since", "TEXT")
-    conn.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_licitacion_file_inventory_unique
-        ON licitacion_file_inventory(licitacion_id, relative_path, source)
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_licitacion_file_inventory_licitacion
-        ON licitacion_file_inventory(licitacion_id, is_missing)
-        """
-    )
-    conn.execute(
-        """
         CREATE TABLE IF NOT EXISTS licitacion_path_reconciliation_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             licitacion_id INTEGER,

@@ -12,6 +12,12 @@ try:
     from .comments import create_system_comment
     from .email_templates import build_llangon_email_shell
     from .formatting import format_date_es
+    from .infonalia_history import (
+        SEVERITY_ATTENTION,
+        SEVERITY_CRITICAL,
+        SEVERITY_NORMAL,
+        record_infonalia_activity,
+    )
     from .infonalia_days import refresh_day_status
     from .licitacion_center import record_licitacion_history
     from .licitacion_publication import is_anuncio_previo
@@ -28,6 +34,12 @@ except ImportError:
     from comments import create_system_comment
     from email_templates import build_llangon_email_shell
     from formatting import format_date_es
+    from infonalia_history import (
+        SEVERITY_ATTENTION,
+        SEVERITY_CRITICAL,
+        SEVERITY_NORMAL,
+        record_infonalia_activity,
+    )
     from infonalia_days import refresh_day_status
     from licitacion_center import record_licitacion_history
     from licitacion_publication import is_anuncio_previo
@@ -47,6 +59,16 @@ ACTION_DOWNLOAD_REVIEW = "02"
 ACTION_PREPARE = "03"
 ACTION_AI_SUMMARY = "04"
 ACTION_REVIEWED = "99"
+
+EMAIL_ACTION_EXECUTION_PENDING = "pending"
+EMAIL_ACTION_EXECUTION_COMPLETED = "completed"
+EMAIL_ACTION_EXECUTION_FAILED = "failed"
+EMAIL_ACTION_EXECUTION_IGNORED = "ignored"
+EMAIL_ACTION_DOWNLOAD_CODES = {
+    ACTION_DOWNLOAD_REVIEW,
+    ACTION_PREPARE,
+    ACTION_AI_SUMMARY,
+}
 
 ACTION_MAILBOX_TO_DEFAULT = "info3llangon@gmail.com"
 ACTION_MAILBOX_CC_DEFAULT = ""
@@ -206,7 +228,15 @@ def ensure_email_action_schema(conn: sqlite3.Connection) -> None:
             previous_status TEXT,
             new_status TEXT,
             result TEXT NOT NULL,
-            reason TEXT
+            reason TEXT,
+            download_job_id INTEGER,
+            execution_status TEXT,
+            failure_stage TEXT,
+            failure_code TEXT,
+            failure_detail TEXT,
+            telegram_notification_attempt_count INTEGER NOT NULL DEFAULT 0,
+            telegram_notification_next_attempt_at TEXT,
+            telegram_notification_claimed_at TEXT
         )
         """
     )
@@ -245,6 +275,14 @@ def ensure_email_action_schema(conn: sqlite3.Connection) -> None:
         "telegram_notification_target": "TEXT",
         "telegram_notification_error": "TEXT",
         "telegram_notification_message_id": "TEXT",
+        "download_job_id": "INTEGER",
+        "execution_status": "TEXT",
+        "failure_stage": "TEXT",
+        "failure_code": "TEXT",
+        "failure_detail": "TEXT",
+        "telegram_notification_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+        "telegram_notification_next_attempt_at": "TEXT",
+        "telegram_notification_claimed_at": "TEXT",
     }
     existing = {row[1] for row in conn.execute("PRAGMA table_info(email_action_codes)").fetchall()}
     for column, definition in code_additions.items():
@@ -262,6 +300,12 @@ def ensure_email_action_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_email_action_events_review ON email_action_events(review_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_email_action_events_licitacion ON email_action_events(licitacion_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_email_action_events_created ON email_action_events(created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_email_action_events_download_job ON email_action_events(download_job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_email_action_events_execution ON email_action_events(execution_status)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_email_action_events_telegram_pending "
+        "ON email_action_events(telegram_notification_status, telegram_notification_next_attempt_at)"
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_email_ai_summary_requests_download ON email_ai_summary_requests(download_job_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_email_ai_summary_requests_status ON email_ai_summary_requests(status)")
 
@@ -685,16 +729,34 @@ def _insert_email_action_event(
     new_status: str = "",
     result: str,
     reason: str = "",
+    download_job_id: int | None = None,
+    execution_status: str = "",
+    failure_stage: str = "",
+    failure_code: str = "",
+    failure_detail: str = "",
 ) -> int:
     ensure_email_action_schema(conn)
+    normalized_result = clean_text(result)
+    normalized_execution_status = clean_text(execution_status)
+    if not normalized_execution_status:
+        if normalized_result == "error":
+            normalized_execution_status = EMAIL_ACTION_EXECUTION_FAILED
+        elif normalized_result == "ignored":
+            normalized_execution_status = EMAIL_ACTION_EXECUTION_IGNORED
+        elif action_code in EMAIL_ACTION_DOWNLOAD_CODES:
+            normalized_execution_status = EMAIL_ACTION_EXECUTION_PENDING
+        else:
+            normalized_execution_status = EMAIL_ACTION_EXECUTION_COMPLETED
+    telegram_status = "pending" if normalized_execution_status == EMAIL_ACTION_EXECUTION_FAILED else ""
     cur = conn.execute(
         """
         INSERT INTO email_action_events (
             created_at, source_message_id, from_email, subject, code, action_code,
             action_name, review_id, licitacion_id, previous_status, new_status,
-            result, reason
+            result, reason, download_job_id, execution_status, failure_stage,
+            failure_code, failure_detail, telegram_notification_status
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             created_at,
@@ -708,8 +770,14 @@ def _insert_email_action_event(
             licitacion_id,
             clean_text(previous_status),
             clean_text(new_status),
-            clean_text(result),
+            normalized_result,
             clean_text(reason),
+            download_job_id,
+            normalized_execution_status,
+            clean_text(failure_stage),
+            clean_text(failure_code),
+            clean_text(failure_detail or (reason if normalized_execution_status == EMAIL_ACTION_EXECUTION_FAILED else ""))[:2000],
+            telegram_status,
         ),
     )
     return int(cur.lastrowid)
@@ -809,6 +877,7 @@ def check_action_code(
         "allowed_senders_configured": bool(split_emails(allowed_senders or "")),
         "sender_authorized": None,
         "processable": False,
+        "late_closed_review": False,
     }
     if not parsed["well_formed"]:
         return payload
@@ -860,10 +929,9 @@ def check_action_code(
     if not day:
         payload["reason"] = "revisión inexistente"
         return payload
-    payload["review_status"] = "abierta" if _review_is_open(day) else "revisada"
-    if not _review_is_open(day):
-        payload["reason"] = "revisión Infonalia ya cerrada"
-        return payload
+    review_is_open = _review_is_open(day)
+    payload["review_status"] = "abierta" if review_is_open else "revisada"
+    payload["late_closed_review"] = not review_is_open
     if state not in INITIAL_EMAIL_ACTION_STATES:
         payload["reason"] = "estado avanzado no modificable desde correo"
         return payload
@@ -874,7 +942,11 @@ def check_action_code(
         payload["reason"] = "remitente no autorizado"
         return payload
     payload["processable"] = True
-    payload["reason"] = "revisión abierta y licitación procesable"
+    payload["reason"] = (
+        "revisión abierta y licitación procesable"
+        if review_is_open
+        else "revisión cerrada y acción individual tardía procesable"
+    )
     return payload
 
 
@@ -1001,9 +1073,9 @@ def _process_individual_action(
     old_state = _normalize_state_for_email_action(licitacion["estado"])
     review_id = int(licitacion["infonalia_dia_id"] or 0)
     day = conn.execute("SELECT * FROM infonalia_dias WHERE id = ?", (review_id,)).fetchone() if review_id else None
-    if not _review_is_open(day):
-        message = "Orden ignorada: revisión Infonalia ya cerrada."
-        _insert_email_action_event(
+    if not day:
+        message = "Orden ignorada: revisión Infonalia inexistente."
+        event_id = _insert_email_action_event(
             conn,
             created_at=timestamp,
             source_message_id=source_message_id,
@@ -1016,10 +1088,25 @@ def _process_individual_action(
             licitacion_id=licitacion_id,
             previous_status=old_state,
             new_status=old_state,
-            result="ignored",
+            result="error",
             reason=message,
         )
-        return {"status": "ignored", "error_code": "REVIEW_CLOSED", "message": message}
+        record_infonalia_activity(
+            conn,
+            category="nuria_action",
+            event_type="review_not_found",
+            source="email",
+            actor=sender_email,
+            result="error",
+            title="Orden de Nuria sin Día Infonalia disponible",
+            detail=message,
+            licitacion_id=licitacion_id,
+            severity=SEVERITY_CRITICAL,
+            dedupe_key=f"email_action:{event_id}",
+            timestamp=timestamp,
+        )
+        return {"status": "error", "error_code": "REVIEW_NOT_FOUND", "message": message}
+    review_was_closed = not _review_is_open(day)
     if old_state not in INITIAL_EMAIL_ACTION_STATES:
         message = "Orden ignorada: la licitación está en estado avanzado y no puede modificarse desde correo de revisión."
         _insert_email_action_event(
@@ -1098,9 +1185,11 @@ def _process_individual_action(
         sender_email=sender_email,
         source_message_id=source_message_id,
         timestamp=timestamp,
-        start_worker=action_code != ACTION_AI_SUMMARY,
+        start_worker=False,
     )
     message = f"Acción {action['name']} aplicada a la licitación {licitacion_id}."
+    if review_was_closed:
+        message += " La decisión se recibió después del cierre del Día Infonalia."
     queue_info = download_request.get("queue") if isinstance(download_request, dict) else None
     if isinstance(queue_info, Mapping) and action_code in {ACTION_DOWNLOAD_REVIEW, ACTION_PREPARE, ACTION_AI_SUMMARY}:
         queue_status = clean_text(queue_info.get("status"))
@@ -1118,6 +1207,46 @@ def _process_individual_action(
     if isinstance(worker_info, Mapping) and queue_info and clean_text(queue_info.get("status")) == "queued":
         if worker_info.get("started") is False:
             message += f" Worker de descarga no iniciado automáticamente: {clean_text(worker_info.get('error'))}."
+    download_job_id = 0
+    if isinstance(queue_info, Mapping):
+        try:
+            download_job_id = int(queue_info.get("job_id") or 0)
+        except (TypeError, ValueError):
+            download_job_id = 0
+    execution_status = ""
+    failure_stage = ""
+    failure_code = ""
+    failure_detail = ""
+    if action_code in EMAIL_ACTION_DOWNLOAD_CODES:
+        execution_status = EMAIL_ACTION_EXECUTION_PENDING
+        queue_status = clean_text(queue_info.get("status")) if isinstance(queue_info, Mapping) else ""
+        queue_ok = bool(queue_info.get("ok")) if isinstance(queue_info, Mapping) else False
+        if not queue_ok or queue_status in {"error", "failed", "skipped"}:
+            execution_status = EMAIL_ACTION_EXECUTION_FAILED
+            failure_stage = "queue"
+            failure_code = clean_text(queue_info.get("error_code")) if isinstance(queue_info, Mapping) else "DOWNLOAD_QUEUE_ERROR"
+            failure_code = failure_code or "DOWNLOAD_QUEUE_ERROR"
+            failure_detail = (
+                clean_text(queue_info.get("message"))
+                if isinstance(queue_info, Mapping)
+                else "No se pudo crear el trabajo de descarga."
+            )
+        elif queue_status == "already_downloaded":
+            execution_status = EMAIL_ACTION_EXECUTION_COMPLETED
+        elif isinstance(worker_info, Mapping) and worker_info.get("started") is False:
+            execution_status = EMAIL_ACTION_EXECUTION_FAILED
+            failure_stage = "worker_start"
+            failure_code = "DOWNLOAD_WORKER_START_FAILED"
+            failure_detail = clean_text(worker_info.get("error")) or "No se pudo iniciar el proceso de descarga."
+            if download_job_id:
+                conn.execute(
+                    """
+                    UPDATE download_jobs
+                    SET status = 'failed', error_message = ?, finished_at = ?, updated_at = ?
+                    WHERE id = ? AND status IN ('pending', 'running')
+                    """,
+                    (failure_detail[:2000], timestamp, timestamp, download_job_id),
+                )
     event_id = _insert_email_action_event(
         conn,
         created_at=timestamp,
@@ -1133,7 +1262,69 @@ def _process_individual_action(
         new_status=new_state,
         result="processed",
         reason=message,
+        download_job_id=download_job_id or None,
+        execution_status=execution_status,
+        failure_stage=failure_stage,
+        failure_code=failure_code,
+        failure_detail=failure_detail,
     )
+    record_infonalia_activity(
+        conn,
+        category="nuria_action",
+        event_type="late_decision_change" if review_was_closed and changed else "email_action",
+        source="email",
+        actor=sender_email,
+        result="processed",
+        title=(
+            "Cambio de decisión de Nuria posterior al cierre"
+            if review_was_closed and changed
+            else "Orden de Nuria posterior al cierre"
+            if review_was_closed
+            else f"Orden de Nuria: {action['name']}"
+        ),
+        detail=message,
+        day_id=review_id,
+        licitacion_id=licitacion_id,
+        old_value=old_state,
+        new_value=new_state,
+        severity=(
+            SEVERITY_CRITICAL
+            if review_was_closed and changed
+            else SEVERITY_ATTENTION
+            if review_was_closed
+            else SEVERITY_NORMAL
+        ),
+        metadata={
+            "email_action_event_id": event_id,
+            "action_code": action_code,
+            "source_message_id": clean_text(source_message_id),
+        },
+        dedupe_key=f"email_action:{event_id}",
+        timestamp=timestamp,
+    )
+    if execution_status == EMAIL_ACTION_EXECUTION_FAILED:
+        record_infonalia_activity(
+            conn,
+            category="download_ai",
+            event_type="nuria_action_failed",
+            source="email_action",
+            actor=sender_email,
+            result="error",
+            title="Falló una orden de Nuria",
+            detail=failure_detail or message,
+            day_id=review_id,
+            licitacion_id=licitacion_id,
+            severity=SEVERITY_CRITICAL,
+            metadata={
+                "email_action_event_id": event_id,
+                "download_job_id": download_job_id or None,
+                "action_code": action_code,
+                "failure_stage": failure_stage,
+                "failure_code": failure_code,
+            },
+            dedupe_key=f"email_action:{event_id}:failed",
+            timestamp=timestamp,
+        )
     ai_summary_request_id = 0
     if action_code == ACTION_AI_SUMMARY:
         ai_summary_request_id = _create_email_ai_summary_request(
@@ -1146,28 +1337,90 @@ def _process_individual_action(
             sender_email=sender_email,
             timestamp=timestamp,
         )
-        if isinstance(queue_info, Mapping) and clean_text(queue_info.get("status")) == "queued" and queue_info.get("job_id"):
-            # La petición queda persistida antes de arrancar el worker, para que éste
-            # pueda enlazar la descarga y el análisis incluso si termina muy rápido.
-            conn.commit()
+    if (
+        action_code in EMAIL_ACTION_DOWNLOAD_CODES
+        and isinstance(queue_info, Mapping)
+        and clean_text(queue_info.get("status")) == "queued"
+        and queue_info.get("job_id")
+    ):
+        # El trabajo y su evento deben ser visibles desde la conexión independiente
+        # del worker antes de crear el proceso. De otro modo el worker puede arrancar,
+        # no encontrar el trabajo todavía no confirmado y terminar silenciosamente.
+        conn.commit()
+        worker_failure_detail = ""
+        try:
             try:
-                try:
-                    from . import app as app_module
-                except ImportError:
-                    import app as app_module  # type: ignore
+                from . import app as app_module
+            except ImportError:
+                import app as app_module  # type: ignore
 
-                worker_info = app_module.start_download_worker(job_id=int(queue_info["job_id"]))
-                download_request["worker"] = worker_info
-                if isinstance(worker_info, Mapping) and worker_info.get("started") is False:
-                    message += f" Worker de descarga no iniciado automáticamente: {clean_text(worker_info.get('error'))}."
-                    conn.execute("UPDATE email_action_events SET reason = ? WHERE id = ?", (message, event_id))
-            except Exception as exc:
-                message += f" Worker de descarga no iniciado automáticamente: {exc}."
-                conn.execute("UPDATE email_action_events SET reason = ? WHERE id = ?", (message, event_id))
+            worker_info = app_module.start_download_worker(job_id=int(queue_info["job_id"]))
+            download_request["worker"] = worker_info
+            if isinstance(worker_info, Mapping) and worker_info.get("started") is False:
+                worker_failure_detail = clean_text(worker_info.get("error")) or "No se pudo iniciar el proceso de descarga."
+        except Exception as exc:
+            worker_failure_detail = clean_text(exc) or exc.__class__.__name__
+        if worker_failure_detail:
+            message += f" Worker de descarga no iniciado automáticamente: {worker_failure_detail}."
+            conn.execute(
+                """
+                UPDATE email_action_events
+                SET reason = ?, execution_status = ?, failure_stage = 'worker_start',
+                    failure_code = 'DOWNLOAD_WORKER_START_FAILED', failure_detail = ?,
+                    telegram_notification_status = 'pending',
+                    telegram_notification_next_attempt_at = NULL,
+                    telegram_notification_claimed_at = NULL
+                WHERE id = ?
+                """,
+                (
+                    message,
+                    EMAIL_ACTION_EXECUTION_FAILED,
+                    worker_failure_detail[:2000],
+                    event_id,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE download_jobs
+                SET status = 'failed', error_message = ?, finished_at = ?, updated_at = ?
+                WHERE id = ? AND status IN ('pending', 'running')
+                """,
+                (worker_failure_detail[:2000], timestamp, timestamp, int(queue_info["job_id"])),
+            )
+            record_infonalia_activity(
+                conn,
+                category="download_ai",
+                event_type="nuria_action_failed",
+                source="email_action",
+                actor=sender_email,
+                result="error",
+                title="Falló una orden de Nuria",
+                detail=worker_failure_detail,
+                day_id=review_id,
+                licitacion_id=licitacion_id,
+                severity=SEVERITY_CRITICAL,
+                metadata={
+                    "email_action_event_id": event_id,
+                    "download_job_id": int(queue_info["job_id"]),
+                    "action_code": action_code,
+                    "failure_stage": "worker_start",
+                    "failure_code": "DOWNLOAD_WORKER_START_FAILED",
+                },
+                dedupe_key=f"email_action:{event_id}:failed",
+                timestamp=timestamp,
+            )
     return {
         "status": "processed",
         "action": action["name"],
+        "action_code": action_code,
+        "review_id": review_id,
+        "review_date": clean_text(day["fecha"]),
         "licitacion_id": licitacion_id,
+        "expediente": clean_text(licitacion["expediente"]),
+        "organismo": clean_text(licitacion["organismo"]),
+        "sender_email": clean_text(sender_email).lower(),
+        "processed_at": timestamp,
+        "review_was_closed": review_was_closed,
         "old_state": old_state,
         "new_state": new_state,
         "changed": changed,
@@ -1175,6 +1428,71 @@ def _process_individual_action(
         "ai_summary_request_id": ai_summary_request_id or None,
         "message": message,
     }
+
+
+def build_late_decision_notification_email(result: Mapping[str, object]) -> tuple[str, str, str]:
+    expediente = clean_text(result.get("expediente")) or f"Licitación {result.get('licitacion_id')}"
+    organismo = clean_text(result.get("organismo")) or "Sin organismo informado"
+    review_date = clean_text(result.get("review_date"))
+    old_state = clean_text(result.get("old_state"))
+    new_state = clean_text(result.get("new_state"))
+    action = clean_text(result.get("action"))
+    sender = clean_text(result.get("sender_email"))
+    processed_at = clean_text(result.get("processed_at"))
+    operation = clean_text(result.get("message"))
+    subject = f"Cambio de decisión de Nuria tras cierre · {expediente}"
+    body = "\n".join(
+        [
+            "Se ha procesado una nueva decisión de Nuria después del cierre del Día Infonalia.",
+            "",
+            f"Día Infonalia: {format_date_es(review_date) if review_date else 'Sin fecha'}",
+            f"Expediente: {expediente}",
+            f"Organismo: {organismo}",
+            f"Acción recibida: {action}",
+            f"Estado anterior: {old_state}",
+            f"Estado nuevo: {new_state}",
+            f"Remitente: {sender}",
+            f"Procesada: {processed_at}",
+            "",
+            operation,
+            "",
+            "El Día Infonalia permanece cerrado.",
+        ]
+    )
+    rows = [
+        ("Día Infonalia", format_date_es(review_date) if review_date else "Sin fecha"),
+        ("Expediente", expediente),
+        ("Organismo", organismo),
+        ("Acción recibida", action),
+        ("Estado anterior", old_state),
+        ("Estado nuevo", new_state),
+        ("Remitente", sender),
+        ("Procesada", processed_at),
+    ]
+    html_rows = "".join(
+        "<tr>"
+        f"<td style='padding:9px 12px; color:#667085; font-weight:800;'>{html.escape(label)}</td>"
+        f"<td style='padding:9px 12px;'>{html.escape(value)}</td>"
+        "</tr>"
+        for label, value in rows
+    )
+    html_body = build_llangon_email_shell(
+        eyebrow="Incidencia Infonalia",
+        title="Cambio de decisión posterior al cierre",
+        subtitle=expediente,
+        body_html=(
+            "<div style='padding:12px 14px; margin-bottom:14px; background:#fff0f0; "
+            "border:1px solid #ef9a9a; border-radius:8px; color:#9b1c1c; font-weight:800;'>"
+            "La última decisión válida de Nuria se ha aplicado y el día permanece cerrado."
+            "</div>"
+            "<table width='100%' cellpadding='0' cellspacing='0' style='border-collapse:collapse; "
+            "border:1px solid #d9e2ec;'>"
+            f"{html_rows}</table>"
+            f"<p style='margin:14px 0 0 0;'>{html.escape(operation)}</p>"
+        ),
+        closing_html="Revisa este cambio en el Histórico general de Días Infonalia.",
+    )
+    return subject, body, html_body
 
 
 def build_review_confirmation_email(result: Mapping[str, object]) -> tuple[str, str, str]:
@@ -1308,7 +1626,7 @@ def _process_review_action(
         (timestamp, timestamp, review_id),
     )
     message = f"Revisión {review_id} marcada como revisada."
-    _insert_email_action_event(
+    event_id = _insert_email_action_event(
         conn,
         created_at=timestamp,
         source_message_id=source_message_id,
@@ -1320,6 +1638,24 @@ def _process_review_action(
         review_id=review_id,
         result="processed",
         reason=message,
+    )
+    record_infonalia_activity(
+        conn,
+        category="closure",
+        event_type="day_reviewed_by_email",
+        source="email",
+        actor=sender_email,
+        result="processed",
+        title="Día Infonalia cerrado por orden de Nuria",
+        detail=(
+            f"Descartadas automáticamente: {auto_discarded}. "
+            f"Sin cambios: {untouched}."
+        ),
+        day_id=review_id,
+        severity=SEVERITY_NORMAL,
+        metadata={"email_action_event_id": event_id, "source_message_id": source_message_id},
+        dedupe_key=f"email_action:{event_id}",
+        timestamp=timestamp,
     )
     result = {
         "status": "processed",
@@ -1362,7 +1698,7 @@ def process_email_action(
     def audit_blocked(*, result: str, reason: str, review_id: int | None = None, licitacion_id: int | None = None, previous_status: str = "", new_status: str = "") -> None:
         if dry_run:
             return
-        _insert_email_action_event(
+        event_id = _insert_email_action_event(
             conn,
             created_at=processed_at,
             source_message_id=source_message_id,
@@ -1378,6 +1714,35 @@ def process_email_action(
             result=result,
             reason=reason,
         )
+        record_infonalia_activity(
+            conn,
+            category="nuria_action",
+            event_type=f"email_action_{clean_text(result) or 'blocked'}",
+            source="email",
+            actor=sender_email,
+            result=result,
+            title=(
+                "Error en una orden de Nuria"
+                if result == "error"
+                else "Orden de Nuria ignorada"
+            ),
+            detail=reason,
+            day_id=review_id,
+            licitacion_id=licitacion_id,
+            old_value=previous_status,
+            new_value=new_status or previous_status,
+            severity=SEVERITY_CRITICAL if result == "error" else SEVERITY_ATTENTION,
+            metadata={
+                "email_action_event_id": event_id,
+                "action_code": action_code,
+                "source_message_id": clean_text(source_message_id),
+            },
+            dedupe_key=(
+                f"email_action_blocked:{clean_text(source_message_id) or normalized_code}:"
+                f"{normalized_code}:{clean_text(result)}"
+            ),
+            timestamp=processed_at,
+        )
 
     if not parsed["well_formed"]:
         message = "Código de acción no válido."
@@ -1387,9 +1752,27 @@ def process_email_action(
         message = "Acción no reconocida."
         audit_blocked(result="error", reason=message)
         return {"status": "error", "error_code": "UNKNOWN_ACTION", "message": message}
+    blocked_review_id = entity_id if action_code == ACTION_REVIEWED else None
+    blocked_licitacion_id = entity_id if action_code != ACTION_REVIEWED else None
+    blocked_state = ""
+    if blocked_licitacion_id:
+        blocked_row = conn.execute(
+            "SELECT infonalia_dia_id, estado FROM licitaciones WHERE id = ?",
+            (blocked_licitacion_id,),
+        ).fetchone()
+        if blocked_row:
+            blocked_review_id = int(blocked_row["infonalia_dia_id"] or 0) or None
+            blocked_state = clean_text(blocked_row["estado"])
     if not split_emails(allowed_senders or ""):
         message = "Sin remitentes autorizados configurados."
-        audit_blocked(result="error", reason=message)
+        audit_blocked(
+            result="error",
+            reason=message,
+            review_id=blocked_review_id,
+            licitacion_id=blocked_licitacion_id,
+            previous_status=blocked_state,
+            new_status=blocked_state,
+        )
         return {
             "status": "error",
             "error_code": "NO_ALLOWED_SENDERS",
@@ -1397,7 +1780,14 @@ def process_email_action(
         }
     if not sender_is_allowed(sender_email, allowed_senders):
         error = "Remitente no autorizado."
-        audit_blocked(result="error", reason=error)
+        audit_blocked(
+            result="error",
+            reason=error,
+            review_id=blocked_review_id,
+            licitacion_id=blocked_licitacion_id,
+            previous_status=blocked_state,
+            new_status=blocked_state,
+        )
         return {"status": "error", "error_code": "UNAUTHORIZED_SENDER", "message": error}
     if action_code == ACTION_AI_SUMMARY and not review_ai_summary_button_enabled():
         message = "Orden ignorada: el resumen IA por correo está desactivado."

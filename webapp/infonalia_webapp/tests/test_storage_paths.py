@@ -73,7 +73,7 @@ def test_default_dropbox_folder_preserves_current_date_shape(tmp_path) -> None:
     assert folder.parts[-3:] == (
         "2026",
         "06 JUNIO",
-        "30 JUNIO 0905 MADRID PINTO HOSPITAL CENTRAL EXP2026 001",
+        "30 JUNIO 0905 MADRID PINTO HOSPITAL CENTRAL EXP 2026 001",
     )
     assert get_nombre_mes(6) == "JUNIO"
 
@@ -108,7 +108,7 @@ def test_default_dropbox_folder_falls_back_to_fecha_infonalia_with_year_month(tm
     folder = default_dropbox_folder(row, tmp_path)
 
     assert folder.parts[-3:-1] == ("2026", "07 JULIO")
-    assert folder.name == "02 JULIO JAEN MARTOS EXP7"
+    assert folder.name == "02 JULIO JAEN MARTOS EXP-7"
 
 
 def test_resolve_destination_folder_uses_download_root_without_dropbox(tmp_path) -> None:

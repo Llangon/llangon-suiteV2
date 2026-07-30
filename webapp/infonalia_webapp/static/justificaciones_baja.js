@@ -816,6 +816,16 @@
       if (!navigationLoadIsCurrent(serial, controller)) return;
       state.clients = clientsPayload.items || [];
       state.current = normalizeItem(payload);
+      const currentClientId = state.current.cliente_id || currentDraft().client?.client_id || "";
+      if (currentClientId && !state.clients.some((client) => String(client.id) === String(currentClientId))) {
+        const snapshot = currentDraft().client || {};
+        state.clients.push({
+          id: currentClientId,
+          razon_social: snapshot.name || "Cliente inactivo",
+          nif_cif: snapshot.nif || "",
+          activo: false,
+        });
+      }
       state.permissions = payload.permissions || {};
       state.returnLicitacionId = String(state.current.licitacion_id || "");
       state.selectedLineIds.clear();
@@ -934,7 +944,8 @@
       ...state.clients.map((client) => {
         const name = client.display_name || client.nombre_comercial || client.razon_social || "Cliente sin nombre";
         const nif = client.nif_cif ? ` · ${client.nif_cif}` : "";
-        return `<option value="${escapeHtml(client.id)}" ${String(client.id) === String(selectedValue) ? "selected" : ""}>${escapeHtml(`${name}${nif}`)}</option>`;
+        const inactive = client.activo === false ? " · Inactivo" : "";
+        return `<option value="${escapeHtml(client.id)}" ${String(client.id) === String(selectedValue) ? "selected" : ""}>${escapeHtml(`${name}${nif}${inactive}`)}</option>`;
       }),
     ].join("");
   }
@@ -1972,10 +1983,10 @@
     state.root.addEventListener("input", handleInput);
     state.root.addEventListener("change", (event) => { handleChange(event); });
     const search = state.root.querySelector("[data-jb-list-search]");
-    let searchTimer = null;
-    search.addEventListener("input", () => {
-      global.clearTimeout(searchTimer);
-      searchTimer = global.setTimeout(renderList, 150);
+    search.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.isComposing) return;
+      event.preventDefault();
+      renderList();
     });
     state.root.querySelector("[data-jb-list-status]").addEventListener("change", loadList);
     document.addEventListener("click", (event) => {

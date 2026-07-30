@@ -22,7 +22,7 @@ const appState = {
   agendaWorkbenchSelectedKey: "",
   agendaActiveDateLabel: "",
   agendaIsToday: false,
-  agendaView: "day",
+  agendaView: "pending",
   agendaType: "all",
   newsItems: [],
   monitorRuns: [],
@@ -31,11 +31,11 @@ const appState = {
   automationRuns: [],
   automationWindowsTasks: null,
   actuaciones: [],
-  actuacionesSummary: {},
   actuacionSelectedLicitaciones: [],
   actuacionSelectorResults: [],
   actuacionSelectorDraft: new Map(),
   clientes: [],
+  clientesGestion: [],
   clienteDetail: null,
   clienteEnvios: [],
   clienteEnviosSummary: {},
@@ -44,6 +44,10 @@ const appState = {
   calendarDate: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
   calendarSelectedDate: "",
   nuriaDaysView: "pending",
+  infonaliaHistoryItems: [],
+  infonaliaHistoryNextCursor: "",
+  infonaliaHistorySummary: { total: 0, pending_review: 0, critical: 0, attention: 0 },
+  infonaliaHistoryGlobalPending: 0,
   licitacionesView: "live",
   licitacionesYear: String(new Date().getFullYear()),
   licitacionesMonth: String(new Date().getMonth() + 1),
@@ -69,7 +73,6 @@ const appState = {
 
 const daysSection = document.getElementById("days-section");
 const licitacionesSection = document.getElementById("licitaciones-section");
-const justificacionesBajaSection = document.getElementById("justificaciones-baja-section");
 const calendarSection = document.getElementById("calendar-section");
 const actuacionesSection = document.getElementById("actuaciones-section");
 const clientsSection = document.getElementById("clients-section");
@@ -77,10 +80,27 @@ const clienteEnviosSection = document.getElementById("cliente-envios-section");
 const notificationsSection = document.getElementById("notifications-section");
 const newsAdminSection = document.getElementById("news-admin-section");
 const monitorSection = document.getElementById("monitor-section");
+const automationSection = document.getElementById("automation-section");
 const configSection = document.getElementById("config-section");
 const daysBoard = document.getElementById("days-board");
-const daysSummary = document.getElementById("days-summary");
 const nuriaDaysTabs = document.getElementById("nuria-days-tabs");
+const infonaliaHistory = document.getElementById("infonalia-history");
+const infonaliaHistoryFilters = document.getElementById("infonalia-history-filters");
+const infonaliaHistoryDay = document.getElementById("infonalia-history-day");
+const infonaliaHistoryDateFrom = document.getElementById("infonalia-history-date-from");
+const infonaliaHistoryDateTo = document.getElementById("infonalia-history-date-to");
+const infonaliaHistoryCategory = document.getElementById("infonalia-history-category");
+const infonaliaHistorySeverity = document.getElementById("infonalia-history-severity");
+const infonaliaHistoryReviewState = document.getElementById("infonalia-history-review-state");
+const infonaliaHistoryResult = document.getElementById("infonalia-history-result");
+const infonaliaHistorySource = document.getElementById("infonalia-history-source");
+const infonaliaHistoryActor = document.getElementById("infonalia-history-actor");
+const infonaliaHistoryQuery = document.getElementById("infonalia-history-query");
+const infonaliaHistorySummary = document.getElementById("infonalia-history-summary");
+const infonaliaHistoryList = document.getElementById("infonalia-history-list");
+const infonaliaHistoryAckFiltered = document.getElementById("infonalia-history-ack-filtered");
+const infonaliaHistoryMore = document.getElementById("infonalia-history-more");
+const infonaliaHistoryTabBadge = document.getElementById("infonalia-history-tab-badge");
 const licitacionesTabs = document.getElementById("licitaciones-tabs");
 const licitacionesDateFilters = document.getElementById("licitaciones-date-filters");
 const licitacionesYearFilters = document.getElementById("licitaciones-year-filters");
@@ -88,17 +108,15 @@ const licitacionesMonthFilters = document.getElementById("licitaciones-month-fil
 const board = document.getElementById("board");
 const summary = document.getElementById("summary");
 const stateFilter = document.getElementById("state-filter");
-const publicationTypeFilter = document.getElementById("publication-type-filter");
 const dateOrder = document.getElementById("date-order");
 const licitacionesActuacionesFilter = document.getElementById("licitaciones-actuaciones-filter");
 const licitacionesQuickFilter = document.getElementById("licitaciones-quick-filter");
 const searchInput = document.getElementById("search");
-const currentDayTitle = document.getElementById("current-day-title");
 const reviewDayButton = document.getElementById("review-day-button");
 const sendNuriaButton = document.getElementById("send-nuria-button");
 const calendarMonthTitle = document.getElementById("calendar-month-title");
 const calendarSearch = document.getElementById("calendar-search");
-const calendarStateFilter = document.getElementById("calendar-state-filter");
+const agendaUnifiedToolbar = document.querySelector(".agenda-unified-toolbar");
 const agendaWorkbench = document.getElementById("agenda-workbench");
 const calendarSummary = document.getElementById("calendar-summary");
 const calendarRadar = document.getElementById("calendar-radar");
@@ -109,7 +127,6 @@ const agendaEventForm = document.getElementById("agenda-event-form");
 const agendaEventFormTitle = document.getElementById("agenda-event-form-title");
 const agendaEventDateWarning = document.getElementById("agenda-event-date-warning");
 const actuacionesBoard = document.getElementById("actuaciones-board");
-const actuacionesSummary = document.getElementById("actuaciones-summary");
 const actuacionesFilter = document.getElementById("actuaciones-filter");
 const actuacionDialog = document.getElementById("actuacion-dialog");
 const actuacionForm = document.getElementById("actuacion-form");
@@ -124,9 +141,10 @@ const licitacionSelectorForm = document.getElementById("licitacion-selector-form
 const licitacionSelectorSearch = document.getElementById("licitacion-selector-search");
 const licitacionSelectorResults = document.getElementById("licitacion-selector-results");
 const clientsBoard = document.getElementById("clients-board");
-const clientHistoryBoard = document.getElementById("client-history-board");
-const clientHistoryTitle = document.getElementById("client-history-title");
 const clientSearch = document.getElementById("clients-search");
+const clientsStateFilter = document.getElementById("clients-state-filter");
+const clientsResult = document.getElementById("clients-result");
+const clientDialog = document.getElementById("client-dialog");
 const clientForm = document.getElementById("client-form");
 const clientFormTitle = document.getElementById("client-form-title");
 const clientFormResult = document.getElementById("client-form-result");
@@ -184,6 +202,7 @@ const capturePlatformResult = document.getElementById("capture-platform-result")
 const licitacionDetailDialog = document.getElementById("licitacion-detail-dialog");
 const licitacionDetailTitle = document.getElementById("licitacion-detail-title");
 const licitacionDetailContent = document.getElementById("licitacion-detail-content");
+const licitacionDetailActions = document.getElementById("licitacion-detail-actions");
 const preparedNoticeDialog = document.getElementById("prepared-notice-dialog");
 const preparedNoticeTo = document.getElementById("prepared-notice-to");
 const preparedNoticeSubject = document.getElementById("prepared-notice-subject");
@@ -231,6 +250,10 @@ const telegramStatusBoard = document.getElementById("telegram-status-board");
 const testTelegramGroupButton = document.getElementById("test-telegram-group-button");
 const storageStatusBoard = document.getElementById("storage-status-board");
 const storageResult = document.getElementById("storage-result");
+const placeSettingsForm = document.getElementById("place-settings-form");
+const placeSettingsResult = document.getElementById("place-settings-result");
+const placePasswordStatus = document.getElementById("place-password-status");
+const placeStatusBoard = document.getElementById("place-status-board");
 const testDropboxButton = document.getElementById("test-dropbox-button");
 const dryRunDropboxButton = document.getElementById("dry-run-dropbox-button");
 const syncDropboxMarkersButton = document.getElementById("sync-dropbox-markers-button");
@@ -517,6 +540,10 @@ function isAdmin() {
 
 function isNuria() {
   return appState.user?.role === "nuria";
+}
+
+function canUsePendingAgenda() {
+  return isAdmin() || isNuria();
 }
 
 function isNuriaDayReview() {
@@ -1223,6 +1250,23 @@ function monthTitle(date) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+function renderDeadlineText(value) {
+  const text = String(value || "");
+  const match = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?\b/);
+  if (!match) return escapeHtml(text);
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 12 || (hours === 12 && minutes > 0)) return escapeHtml(text);
+  const start = match.index || 0;
+  const end = start + match[0].length;
+  return `${escapeHtml(text.slice(0, start))}<b class="early-deadline-time">${escapeHtml(match[0])}</b>${escapeHtml(text.slice(end))}`;
+}
+
+function monthName(date) {
+  const text = date.toLocaleDateString("es-ES", { month: "long" });
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 function isSameMonth(date, monthDate) {
   return date.getFullYear() === monthDate.getFullYear() && date.getMonth() === monthDate.getMonth();
 }
@@ -1316,8 +1360,11 @@ function applyRoleUi() {
   document.body.classList.toggle("is-admin", isAdmin());
   document.body.classList.toggle("is-nuria", !isAdmin());
   document.querySelectorAll("[data-admin-only]").forEach((element) => {
-    element.hidden = !isAdmin();
+    element.hidden = !isAdmin() || element.hasAttribute("data-feature-disabled");
   });
+  if (infonaliaHistory) {
+    infonaliaHistory.hidden = !isAdmin() || appState.nuriaDaysView !== "history";
+  }
   nuriaDaysTabs.hidden = false;
   document.getElementById("list-button").textContent = "Centro de licitaciones";
   if (sessionUser) {
@@ -1657,8 +1704,7 @@ function defaultNuriaReviewEmail() {
   const settings = appState.config?.settings || {};
   return (
     settings.nuria_review_email_to ||
-    settings.prepared_notice_email_to ||
-    "info3@llangon.com"
+    "info@llangon.com"
   ).trim();
 }
 
@@ -1736,6 +1782,9 @@ function showDaysView() {
   setActiveNav("days");
   setPageHeader("Días Infonalia", "Revisión");
   daysSection.hidden = false;
+  const showHistory = isAdmin() && appState.nuriaDaysView === "history";
+  daysBoard.hidden = showHistory;
+  infonaliaHistory.hidden = !showHistory;
   licitacionesSection.hidden = true;
   calendarSection.hidden = true;
   actuacionesSection.hidden = true;
@@ -1744,6 +1793,7 @@ function showDaysView() {
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
+  automationSection.hidden = true;
   configSection.hidden = true;
   loadDias();
 }
@@ -1753,8 +1803,7 @@ function showLicitacionesView({ diaId = "", title = "Centro de licitaciones", vi
   appState.currentDiaTitle = title;
   appState.licitacionesView = diaId ? "all" : view;
   if (diaId && isNuria()) stateFilter.value = "__nuria_active";
-  if (!diaId) dateOrder.value = appState.licitacionesView === "all" ? "desc" : "asc";
-  currentDayTitle.textContent = title;
+  if (!diaId) dateOrder.value = ["all", "previous"].includes(appState.licitacionesView) ? "desc" : "asc";
   appState.lastSection = "licitaciones";
   setActiveNav("licitaciones");
   setPageHeader(diaId ? "Revisión de día" : "Centro de licitaciones", diaId ? title : "Bandeja");
@@ -1768,38 +1817,19 @@ function showLicitacionesView({ diaId = "", title = "Centro de licitaciones", vi
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
+  automationSection.hidden = true;
   configSection.hidden = true;
   renderLicitacionesTabs();
   renderLicitacionesDateFilters();
   loadItems();
 }
 
-function showJustificacionesBajaView(title = "Justificaciones de baja", kicker = "Licitaciones") {
-  appState.lastSection = "justificaciones-baja";
-  setActiveNav("justificaciones-baja");
-  setPageHeader(title, kicker);
-  daysSection.hidden = true;
-  licitacionesSection.hidden = true;
-  calendarSection.hidden = true;
-  actuacionesSection.hidden = true;
-  clientsSection.hidden = true;
-  clienteEnviosSection.hidden = true;
-  notificationsSection.hidden = true;
-  newsAdminSection.hidden = true;
-  monitorSection.hidden = true;
-  configSection.hidden = true;
-  if (justificacionesBajaSection) justificacionesBajaSection.hidden = false;
-  if (licitacionDetailDialog?.open) licitacionDetailDialog.close();
-  closeSidebar();
-}
-
 function showCalendarView() {
-  const todayKey = dateKey(new Date());
-  if (!isAdmin() && appState.agendaView === "pending") appState.agendaView = "day";
-  if (!appState.calendarSelectedDate) appState.calendarSelectedDate = todayKey;
+  appState.agendaView = "pending";
+  appState.calendarSelectedDate = "";
   appState.lastSection = "calendar";
   setActiveNav("calendar");
-  setPageHeader("Agenda", isAdmin() ? "Tareas pendientes / Hoy / Semana / Calendario / Todo" : "Hoy / Semana / Calendario / Todo");
+  setPageHeader("Agenda", "Calendario y tareas pendientes");
   daysSection.hidden = true;
   licitacionesSection.hidden = true;
   calendarSection.hidden = false;
@@ -1809,6 +1839,7 @@ function showCalendarView() {
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
+  automationSection.hidden = true;
   configSection.hidden = true;
   return loadCalendarItems();
 }
@@ -1828,7 +1859,7 @@ function clearAgendaDeepLinkToken() {
 }
 
 async function openAgendaDeepLink(token) {
-  if (!isAdmin() || !token) return false;
+  if (!canUsePendingAgenda() || !token) return false;
   appState.agendaView = "pending";
   appState.calendarSelectedDate = dateKey(new Date());
   await showCalendarView();
@@ -1840,7 +1871,7 @@ async function openAgendaDeepLink(token) {
 async function showInitialView() {
   const token = agendaDeepLinkToken();
   if (token && await openAgendaDeepLink(token)) return;
-  if (isAdmin()) {
+  if (canUsePendingAgenda()) {
     appState.agendaView = "pending";
     appState.calendarSelectedDate = dateKey(new Date());
     await showCalendarView();
@@ -1862,6 +1893,7 @@ function showActuacionesView() {
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
+  automationSection.hidden = true;
   configSection.hidden = true;
   loadActuaciones();
 }
@@ -1880,6 +1912,7 @@ function showClientsView() {
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
+  automationSection.hidden = true;
   configSection.hidden = true;
   loadClientes();
 }
@@ -1898,6 +1931,7 @@ function showClienteEnviosView() {
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
+  automationSection.hidden = true;
   configSection.hidden = true;
   loadClienteEnvios();
 }
@@ -1914,6 +1948,7 @@ function showNotificationsView() {
   notificationsSection.hidden = false;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
+  automationSection.hidden = true;
   configSection.hidden = true;
   loadNotifications();
 }
@@ -1932,6 +1967,7 @@ function showNewsAdminView() {
   notificationsSection.hidden = true;
   newsAdminSection.hidden = false;
   monitorSection.hidden = true;
+  automationSection.hidden = true;
   configSection.hidden = true;
   loadNewsAdmin();
 }
@@ -1950,8 +1986,28 @@ function showMonitorView() {
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = false;
+  automationSection.hidden = true;
   configSection.hidden = true;
   window.TenderMonitorUI?.show();
+}
+
+function showAutomationView() {
+  if (!isAdmin()) return;
+  appState.lastSection = "automation";
+  setActiveNav("automation");
+  setPageHeader("Automatizaciones", "Administración y diagnóstico");
+  daysSection.hidden = true;
+  licitacionesSection.hidden = true;
+  calendarSection.hidden = true;
+  actuacionesSection.hidden = true;
+  clientsSection.hidden = true;
+  clienteEnviosSection.hidden = true;
+  notificationsSection.hidden = true;
+  newsAdminSection.hidden = true;
+  monitorSection.hidden = true;
+  automationSection.hidden = false;
+  configSection.hidden = true;
+  loadAutomationConsole();
   loadMonitorRuns();
 }
 
@@ -1969,6 +2025,7 @@ function showConfigView() {
   notificationsSection.hidden = true;
   newsAdminSection.hidden = true;
   monitorSection.hidden = true;
+  automationSection.hidden = true;
   configSection.hidden = false;
   loadConfig();
 }
@@ -1994,6 +2051,10 @@ function backFromNotifications() {
     showMonitorView();
     return;
   }
+  if (appState.lastSection === "automation") {
+    showAutomationView();
+    return;
+  }
   if (appState.lastSection === "licitaciones") {
     showLicitacionesView({
       diaId: appState.currentDiaId,
@@ -2017,9 +2078,19 @@ async function loadDias() {
   }
   const data = await response.json();
   appState.dias = data.items;
+  renderInfonaliaHistoryDayOptions();
+  if (isAdmin()) await loadInfonaliaHistoryBadge();
   renderNuriaDaysTabs();
-  renderDaysSummary();
-  renderDays();
+  if (appState.nuriaDaysView === "history" && isAdmin()) {
+    daysBoard.hidden = true;
+    infonaliaHistory.hidden = false;
+    await loadInfonaliaHistory();
+  } else {
+    if (appState.nuriaDaysView === "history") appState.nuriaDaysView = "pending";
+    daysBoard.hidden = false;
+    infonaliaHistory.hidden = true;
+    renderDays();
+  }
 }
 
 function visibleDias() {
@@ -2037,27 +2108,202 @@ function renderNuriaDaysTabs() {
   nuriaDaysTabs.querySelectorAll("button[data-nuria-days-view]").forEach((button) => {
     const view = button.dataset.nuriaDaysView;
     button.classList.toggle("active", view === appState.nuriaDaysView);
-    button.textContent = view === "pending"
-      ? `Pendientes de revisión (${pendientes})`
-      : `Revisados (${revisados})`;
+    if (view === "pending") button.textContent = `Pendientes de revisión (${pendientes})`;
+    if (view === "reviewed") button.textContent = `Revisados (${revisados})`;
+    if (view === "history" && button.firstChild) button.firstChild.nodeValue = "Histórico ";
   });
+  if (infonaliaHistoryTabBadge) {
+    infonaliaHistoryTabBadge.textContent = String(appState.infonaliaHistoryGlobalPending || 0);
+    infonaliaHistoryTabBadge.hidden = !appState.infonaliaHistoryGlobalPending;
+  }
+}
+
+function renderInfonaliaHistoryDayOptions() {
+  if (!infonaliaHistoryDay) return;
+  const selected = infonaliaHistoryDay.value;
+  infonaliaHistoryDay.innerHTML = [
+    '<option value="">Todos los días</option>',
+    ...appState.dias.map((dia) => (
+      `<option value="${escapeHtml(dia.id)}">${escapeHtml(formatDate(dia.fecha) || dia.titulo || `Día ${dia.id}`)}</option>`
+    )),
+  ].join("");
+  if ([...infonaliaHistoryDay.options].some((option) => option.value === selected)) {
+    infonaliaHistoryDay.value = selected;
+  }
+}
+
+function infonaliaHistoryActiveFilters() {
+  const entries = {
+    day_id: infonaliaHistoryDay?.value || "",
+    date_from: infonaliaHistoryDateFrom?.value || "",
+    date_to: infonaliaHistoryDateTo?.value || "",
+    category: infonaliaHistoryCategory?.value || "",
+    severity: infonaliaHistorySeverity?.value || "",
+    review_state: infonaliaHistoryReviewState?.value || "",
+    result: infonaliaHistoryResult?.value || "",
+    source: infonaliaHistorySource?.value.trim() || "",
+    actor: infonaliaHistoryActor?.value.trim() || "",
+    q: infonaliaHistoryQuery?.value.trim() || "",
+  };
+  return Object.fromEntries(Object.entries(entries).filter(([, value]) => value));
+}
+
+function infonaliaHistoryQueryParams({ cursor = "", filters = null } = {}) {
+  const params = new URLSearchParams(filters || infonaliaHistoryActiveFilters());
+  params.set("limit", "50");
+  if (cursor) params.set("cursor", cursor);
+  return params;
+}
+
+async function loadInfonaliaHistoryBadge() {
+  const response = await fetch(`/api/infonalia/history?${infonaliaHistoryQueryParams({ filters: {} }).toString()}`);
+  if (!response.ok) return;
+  const data = await response.json();
+  appState.infonaliaHistoryGlobalPending = Number(data.summary?.pending_review || 0);
+}
+
+const INFONALIA_HISTORY_CATEGORY_LABELS = {
+  import: "Importación",
+  internal_review: "Gestión interna",
+  nuria_delivery: "Envío a Nuria",
+  nuria_action: "Decisión de Nuria",
+  closure: "Cierre/reapertura",
+  download_ai: "Descarga/IA",
+  comment: "Comentario",
+  system: "Sistema",
+};
+
+const INFONALIA_HISTORY_SEVERITY_LABELS = {
+  normal: "Normal",
+  attention: "Atención",
+  critical: "Crítico",
+};
+
+function renderInfonaliaHistorySummary() {
+  const data = appState.infonaliaHistorySummary || {};
+  infonaliaHistorySummary.innerHTML = [
+    ["Eventos", data.total || 0, ""],
+    ["Pendientes", data.pending_review || 0, "pending"],
+    ["Críticos", data.critical || 0, "critical"],
+    ["Atención", data.attention || 0, "attention"],
+  ].map(([label, value, className]) => (
+    `<div class="metric ${className}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`
+  )).join("");
+  const pending = Number(data.pending_review || 0);
+  infonaliaHistoryAckFiltered.disabled = pending < 1;
+  infonaliaHistoryAckFiltered.textContent = pending
+    ? `Marcar ${pending} incidencia${pending === 1 ? "" : "s"} filtrada${pending === 1 ? "" : "s"} como revisada${pending === 1 ? "" : "s"}`
+    : "No hay incidencias pendientes con estos filtros";
+}
+
+function renderInfonaliaHistoryEvent(item) {
+  const severity = ["normal", "attention", "critical"].includes(item.severity) ? item.severity : "normal";
+  const context = [
+    item.day_date ? `Día ${formatDate(item.day_date)}` : item.day_title,
+    item.expediente,
+    item.organismo,
+  ].filter(Boolean);
+  const origin = [item.source, item.actor].filter(Boolean).join(" · ");
+  const values = item.old_value || item.new_value
+    ? `<div class="history-event-values"><strong>Anterior:</strong> ${escapeHtml(item.old_value || "—")} &nbsp;→&nbsp; <strong>Nuevo:</strong> ${escapeHtml(item.new_value || "—")}</div>`
+    : "";
+  const reviewNote = item.reviewed_at
+    ? `<div class="history-review-note">Revisado el ${escapeHtml(formatDateTime(item.reviewed_at) || item.reviewed_at)} por ${escapeHtml(item.reviewed_by || "administrador")}</div>`
+    : "";
+  const actions = [];
+  if (item.day_exists) {
+    actions.push(`<button type="button" data-history-open-day="${escapeHtml(item.day_id)}" data-history-day-title="${escapeHtml(item.day_title || formatDate(item.day_date) || "Día Infonalia")}">Abrir día</button>`);
+  }
+  if (item.licitacion_exists) {
+    actions.push(`<button type="button" data-history-open-licitacion="${escapeHtml(item.licitacion_id)}">Abrir licitación</button>`);
+  }
+  if (item.requires_review && !item.is_reviewed) {
+    actions.push(`<button type="button" class="primary" data-history-ack="${escapeHtml(item.id)}">Marcar como revisado</button>`);
+  }
+  return `
+    <article class="history-event severity-${escapeHtml(severity)} ${item.is_reviewed ? "is-reviewed" : ""}">
+      <div class="history-event-head">
+        <h3>${escapeHtml(item.title || "Actividad Infonalia")}</h3>
+        <span class="history-event-level">${escapeHtml(INFONALIA_HISTORY_SEVERITY_LABELS[severity])}</span>
+      </div>
+      <div class="history-event-meta">
+        <strong>${escapeHtml(formatDateTime(item.created_at) || item.created_at || "")}</strong>
+        <span>${escapeHtml(INFONALIA_HISTORY_CATEGORY_LABELS[item.category] || item.category || "Sistema")}</span>
+        ${origin ? `<span>${escapeHtml(origin)}</span>` : ""}
+        ${item.result ? `<span>Resultado: ${escapeHtml(item.result)}</span>` : ""}
+      </div>
+      ${context.length ? `<div class="history-event-meta">${context.map((value) => `<span>${escapeHtml(value)}</span>`).join("")}</div>` : ""}
+      ${item.detail ? `<p>${escapeHtml(item.detail)}</p>` : ""}
+      ${values}
+      ${reviewNote}
+      ${actions.length ? `<div class="history-event-actions">${actions.join("")}</div>` : ""}
+    </article>
+  `;
+}
+
+function renderInfonaliaHistory() {
+  renderInfonaliaHistorySummary();
+  infonaliaHistoryList.innerHTML = appState.infonaliaHistoryItems.length
+    ? appState.infonaliaHistoryItems.map(renderInfonaliaHistoryEvent).join("")
+    : '<div class="history-empty">No hay actividad que coincida con los filtros.</div>';
+  infonaliaHistoryMore.hidden = !appState.infonaliaHistoryNextCursor;
+}
+
+async function loadInfonaliaHistory({ append = false } = {}) {
+  if (!isAdmin()) return;
+  if (!append) {
+    infonaliaHistoryList.innerHTML = '<div class="history-empty">Cargando histórico…</div>';
+  }
+  const cursor = append ? appState.infonaliaHistoryNextCursor : "";
+  const response = await fetch(`/api/infonalia/history?${infonaliaHistoryQueryParams({ cursor }).toString()}`);
+  if (!response.ok) {
+    infonaliaHistoryList.innerHTML = '<div class="history-empty">No se pudo cargar el histórico.</div>';
+    return;
+  }
+  const data = await response.json();
+  const items = data.items || [];
+  appState.infonaliaHistoryItems = append ? [...appState.infonaliaHistoryItems, ...items] : items;
+  appState.infonaliaHistoryNextCursor = data.next_cursor || "";
+  appState.infonaliaHistorySummary = data.summary || {};
+  renderInfonaliaHistory();
+}
+
+async function acknowledgeInfonaliaHistoryEvent(eventId) {
+  const response = await fetch(`/api/infonalia/history/${eventId}/acknowledge`, {
+    method: "POST",
+    headers: csrfHeaders(),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(data.error || "No se pudo marcar la incidencia como revisada.");
+    return;
+  }
+  await loadInfonaliaHistoryBadge();
+  renderNuriaDaysTabs();
+  await loadInfonaliaHistory();
+}
+
+async function acknowledgeFilteredInfonaliaHistory() {
+  const pending = Number(appState.infonaliaHistorySummary?.pending_review || 0);
+  if (!pending) return;
+  if (!confirm(`Se marcarán como revisadas ${pending} incidencias que coinciden con los filtros activos. ¿Continuar?`)) return;
+  const response = await fetch("/api/infonalia/history/acknowledge-filtered", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...csrfHeaders() },
+    body: JSON.stringify({ filters: infonaliaHistoryActiveFilters() }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(data.error || "No se pudieron revisar las incidencias filtradas.");
+    return;
+  }
+  await loadInfonaliaHistoryBadge();
+  renderNuriaDaysTabs();
+  await loadInfonaliaHistory();
 }
 
 function diaIsCurrentlyReviewed(dia) {
   return Boolean(dia?.reviewed_at) && !dia?.nuria_pending_update;
-}
-
-function renderDaysSummary() {
-  const days = visibleDias();
-  const pendientes = days.filter((dia) => ["Pendiente de revisión", "En revisión por administrador", "Revisado por administrador · pendiente de Nuria"].includes(dia.estado_visual)).length;
-  const enRevision = days.filter((dia) => dia.estado_visual === "Revisado por Nuria · pendiente de cerrar").length;
-  const completados = days.filter((dia) => dia.estado_visual === "Cerrado").length;
-
-  daysSummary.innerHTML = [
-    ["Días pendientes", pendientes],
-    ["Revisados pendientes de cerrar", enRevision],
-    ["Cerrados", completados],
-  ].map(renderMetric).join("");
 }
 
 function renderMetric([label, value]) {
@@ -2087,20 +2333,7 @@ async function loadActuaciones() {
   }
   const data = await response.json();
   appState.actuaciones = data.items || [];
-  appState.actuacionesSummary = data.summary || {};
-  renderActuacionesSummary();
   renderActuacionesBoard();
-}
-
-function renderActuacionesSummary() {
-  const summaryData = appState.actuacionesSummary || {};
-  actuacionesSummary.innerHTML = [
-    ["Abiertas", summaryData.total_abiertas || 0],
-    ["Vencidas", summaryData.vencidas || 0],
-    ["Hoy", summaryData.vencen_hoy || 0],
-    ["Esta semana", summaryData.vencen_semana || 0],
-    ["Sin licitación", summaryData.sin_licitacion || 0],
-  ].map(renderMetric).join("");
 }
 
 function renderActuacionesBoard() {
@@ -2143,6 +2376,29 @@ function cleanActionButtons(actions = []) {
   return actions.map((action) => String(action || "").trim()).filter(Boolean);
 }
 
+function renderExpandableDescription(value, extraClass = "") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const className = ["expandable-description", extraClass].filter(Boolean).join(" ");
+  return `
+    <details class="${escapeHtml(className)}">
+      <summary>
+        <span class="expandable-description-text">${escapeHtml(text)}</span>
+        <span class="expandable-description-toggle" aria-hidden="true"></span>
+      </summary>
+    </details>
+  `;
+}
+
+function syncExpandableDescriptions(root = document) {
+  root.querySelectorAll(".expandable-description").forEach((details) => {
+    if (details.open) return;
+    const text = details.querySelector(".expandable-description-text");
+    if (!text) return;
+    details.classList.toggle("has-overflow", text.scrollHeight > text.clientHeight + 1);
+  });
+}
+
 function renderListActions(primaryAction, secondaryActions = [], options = {}) {
   const primary = String(primaryAction || "").trim();
   const secondary = cleanActionButtons(secondaryActions);
@@ -2162,7 +2418,7 @@ function renderListActions(primaryAction, secondaryActions = [], options = {}) {
 }
 
 function renderActuacionCard(item) {
-  const deadline = item.deadline_at ? item.deadline_at.replace("T", " ") : "Sin fecha";
+  const deadline = item.deadline_at ? formatDateTime(item.deadline_at) : "Sin fecha";
   const linked = item.licitaciones || [];
   const hasLinkedLicitaciones = linked.length > 0;
   const canClose = ["pendiente", "en_preparacion", "preparado"].includes(normalizedActuacionStateValue(item.estado));
@@ -2183,16 +2439,17 @@ function renderActuacionCard(item) {
             <h2>${escapeHtml(item.titulo)}</h2>
           </div>
           <div class="card-flags">
-            <span class="due-chip ${escapeHtml(item.estado_visual)}">${escapeHtml(actuacionLabel(actuacionVisualLabels, item.estado_visual))}</span>
+            <span class="due-chip card-state-badge ${escapeHtml(item.estado_visual)}">${escapeHtml(actuacionLabel(actuacionVisualLabels, item.estado_visual))}</span>
             <span class="province-chip">${escapeHtml(actuacionLabel(actuacionTipoLabels, item.tipo))}</span>
           </div>
         </div>
         <div class="details">
-          <div class="detail"><span>Límite</span>${escapeHtml(deadline)}</div>
+          <div class="detail"><span>Límite</span>${renderDeadlineText(deadline)}</div>
           <div class="detail"><span>Estado</span>${escapeHtml(actuacionLabel(actuacionEstadoLabels, item.estado))}</div>
           <div class="detail detail-vinculos"><span>Vínculos</span><span class="actuacion-link-detail">${escapeHtml(linkedLicitacionesText(linked))}</span></div>
         </div>
-        ${item.descripcion ? `<p class="muted actuacion-description">${escapeHtml(item.descripcion)}</p>` : ""}
+        <div class="mobile-deadline"><span>Vencimiento</span><strong>${renderDeadlineText(deadline)}</strong></div>
+        ${renderExpandableDescription(item.descripcion, "muted actuacion-description")}
         ${renderCommentsWidget("actuacion", item.id, item.comments_summary)}
         <div class="card-actions">
           ${renderListActions(primaryAction, secondaryActions)}
@@ -2212,6 +2469,58 @@ function setSelectedActuacionLicitaciones(items = []) {
   }
   appState.actuacionSelectedLicitaciones = [...unique.values()];
   renderSelectedActuacionLicitaciones();
+  updateSuggestedActuacionTitle();
+}
+
+function actuacionTitleFolderParts(item) {
+  const parts = folderDisplayPath(item)
+    .replaceAll("/", "\\")
+    .split("\\")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!parts.length) return { clientAlias: "", folderLabel: "" };
+  const yearIndex = parts.findIndex((part) => /^\d{4}$/.test(part));
+  const monthIndex = parts.findIndex((part) => /^\d{2}\s+[A-ZÁÉÍÓÚÜÑ]+$/i.test(part));
+  const clientIndex = yearIndex > 0 ? yearIndex - 1 : (monthIndex > 0 ? monthIndex - 1 : -1);
+  return {
+    clientAlias: clientIndex >= 0 ? parts[clientIndex] : "",
+    // La ruta contiene niveles operativos (año y mes); el título debe usar
+    // únicamente la carpeta final, que identifica a la licitación.
+    folderLabel: parts.at(-1),
+  };
+}
+
+function suggestedActuacionTitle() {
+  const typeSelect = actuacionForm.elements.tipo;
+  const typeLabel = typeSelect.options[typeSelect.selectedIndex]?.textContent?.trim() || "Actuación";
+  const linkedItem = (appState.actuacionSelectedLicitaciones || [])[0];
+  const selectedClientAlias = actuacionForm.elements.cliente_id.selectedOptions[0]?.dataset.clientAlias || "";
+  if (!linkedItem) return [typeLabel, selectedClientAlias].filter(Boolean).join(" ");
+  const folderParts = actuacionTitleFolderParts(linkedItem);
+  const clientAlias = selectedClientAlias || folderParts.clientAlias;
+  const folderLabel = folderParts.folderLabel;
+  return [typeLabel, clientAlias, folderLabel].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+}
+
+function populateActuacionClientOptions(selectedValue = "", currentClient = null) {
+  const select = actuacionForm.elements.cliente_id;
+  select.innerHTML = [
+    `<option value="">Sin cliente</option>`,
+    ...operationalClientOptions(selectedValue, currentClient).map((item) => {
+      const alias = item.nombre_comercial || item.razon_social || "";
+      return `<option value="${escapeHtml(item.id)}" data-client-alias="${escapeHtml(alias)}" ${String(item.id) === String(selectedValue) ? "selected" : ""}>${escapeHtml(clienteOptionText(item))}</option>`;
+    }),
+  ].join("");
+}
+
+function updateSuggestedActuacionTitle() {
+  if (actuacionForm.elements.id.value) return;
+  const titleInput = actuacionForm.elements.titulo;
+  const previousSuggestion = titleInput.dataset.suggestedTitle || "";
+  if (titleInput.value.trim() && titleInput.value !== previousSuggestion) return;
+  const suggestion = suggestedActuacionTitle();
+  titleInput.value = suggestion;
+  titleInput.dataset.suggestedTitle = suggestion;
 }
 
 function renderSelectedActuacionLicitaciones() {
@@ -2332,8 +2641,11 @@ function renderActuacionHistory(entries = [], item = null) {
 async function openActuacionDialog(licitacionId = "") {
   actuacionForm.reset();
   actuacionForm.elements.id.value = "";
+  actuacionForm.elements.titulo.dataset.suggestedTitle = "";
   actuacionFormTitle.textContent = "Nueva actuación";
   actuacionForm.elements.recordatorio_email.checked = true;
+  await ensureClientsLoaded();
+  populateActuacionClientOptions();
   showDateWarning(actuacionDateWarning, "");
   const linkedItem = licitacionId ? findLicitacionSelection(licitacionId) : null;
   const linked = linkedItem ? [linkedItem] : [];
@@ -2350,6 +2662,7 @@ async function editActuacion(id) {
     return;
   }
   const item = result.item;
+  await ensureClientsLoaded();
   actuacionForm.reset();
   actuacionFormTitle.textContent = `Editar ${item.titulo || "actuación"}`;
   actuacionForm.elements.id.value = item.id;
@@ -2360,6 +2673,7 @@ async function editActuacion(id) {
   showDateWarning(actuacionDateWarning, actuacionForm.elements.deadline_at.value);
   actuacionForm.elements.estado.value = normalizedActuacionStateValue(item.estado || "pendiente");
   actuacionForm.elements.recordatorio_email.checked = Boolean(item.recordatorio_email);
+  populateActuacionClientOptions(item.cliente_id || "", item.cliente);
   setSelectedActuacionLicitaciones(item.licitaciones || []);
   renderActuacionHistory(item.historial || [], item);
   actuacionDialog.showModal();
@@ -2376,6 +2690,7 @@ async function saveActuacion(event) {
     deadline_at: actuacionForm.elements.deadline_at.value,
     estado: actuacionForm.elements.estado.value,
     recordatorio_email: actuacionForm.elements.recordatorio_email.checked,
+    cliente_id: actuacionForm.elements.cliente_id.value || null,
     licitacion_ids: (appState.actuacionSelectedLicitaciones || []).map((item) => Number(item.id)),
     origen: "manual",
   };
@@ -2502,30 +2817,6 @@ async function updatePendingTaskState(token, stateValue) {
   await loadCalendarItems();
 }
 
-async function sendAgendaEmailSummary() {
-  const payload = {
-    view: appState.agendaView || "day",
-    date: appState.calendarSelectedDate || dateKey(new Date()),
-    type_filter: appState.agendaType || "all",
-    search: calendarSearch.value.trim(),
-    include_no_date: appState.agendaType === "sin_fecha" || appState.agendaView === "all",
-  };
-  const response = await fetch("/api/agenda/email-summary", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...csrfHeaders() },
-    body: JSON.stringify(payload),
-  });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    alert(result.error || "No se pudo enviar el resumen.");
-    return;
-  }
-  const status = result.dry_run
-    ? "Dry-run: no se ha enviado email real."
-    : "Resumen enviado por email.";
-  alert(`${status}\n\n${result.subject || ""}\n\n${result.preview || ""}`.trim());
-}
-
 function openAgendaOrigin(token) {
   const [sourceType, sourceId] = String(token || "").split(":");
   if (!sourceType || !sourceId) return;
@@ -2626,15 +2917,15 @@ async function loadItems() {
 
   if (!isNuriaDayReview() && estado && estado !== "Todos") params.set("estado", estado);
   if (appState.currentDiaId) params.set("dia_id", appState.currentDiaId);
-  if (!appState.currentDiaId && publicationTypeFilter?.value) {
-    params.set("tipo_publicacion", publicationTypeFilter.value);
+  if (!appState.currentDiaId) {
+    params.set("tipo_publicacion", appState.licitacionesView === "previous" ? "anuncio_previo" : "licitacion");
   }
   if (!appState.currentDiaId && appState.licitacionesView === "live") params.set("vivas", "1");
   if (!appState.currentDiaId && appState.licitacionesView === "managed") params.set("gestionadas", "1");
-  if (!appState.currentDiaId && appState.licitacionesYear && appState.licitacionesYear !== "Todos") {
+  if (!appState.currentDiaId && appState.licitacionesView !== "previous" && appState.licitacionesYear && appState.licitacionesYear !== "Todos") {
     params.set("ejercicio", appState.licitacionesYear);
   }
-  if (!appState.currentDiaId && appState.licitacionesMonth && appState.licitacionesMonth !== "Todos") {
+  if (!appState.currentDiaId && appState.licitacionesView !== "previous" && appState.licitacionesMonth && appState.licitacionesMonth !== "Todos") {
     params.set("mes", appState.licitacionesMonth);
   }
   params.set("orden_fecha", ordenFecha);
@@ -2687,7 +2978,7 @@ function renderLicitacionesTabs() {
 }
 
 function renderLicitacionesDateFilters() {
-  const showFilters = !appState.currentDiaId;
+  const showFilters = !appState.currentDiaId && appState.licitacionesView !== "previous";
   licitacionesDateFilters.hidden = !showFilters;
   if (!showFilters) return;
 
@@ -2911,16 +3202,8 @@ function calendarFilteredItems() {
 }
 
 function renderCalendarStateFilter() {
-  calendarStateFilter.value = appState.agendaType || "all";
-  calendarStateFilter.disabled = appState.agendaView === "pending";
   calendarSection.classList.remove("agenda-view-pending", "agenda-view-day", "agenda-view-week", "agenda-view-month", "agenda-view-all");
-  calendarSection.classList.add(`agenda-view-${appState.agendaView || "day"}`);
-  document.querySelectorAll("[data-agenda-view]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.agendaView === appState.agendaView);
-    if (button.dataset.agendaView === "day") {
-      button.textContent = "Hoy";
-    }
-  });
+  calendarSection.classList.add("agenda-view-pending");
 }
 
 function itemsByDate(items) {
@@ -2998,8 +3281,15 @@ function isPendingAgendaView() {
 
 function pendingStateOptions(item) {
   if (item.source_type === "cliente_envio") return [];
+  if (item.source_type === "licitacion") {
+    const options = item.state_options?.length
+      ? item.state_options
+      : estadoOrden.map((estado) => ({ value: estado, label: estadoLabel(estado) }));
+    if (!isNuria()) return options;
+    const current = item.state_value || item.status || item.state || "";
+    return options.filter((option) => nuriaEstados.includes(option.value) || option.value === current);
+  }
   if (item.state_options && item.state_options.length) return item.state_options;
-  if (item.source_type === "licitacion") return estadoOrden.map((estado) => ({ value: estado, label: estadoLabel(estado) }));
   if (item.source_type === "actuacion") return actuacionStateOptions;
   return taskStateOptions;
 }
@@ -3167,7 +3457,7 @@ function renderWorkbenchItem(item) {
       <span>${escapeHtml(sourceType || "Prioridad")}</span>
       <strong>${escapeHtml(title)}</strong>
       <small>${escapeHtml(when)}</small>
-      <small>${escapeHtml(subtitle)}</small>
+      ${renderExpandableDescription(subtitle, "radar-description")}
       ${sourceType === "licitacion" && id ? `<div class="links"><button type="button" data-workbench-licitacion="${escapeHtml(id)}">Abrir licitación</button></div>` : ""}
       ${sourceType === "actuacion" && id ? `<div class="links"><button type="button" data-workbench-actuacion="${escapeHtml(id)}">Abrir actuación</button></div>` : ""}
     </article>
@@ -3214,11 +3504,8 @@ function activateWorkbenchSection(key) {
   }
 }
 
-function renderAgendaMonth(items, selectedKey) {
-  const groups = itemsByDate(items);
-  const monthDate = appState.calendarDate;
+function renderCompactCalendarCells(groups, monthDate, selectedKey, dateAttribute = "data-calendar-date") {
   const todayKey = dateKey(new Date());
-  calendarRadar.innerHTML = "";
   const start = monthStartMonday(monthDate);
   const cells = [];
   for (let index = 0; index < 42; index += 1) {
@@ -3226,6 +3513,7 @@ function renderAgendaMonth(items, selectedKey) {
     current.setDate(start.getDate() + index);
     const key = dateKey(current);
     const dayItems = (groups.get(key) || []).sort(compareCalendarItems);
+    const eventCountLabel = `${dayItems.length} evento${dayItems.length === 1 ? "" : "s"}`;
     const expired = dayItems.some((item) => item.is_overdue);
     const classes = [
       "calendar-day",
@@ -3233,23 +3521,27 @@ function renderAgendaMonth(items, selectedKey) {
       key === todayKey ? "today" : "",
       key === selectedKey ? "selected" : "",
       dayItems.length ? "has-items" : "",
+      dayItems.length ? "" : "no-items",
       expired ? "expired-day" : "",
     ].filter(Boolean).join(" ");
 
     cells.push(`
-      <article class="${classes}" data-calendar-date="${escapeHtml(key)}">
+      <article class="${classes}" ${dateAttribute}="${escapeHtml(key)}">
         <div class="calendar-day-head">
           <strong>${current.getDate()}</strong>
-          ${dayItems.length ? `<span>${dayItems.length}</span>` : ""}
-        </div>
-        <div class="calendar-events">
-          ${dayItems.slice(0, 3).map(renderCalendarEvent).join("")}
-          ${dayItems.length > 3 ? `<span class="calendar-more">+${dayItems.length - 3} más</span>` : ""}
+          ${dayItems.length ? `<span class="calendar-event-count" title="${escapeHtml(eventCountLabel)}" aria-label="${escapeHtml(eventCountLabel)}">${dayItems.length}</span>` : ""}
         </div>
       </article>
     `);
   }
-  calendarBoard.innerHTML = cells.join("");
+  return cells.join("");
+}
+
+function renderAgendaMonth(items, selectedKey) {
+  const groups = itemsByDate(items);
+  const monthDate = appState.calendarDate;
+  calendarRadar.innerHTML = "";
+  calendarBoard.innerHTML = renderCompactCalendarCells(groups, monthDate, selectedKey);
   renderCalendarDayPanel(groups.get(selectedKey) || [], selectedKey);
 }
 
@@ -3258,17 +3550,6 @@ function compareCalendarItems(a, b) {
   const timeB = agendaEventTime(b) || "99:99";
   if (timeA !== timeB) return timeA.localeCompare(timeB);
   return String(a.title || "").localeCompare(String(b.title || ""));
-}
-
-function renderCalendarEvent(item) {
-  const time = agendaEventTime(item) ? `${agendaEventTime(item)} · ` : "";
-  const colorClass = agendaEventClass(item);
-  return `
-    <span class="calendar-event ${colorClass}">
-      <b class="agenda-event-dot ${colorClass}"></b>
-      <span>${escapeHtml(time)}${escapeHtml(item.title || "Sin título")}</span>
-    </span>
-  `;
 }
 
 function renderCalendarRadar(items) {
@@ -3297,31 +3578,95 @@ function renderAgendaDay(items, selectedKey) {
 }
 
 function renderAgendaPending(items) {
+  const searchFocus = document.activeElement === calendarSearch
+    ? {
+      start: calendarSearch.selectionStart,
+      end: calendarSearch.selectionEnd,
+    }
+    : null;
   const panels = appState.agendaPanels || [];
-  if (panels.length) {
-    const blocks = panels.map((panel) => (
+  let blocks = [];
+  const selectedKey = appState.calendarSelectedDate || "";
+  const selectedItems = selectedKey
+    ? items.filter((item) => {
+      const eventDate = agendaEventDate(item);
+      return eventDate && dateKey(eventDate) === selectedKey;
+    })
+    : items;
+  if (selectedKey) {
+    blocks = [renderAgendaGroup(`Eventos del ${formatDate(selectedKey)} (${selectedItems.length})`, selectedItems)];
+  } else if (panels.length) {
+    blocks = panels.map((panel) => (
       renderAgendaGroup(
         panel.items?.length ? `${panel.title} (${panel.items.length})` : panel.title,
         panel.items || []
       )
     ));
-    calendarRadar.innerHTML = renderAgendaListPanel("Tareas pendientes", "Lista de trabajo", blocks.join(""));
-    calendarBoard.innerHTML = "";
-    calendarDayPanel.innerHTML = "";
-    return;
+  } else {
+    const groups = appState.agendaGroups || {};
+    blocks = [
+      renderAgendaGroup("Vencidos", groups.overdue || items.filter((item) => item.is_overdue)),
+      renderAgendaGroup("Sin fecha", groups.no_date || items.filter((item) => item.is_without_date)),
+      renderAgendaGroup("Hoy", groups.today || items.filter((item) => item.is_today && !item.is_overdue)),
+      renderAgendaGroup("Próximos", groups.upcoming || items.filter((item) => (
+        !item.is_overdue && !item.is_without_date && !item.is_today
+      ))),
+    ];
   }
-  const groups = appState.agendaGroups || {};
-  const blocks = [
-    renderAgendaGroup("Vencidos", groups.overdue || items.filter((item) => item.is_overdue)),
-    renderAgendaGroup("Sin fecha", groups.no_date || items.filter((item) => item.is_without_date)),
-    renderAgendaGroup("Hoy", groups.today || items.filter((item) => item.is_today && !item.is_overdue)),
-    renderAgendaGroup("Próximos", groups.upcoming || items.filter((item) => (
-      !item.is_overdue && !item.is_without_date && !item.is_today
-    ))),
-  ];
-  calendarRadar.innerHTML = renderAgendaListPanel("Tareas pendientes", "Lista de trabajo", blocks.join(""));
+  const monthDate = appState.calendarDate;
+  const previousMonth = addMonths(monthDate, -1);
+  const nextMonth = addMonths(monthDate, 1);
+  const calendarGroups = itemsByDate(items);
+  const calendarCopy = `
+    <section class="pending-agenda-calendar">
+      <div class="pending-agenda-calendar-head">
+        <p class="eyebrow">Calendario</p>
+        <h3>${escapeHtml(monthTitle(monthDate))}</h3>
+      </div>
+      <div class="pending-agenda-calendar-layout">
+        <div class="calendar-month-wrap">
+          <div class="calendar-weekdays">
+            <span>Lun</span><span>Mar</span><span>Mié</span><span>Jue</span><span>Vie</span><span>Sáb</span><span>Dom</span>
+          </div>
+          <div class="calendar-board pending-calendar-board">
+            ${renderCompactCalendarCells(calendarGroups, monthDate, selectedKey, "data-pending-calendar-date")}
+          </div>
+        </div>
+        <div class="pending-agenda-calendar-nav" aria-label="Navegación del calendario">
+          <div class="pending-calendar-nav-group">
+            <span class="pending-calendar-nav-label">Navegación</span>
+            <button type="button" class="ghost" data-calendar-nav="prev" aria-label="Anterior: ${escapeHtml(monthTitle(previousMonth))}" title="Anterior: ${escapeHtml(monthTitle(previousMonth))}">← ${escapeHtml(monthName(previousMonth))}</button>
+            <button type="button" class="ghost" data-calendar-nav="next" aria-label="Siguiente: ${escapeHtml(monthTitle(nextMonth))}" title="Siguiente: ${escapeHtml(monthTitle(nextMonth))}">${escapeHtml(monthName(nextMonth))} →</button>
+          </div>
+          <div class="pending-calendar-nav-group pending-calendar-view-group">
+            <span class="pending-calendar-nav-label">Filtro</span>
+            <button type="button" class="secondary" data-calendar-nav="today">Hoy</button>
+            <button type="button" class="${selectedKey ? "ghost" : "secondary is-active"}" data-calendar-show-all>Todo</button>
+          </div>
+          <button type="button" class="primary pending-calendar-new-event" data-new-agenda-event><span aria-hidden="true">＋</span> Nuevo evento interno</button>
+        </div>
+      </div>
+    </section>
+    <section class="agenda-legend pending-agenda-legend" aria-label="Leyenda de eventos">
+      <span><b class="legend-dot agenda-dot--actuacion"></b> Actuación</span>
+      <span><b class="legend-dot agenda-dot--licitacion"></b> Licitación</span>
+      <span><b class="legend-dot agenda-dot--interno"></b> Interno</span>
+      <span><b class="legend-dot agenda-dot--vencido"></b> Vencido</span>
+    </section>
+  `;
+  calendarRadar.innerHTML = `${calendarCopy}${renderAgendaListPanel("", "", blocks.join(""))}`;
+  const pendingListHeading = calendarRadar.querySelector(".agenda-week-list-content .agenda-group h3");
+  if (pendingListHeading && agendaUnifiedToolbar) pendingListHeading.after(agendaUnifiedToolbar);
   calendarBoard.innerHTML = "";
   calendarDayPanel.innerHTML = "";
+  if (searchFocus && calendarSearch.isConnected) {
+    calendarSearch.focus({ preventScroll: true });
+    const fallbackPosition = calendarSearch.value.length;
+    calendarSearch.setSelectionRange(
+      searchFocus.start ?? fallbackPosition,
+      searchFocus.end ?? fallbackPosition
+    );
+  }
 }
 
 function renderAgendaAll(items, selectedKey) {
@@ -3378,8 +3723,8 @@ function renderAgendaGroup(title, items) {
 function renderAgendaListPanel(eyebrow, title, content) {
   return `
     <div class="panel-sticky agenda-week-list">
-      <p class="eyebrow">${escapeHtml(eyebrow)}</p>
-      <h3>${escapeHtml(title)}</h3>
+      ${eyebrow ? `<p class="eyebrow">${escapeHtml(eyebrow)}</p>` : ""}
+      ${title ? `<h3>${escapeHtml(title)}</h3>` : ""}
       <div class="agenda-week-list-content">${content}</div>
     </div>
   `;
@@ -3395,15 +3740,19 @@ function agendaDayHeading(key) {
 }
 
 function pendingLicitacionCardItem(item) {
+  const linked = (item.linked_licitaciones || []).find((licitacion) => (
+    String(licitacion.id) === String(item.source_id)
+  )) || item.linked_licitaciones?.[0] || {};
   return {
+    ...linked,
     ...item,
     id: item.source_id,
-    expediente: item.expediente || item.title || `Licitación ${item.source_id}`,
-    organismo: item.organismo || item.description || "",
-    objeto: item.objeto || item.subtitle || "",
-    estado: item.state_value || item.status || item.state || "",
-    fecha_limite: item.fecha_limite || item.date || "",
-    hora_limite: item.hora_limite || agendaEventTime(item) || "",
+    expediente: item.expediente || linked.expediente || item.title || `Licitación ${item.source_id}`,
+    organismo: item.organismo || linked.organismo || item.description || "",
+    objeto: item.objeto || linked.objeto || item.subtitle || "",
+    estado: item.state_value || item.status || item.state || linked.estado || "",
+    fecha_limite: item.fecha_limite || linked.fecha_limite || item.date || "",
+    hora_limite: item.hora_limite || linked.hora_limite || agendaEventTime(item) || "",
   };
 }
 
@@ -3424,10 +3773,10 @@ function renderPendingTaskCard(item, colorClass) {
               <p class="eyebrow">${escapeHtml(agendaTypeLabel(item))}</p>
               <h2>${escapeHtml(item.title || "Sin título")}</h2>
               <p class="card-organismo">${escapeHtml(linked ? `Licitación vinculada: ${linked}` : item.description || "")}</p>
-              <p class="object">${escapeHtml(item.subtitle || item.description || "Sin descripción")}</p>
+              ${renderExpandableDescription(item.subtitle || item.description || "Sin descripción", "object")}
             </div>
             <div class="card-flags">
-              <span class="badge">${escapeHtml(agendaStatusLabel(item))}</span>
+              <span class="badge card-state-badge">${escapeHtml(agendaStatusLabel(item))}</span>
               <span class="due-chip ${colorClass}">${escapeHtml(item.is_overdue ? `Vencido · ${dueText}` : dueText)}</span>
             </div>
           </div>
@@ -3435,7 +3784,7 @@ function renderPendingTaskCard(item, colorClass) {
           <div class="details">
             <div class="detail"><span>Tipo</span>${escapeHtml(agendaTypeLabel(item))}</div>
             <div class="detail"><span>Estado</span>${escapeHtml(agendaStatusLabel(item))}</div>
-            <div class="detail"><span>Fecha límite</span>${escapeHtml(dueText)}</div>
+            <div class="detail"><span>Fecha límite</span>${renderDeadlineText(dueText)}</div>
           </div>
           ${renderCommentsWidget(commentEntityType, item.source_id, item.comments_summary)}
         </div>
@@ -3451,29 +3800,13 @@ function renderPendingTaskCard(item, colorClass) {
 
 function renderAgendaCompactCard(item) {
   const colorClass = agendaEventClass(item);
-  if (isPendingAgendaView() && item.source_type === "licitacion") {
+  if (item.source_type === "licitacion") {
     return renderCard(pendingLicitacionCardItem(item), {
       extraClass: `agenda-card pending-licitacion-card ${colorClass}`,
       pendingStateControl: renderPendingStateControl(item, { showLabel: false }),
     });
   }
-  if (isPendingAgendaView()) {
-    return renderPendingTaskCard(item, colorClass);
-  }
-  const linked = agendaLinkedText(item);
-  return `
-    <article class="radar-card agenda-card ${colorClass}" data-calendar-date="${escapeHtml(item.date || "sin-fecha")}">
-      <span><b class="agenda-event-dot ${colorClass}"></b>${escapeHtml(agendaTypeLabel(item))}${item.is_overdue ? " · Vencido" : ""}</span>
-      <strong>${escapeHtml(item.title || "Sin título")}</strong>
-      <small>Estado: ${escapeHtml(agendaStatusLabel(item))}</small>
-      <small>${escapeHtml(item.date ? formatDate(item.date) : "Sin fecha")}${agendaEventTime(item) ? ` · ${escapeHtml(agendaEventTime(item))}` : ""}</small>
-      <small>${escapeHtml(item.subtitle || "")}</small>
-      ${linked ? `<small>Licitación vinculada: ${escapeHtml(linked)}</small>` : ""}
-      ${renderAiSummaryBadge(item)}
-      ${renderCommentsWidget(commentEntityTypeForAgenda(item), item.source_id, item.comments_summary)}
-      ${renderAgendaActions(item)}
-    </article>
-  `;
+  return renderPendingTaskCard(item, colorClass);
 }
 
 function renderCalendarDayPanel(items, key) {
@@ -3616,6 +3949,7 @@ function renderClienteEnvioActions(envio, { includeEdit = true } = {}) {
   }
   if (includeEdit && isAdmin()) {
     actions.push(`<button type="button" data-edit-cliente-envio="${escapeHtml(envio.id)}">Editar envío</button>`);
+    actions.push(`<button type="button" class="danger" data-delete-cliente-envio="${escapeHtml(envio.id)}">Eliminar envío</button>`);
   }
   return actions.join("");
 }
@@ -3728,21 +4062,6 @@ async function loadClienteEnvios() {
   renderClienteEnviosBoard();
 }
 
-function renderClientHistoryBoard() {
-  const detail = appState.clienteDetail;
-  if (!detail) {
-    clientHistoryTitle.textContent = "Envíos del cliente";
-    clientHistoryBoard.innerHTML = `<div class="empty">Selecciona un cliente para ver su historial básico.</div>`;
-    return;
-  }
-  clientHistoryTitle.textContent = `Envíos de ${clienteName(detail)}`;
-  const envios = detail.envios || [];
-  clientHistoryBoard.innerHTML = renderClienteEnviosList(envios, {
-    showClient: false,
-    emptyText: "Este cliente todavía no tiene envíos registrados.",
-  });
-}
-
 function resetClientForm() {
   if (!clientForm) return;
   clientForm.reset();
@@ -3751,8 +4070,11 @@ function resetClientForm() {
   clientFormTitle.textContent = "Nuevo cliente";
   appState.clienteDetail = null;
   setInlineResult(clientFormResult, "");
-  renderClientHistoryBoard();
-  renderClientsBoard();
+}
+
+function openNewClientDialog() {
+  resetClientForm();
+  clientDialog?.showModal();
 }
 
 function fillClientForm(item) {
@@ -3789,24 +4111,26 @@ function fillClientForm(item) {
 }
 
 function renderClientsBoard() {
-  const clients = appState.clientes || [];
-  const selectedId = String(appState.clienteDetail?.id || "");
+  const clients = appState.clientesGestion || [];
   if (!clients.length) {
-    clientsBoard.innerHTML = `<div class="empty">Todavía no hay clientes dados de alta.</div>`;
+    clientsBoard.innerHTML = `<tr><td colspan="7" class="clients-empty">No hay clientes para esta vista.</td></tr>`;
     return;
   }
   clientsBoard.innerHTML = clients.map((client) => `
-    <article class="user-row ${String(client.id) === selectedId ? "selected-row" : ""}">
-      <div>
-        <strong>${escapeHtml(clienteName(client))}</strong>
-        <span>${escapeHtml(client.razon_social || "")}</span>
-        <span>${escapeHtml(client.nif_cif || "Sin NIF/CIF")}</span>
-        <span>${escapeHtml(client.email_principal || client.email_alternativo || "Sin email")}</span>
-      </div>
-      <div class="card-actions">
+    <tr class="${client.activo ? "" : "inactive"}">
+      <td data-label="NIF/CIF">${escapeHtml(client.nif_cif || "—")}</td>
+      <td data-label="Razón social"><strong>${escapeHtml(client.razon_social || "—")}</strong></td>
+      <td data-label="Nombre comercial">${escapeHtml(client.nombre_comercial || "—")}</td>
+      <td data-label="Teléfono">${escapeHtml(client.telefono_principal || "—")}</td>
+      <td data-label="Email">${escapeHtml(client.email_principal || client.email_alternativo || "—")}</td>
+      <td data-label="Estado"><span class="status-pill ${client.activo ? "status-active" : "status-inactive"}">${client.activo ? "Activo" : "Inactivo"}</span></td>
+      <td data-label="Acciones">
+        <div class="card-actions clients-table-actions">
         <button type="button" data-edit-client="${escapeHtml(client.id)}">Editar</button>
-      </div>
-    </article>
+          <button type="button" class="${client.activo ? "danger" : "ghost"}" data-client-status="${client.activo ? "desactivar" : "reactivar"}" data-client-id="${escapeHtml(client.id)}" data-client-name="${escapeHtml(clienteName(client))}">${client.activo ? "Desactivar" : "Reactivar"}</button>
+        </div>
+      </td>
+    </tr>
   `).join("");
 }
 
@@ -3814,33 +4138,40 @@ async function loadClientDetail(clientId) {
   const response = await fetch(`/api/clientes/${clientId}`);
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
-    setInlineResult(clientFormResult, result.error || "No se pudo cargar el cliente.", "error");
+    setInlineResult(clientsResult, result.error || "No se pudo cargar el cliente.", "error");
     return;
   }
   appState.clienteDetail = result.item;
   fillClientForm(result.item);
-  renderClientsBoard();
-  renderClientHistoryBoard();
+  setInlineResult(clientFormResult, "");
+  clientDialog?.showModal();
 }
 
 async function loadClientes() {
   const params = new URLSearchParams();
   const q = clientSearch?.value.trim() || "";
+  const estado = clientsStateFilter?.value || "activos";
   if (q) params.set("q", q);
+  params.set("estado", estado);
   const response = await fetch(`/api/clientes?${params.toString()}`);
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
-    clientsBoard.innerHTML = `<div class="empty">No se pudieron cargar los clientes.</div>`;
+    clientsBoard.innerHTML = `<tr><td colspan="7" class="clients-empty">No se pudieron cargar los clientes.</td></tr>`;
     return;
   }
-  const selectedId = String(appState.clienteDetail?.id || "");
-  appState.clientes = result.items || [];
+  appState.clientesGestion = result.items || [];
   renderClientsBoard();
-  if (selectedId && appState.clientes.some((item) => String(item.id) === selectedId)) {
-    await loadClientDetail(selectedId);
-  } else {
-    renderClientHistoryBoard();
+}
+
+async function loadActiveClientes() {
+  const response = await fetch("/api/clientes?estado=activos");
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    appState.clientes = [];
+    return false;
   }
+  appState.clientes = result.items || [];
+  return true;
 }
 
 async function saveClient(event) {
@@ -3857,15 +4188,45 @@ async function saveClient(event) {
     setInlineResult(clientFormResult, result.error || "No se pudo guardar el cliente.", "error");
     return;
   }
-  setInlineResult(clientFormResult, "Cliente guardado correctamente.", "ok");
-  await loadClientes();
-  if (result.item?.id) await loadClientDetail(result.item.id);
+  clientDialog?.close();
+  appState.clienteDetail = null;
+  setInlineResult(clientsResult, "Cliente guardado correctamente.", "ok");
+  await Promise.all([loadClientes(), loadActiveClientes()]);
+}
+
+async function setClientActive(clientId, action, clientName) {
+  if (!isAdmin()) return;
+  if (action === "desactivar") {
+    const confirmed = window.confirm(`¿Desactivar a ${clientName}? Dejará de estar disponible para operaciones nuevas.`);
+    if (!confirmed) return;
+  }
+  const response = await fetch(`/api/clientes/${clientId}/${action}`, {
+    method: "POST",
+    headers: csrfHeaders(),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    setInlineResult(clientsResult, result.error || `No se pudo ${action} el cliente.`, "error");
+    return;
+  }
+  const message = action === "desactivar" ? "Cliente desactivado correctamente." : "Cliente reactivado correctamente.";
+  setInlineResult(clientsResult, message, "ok");
+  await Promise.all([loadClientes(), loadActiveClientes()]);
 }
 
 function clienteOptionText(item) {
   const name = clienteName(item);
   const nif = item.nif_cif ? ` · ${item.nif_cif}` : "";
-  return `${name}${nif}`;
+  const inactive = item.activo === false ? " · Inactivo" : "";
+  return `${name}${nif}${inactive}`;
+}
+
+function operationalClientOptions(selectedValue = "", currentClient = null) {
+  const items = [...(appState.clientes || [])];
+  if (selectedValue && !items.some((item) => String(item.id) === String(selectedValue)) && currentClient) {
+    items.push({ ...currentClient, id: selectedValue, activo: false });
+  }
+  return items;
 }
 
 function populateSelectOptions(select, items, valueKey, labelKey, selectedValue = "") {
@@ -3889,12 +4250,12 @@ function resetClienteEnvioForm() {
   setInlineResult(clienteEnvioResult, "");
 }
 
-function populateClienteEnvioClientOptions(selectedValue = "") {
+function populateClienteEnvioClientOptions(selectedValue = "", currentClient = null) {
   const select = clienteEnvioForm?.elements?.cliente_id;
   if (!select) return;
   select.innerHTML = [
     `<option value="">Selecciona cliente</option>`,
-    ...(appState.clientes || []).map((item) => (
+    ...operationalClientOptions(selectedValue, currentClient).map((item) => (
       `<option value="${escapeHtml(item.id)}" ${String(item.id) === String(selectedValue) ? "selected" : ""}>${escapeHtml(clienteOptionText(item))}</option>`
     )),
   ].join("");
@@ -3920,7 +4281,7 @@ function populateClienteEnvioLicitacionOptions(options, selectedValue = "", { hi
 
 async function ensureClientsLoaded() {
   if ((appState.clientes || []).length) return;
-  await loadClientes();
+  await loadActiveClientes();
 }
 
 async function loadClienteEnvioFolderFiles(folderValue, selectedPaths = []) {
@@ -3968,7 +4329,11 @@ async function openClienteEnvioDialog({ licitacionId = "", actuacionId = "", env
     clienteEnvioForm.elements.actuacion_id.value = item.actuacion_id || "";
     clienteEnvioFormTitle.textContent = `Editar envío · ${item.cliente_nombre || "Cliente"}`;
     clienteEnvioContext.innerHTML = `<strong>${escapeHtml(item.licitacion_expediente || "Licitación")}</strong><span>${escapeHtml(item.actuacion_titulo || item.licitacion_objeto || "")}</span>`;
-    populateClienteEnvioClientOptions(item.cliente_id);
+    populateClienteEnvioClientOptions(item.cliente_id, {
+      id: item.cliente_id,
+      display_name: item.cliente_nombre,
+      activo: item.cliente_activo,
+    });
     populateClienteEnvioTypeOptions(item.tipo_envio);
     populateClienteEnvioStateOptions(item.estado);
     populateClienteEnvioLicitacionOptions([{ id: item.licitacion_id, expediente: item.licitacion_expediente }], item.licitacion_id, { hidden: true });
@@ -4056,6 +4421,24 @@ async function saveClienteEnvio(event) {
   clienteEnvioDialog.close();
 }
 
+async function deleteClienteEnvio(envioId) {
+  if (!isAdmin()) return;
+  const confirmed = window.confirm(
+    "¿Eliminar este envío? Se borrará su registro de la Suite, pero no los archivos de Dropbox ni el correo preparado."
+  );
+  if (!confirmed) return;
+  const response = await fetch(`/api/cliente-envios/${envioId}`, {
+    method: "DELETE",
+    headers: csrfHeaders(),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    alert(result.error || "No se pudo eliminar el envío.");
+    return;
+  }
+  await afterClienteEnvioMutation(result.item);
+}
+
 async function afterClienteEnvioMutation(item) {
   if (!item) return;
   if (appState.lastSection === "calendar" && appState.agendaView === "pending") {
@@ -4063,7 +4446,6 @@ async function afterClienteEnvioMutation(item) {
   }
   if (appState.lastSection === "clients") {
     await loadClientes();
-    if (item.cliente_id) await loadClientDetail(item.cliente_id);
   }
   if (appState.lastSection === "cliente-envios") {
     await loadClienteEnvios();
@@ -4073,6 +4455,7 @@ async function afterClienteEnvioMutation(item) {
     const detail = appState.cardDetails[item.licitacion_id]?.item;
     if (detail) {
       licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
+      licitacionDetailActions.innerHTML = renderDetailActionBar(detail);
       hydrateFullCommentWidgets(licitacionDetailContent);
       activateDetailTabByName("envios-clientes");
     }
@@ -4226,6 +4609,12 @@ async function handleClienteEnvioUiAction(target) {
   const editClienteEnvioButton = target.closest("button[data-edit-cliente-envio]");
   if (editClienteEnvioButton) {
     await openClienteEnvioDialog({ envioId: editClienteEnvioButton.dataset.editClienteEnvio });
+    return true;
+  }
+
+  const deleteClienteEnvioButton = target.closest("button[data-delete-cliente-envio]");
+  if (deleteClienteEnvioButton) {
+    await deleteClienteEnvio(deleteClienteEnvioButton.dataset.deleteClienteEnvio);
     return true;
   }
 
@@ -4414,6 +4803,7 @@ function renderConfig() {
   renderSettingsConfig();
   renderTelegramConfig();
   renderStorageConfig();
+  renderPlaceConfig();
   renderConfigOverview();
   renderMailboxesConfig();
   renderAiConfig();
@@ -4542,7 +4932,7 @@ function renderConfigOverview() {
       title: "Automatismos",
       status: autoActive ? "ok" : "disabled",
       detail: autoActive ? "Hay automatismos activos" : "Sin automatismos activos",
-      help: "Revisiones de correo, importación automática e inventario.",
+      help: "Revisiones de correo, importación automática y reconciliación de rutas.",
     }),
   ].join("");
 }
@@ -4609,6 +4999,30 @@ function renderTelegramConfig() {
     <div class="storage-status-row"><span>Token configurado</span><strong>${escapeHtml(telegram.token_configured ? "Sí" : "No")}</strong></div>
     <div class="storage-status-row"><span>Grupo configurado</span><strong>${escapeHtml(telegram.group_configured ? "Sí" : "No")}</strong></div>
   `;
+}
+
+function renderPlaceConfig() {
+  if (!placeSettingsForm) return;
+  const settings = appState.config?.settings || {};
+  placeSettingsForm.elements.place_username.value = settings.place_username || "";
+  placeSettingsForm.elements.place_password.value = "";
+  placeSettingsForm.elements.place_password.placeholder = settings.place_password_set
+    ? "Contraseña guardada, dejar vacío para no cambiar"
+    : "Sin contraseña guardada";
+  placeSettingsForm.elements.clear_place_password.checked = false;
+  if (placePasswordStatus) {
+    placePasswordStatus.textContent = settings.place_password_set
+      ? "Contraseña PLACE configurada. Escribe una nueva únicamente para reemplazarla."
+      : "Contraseña PLACE no configurada.";
+  }
+  renderStatusRows(placeStatusBoard, [
+    { label: "Usuario", value: settings.place_username || "No configurado" },
+    { label: "Contraseña", value: settings.place_password_set ? "Configurada" : "No configurada" },
+    {
+      label: "Descarga de preguntas",
+      value: settings.place_username && settings.place_password_set ? "Disponible" : "Pendiente de configuración",
+    },
+  ]);
 }
 
 function storageValue(value) {
@@ -4755,9 +5169,8 @@ function renderAutomationConfig() {
     { label: "Correo agenda diaria", value: settings.monitor_agenda_pending_email_to || "No configurado" },
   ]);
   renderStatusRows(inventoryStatusBoard, [
-    { label: "Inventario interno", value: automation.file_inventory_enabled ? "Activo" : "Desactivado" },
-    { label: "Frecuencia del inventario", value: `${automation.file_inventory_poll_minutes || 60} minutos` },
-    { label: "Reconciliación de rutas", value: yesNo(automation.file_inventory_reconcile_paths) },
+    { label: "Reconciliación de rutas", value: automation.file_inventory_enabled ? "Activa" : "Desactivada" },
+    { label: "Frecuencia de reconciliación", value: `${automation.file_inventory_poll_minutes || 60} minutos` },
   ]);
 }
 
@@ -4991,6 +5404,39 @@ function infonaliaImportPayload() {
     infonalia_import_lookback_hours: formValue(infonaliaImportForm, "infonalia_import_lookback_hours") || "48",
     infonalia_import_mark_read_on_success: infonaliaImportForm.elements.infonalia_import_mark_read_on_success.checked ? "1" : "0",
   };
+}
+
+function placeSettingsPayload() {
+  const payload = {
+    place_username: formValue(placeSettingsForm, "place_username"),
+    clear_place_password: placeSettingsForm.elements.clear_place_password.checked,
+  };
+  if (placeSettingsForm.elements.place_password.value) {
+    payload.place_password = placeSettingsForm.elements.place_password.value;
+  }
+  return payload;
+}
+
+async function savePlaceSettingsConfig(event) {
+  event.preventDefault();
+  if (!isAdmin()) return;
+  const payload = placeSettingsPayload();
+  placeSettingsResult.className = "import-result";
+  placeSettingsResult.textContent = "Guardando cuenta PLACE...";
+  try {
+    const result = await savePartialSettingsPayload(payload);
+    const saved = result?.settings || {};
+    const usernameSaved = saved.place_username === payload.place_username;
+    const passwordSaved = payload.place_password ? saved.place_password_set === true : true;
+    if (!usernameSaved || !passwordSaved) {
+      throw new Error("La Suite no confirmó el guardado. Recarga la página e inténtalo de nuevo.");
+    }
+    placeSettingsResult.className = "import-result ok";
+    placeSettingsResult.textContent = "Cuenta PLACE guardada y disponible para los descargadores.";
+  } catch (error) {
+    placeSettingsResult.className = "import-result error";
+    placeSettingsResult.textContent = error.message || "No se pudo guardar la cuenta PLACE.";
+  }
 }
 
 function aiSettingsPayload() {
@@ -5227,6 +5673,7 @@ function monitorStatusLabel(status) {
     running: "En curso",
     completed: "Completada",
     completed_with_errors: "Completada con errores",
+    interrupted: "Interrumpida",
     failed: "Fallida",
     ok: "Completada",
     error: "Fallida",
@@ -5237,7 +5684,7 @@ function monitorStatusLabel(status) {
 function monitorStatusClass(status) {
   if (status === "completed") return "ok";
   if (status === "completed_with_errors") return "warning";
-  if (status === "failed" || status === "error") return "error";
+  if (status === "failed" || status === "error" || status === "interrupted") return "error";
   return "running";
 }
 
@@ -5293,6 +5740,7 @@ function automationStatusText(status) {
     running: "En curso",
     skipped: "Omitida",
     completed: "Completada",
+    interrupted: "Interrumpida",
     failed: "Error",
     disabled: "Desactivada",
   };
@@ -5326,6 +5774,11 @@ function renderAutomationTasks(tasks) {
       ${tasks.map((task) => {
         const last = task.last_run || {};
         const canRun = task.manual_allowed && task.enabled;
+        const runLabel = task.key === "pc_restart"
+          ? "Programar reinicio"
+          : task.key === "pc_restart_cancel"
+            ? "Cancelar reinicio"
+            : "Ejecutar ahora";
         return `
           <article class="automation-row">
             <div>
@@ -5338,9 +5791,10 @@ function renderAutomationTasks(tasks) {
               <span>Próxima: ${escapeHtml(formatDateTime(task.next_run) || task.next_run || "-")}</span>
               <span>Última: ${escapeHtml(formatDateTime(last.started_at) || last.started_at || "-")}</span>
               <span>Resultado: ${escapeHtml(automationStatusText(last.status))}</span>
+              ${last.error_message ? `<span class="automation-row-error danger-text">${escapeHtml(last.error_message)}</span>` : ""}
             </div>
             <div class="automation-row-actions">
-              <button type="button" class="secondary" data-automation-run="${escapeHtml(task.key)}" ${canRun ? "" : "disabled"}>Ejecutar ahora</button>
+              <button type="button" class="secondary" data-automation-run="${escapeHtml(task.key)}" ${canRun ? "" : "disabled"}>${runLabel}</button>
               <button type="button" class="ghost" data-automation-toggle="${escapeHtml(task.key)}" data-enabled="${task.enabled ? "0" : "1"}">${task.enabled ? "Desactivar" : "Activar"}</button>
             </div>
           </article>
@@ -5401,7 +5855,7 @@ async function loadAutomationConsole() {
   }
 }
 
-async function runAutomationAction(url, button, successText) {
+async function runAutomationAction(url, button, successText, requestInit = {}) {
   if (!isAdmin() || !button) return;
   const original = button.textContent;
   button.disabled = true;
@@ -5411,7 +5865,11 @@ async function runAutomationAction(url, button, successText) {
     monitorActionResult.textContent = "Procesando automatización...";
   }
   try {
-    const response = await fetch(url, { method: "POST", headers: csrfHeaders() });
+    const response = await fetch(url, {
+      method: "POST",
+      ...requestInit,
+      headers: { ...csrfHeaders(), ...(requestInit.headers || {}) },
+    });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.ok === false) {
       if (monitorActionResult) {
@@ -5676,6 +6134,22 @@ automationCopyDiagnosticButton?.addEventListener("click", async () => {
 automationTasksBoard?.addEventListener("click", (event) => {
   const runButton = event.target.closest("[data-automation-run]");
   if (runButton) {
+    if (runButton.dataset.automationRun === "pc_restart") {
+      const confirmation = window.prompt(
+        "Vas a programar un reinicio FORZOSO del PC dentro de 60 segundos.\n\nLos trabajos no guardados se perderán. Para confirmarlo, escribe REINICIAR."
+      );
+      if ((confirmation || "").trim().toUpperCase() !== "REINICIAR") return;
+      runAutomationAction(
+        `/api/admin/automation/tasks/${encodeURIComponent(runButton.dataset.automationRun)}/run`,
+        runButton,
+        "Reinicio remoto programado.",
+        {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ confirmation: "REINICIAR" }),
+        },
+      );
+      return;
+    }
     if (runButton.dataset.automationRun === "night_suspend") {
       const ok = window.confirm(
         "Vas a solicitar la suspensión del PC. La Suite comprobará antes si hay trabajos críticos o actividad.\n\n¿Quieres continuar?"
@@ -5735,6 +6209,9 @@ function renderCard(item, options = {}) {
   const showStateActions = options.showStateActions ?? isReview;
   const dueText = dueLabel(remainingDays) || "Sin fecha";
   const dueClassName = remainingDays === null ? "" : dueClass(remainingDays);
+  const dueBadge = remainingDays === null
+    ? ""
+    : `<strong class="due-chip ${dueClassName}">${escapeHtml(dueText)}</strong>`;
   const extraClass = options.extraClass ? ` ${options.extraClass}` : "";
   const sideActionsExtra = options.sideActionsExtra || "";
   const showEditButton = options.showEditButton ?? isAdmin();
@@ -5748,8 +6225,11 @@ function renderCard(item, options = {}) {
     showNewActuacionButton ? `<button data-new-actuacion-id="${escapeHtml(item.id)}">Crear nueva actuación</button>` : "",
     `<button data-open-licitacion-envios="${escapeHtml(item.id)}">Envíos a clientes</button>`,
     sideActionsExtra,
-    ...stateActionButtons,
   ];
+  const reviewStateActions = stateActionButtons.length
+    ? `<div class="review-state-actions">${stateActionButtons.join("")}</div>`
+    : "";
+  const reviewClass = stateActionButtons.length ? " has-review-actions" : "";
   const primaryAction = `<button data-open-licitacion-detail="${escapeHtml(item.id)}">Abrir</button>`;
   const mobilePrimaryAction = `<button class="primary" data-open-licitacion-detail="${escapeHtml(item.id)}">Abrir</button>`;
   const actionStateControl = pendingStateControl
@@ -5757,29 +6237,31 @@ function renderCard(item, options = {}) {
     : "";
 
   return `
-    <article class="card compact-card mobile-compact-card${extraClass}">
+    <article class="card compact-card mobile-compact-card${reviewClass}${extraClass}">
       <div class="card-layout">
         <div class="card-content">
           <div class="card-head">
             <div class="card-title-block">
               <h2>${escapeHtml(item.expediente)}</h2>
               <p class="card-organismo">${escapeHtml(item.organismo)}</p>
-              <p class="object">${escapeHtml(item.objeto || "Sin objeto informado")}</p>
+              <div class="card-object-line">
+                ${item.provincia ? `<span class="province-chip">${escapeHtml(item.provincia)}</span>` : ""}
+                ${renderExpandableDescription(item.objeto || "Sin objeto informado", "object")}
+              </div>
             </div>
             <div class="card-flags">
               ${renderAiSummaryBadge(item)}
-              <span class="badge ${badgeClass(item.estado)}">${escapeHtml(estadoLabel(item.estado))}</span>
+              <span class="badge card-state-badge ${badgeClass(item.estado)}">${escapeHtml(estadoLabel(item.estado))}</span>
               ${previousNotice ? `<span class="badge">Anuncio previo</span>` : ""}
-              <span class="due-chip ${dueClassName}">${escapeHtml(dueText)}</span>
-              ${item.provincia ? `<span class="province-chip">${escapeHtml(item.provincia)}</span>` : ""}
             </div>
           </div>
 
           <div class="details">
             <div class="detail"><span>Tipo</span>${escapeHtml(item.tipo)}</div>
             <div class="detail"><span>Presupuesto</span>${escapeHtml(formatMoney(item.presupuesto))}</div>
-            <div class="detail"><span>Fecha límite</span>${escapeHtml(fechaLimite)}</div>
+            <div class="detail"><span>Fecha límite</span><div class="deadline-value">${renderDeadlineText(fechaLimite || "Sin fecha")}${dueBadge}</div></div>
           </div>
+          <div class="mobile-deadline"><span>Vencimiento</span><strong>${renderDeadlineText(fechaLimite || "Sin fecha")}</strong>${dueBadge}</div>
 
           ${(links || folderText) ? `<div class="links card-footer-links">${links}<span class="card-folder-path${folderClass}" title="${escapeHtml(folderPath || folderText)}" data-folder-path="${escapeHtml(folderPath || "")}">${escapeHtml(folderText)}</span></div>` : ""}
           ${renderCommentsWidget("licitacion", item.id, item.comments_summary)}
@@ -5788,12 +6270,14 @@ function renderCard(item, options = {}) {
         <div class="card-side-actions">
           ${actionStateControl}
           ${renderListActions(primaryAction, secondaryActions)}
+          ${reviewStateActions}
           <span class="card-side-id">ID ${escapeHtml(item.id)}</span>
         </div>
 
         <div class="mobile-card-actions no-print">
           ${actionStateControl}
           ${renderListActions(mobilePrimaryAction, secondaryActions)}
+          ${reviewStateActions}
         </div>
       </div>
     </article>
@@ -5868,6 +6352,7 @@ function renderLicitacionDetailView(item) {
     ["Órgano / organismo", item.organismo],
     ["Lugar / provincia", item.provincia],
     ["Tipo de contrato", item.tipo],
+    ["Presupuesto", formatMoney(item.presupuesto)],
     ["Procedimiento", item.procedimiento],
     ["CPV", item.cpv],
     ["Cliente / representada", item.cliente || item.representada],
@@ -5879,19 +6364,16 @@ function renderLicitacionDetailView(item) {
         <div class="detail-cover-main">
           <p class="eyebrow">Expediente</p>
           <h2>${escapeHtml(item.expediente || "Sin expediente")}</h2>
-          <p class="detail-cover-object">${escapeHtml(item.objeto || "Sin objeto informado")}</p>
+          ${renderExpandableDescription(item.objeto || "Sin objeto informado", "detail-cover-object")}
           <p class="detail-cover-meta">${escapeHtml([item.organismo, item.provincia].filter(Boolean).join(" · "))}</p>
         </div>
            <div class="detail-cover-side">
-           ${renderAiSummaryBadge(item)}
+           ${fechaLimite ? `<div class="detail-kpi"><span>Fecha límite</span><strong>${renderDeadlineText(fechaLimite)}</strong></div>` : ""}
            <span class="badge ${badgeClass(item.estado)}">${escapeHtml(estadoLabel(item.estado))}</span>
-           ${fechaLimite ? `<div class="detail-kpi"><span>Fecha límite</span><strong>${escapeHtml(fechaLimite)}</strong></div>` : ""}
-           ${item.presupuesto ? `<div class="detail-kpi"><span>Presupuesto</span><strong>${escapeHtml(formatMoney(item.presupuesto))}</strong></div>` : ""}
+           ${renderAiSummaryBadge(item)}
            <span class="folder-status-chip ${escapeHtml(folderTone)}">Carpeta: ${escapeHtml(folderLabel)}</span>
            </div>
          </section>
-
-        ${renderDetailActionBar(item)}
 
       <nav class="detail-tabs no-print" aria-label="Secciones de la ficha">
         <button type="button" class="detail-tab-button active" data-detail-tab="resumen">Resumen</button>
@@ -5984,25 +6466,20 @@ function renderLicitacionDetailView(item) {
 
 function renderDetailActionBar(item) {
   const previousNotice = isPreviousNotice(item);
+  const actions = [
+    !previousNotice ? `<button data-new-actuacion-id="${escapeHtml(item.id)}">Crear actuación</button>` : "",
+    isAdmin() ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : "",
+    isAdmin() ? `<button data-duplicate-id="${escapeHtml(item.id)}">Duplicar</button>` : "",
+    isAdmin() ? `<button class="danger" data-delete-id="${escapeHtml(item.id)}">Borrar</button>` : "",
+  ].filter(Boolean);
+  if (!actions.length) return "";
   return `
-    <section class="expanded-action-bar no-print">
-      <div class="detail-action-bar" role="group" aria-label="Acciones de la licitación">
-      ${isAdmin() && !previousNotice ? `<button class="download-button primary" data-download-id="${escapeHtml(item.id)}">Descargar documentación</button>` : ""}
-      ${!previousNotice ? `<button data-new-actuacion-id="${escapeHtml(item.id)}">Crear actuación</button>` : ""}
-      ${!previousNotice ? `<button data-open-justificaciones-baja="${escapeHtml(item.id)}">Ver justificaciones de baja</button>` : ""}
-      ${isAdmin() && !previousNotice ? `<button data-create-justificacion-baja="${escapeHtml(item.id)}">Crear justificación de baja</button>` : ""}
-      <button data-open-licitacion-envios="${escapeHtml(item.id)}">Envíos a clientes</button>
-      ${isAdmin() ? `<button data-edit-id="${escapeHtml(item.id)}">Editar</button>` : ""}
-      <details class="detail-more-actions"${isAdmin() ? "" : ' hidden=""'}>
-        <summary>Más acciones</summary>
+      <details class="detail-more-actions detail-actions-menu">
+        <summary aria-label="Más acciones" title="Más acciones"><span aria-hidden="true">☰</span></summary>
         <div class="detail-more-menu">
-          ${renderCreateClienteEnvioButton({ licitacionId: item.id })}
-          ${isAdmin() ? `<button data-duplicate-id="${escapeHtml(item.id)}">Duplicar</button>` : ""}
-          ${isAdmin() ? `<button class="danger" data-delete-id="${escapeHtml(item.id)}">Borrar</button>` : ""}
+          ${actions.join("")}
         </div>
       </details>
-      </div>
-    </section>
   `;
 }
 
@@ -6023,7 +6500,7 @@ function renderLicitacionSummary(item) {
   ];
   return `
     <div class="detail-grid">
-      ${rows.map(([label, value]) => `<div class="detail"><span>${escapeHtml(label)}</span>${escapeHtml(value || "No informado")}</div>`).join("")}
+      ${rows.map(([label, value]) => `<div class="detail"><span>${escapeHtml(label)}</span>${label === "Fecha límite" ? renderDeadlineText(value || "No informado") : escapeHtml(value || "No informado")}</div>`).join("")}
     </div>
     <div class="links">
       ${folderUrl ? `<a href="${escapeHtml(folderUrl)}" target="_blank" rel="noreferrer">Abrir carpeta</a>` : ""}
@@ -6219,7 +6696,7 @@ function renderDocumentTreeNode(node, depth = 0) {
 function renderDocumentTreePayload(payload) {
   const tree = payload.tree || [];
   const statusClass = payload.root_status === "valid" ? "ok" : payload.root_status === "missing" ? "danger" : "warning";
-  const sourceLabel = payload.source === "inventory" ? "Inventario guardado" : "Lectura directa de carpeta";
+  const sourceLabel = "Lectura directa de carpeta";
   return `
     <section class="document-tree-wrap">
       <div class="document-tree-head">
@@ -6235,7 +6712,7 @@ function renderDocumentTreePayload(payload) {
           ${payload.truncated ? `<span class="danger-text">Listado limitado por seguridad</span>` : ""}
         </div>
       </div>
-      ${tree.length ? `<div class="document-tree">${tree.map((node) => renderDocumentTreeNode(node, 0)).join("")}</div>` : `<div class="empty">${escapeHtml(payload.message || "No hay documentación inventariada.")}</div>`}
+      ${tree.length ? `<div class="document-tree">${tree.map((node) => renderDocumentTreeNode(node, 0)).join("")}</div>` : `<div class="empty">${escapeHtml(payload.message || "No hay documentación en la carpeta.")}</div>`}
     </section>
   `;
 }
@@ -6445,7 +6922,7 @@ function renderAiKeyTable(rows) {
           ${visibleRows.map((row) => `
             <tr class="${row.critical ? "ai-row-critical" : ""}">
               <td>${escapeHtml(row.label)}</td>
-              <td>${escapeHtml(aiReadableValue(row.value))}</td>
+              <td>${row.label === "Fecha límite" ? renderDeadlineText(aiReadableValue(row.value)) : escapeHtml(aiReadableValue(row.value))}</td>
               <td>${escapeHtml(aiReadableValue(row.note))}</td>
             </tr>
           `).join("")}
@@ -7357,7 +7834,7 @@ function renderLinkedActuaciones(items) {
           <div>
             <span class="due-chip ${escapeHtml(actuacion.estado_visual || "")}">${escapeHtml(actuacionLabel(actuacionEstadoLabels, actuacion.estado))}</span>
             <strong>${escapeHtml(actuacion.titulo || "Actuación")}</strong>
-            <small>${escapeHtml(actuacion.deadline_at ? formatDateTime(actuacion.deadline_at) : "Sin fecha")}</small>
+            <small>${renderDeadlineText(actuacion.deadline_at ? formatDateTime(actuacion.deadline_at) : "Sin fecha")}</small>
             ${actuacion.ultimo_comentario ? `<small>${escapeHtml(actuacion.ultimo_comentario)}</small>` : `<small>${escapeHtml(actuacion.historial_count || 0)} comentario(s)</small>`}
             ${renderCommentsWidget("actuacion", actuacion.id, actuacion.comments_summary)}
           </div>
@@ -7554,9 +8031,21 @@ function showDownloadFolderDialog(id, suggestedFolderName, button) {
   downloadFolderName.select();
 }
 
-async function finishDownload(result) {
+async function finishDownload(result, id) {
+  const activeTab = licitacionDetailContent.querySelector("button[data-detail-tab].active")?.dataset.detailTab || "documentos-seguimiento";
   alert(`Descarga completada.\n\nCarpeta:\n${result.carpeta}`);
   await loadItems();
+  await refreshLicitacionDetail(id);
+  const detail = appState.cardDetails[id]?.item;
+  if (detail && licitacionDetailDialog.open) {
+    licitacionDetailTitle.textContent = "Ficha de licitación";
+    licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
+    licitacionDetailActions.innerHTML = renderDetailActionBar(detail);
+    hydrateFullCommentWidgets(licitacionDetailContent);
+    activateDetailTabByName(activeTab);
+    loadDocumentTree(id, { silent: true });
+    loadAiSummary(id);
+  }
 }
 
 async function downloadLicitacion(id, button, options = {}) {
@@ -7585,7 +8074,7 @@ async function downloadLicitacion(id, button, options = {}) {
       alert(result.error || result.salida || "No se pudo completar la descarga.");
       return;
     }
-    await finishDownload(result);
+    await finishDownload(result, id);
   } finally {
     if (button) {
       button.disabled = false;
@@ -7617,7 +8106,7 @@ async function confirmDownloadFolder() {
       throw new Error(result.error || result.salida || "No se pudo completar la descarga.");
     }
     closeDownloadFolderDialog();
-    await finishDownload(result);
+    await finishDownload(result, pending.id);
   } catch (error) {
     appState.downloadFolderSubmitting = false;
     confirmDownloadFolderButton.disabled = false;
@@ -7665,6 +8154,7 @@ async function openLicitacionDetail(id) {
   appState.cardDetails[id] = { ...(appState.cardDetails[id] || {}), item };
   licitacionDetailTitle.textContent = "Ficha de licitación";
   licitacionDetailContent.innerHTML = renderLicitacionDetailView(item);
+  licitacionDetailActions.innerHTML = renderDetailActionBar(item);
   hydrateFullCommentWidgets(licitacionDetailContent);
   loadDocumentTree(id);
   loadAiSummary(id);
@@ -7717,6 +8207,7 @@ async function runLicitacionMarkerAction(id, action, button) {
     if (detail && licitacionDetailDialog.open) {
     licitacionDetailTitle.textContent = "Ficha de licitación";
     licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
+    licitacionDetailActions.innerHTML = renderDetailActionBar(detail);
     hydrateFullCommentWidgets(licitacionDetailContent);
     loadDocumentTree(id, { silent: true });
     loadAiSummary(id);
@@ -7769,6 +8260,7 @@ async function patchLicitacionWork(id, payload) {
   if (detail && licitacionDetailDialog.open) {
     licitacionDetailTitle.textContent = "Ficha de licitación";
     licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
+    licitacionDetailActions.innerHTML = renderDetailActionBar(detail);
     hydrateFullCommentWidgets(licitacionDetailContent);
     loadDocumentTree(id, { silent: true });
     loadAiSummary(id);
@@ -7954,6 +8446,29 @@ function debounce(fn, delay) {
   };
 }
 
+function submitSearchOnEnter(input, search) {
+  input?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing) return;
+    event.preventDefault();
+    search();
+  });
+}
+
+let expandableDescriptionSyncFrame = 0;
+function scheduleExpandableDescriptionSync() {
+  cancelAnimationFrame(expandableDescriptionSyncFrame);
+  expandableDescriptionSyncFrame = requestAnimationFrame(() => syncExpandableDescriptions());
+}
+
+const expandableDescriptionObserver = new MutationObserver(scheduleExpandableDescriptionSync);
+expandableDescriptionObserver.observe(document.body, { childList: true, subtree: true });
+window.addEventListener("resize", debounce(scheduleExpandableDescriptionSync, 100));
+document.addEventListener("click", (event) => {
+  const summary = event.target.closest(".expandable-description > summary");
+  if (summary && !summary.parentElement.classList.contains("has-overflow")) event.preventDefault();
+});
+scheduleExpandableDescriptionSync();
+
 mobileMenuButton?.addEventListener("click", toggleSidebar);
 mobileMenuClose?.addEventListener("click", closeSidebar);
 sidebarOverlay?.addEventListener("click", closeSidebar);
@@ -7985,6 +8500,7 @@ document.getElementById("notifications-menu-button")?.addEventListener("click", 
 document.getElementById("back-from-notifications").addEventListener("click", backFromNotifications);
 document.getElementById("news-admin-button").addEventListener("click", showNewsAdminView);
 document.getElementById("monitor-button").addEventListener("click", showMonitorView);
+document.getElementById("automation-button").addEventListener("click", showAutomationView);
 window.addEventListener("tender-monitor:open-licitacion", async (event) => {
   const id = event.detail?.id;
   if (!id) return;
@@ -8011,15 +8527,19 @@ copyConfigDiagnosticsButton?.addEventListener("click", async () => {
     settingsResult.textContent = "No se pudo copiar automáticamente. Puedes seleccionar el texto del diagnóstico.";
   }
 });
-document.getElementById("back-to-days").addEventListener("click", showDaysView);
 reviewDayButton.addEventListener("click", markDayReviewed);
 sendNuriaButton.addEventListener("click", sendDayToNuria);
 licitacionesTabs.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-licitaciones-view]");
   if (!button) return;
   appState.licitacionesView = button.dataset.licitacionesView;
-  dateOrder.value = appState.licitacionesView === "all" ? "desc" : "asc";
+  if (appState.licitacionesView === "all") {
+    appState.licitacionesYear = "Todos";
+    appState.licitacionesMonth = "Todos";
+  }
+  dateOrder.value = ["all", "previous"].includes(appState.licitacionesView) ? "desc" : "asc";
   renderLicitacionesTabs();
+  renderLicitacionesDateFilters();
   loadItems();
 });
 licitacionesYearFilters.addEventListener("click", (event) => {
@@ -8039,10 +8559,47 @@ licitacionesMonthFilters.addEventListener("click", (event) => {
 nuriaDaysTabs.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-nuria-days-view]");
   if (!button) return;
+  if (button.dataset.nuriaDaysView === "history" && !isAdmin()) return;
   appState.nuriaDaysView = button.dataset.nuriaDaysView;
   renderNuriaDaysTabs();
-  renderDaysSummary();
-  renderDays();
+  const showHistory = appState.nuriaDaysView === "history";
+  daysBoard.hidden = showHistory;
+  infonaliaHistory.hidden = !showHistory;
+  if (showHistory) loadInfonaliaHistory();
+  else renderDays();
+});
+infonaliaHistoryFilters?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  loadInfonaliaHistory();
+});
+[
+  infonaliaHistoryDay,
+  infonaliaHistoryDateFrom,
+  infonaliaHistoryDateTo,
+  infonaliaHistoryCategory,
+  infonaliaHistorySeverity,
+  infonaliaHistoryReviewState,
+  infonaliaHistoryResult,
+].forEach((control) => control?.addEventListener("change", () => loadInfonaliaHistory()));
+infonaliaHistoryMore?.addEventListener("click", () => loadInfonaliaHistory({ append: true }));
+infonaliaHistoryAckFiltered?.addEventListener("click", acknowledgeFilteredInfonaliaHistory);
+infonaliaHistoryList?.addEventListener("click", (event) => {
+  const acknowledgeButton = event.target.closest("button[data-history-ack]");
+  if (acknowledgeButton) {
+    acknowledgeInfonaliaHistoryEvent(acknowledgeButton.dataset.historyAck);
+    return;
+  }
+  const dayButton = event.target.closest("button[data-history-open-day]");
+  if (dayButton) {
+    showLicitacionesView({
+      diaId: dayButton.dataset.historyOpenDay,
+      title: dayButton.dataset.historyDayTitle || "Día Infonalia",
+      view: "all",
+    });
+    return;
+  }
+  const licitacionButton = event.target.closest("button[data-history-open-licitacion]");
+  if (licitacionButton) openLicitacionDetail(licitacionButton.dataset.historyOpenLicitacion);
 });
 document.getElementById("new-button").addEventListener("click", openCreateEditor);
 document.getElementById("close-editor").addEventListener("click", () => editor.close());
@@ -8131,12 +8688,8 @@ stateFilter.addEventListener("change", loadItems);
 dateOrder.addEventListener("change", loadItems);
 licitacionesActuacionesFilter.addEventListener("change", loadItems);
 licitacionesQuickFilter.addEventListener("change", loadItems);
-searchInput.addEventListener("input", debounce(loadItems, 250));
-calendarSearch.addEventListener("input", debounce(loadCalendarItems, 250));
-calendarStateFilter.addEventListener("change", () => {
-  appState.agendaType = calendarStateFilter.value || "all";
-  loadCalendarItems();
-});
+submitSearchOnEnter(searchInput, loadItems);
+submitSearchOnEnter(calendarSearch, loadCalendarItems);
 agendaWorkbench.addEventListener("click", (event) => {
   const sectionButton = event.target.closest("button[data-workbench-key]");
   if (sectionButton) {
@@ -8158,59 +8711,36 @@ agendaWorkbench.addEventListener("click", (event) => {
   const actuacionButton = event.target.closest("button[data-workbench-actuacion]");
   if (actuacionButton) editActuacion(actuacionButton.dataset.workbenchActuacion);
 });
-document.querySelectorAll("[data-agenda-view]").forEach((button) => {
-  button.addEventListener("click", () => {
-    appState.agendaView = button.dataset.agendaView || "day";
-    const selected = parseDate(appState.calendarSelectedDate) || new Date();
-    appState.calendarDate = new Date(selected.getFullYear(), selected.getMonth(), 1);
-    loadCalendarItems();
-  });
-});
-document.getElementById("calendar-prev").addEventListener("click", () => {
-  const selected = parseDate(appState.calendarSelectedDate) || new Date();
-  const next = appState.agendaView === "month"
-    ? addMonths(appState.calendarDate, -1)
-    : addDays(selected, appState.agendaView === "week" ? -7 : -1);
-  appState.calendarDate = new Date(next.getFullYear(), next.getMonth(), 1);
-  appState.calendarSelectedDate = dateKey(next);
-  loadCalendarItems();
-});
-document.getElementById("calendar-next").addEventListener("click", () => {
-  const selected = parseDate(appState.calendarSelectedDate) || new Date();
-  const next = appState.agendaView === "month"
-    ? addMonths(appState.calendarDate, 1)
-    : addDays(selected, appState.agendaView === "week" ? 7 : 1);
-  appState.calendarDate = new Date(next.getFullYear(), next.getMonth(), 1);
-  appState.calendarSelectedDate = dateKey(next);
-  loadCalendarItems();
-});
-document.getElementById("calendar-today").addEventListener("click", () => {
+function navigateUnifiedAgendaCalendar(action) {
   const today = new Date();
-  appState.calendarDate = new Date(today.getFullYear(), today.getMonth(), 1);
-  appState.calendarSelectedDate = dateKey(today);
+  const next = action === "today"
+    ? today
+    : addMonths(appState.calendarDate, action === "prev" ? -1 : 1);
+  appState.calendarDate = new Date(next.getFullYear(), next.getMonth(), 1);
+  appState.calendarSelectedDate = dateKey(next);
   loadCalendarItems();
-});
-document.getElementById("new-agenda-event-button").addEventListener("click", () => openAgendaEventoDialog());
-document.getElementById("agenda-email-summary-button").addEventListener("click", sendAgendaEmailSummary);
+}
 document.getElementById("close-agenda-event-dialog").addEventListener("click", () => agendaEventDialog.close());
 document.getElementById("cancel-agenda-event-dialog").addEventListener("click", () => agendaEventDialog.close());
 agendaEventForm.addEventListener("submit", saveAgendaEvento);
 agendaEventForm.elements.starts_at.addEventListener("input", () => (
   showDateWarning(agendaEventDateWarning, agendaEventForm.elements.starts_at.value, { required: true })
 ));
-notificationSearch.addEventListener("input", debounce(loadNotifications, 250));
+submitSearchOnEnter(notificationSearch, loadNotifications);
 notificationScope.addEventListener("change", loadNotifications);
 notificationDestination.addEventListener("change", loadNotifications);
 notificationEmailState.addEventListener("change", loadNotifications);
 actuacionesFilter.addEventListener("change", loadActuaciones);
 document.getElementById("new-actuacion-button").addEventListener("click", () => openActuacionDialog());
 document.getElementById("refresh-clients-button")?.addEventListener("click", loadClientes);
-document.getElementById("new-client-button")?.addEventListener("click", resetClientForm);
-document.getElementById("reset-client-form")?.addEventListener("click", resetClientForm);
-clientSearch?.addEventListener("input", debounce(loadClientes, 250));
+document.getElementById("new-client-button")?.addEventListener("click", openNewClientDialog);
+document.getElementById("close-client-dialog")?.addEventListener("click", () => clientDialog.close());
+document.getElementById("cancel-client-dialog")?.addEventListener("click", () => clientDialog.close());
+submitSearchOnEnter(clientSearch, loadClientes);
+clientsStateFilter?.addEventListener("change", loadClientes);
 clientForm?.addEventListener("submit", saveClient);
 document.getElementById("refresh-cliente-envios-button")?.addEventListener("click", loadClienteEnvios);
-clienteEnviosSearch?.addEventListener("input", debounce(loadClienteEnvios, 250));
+submitSearchOnEnter(clienteEnviosSearch, loadClienteEnvios);
 clienteEnviosStateFilter?.addEventListener("change", loadClienteEnvios);
 document.getElementById("close-cliente-envio-dialog")?.addEventListener("click", () => clienteEnvioDialog.close());
 document.getElementById("cancel-cliente-envio-dialog")?.addEventListener("click", () => clienteEnvioDialog.close());
@@ -8245,7 +8775,9 @@ document.getElementById("clear-licitacion-selection").addEventListener("click", 
 actuacionForm.elements.deadline_at.addEventListener("input", () => (
   showDateWarning(actuacionDateWarning, actuacionForm.elements.deadline_at.value)
 ));
-licitacionSelectorSearch.addEventListener("input", debounce(loadLicitacionSelectorResults, 250));
+actuacionForm.elements.tipo.addEventListener("change", updateSuggestedActuacionTitle);
+actuacionForm.elements.cliente_id.addEventListener("change", updateSuggestedActuacionTitle);
+submitSearchOnEnter(licitacionSelectorSearch, loadLicitacionSelectorResults);
 licitacionSelectorForm.addEventListener("submit", (event) => {
   event.preventDefault();
   commitLicitacionSelection();
@@ -8287,6 +8819,9 @@ if (aiSettingsForm) {
   aiSettingsForm.addEventListener("submit", (event) => (
     saveConfigBlock(event, aiSettingsPayload, aiSettingsResult, "Configuración IA guardada.")
   ));
+}
+if (placeSettingsForm) {
+  placeSettingsForm.addEventListener("submit", savePlaceSettingsConfig);
 }
 if (automationSettingsForm) {
   automationSettingsForm.addEventListener("submit", (event) => (
@@ -8333,6 +8868,19 @@ newsAdminBoard.addEventListener("click", (event) => {
 });
 
 document.getElementById("close-licitacion-detail").addEventListener("click", () => licitacionDetailDialog.close());
+licitacionDetailActions.addEventListener("click", (event) => {
+  const editButton = event.target.closest("button[data-edit-id]");
+  if (editButton) return openEditEditor(editButton.dataset.editId);
+  const duplicateButton = event.target.closest("button[data-duplicate-id]");
+  if (duplicateButton) return openDuplicateEditor(duplicateButton.dataset.duplicateId);
+  const newActuacionButton = event.target.closest("button[data-new-actuacion-id]");
+  if (newActuacionButton) return openActuacionDialog(newActuacionButton.dataset.newActuacionId);
+  const deleteButton = event.target.closest("button[data-delete-id]");
+  if (deleteButton) {
+    deleteLicitacion(deleteButton.dataset.deleteId);
+    licitacionDetailDialog.close();
+  }
+});
 
 function activateDetailTab(button) {
   const workspace = button.closest(".licitacion-detail-workspace");
@@ -8686,6 +9234,22 @@ calendarBoard.addEventListener("click", (event) => {
 
 calendarRadar.addEventListener("click", async (event) => {
   if (await handleClienteEnvioUiAction(event.target)) return;
+  const newAgendaEventButton = event.target.closest("button[data-new-agenda-event]");
+  if (newAgendaEventButton) {
+    openAgendaEventoDialog();
+    return;
+  }
+  const showAllCalendarButton = event.target.closest("button[data-calendar-show-all]");
+  if (showAllCalendarButton) {
+    appState.calendarSelectedDate = "";
+    renderCalendar();
+    return;
+  }
+  const calendarNavButton = event.target.closest("button[data-calendar-nav]");
+  if (calendarNavButton) {
+    navigateUnifiedAgendaCalendar(calendarNavButton.dataset.calendarNav);
+    return;
+  }
   const openDetailButton = event.target.closest("button[data-open-licitacion-detail]");
   if (openDetailButton) {
     openLicitacionDetail(openDetailButton.dataset.openLicitacionDetail);
@@ -8724,6 +9288,15 @@ calendarRadar.addEventListener("click", async (event) => {
   const cancelButton = event.target.closest("button[data-agenda-cancel]");
   if (cancelButton) {
     setAgendaEventoEstado(cancelButton.dataset.agendaCancel, "cancelar");
+    return;
+  }
+  const pendingCalendarDay = event.target.closest("[data-pending-calendar-date]");
+  if (pendingCalendarDay) {
+    const selected = parseDate(pendingCalendarDay.dataset.pendingCalendarDate);
+    if (!selected) return;
+    appState.calendarDate = new Date(selected.getFullYear(), selected.getMonth(), 1);
+    appState.calendarSelectedDate = dateKey(selected);
+    renderCalendar();
     return;
   }
   if (!["week", "month"].includes(appState.agendaView)) return;
@@ -8791,10 +9364,15 @@ calendarDayPanel.addEventListener("change", (event) => {
 });
 
 clientsBoard?.addEventListener("click", async (event) => {
-  if (await handleClienteEnvioUiAction(event.target)) return;
-});
-
-clientHistoryBoard?.addEventListener("click", async (event) => {
+  const statusButton = event.target.closest("button[data-client-status]");
+  if (statusButton) {
+    await setClientActive(
+      statusButton.dataset.clientId,
+      statusButton.dataset.clientStatus,
+      statusButton.dataset.clientName || "este cliente",
+    );
+    return;
+  }
   if (await handleClienteEnvioUiAction(event.target)) return;
 });
 
@@ -8904,13 +9482,6 @@ enhanceConfigHelp();
 renderConfigHelpManual();
 
 loadMe().then(() => {
-  window.JustificacionesBaja?.init({
-    bridge: {
-      csrfHeaders,
-      getCurrentUser: () => appState.user,
-      navigate: (_section, title, kicker) => showJustificacionesBajaView(title, kicker),
-    },
-  });
   showInitialView();
   loadAiQueue();
   startAiQueuePolling(15000);

@@ -302,16 +302,6 @@ def test_delete_dia_with_ai_inventory_comments_and_email_records_is_controlled()
             )
             conn.execute(
                 """
-                INSERT INTO licitacion_file_inventory (
-                    licitacion_id, folder_path, relative_path, file_name,
-                    discovered_at, last_seen_at, source
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (licitacion_id, "C:/fake", "doc.pdf", "doc.pdf", timestamp, timestamp, "local_dropbox"),
-            )
-            conn.execute(
-                """
                 INSERT INTO licitacion_path_reconciliation_events (
                     licitacion_id, created_at, result
                 )
@@ -363,7 +353,7 @@ def test_delete_dia_with_ai_inventory_comments_and_email_records_is_controlled()
         assert payload["deleted"]["ai_analysis_jobs"] == 1
         assert payload["deleted"]["ai_summaries"] == 1
         assert payload["deleted"]["ai_usage_log"] == 1
-        assert payload["deleted"]["licitacion_file_inventory"] == 1
+        assert payload["deleted"]["licitacion_file_inventory"] == 0
         assert payload["deleted"]["email_action_codes"] == 1
         assert payload["deleted"]["email_action_events"] == 1
         assert payload["deleted"]["comments_deleted"] == 1

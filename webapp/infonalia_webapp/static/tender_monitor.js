@@ -1,13 +1,19 @@
 (() => {
   "use strict";
 
+  if (window.__llangonTenderMonitorInitialized) return;
+  window.__llangonTenderMonitorInitialized = true;
+
   const state = {
     me: null,
     summary: null,
     followed: [],
     settings: null,
+    history: [],
+    searchQuery: "",
     activeTab: "overview",
     pollTimer: null,
+    panelRequests: new Map(),
   };
 
   const byId = (id) => document.getElementById(id);
@@ -78,11 +84,18 @@
     element.textContent = message;
   }
 
+  function matchesSearch(item, fields) {
+    const query = state.searchQuery.trim().toLocaleLowerCase("es-ES");
+    if (!query) return true;
+    return fields.some((field) => String(item?.[field] ?? "").toLocaleLowerCase("es-ES").includes(query));
+  }
+
   function renderSummary() {
     const item = state.summary || {};
     const counts = item.counts || {};
     const active = item.active_cycle;
     const last = item.last_cycle;
+    const cycle = active || last;
     const banner = byId("tender-monitor-banner");
     if (banner) {
       banner.className = `tender-monitor-banner ${active ? "running" : ""}`;
@@ -94,16 +107,9 @@
     if (!target) return;
     target.innerHTML = `
       <article class="tender-monitor-card"><span>En seguimiento</span><strong>${escapeHtml(counts.followed || 0)}</strong></article>
-      <article class="tender-monitor-card"><span>Preparadas</span><strong>${escapeHtml(counts.prepared || 0)}</strong></article>
       <article class="tender-monitor-card"><span>Requieren atención</span><strong>${escapeHtml((counts.not_prepared || 0) + (counts.discovery_issues || 0))}</strong></article>
-      <article class="tender-monitor-card"><span>Revisadas (último ciclo)</span><strong>${escapeHtml(last?.processed_count || 0)}</strong></article>
-      <article class="tender-monitor-card"><span>Sin cambios</span><strong>${escapeHtml(last?.no_changes_count || 0)}</strong></article>
       <article class="tender-monitor-card"><span>Con novedades</span><strong>${escapeHtml(last?.changes_count || 0)}</strong></article>
-      <article class="tender-monitor-card"><span>Esperando IA</span><strong>${escapeHtml(active?.waiting_ai_count || 0)}</strong></article>
-      <article class="tender-monitor-card"><span>Notificadas</span><strong>${escapeHtml(last?.notified_count || 0)}</strong></article>
-      <article class="tender-monitor-card"><span>Errores</span><strong>${escapeHtml(last?.error_count || 0)}</strong></article>
-      <article class="tender-monitor-card"><span>Incidencias</span><strong>${escapeHtml((active || last)?.incident_count || 0)}</strong></article>
-      <article class="tender-monitor-card"><span>Último ciclo</span><strong>${last ? escapeHtml(`#${last.id}`) : "—"}</strong><small>${last ? escapeHtml(last.status) : "Sin ejecuciones"}</small></article>
+      <article class="tender-monitor-card"><span>Incidencias</span><strong>${escapeHtml((cycle?.error_count || 0) + (cycle?.incident_count || 0))}</strong></article>
     `;
     const runButton = byId("tender-monitor-run-global");
     if (runButton) runButton.disabled = Boolean(active);
@@ -112,24 +118,28 @@
   function renderFollowed() {
     const target = byId("tender-monitor-followed");
     if (!target) return;
-    if (!state.followed.length) {
-      target.innerHTML = `<div class="empty">No hay licitaciones con el marcador físico EnSeguimiento.llangon.</div>`;
+    const items = state.followed.filter((item) => matchesSearch(item, ["id", "expediente", "title", "organismo", "organism", "platform", "last_result", "preparation_reason"]));
+    if (!items.length) {
+      const message = state.followed.length
+        ? "No hay licitaciones que coincidan con la búsqueda."
+        : "No hay licitaciones con el marcador físico EnSeguimiento.llangon.";
+      target.innerHTML = `<div class="empty">${message}</div>`;
       return;
     }
     target.innerHTML = `
       <table class="tender-monitor-table">
         <thead><tr><th>ID</th><th>Expediente</th><th>Plataforma</th><th>Preparación</th><th>Última revisión</th><th>Última novedad</th><th>Resultado</th><th>IA / aviso</th><th></th></tr></thead>
-        <tbody>${state.followed.map((item) => `
+        <tbody>${items.map((item) => `
           <tr>
-            <td>${escapeHtml(item.id)}</td>
-            <td><strong>${escapeHtml(item.expediente || `#${item.id}`)}</strong><br><small>${escapeHtml(item.title)}</small></td>
-            <td>${escapeHtml(item.platform || "—")}</td>
-            <td>${pill(item.prepared ? "Preparada" : "No preparada", item.prepared ? "prepared" : "not_prepared")}<br><small>${escapeHtml(item.preparation_reason || "")}</small></td>
-            <td>${escapeHtml(formatDate(item.last_review))}</td>
-            <td>${escapeHtml(formatDate(item.last_change))}</td>
-            <td>${pill(item.last_result, item.last_result)}</td>
-            <td>${escapeHtml(item.ai_status || "—")} / ${escapeHtml(item.notification_status || "—")}</td>
-            <td class="actions"><button type="button" class="secondary" data-tm-run-id="${escapeHtml(item.id)}" ${item.prepared ? "" : "disabled"}>Revisar</button> <button type="button" class="ghost" data-tm-open-id="${escapeHtml(item.id)}">Ficha</button> <button type="button" class="ghost" data-tm-history-id="${escapeHtml(item.id)}">Histórico</button></td>
+            <td data-label="ID">${escapeHtml(item.id)}</td>
+            <td data-label="Expediente"><strong>${escapeHtml(item.expediente || `#${item.id}`)}</strong><br><small>${escapeHtml(item.title)}</small></td>
+            <td data-label="Plataforma">${escapeHtml(item.platform || "—")}</td>
+            <td data-label="Preparación">${pill(item.prepared ? "Preparada" : "No preparada", item.prepared ? "prepared" : "not_prepared")}<br><small>${escapeHtml(item.preparation_reason || "")}</small></td>
+            <td data-label="Última revisión">${escapeHtml(formatDate(item.last_review))}</td>
+            <td data-label="Última novedad">${escapeHtml(formatDate(item.last_change))}</td>
+            <td data-label="Resultado">${pill(item.last_result, item.last_result)}</td>
+            <td data-label="IA / aviso">${escapeHtml(item.ai_status || "—")} / ${escapeHtml(item.notification_status || "—")}</td>
+            <td class="actions" data-label="Acciones"><button type="button" class="secondary" data-tm-run-id="${escapeHtml(item.id)}" ${item.prepared ? "" : "disabled"}>Revisar</button> <button type="button" class="ghost" data-tm-open-id="${escapeHtml(item.id)}">Ficha</button> <button type="button" class="ghost" data-tm-history-id="${escapeHtml(item.id)}">Histórico</button></td>
           </tr>`).join("")}</tbody>
       </table>`;
   }
@@ -184,17 +194,23 @@
     return params;
   }
 
+  function renderHistory() {
+    const target = byId("tender-monitor-history");
+    if (!target) return;
+    const items = state.history.filter((item) => matchesSearch(item, ["id", "origin", "status", "platform", "requested_licitacion_id"]));
+    target.innerHTML = items.length ? `
+      <table class="tender-monitor-table"><thead><tr><th>Ciclo</th><th>Origen</th><th>Estado</th><th>Procesadas</th><th>Novedades</th><th>Incidencias</th></tr></thead>
+      <tbody>${items.map((item) => `<tr data-tm-cycle-id="${escapeHtml(item.id)}" tabindex="0"><td data-label="Ciclo"><strong>#${escapeHtml(item.id)}</strong><br><small>${escapeHtml(formatDate(item.started_at || item.created_at))}</small></td><td data-label="Origen">${escapeHtml(item.origin)}</td><td data-label="Estado">${pill(item.status, item.status)}</td><td data-label="Procesadas">${escapeHtml(item.processed_count || 0)}/${escapeHtml(item.total_count || 0)}</td><td data-label="Novedades">${escapeHtml(item.changes_count || 0)}</td><td data-label="Incidencias">${escapeHtml(item.incident_count || 0)}</td><td class="tender-monitor-cycle-inline-detail" data-label="Detalle"><details data-tm-cycle-details="${escapeHtml(item.id)}"><summary>Ver detalle del ciclo</summary><div class="tender-monitor-cycle-detail-content"><div class="empty">Despliega para cargar el detalle.</div></div></details></td></tr>`).join("")}</tbody></table>`
+      : `<div class="empty">${state.history.length ? "No hay ciclos que coincidan con la búsqueda." : "No hay ciclos para estos filtros."}</div>`;
+  }
+
   async function loadHistory() {
     const target = byId("tender-monitor-history");
     if (target) target.innerHTML = `<div class="empty">Cargando ciclos…</div>`;
     try {
       const payload = await api(`/api/tender-monitor/cycles?${historyQuery().toString()}`);
-      const items = payload.items || [];
-      if (!target) return;
-      target.innerHTML = items.length ? `
-        <table class="tender-monitor-table"><thead><tr><th>Ciclo</th><th>Origen</th><th>Estado</th><th>Procesadas</th><th>Novedades</th><th>Incidencias</th></tr></thead>
-        <tbody>${items.map((item) => `<tr data-tm-cycle-id="${escapeHtml(item.id)}" tabindex="0"><td><strong>#${escapeHtml(item.id)}</strong><br><small>${escapeHtml(formatDate(item.started_at || item.created_at))}</small></td><td>${escapeHtml(item.origin)}</td><td>${pill(item.status, item.status)}</td><td>${escapeHtml(item.processed_count || 0)}/${escapeHtml(item.total_count || 0)}</td><td>${escapeHtml(item.changes_count || 0)}</td><td>${escapeHtml(item.incident_count || 0)}</td></tr>`).join("")}</tbody></table>`
-        : `<div class="empty">No hay ciclos para estos filtros.</div>`;
+      state.history = payload.items || [];
+      renderHistory();
     } catch (error) {
       if (target) target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
     }
@@ -207,16 +223,19 @@
     return `<div class="tender-monitor-detail-item"><strong>${escapeHtml(item.channel)} · ${escapeHtml(item.destination)}</strong> ${pill(item.status, item.status)}<p>${escapeHtml(item.error_message || "")}</p>${retry}</div>`;
   }
 
-  function renderCycleDetail(item) {
-    const target = byId("tender-monitor-cycle-detail");
+  function renderCycleDetail(item, target = byId("tender-monitor-cycle-detail")) {
     if (!target) return;
     const executions = item.executions || [];
     const incidents = item.incidents || [];
     target.innerHTML = `
       <h3>Ciclo #${escapeHtml(item.id)}</h3>
       <p>${pill(item.status, item.status)} · ${escapeHtml(formatDate(item.started_at || item.created_at))}</p>
-      <h4>Licitaciones</h4>
-      <div class="tender-monitor-detail-list">${executions.length ? executions.map((execution) => {
+      <h4>Incidencias</h4>
+      <div class="tender-monitor-detail-list">${incidents.length ? incidents.map((incident) => `<div class="tender-monitor-detail-item"><strong>${escapeHtml(incident.phase)} · ${escapeHtml(incident.code)}</strong><p>${escapeHtml(incident.summary)}</p>${incident.technical_detail ? `<small>${escapeHtml(incident.technical_detail)}</small>` : ""}</div>`).join("") : `<div class="empty">Sin incidencias.</div>`}</div>
+      ${isAdmin() && item.incident_report?.status === "failed" ? `<button type="button" class="secondary" data-tm-retry-report="${escapeHtml(item.id)}">Reintentar informe de incidencias</button>` : ""}
+      <details class="tender-monitor-cycle-tenders">
+        <summary>Licitaciones (${escapeHtml(executions.length)})</summary>
+        <div class="tender-monitor-detail-list">${executions.length ? executions.map((execution) => {
         const batch = execution.batch;
         const differences = batch?.differences || [];
         const notifications = batch?.notifications || [];
@@ -230,18 +249,15 @@
           ${isAdmin() && execution.log?.length ? `<details><summary>Log técnico</summary><pre>${escapeHtml(JSON.stringify(execution.log, null, 2))}</pre></details>` : ""}
           ${isAdmin() && execution.status === "error" ? `<button type="button" class="secondary" data-tm-retry-execution="${escapeHtml(execution.id)}">Reintentar licitación</button>` : ""}
         </div>`;
-      }).join("") : `<div class="empty">Sin ejecuciones.</div>`}</div>
-      <h4>Incidencias</h4>
-      <div class="tender-monitor-detail-list">${incidents.length ? incidents.map((incident) => `<div class="tender-monitor-detail-item"><strong>${escapeHtml(incident.phase)} · ${escapeHtml(incident.code)}</strong><p>${escapeHtml(incident.summary)}</p>${incident.technical_detail ? `<small>${escapeHtml(incident.technical_detail)}</small>` : ""}</div>`).join("") : `<div class="empty">Sin incidencias.</div>`}</div>
-      ${isAdmin() && item.incident_report?.status === "failed" ? `<button type="button" class="secondary" data-tm-retry-report="${escapeHtml(item.id)}">Reintentar informe de incidencias</button>` : ""}
+        }).join("") : `<div class="empty">Sin ejecuciones.</div>`}</div>
+      </details>
     `;
   }
 
-  async function loadCycleDetail(cycleId) {
-    const target = byId("tender-monitor-cycle-detail");
+  async function loadCycleDetail(cycleId, target = byId("tender-monitor-cycle-detail")) {
     if (target) target.innerHTML = `<div class="empty">Cargando detalle…</div>`;
     try {
-      renderCycleDetail(await api(`/api/tender-monitor/cycles/${encodeURIComponent(cycleId)}`));
+      renderCycleDetail(await api(`/api/tender-monitor/cycles/${encodeURIComponent(cycleId)}`), target);
     } catch (error) {
       if (target) target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
     }
@@ -252,15 +268,14 @@
     const target = byId("tender-monitor-settings");
     if (!target) return;
     const values = payload.values || {};
-    const users = payload.users || [];
+    const users = (payload.users || []).filter((user) => matchesSearch(user, ["username", "display_name", "email", "telegram_chat_id"]));
     target.innerHTML = `
       <h3>Configuración global</h3>
       <p class="tender-monitor-banner">${escapeHtml(payload.automatic_message)}</p>
       <form id="tender-monitor-settings-form">
         <div class="tender-monitor-setting-grid">
-          <label>Programación automática<input value="Desactivada" disabled></label>
-          <label>Periodicidad futura<input name="future_frequency" value="${escapeHtml(values.future_frequency || "manual")}"></label>
-          <label>Hora futura<input name="future_time" type="time" value="${escapeHtml(values.future_time || "")}"></label>
+          <label>Programación automática<input value="${payload.automatic_enabled ? "Activa" : "Desactivada"}" disabled></label>
+          <label>Franjas diarias<input value="${escapeHtml((payload.automatic_schedule || "08:00,13:00,18:00").replaceAll(",", " · "))}" disabled></label>
           <label>Tiempo máximo IA (segundos)<input name="ai_timeout_seconds" type="number" min="5" max="86400" value="${escapeHtml(values.ai_timeout_seconds || 900)}"></label>
           <label>Intentos de consulta<input name="download_retries" type="number" min="1" max="5" value="${escapeHtml(values.download_retries || 2)}"></label>
           <label>Intentos de aviso<input name="notification_retries" type="number" min="1" max="5" value="${escapeHtml(values.notification_retries || 2)}"></label>
@@ -296,7 +311,7 @@
 
   async function saveSettings(form) {
     const values = {};
-    for (const name of ["future_frequency", "future_time", "ai_timeout_seconds", "download_retries", "notification_retries", "lease_minutes"]) {
+    for (const name of ["ai_timeout_seconds", "download_retries", "notification_retries", "lease_minutes"]) {
       values[name] = form.elements[name].value;
     }
     values.ai_enabled = form.elements.ai_enabled.checked ? "1" : "0";
@@ -333,6 +348,12 @@
     if (tab === "settings") loadSettings();
   }
 
+  function applySearch() {
+    if (state.activeTab === "overview") renderFollowed();
+    if (state.activeTab === "history") renderHistory();
+    if (state.activeTab === "settings" && state.settings) renderSettings(state.settings);
+  }
+
   function tenderPanelHtml(licitacion) {
     return `<section class="tender-monitor-panel-card" data-tender-monitor-panel-card="${escapeHtml(licitacion.id)}">
       <div class="tender-monitor-panel-head"><div><p class="eyebrow">Monitor de licitaciones</p><h4>Seguimiento y monitorización</h4></div></div>
@@ -340,39 +361,106 @@
     </section>`;
   }
 
-  async function loadTenderPanel(element) {
+  function tenderPanelsWithin(node) {
+    if (!node || node.nodeType !== 1) return [];
+    const panels = [];
+    if (node.matches?.("[data-tender-monitor-panel-card]")) panels.push(node);
+    node.querySelectorAll?.("[data-tender-monitor-panel-card]").forEach((panel) => panels.push(panel));
+    return panels;
+  }
+
+  function releaseTenderPanel(element) {
     const id = element.dataset.tenderMonitorPanelCard;
-    if (!id || element.dataset.loading === "1") return;
-    element.dataset.loading = "1";
-    try {
-      await ensureMe();
-      const payload = await api(`/api/tender-monitor/licitaciones/${encodeURIComponent(id)}`);
-      const monitor = payload.monitor || {};
-      const executions = payload.executions || [];
-      element.innerHTML = `
-        <div class="tender-monitor-panel-head"><div><p class="eyebrow">Seguimiento y monitorización</p><h4>${monitor.followed ? "En seguimiento" : "Fuera de seguimiento"}</h4></div>${pill(monitor.prepared ? "Preparada" : "No preparada", monitor.prepared ? "prepared" : "not_prepared")}</div>
-        <p>${escapeHtml(monitor.reason || "La licitación está lista para revisión técnica.")}</p>
-        <div class="tender-monitor-panel-actions">
-          ${(isAdmin() || state.me.role === "nuria") && monitor.prepared ? `<button type="button" class="primary" data-tm-run-id="${escapeHtml(id)}">Revisar ahora</button>` : ""}
-          ${isAdmin() ? `<button type="button" class="secondary" data-tm-follow-id="${escapeHtml(id)}" data-active="${monitor.followed ? "0" : "1"}">${monitor.followed ? "Dejar de seguir" : "Seguir"}</button>` : ""}
-          ${isAdmin() && monitor.prepared ? `<button type="button" class="ghost" data-tm-rebuild-id="${escapeHtml(id)}">Reconstruir línea base</button>` : ""}
-          <button type="button" class="ghost" data-tm-history-id="${escapeHtml(id)}">${isAdmin() ? "Ver histórico completo" : "Actualizar historial"}</button>
-        </div>
-        <div class="tender-monitor-detail-list">${executions.slice(0, 5).map((execution) => `<div class="tender-monitor-detail-item"><strong>${escapeHtml(formatDate(execution.finished_at || execution.started_at))}</strong> ${pill(execution.status, execution.status)}<p>IA: ${escapeHtml(execution.ai_status)} · Avisos: ${escapeHtml(execution.notification_status)}</p></div>`).join("") || `<div class="empty">Todavía no se ha revisado.</div>`}</div>`;
-    } catch (error) {
-      element.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
-    } finally {
-      element.dataset.loading = "0";
+    const request = state.panelRequests.get(id);
+    if (request) {
+      request.elements.delete(element);
+      if (!request.elements.size) {
+        state.panelRequests.delete(id);
+        request.controller.abort();
+      }
+    }
+    delete element.dataset.monitorInitialized;
+    delete element.dataset.monitorState;
+  }
+
+  function loadTenderPanel(element) {
+    const id = element.dataset.tenderMonitorPanelCard;
+    if (!id || element.isConnected === false) return Promise.resolve();
+
+    const current = state.panelRequests.get(id);
+    if (element.dataset.monitorInitialized === "1") {
+      return current?.promise || Promise.resolve();
+    }
+
+    element.dataset.monitorInitialized = "1";
+    element.dataset.monitorState = "loading";
+
+    if (current) {
+      current.elements.add(element);
+      return current.promise;
+    }
+
+    const controller = new AbortController();
+    const request = { controller, elements: new Set([element]), promise: null };
+    state.panelRequests.set(id, request);
+    request.promise = (async () => {
+      try {
+        await ensureMe();
+        if (controller.signal.aborted) return;
+        const payload = await api(`/api/tender-monitor/licitaciones/${encodeURIComponent(id)}`, { signal: controller.signal });
+        const monitor = payload.monitor || {};
+        const executions = payload.executions || [];
+        request.elements.forEach((panel) => {
+          if (panel.isConnected === false) return;
+          panel.dataset.monitorState = "success";
+          panel.innerHTML = `
+            <div class="tender-monitor-panel-head"><div><p class="eyebrow">Seguimiento y monitorización</p><h4>${monitor.followed ? "En seguimiento" : "Fuera de seguimiento"}</h4></div>${pill(monitor.prepared ? "Preparada" : "No preparada", monitor.prepared ? "prepared" : "not_prepared")}</div>
+            <p>${escapeHtml(monitor.reason || "La licitación está lista para revisión técnica.")}</p>
+            <div class="tender-monitor-panel-actions">
+              ${(isAdmin() || state.me.role === "nuria") && monitor.prepared ? `<button type="button" class="primary" data-tm-run-id="${escapeHtml(id)}">Revisar ahora</button>` : ""}
+              ${isAdmin() ? `<button type="button" class="secondary" data-tm-follow-id="${escapeHtml(id)}" data-active="${monitor.followed ? "0" : "1"}">${monitor.followed ? "Dejar de seguir" : "Seguir"}</button>` : ""}
+              ${isAdmin() && monitor.prepared ? `<button type="button" class="ghost" data-tm-rebuild-id="${escapeHtml(id)}">Reconstruir línea base</button>` : ""}
+              <button type="button" class="ghost" data-tm-history-id="${escapeHtml(id)}">${isAdmin() ? "Ver histórico completo" : "Actualizar historial"}</button>
+            </div>
+            <div class="tender-monitor-detail-list">${executions.slice(0, 5).map((execution) => `<div class="tender-monitor-detail-item"><strong>${escapeHtml(formatDate(execution.finished_at || execution.started_at))}</strong> ${pill(execution.status, execution.status)}<p>IA: ${escapeHtml(execution.ai_status)} · Avisos: ${escapeHtml(execution.notification_status)}</p></div>`).join("") || `<div class="empty">Todavía no se ha revisado.</div>`}</div>`;
+        });
+      } catch (error) {
+        if (error.name === "AbortError") return;
+        request.elements.forEach((panel) => {
+          if (panel.isConnected === false) return;
+          panel.dataset.monitorState = "error";
+          panel.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+        });
+      } finally {
+        if (state.panelRequests.get(id) === request) state.panelRequests.delete(id);
+      }
+    })();
+    return request.promise;
+  }
+
+  function scanTenderPanels(scope = document) {
+    tenderPanelsWithin(scope).forEach(loadTenderPanel);
+    if (scope === document) {
+      document.querySelectorAll("[data-tender-monitor-panel-card]").forEach(loadTenderPanel);
     }
   }
 
-  function scanTenderPanels() {
-    document.querySelectorAll("[data-tender-monitor-panel-card]").forEach(loadTenderPanel);
+  function observeTenderPanels(records) {
+    records.forEach((record) => {
+      record.removedNodes.forEach((node) => tenderPanelsWithin(node).forEach(releaseTenderPanel));
+      record.addedNodes.forEach((node) => scanTenderPanels(node));
+    });
   }
 
   function refreshTenderPanels(id) {
+    const request = state.panelRequests.get(String(id));
+    if (request) {
+      state.panelRequests.delete(String(id));
+      request.controller.abort();
+    }
     document.querySelectorAll(`[data-tender-monitor-panel-card="${id}"]`).forEach((element) => {
-      element.dataset.loading = "0";
+      delete element.dataset.monitorInitialized;
+      delete element.dataset.monitorState;
       loadTenderPanel(element);
     });
   }
@@ -418,9 +506,24 @@
   root?.addEventListener("click", (event) => {
     const tab = event.target.closest("[data-tender-monitor-tab]");
     if (tab) setTab(tab.dataset.tenderMonitorTab);
+    if (event.target.closest("[data-tm-cycle-details]")) return;
     const cycle = event.target.closest("[data-tm-cycle-id]");
+    if (cycle && window.matchMedia("(max-width: 640px)").matches) return;
     if (cycle) loadCycleDetail(cycle.dataset.tmCycleId);
   });
+
+  root?.addEventListener("toggle", (event) => {
+    const details = event.target.closest?.("[data-tm-cycle-details]");
+    if (!details?.open || details.dataset.loaded === "1") return;
+    if (window.matchMedia("(max-width: 640px)").matches) {
+      root.querySelectorAll("[data-tm-cycle-details][open]").forEach((other) => {
+        if (other !== details) other.open = false;
+      });
+    }
+    details.dataset.loaded = "1";
+    const target = details.querySelector(".tender-monitor-cycle-detail-content");
+    loadCycleDetail(details.dataset.tmCycleDetails, target);
+  }, true);
 
   document.addEventListener("click", (event) => {
     const run = event.target.closest("[data-tm-run-id]");
@@ -461,6 +564,10 @@
     loadDashboard();
     if (state.activeTab === "history") loadHistory();
   });
+  byId("tender-monitor-search")?.addEventListener("input", (event) => {
+    state.searchQuery = event.target.value;
+    applySearch();
+  });
   byId("tender-monitor-history-filters")?.addEventListener("submit", (event) => {
     event.preventDefault();
     loadHistory();
@@ -471,7 +578,7 @@
     saveSettings(event.target);
   });
 
-  new MutationObserver(scanTenderPanels).observe(document.body, { childList: true, subtree: true });
+  new MutationObserver(observeTenderPanels).observe(document.body, { childList: true, subtree: true });
 
   window.TenderMonitorUI = {
     show: async () => {

@@ -169,8 +169,25 @@ if (Test-Path -LiteralPath $LockPath) {
 Write-WebLog "Ejecutando proceso web en primer plano. El healthcheck posterior lo realiza serve.py."
 $StdoutPath = Resolve-LogOutputPath -PreferredPath $StdoutPath -Prefix "web.stdout"
 $StderrPath = Resolve-LogOutputPath -PreferredPath $StderrPath -Prefix "web.stderr"
-& $Python -u -m webapp.infonalia_webapp.serve 1>> $StdoutPath 2>> $StderrPath
-$ExitCode = $LASTEXITCODE
+$PreviousErrorActionPreference = $ErrorActionPreference
+$HasNativeErrorPreference = Test-Path -LiteralPath Variable:\PSNativeCommandUseErrorActionPreference
+$PreviousNativeErrorPreference = if ($HasNativeErrorPreference) { $PSNativeCommandUseErrorActionPreference } else { $null }
+try {
+    # La salida stderr del servidor (por ejemplo, un BrokenPipe de un cliente que
+    # se desconecta) es diagnóstica y nunca debe terminar el wrapper PowerShell.
+    $ErrorActionPreference = "Continue"
+    if ($HasNativeErrorPreference) {
+        $PSNativeCommandUseErrorActionPreference = $false
+    }
+    & $Python -u -m webapp.infonalia_webapp.serve 1>> $StdoutPath 2>> $StderrPath
+    $ExitCode = $LASTEXITCODE
+}
+finally {
+    $ErrorActionPreference = $PreviousErrorActionPreference
+    if ($HasNativeErrorPreference) {
+        $PSNativeCommandUseErrorActionPreference = $PreviousNativeErrorPreference
+    }
+}
 if ($null -eq $ExitCode) {
     $ExitCode = 0
 }

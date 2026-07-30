@@ -106,6 +106,21 @@ def ensure_tender_monitor_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS tender_monitor_baselines (
+            licitacion_id INTEGER PRIMARY KEY,
+            snapshot_id INTEGER NOT NULL,
+            execution_id INTEGER,
+            reason TEXT NOT NULL,
+            schema_version INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (licitacion_id) REFERENCES licitaciones(id),
+            FOREIGN KEY (snapshot_id) REFERENCES tender_monitor_snapshots(id),
+            FOREIGN KEY (execution_id) REFERENCES tender_monitor_executions(id)
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS tender_monitor_batches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             cycle_id INTEGER NOT NULL,
@@ -268,8 +283,18 @@ def ensure_tender_monitor_schema(conn: sqlite3.Connection) -> None:
     )
 
     cycle_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(tender_monitor_cycles)")}
-    if "created_at" not in cycle_columns:
-        conn.execute("ALTER TABLE tender_monitor_cycles ADD COLUMN created_at TEXT")
+    additive_cycle_columns = {
+        "created_at": "TEXT",
+        "worker_launcher_pid": "INTEGER",
+        "worker_pid": "INTEGER",
+        "worker_started_at": "TEXT",
+        "worker_finished_at": "TEXT",
+        "worker_exit_code": "INTEGER",
+        "worker_log_path": "TEXT",
+    }
+    for column, definition in additive_cycle_columns.items():
+        if column not in cycle_columns:
+            conn.execute(f"ALTER TABLE tender_monitor_cycles ADD COLUMN {column} {definition}")
     conn.execute(
         "UPDATE tender_monitor_cycles SET created_at = COALESCE(created_at, started_at, ?) WHERE created_at IS NULL",
         (_now_iso(),),
@@ -281,6 +306,7 @@ def ensure_tender_monitor_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_tender_monitor_executions_licitacion ON tender_monitor_executions(licitacion_id, id)",
         "CREATE INDEX IF NOT EXISTS idx_tender_monitor_executions_status ON tender_monitor_executions(status, id)",
         "CREATE INDEX IF NOT EXISTS idx_tender_monitor_snapshots_licitacion ON tender_monitor_snapshots(licitacion_id, confirmed_at, id)",
+        "CREATE INDEX IF NOT EXISTS idx_tender_monitor_baselines_snapshot ON tender_monitor_baselines(snapshot_id)",
         "CREATE INDEX IF NOT EXISTS idx_tender_monitor_batches_licitacion ON tender_monitor_batches(licitacion_id, created_at, id)",
         "CREATE INDEX IF NOT EXISTS idx_tender_monitor_differences_batch ON tender_monitor_differences(batch_id, id)",
         "CREATE INDEX IF NOT EXISTS idx_tender_monitor_notifications_status ON tender_monitor_notifications(status, next_attempt_at)",
@@ -300,19 +326,53 @@ def ensure_tender_monitor_schema(conn: sqlite3.Connection) -> None:
             (key, value, timestamp),
         )
 
-    # The automatic task is intentionally and unconditionally left disabled.
-    table = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'automation_tasks'"
-    ).fetchone()
-    if table:
-        conn.execute(
-            """
-            INSERT INTO automation_tasks (key, enabled, schedule_value, updated_at, updated_by)
-            VALUES ('monitor_licitaciones', 0, NULL, ?, 'system')
-            ON CONFLICT(key) DO UPDATE SET enabled = 0,
-                schedule_value = NULL,
-                updated_at = excluded.updated_at,
-                updated_by = 'system'
+    # Backfill only states that a real monitor execution confirmed. Historical
+    # normal_download_import rows that were never reviewed are deliberately
+    # excluded so a direct download cannot silently consume future novelty.
+    licitacion_ids = conn.execute(
+        """
+        SELECT DISTINCT snapshots.licitacion_id
+        FROM tender_monitor_snapshots AS snapshots
+        LEFT JOIN tender_monitor_baselines AS baselines
+          ON baselines.licitacion_id = snapshots.licitacion_id
+        WHERE baselines.licitacion_id IS NULL
+        """
+    ).fetchall()
+    confirmed_statuses = (
+        "baseline_rebuilt",
+        "no_changes",
+        "changes",
+        "notified",
+        "no_recipients",
+        "notification_failed",
+        "partial",
+    )
+    status_placeholders = ",".join("?" for _ in confirmed_statuses)
+    for row in licitacion_ids:
+        licitacion_id = int(row[0])
+        candidate = conn.execute(
+            f"""
+            SELECT s.id AS snapshot_id, e.id AS execution_id,
+                   COALESCE(e.finished_at, s.confirmed_at) AS confirmed_at
+            FROM tender_monitor_snapshots AS s
+            LEFT JOIN tender_monitor_executions AS e
+              ON e.current_snapshot_id = s.id
+             AND e.status IN ({status_placeholders})
+            WHERE s.licitacion_id = ?
+              AND (s.source IN ('monitor', 'baseline_rebuilt') OR e.id IS NOT NULL)
+            ORDER BY COALESCE(e.finished_at, s.confirmed_at) DESC, s.id DESC, e.id DESC
+            LIMIT 1
             """,
-            (timestamp,),
-        )
+            (*confirmed_statuses, licitacion_id),
+        ).fetchone()
+        if candidate:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO tender_monitor_baselines (
+                    licitacion_id, snapshot_id, execution_id, reason, schema_version, updated_at
+                ) VALUES (?, ?, ?, 'migration', 1, ?)
+                """,
+                (licitacion_id, int(candidate["snapshot_id"] if isinstance(candidate, sqlite3.Row) else candidate[0]),
+                 candidate["execution_id"] if isinstance(candidate, sqlite3.Row) else candidate[1],
+                 str(candidate["confirmed_at"] if isinstance(candidate, sqlite3.Row) else candidate[2]) or timestamp),
+            )

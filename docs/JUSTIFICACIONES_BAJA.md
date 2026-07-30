@@ -1,5 +1,11 @@
 # Justificaciones de ofertas anormalmente bajas
 
+## Estado de integración
+
+El módulo está integrado técnicamente en el repositorio, incluidas su lógica de dominio, persistencia, API privada, generación documental, activos de interfaz y pruebas. Actualmente está retirado de la Suite por decisión de producto: `index.html` no carga sus activos, no existe entrada de navegación, no se monta su pantalla y las fichas de licitación no ofrecen acciones de justificaciones de baja.
+
+Esta retirada no elimina el módulo ni sus contratos técnicos. Para retomarlo habrá que volver a conectar de forma explícita los activos `static/justificaciones_baja.js` y `.css`, el contenedor de pantalla, la navegación y las acciones de la ficha ampliada.
+
 ## Alcance
 
 El módulo prepara borradores estimativos para un único lote. No reparte costes entre lotes, no sustituye la contabilidad del cliente y no usa IA para decidir importes. La empresa cliente debe revisar y validar los costes, medios y argumentos antes de presentar el documento.

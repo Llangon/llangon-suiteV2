@@ -14,8 +14,11 @@ from webapp.infonalia_webapp.clientes_envios import (
     ensure_client_shipments_schema,
     generate_cliente_envio_draft,
     get_cliente,
+    list_clientes,
     list_dropbox_folder_files,
     mark_cliente_envio_sent,
+    set_cliente_active,
+    update_cliente_envio,
     validate_selected_attachments,
 )
 from webapp.infonalia_webapp.dropbox_paths import DropboxPathError
@@ -115,10 +118,92 @@ def test_client_schema_adds_new_fields_to_existing_table() -> None:
     )
 
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(clientes)").fetchall()}
-    assert {"nombre_comercial", "email_principal", "tipo_cliente", "plantilla_contractual"} <= columns
+    assert {
+        "nombre_comercial",
+        "email_principal",
+        "tipo_cliente",
+        "plantilla_contractual",
+        "activo",
+        "desactivado_at",
+        "desactivado_by",
+    } <= columns
     assert cliente["display_name"] == "Legacy"
+    assert cliente["activo"] is True
     assert cliente["email_principal"] == "legacy@example.test"
     assert cliente["tipo_cliente"] == "Recurrente"
+
+
+def test_cliente_status_filters_and_reversible_deactivation_are_idempotent() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_client_shipments_schema(conn)
+    cliente = create_test_cliente(conn, nombre="Cliente Estado", email="estado@example.test")
+
+    assert [item["id"] for item in list_clientes(conn)] == [cliente["id"]]
+    assert list_clientes(conn, estado="inactivos") == []
+
+    inactive = set_cliente_active(
+        conn,
+        int(cliente["id"]),
+        active=False,
+        user_id="admin_test",
+        timestamp="2026-07-09T11:00:00",
+    )
+    repeated = set_cliente_active(
+        conn,
+        int(cliente["id"]),
+        active=False,
+        user_id="otro_admin",
+        timestamp="2026-07-09T11:30:00",
+    )
+
+    assert inactive["activo"] is False
+    assert repeated["desactivado_at"] == "2026-07-09T11:00:00"
+    assert repeated["desactivado_by"] == "admin_test"
+    assert list_clientes(conn) == []
+    assert [item["id"] for item in list_clientes(conn, estado="inactivos")] == [cliente["id"]]
+    assert [item["id"] for item in list_clientes(conn, estado="todos", search="Estado")] == [cliente["id"]]
+
+    active = set_cliente_active(
+        conn,
+        int(cliente["id"]),
+        active=True,
+        user_id="admin_test",
+        timestamp="2026-07-09T12:00:00",
+    )
+    assert active["activo"] is True
+    assert active["desactivado_at"] == ""
+    assert active["desactivado_by"] == ""
+
+
+def test_cliente_status_endpoints_are_admin_only_and_keep_history() -> None:
+    app = load_app_module()
+    with temporary_app_database(app):
+        with app.db_session() as conn:
+            cliente = create_test_cliente(conn, nombre="Cliente Endpoint Estado", email="estado-api@example.test")
+
+        forbidden = make_handler(
+            app,
+            "POST",
+            f"/api/clientes/{cliente['id']}/desactivar",
+            username="reviewer_test",
+            role="nuria",
+        )
+        dispatch(forbidden, "POST")
+        deactivate = make_handler(app, "POST", f"/api/clientes/{cliente['id']}/desactivar")
+        dispatch(deactivate, "POST")
+        default_list = make_handler(app, "GET", "/api/clientes")
+        dispatch(default_list, "GET")
+        inactive_list = make_handler(app, "GET", "/api/clientes?estado=inactivos&q=Endpoint")
+        dispatch(inactive_list, "GET")
+        reactivate = make_handler(app, "POST", f"/api/clientes/{cliente['id']}/reactivar")
+        dispatch(reactivate, "POST")
+
+    assert forbidden.responses[-1][0] == HTTPStatus.FORBIDDEN
+    assert deactivate.responses[-1][1]["item"]["activo"] is False
+    assert default_list.responses[-1][1]["items"] == []
+    assert [item["id"] for item in inactive_list.responses[-1][1]["items"]] == [cliente["id"]]
+    assert reactivate.responses[-1][1]["item"]["activo"] is True
 
 
 def test_init_db_repairs_client_schema_when_migration_was_already_applied(tmp_path: Path) -> None:
@@ -214,6 +299,70 @@ def test_create_cliente_and_envio_from_licitacion_records_history(monkeypatch, t
     assert [item["id"] for item in cliente_detalle["envios"]] == [envio["id"]]
 
 
+def test_inactive_cliente_rejects_new_envio_but_existing_envio_can_continue(monkeypatch, tmp_path: Path) -> None:
+    app = load_app_module()
+    base = configure_dropbox_base(monkeypatch, tmp_path)
+    folder_path = create_dropbox_folder(base, folder_name="Cliente Inactivo")
+
+    with temporary_app_database(app):
+        licitacion_id = create_test_licitacion(app, expediente="CLI-INACTIVO-001")
+        with app.db_session() as conn:
+            cliente = create_test_cliente(conn, nombre="Cliente Inactivo", email="inactivo@example.test")
+            envio = create_cliente_envio(
+                conn,
+                {
+                    "cliente_id": cliente["id"],
+                    "licitacion_id": licitacion_id,
+                    "tipo_envio": "ficha_inicial",
+                    "estado": "en_preparacion",
+                    "carpeta_dropbox": folder_path,
+                    "adjuntos": ["ficha.pdf"],
+                },
+                user_id="admin_test",
+                timestamp=TIMESTAMP,
+            )
+            set_cliente_active(
+                conn,
+                int(cliente["id"]),
+                active=False,
+                user_id="admin_test",
+                timestamp="2026-07-09T11:00:00",
+            )
+
+            with pytest.raises(ValueError, match="desactivado"):
+                create_cliente_envio(
+                    conn,
+                    {
+                        "cliente_id": cliente["id"],
+                        "licitacion_id": licitacion_id,
+                        "tipo_envio": "otro",
+                        "estado": "en_preparacion",
+                        "carpeta_dropbox": folder_path,
+                        "adjuntos": ["ficha.pdf"],
+                    },
+                    user_id="admin_test",
+                    timestamp="2026-07-09T11:05:00",
+                )
+
+            updated = update_cliente_envio(
+                conn,
+                int(envio["id"]),
+                {
+                    "cliente_id": cliente["id"],
+                    "licitacion_id": licitacion_id,
+                    "tipo_envio": "ficha_inicial",
+                    "estado": "listo_para_preparar_correo",
+                    "carpeta_dropbox": folder_path,
+                    "adjuntos": ["ficha.pdf"],
+                },
+                user_id="admin_test",
+                timestamp="2026-07-09T11:10:00",
+            )
+
+    assert updated["estado"] == "listo_para_preparar_correo"
+    assert updated["cliente_activo"] is False
+
+
 def test_create_envio_endpoint_accepts_base_route(monkeypatch, tmp_path: Path) -> None:
     app = load_app_module()
     base = configure_dropbox_base(monkeypatch, tmp_path)
@@ -240,6 +389,56 @@ def test_create_envio_endpoint_accepts_base_route(monkeypatch, tmp_path: Path) -
     assert item["cliente_id"] == cliente["id"]
     assert item["licitacion_id"] == licitacion_id
     assert item["attachment_count"] == 1
+
+
+def test_delete_envio_endpoint_is_admin_only_and_keeps_dropbox_files(monkeypatch, tmp_path: Path) -> None:
+    app = load_app_module()
+    base = configure_dropbox_base(monkeypatch, tmp_path)
+    folder_path = create_dropbox_folder(base, folder_name="Cliente Eliminar")
+    source_file = base / folder_path / "ficha.pdf"
+
+    with temporary_app_database(app):
+        licitacion_id = create_test_licitacion(app, expediente="CLI-ENV-DELETE")
+        with app.db_session() as conn:
+            cliente = create_test_cliente(conn, nombre="Cliente Eliminar", email="eliminar@example.test")
+            envio = create_cliente_envio(
+                conn,
+                {
+                    "cliente_id": cliente["id"],
+                    "licitacion_id": licitacion_id,
+                    "tipo_envio": "ficha_inicial",
+                    "estado": "en_preparacion",
+                    "carpeta_dropbox": folder_path,
+                    "adjuntos": ["ficha.pdf"],
+                },
+                user_id="admin_test",
+                timestamp=TIMESTAMP,
+            )
+
+        forbidden = make_handler(
+            app,
+            "DELETE",
+            f"/api/cliente-envios/{envio['id']}",
+            username="reviewer_test",
+            role="nuria",
+        )
+        dispatch(forbidden, "DELETE")
+
+        handler = make_handler(app, "DELETE", f"/api/cliente-envios/{envio['id']}")
+        dispatch(handler, "DELETE")
+
+        with app.db_session() as conn:
+            envio_count = conn.execute("SELECT COUNT(*) FROM cliente_envios WHERE id = ?", (envio["id"],)).fetchone()[0]
+            attachment_count = conn.execute("SELECT COUNT(*) FROM cliente_envio_adjuntos WHERE envio_id = ?", (envio["id"],)).fetchone()[0]
+            event_count = conn.execute("SELECT COUNT(*) FROM cliente_envio_eventos WHERE envio_id = ?", (envio["id"],)).fetchone()[0]
+
+    assert forbidden.responses[-1][0] == HTTPStatus.FORBIDDEN
+    assert handler.responses[-1][0] == HTTPStatus.OK
+    assert handler.responses[-1][1]["item"]["id"] == envio["id"]
+    assert envio_count == 0
+    assert attachment_count == 0
+    assert event_count == 0
+    assert source_file.exists()
 
 
 def test_list_dropbox_folder_files_excludes_temp_empty_and_prepared_files(monkeypatch, tmp_path: Path) -> None:

@@ -61,193 +61,14 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
 
     applied = run_migrations(conn, now=lambda: "2026-06-12T10:00:00")
 
-    assert applied == [
-        "0001_baseline_schema",
-        "0002_download_jobs",
-        "0003_import_history",
-        "0004_actuaciones",
-        "0005_actuaciones_multilicitacion",
-        "0006_agenda_eventos",
-        "0007_storage_uploads",
-        "0008_licitaciones_center",
-        "0009_licitaciones_estados_operativos",
-        "0010_licitaciones_seguimiento_markers",
-        "0011_monitor_licitaciones_v0",
-        "0012_monitor_inventory_v05",
-        "0013_ai_analysis_phase1",
-        "0014_ai_jobs_dismissed",
-        "0015_ai_jobs_progress",
-        "0016_ai_analysis_notifications",
-        "0017_comments_unified",
-        "0018_email_action_codes",
-        "0019_email_action_events",
-        "0020_infonalia_email_imports",
-        "0021_download_jobs_request_metadata",
-        "0022_ai_notifications_pdf_delivery",
-        "0023_telegram_user_fields",
-        "0024_email_action_events_telegram_notifications",
-        "0025_infonalia_email_imports_telegram_notifications",
-        "0026_automation_orchestrator",
-        "0027_clientes_envios",
-        "0028_licitacion_tipo_publicacion",
-        "0029_justificaciones_baja",
-        "0035_tender_monitor_e2e",
-    ]
+    assert applied == [migration.version for migration in MIGRATIONS]
     assert table_exists(conn, MIGRATIONS_TABLE)
     rows = conn.execute(
         f"SELECT version, description, applied_at FROM {MIGRATIONS_TABLE}"
     ).fetchall()
     assert rows == [
-        (
-            "0001_baseline_schema",
-            "Baseline del esquema historico gestionado por init_db",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0002_download_jobs",
-            "Tabla preparatoria para jobs de descarga",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0003_import_history",
-            "Tablas preparatorias para historial de importaciones",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0004_actuaciones",
-            "Tabla operativa para actuaciones y vencimientos",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0005_actuaciones_multilicitacion",
-            "Modelo independiente de actuaciones con vinculos multiples e historial",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0006_agenda_eventos",
-            "Eventos internos para Agenda operativa",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0007_storage_uploads",
-            "Auditoria de almacenamiento local y Dropbox",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0008_licitaciones_center",
-            "Campos de trabajo, seguimiento e historial para licitaciones",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0009_licitaciones_estados_operativos",
-            "Normalizacion de estados operativos de licitaciones",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0010_licitaciones_seguimiento_markers",
-            "Cache derivada de marcadores Dropbox para seguimiento",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0011_monitor_licitaciones_v0",
-            "Monitor V0 local con runs e inventario de ficheros",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0012_monitor_inventory_v05",
-            "Clasificacion documental del inventario Monitor V0.5",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0013_ai_analysis_phase1",
-            "Analisis IA Gemini Fase 1 con jobs, summaries y usage log",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0014_ai_jobs_dismissed",
-            "Marca de descarte UI para jobs IA historicos",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0015_ai_jobs_progress",
-            "Campos de progreso y control para la cola IA",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0016_ai_analysis_notifications",
-            "Avisos por email asociados a jobs de analisis IA",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0017_comments_unified",
-            "Comentarios unificados por entidad",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0018_email_action_codes",
-            "Codigos de accion por correo para revision Infonalia",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0019_email_action_events",
-            "Auditoria de acciones por correo de revision Infonalia",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0020_infonalia_email_imports",
-            "Control idempotente de importaciones de correos Infonalia",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0021_download_jobs_request_metadata",
-            "Metadatos de solicitud para jobs de descarga por email",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0022_ai_notifications_pdf_delivery",
-            "Metadatos PDF y adjuntos para avisos de análisis IA",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0023_telegram_user_fields",
-            "Campos de Telegram en usuarios para avisos internos",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0024_email_action_events_telegram_notifications",
-            "Seguimiento y deduplicacion de avisos Telegram para acciones por correo",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0025_infonalia_email_imports_telegram_notifications",
-            "Seguimiento y deduplicacion de avisos Telegram para importaciones Infonalia",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0026_automation_orchestrator",
-            "Orquestador interno unico de automatizaciones",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0027_clientes_envios",
-            "Modulo base de clientes y envios documentales",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0028_licitacion_tipo_publicacion",
-            "Tipo de publicacion para separar licitaciones y anuncios previos",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0029_justificaciones_baja",
-            "Borradores, versiones y documentos de justificaciones de baja",
-            "2026-06-12T10:00:00",
-        ),
-        (
-            "0035_tender_monitor_e2e",
-            "Ciclos, snapshots, lotes, IA, notificaciones e incidencias del monitor de licitaciones",
-            "2026-06-12T10:00:00",
-        ),
+        (migration.version, migration.description, "2026-06-12T10:00:00")
+        for migration in MIGRATIONS
     ]
     assert table_exists(conn, "download_jobs")
     assert table_exists(conn, "import_runs")
@@ -259,8 +80,37 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
     assert table_exists(conn, "storage_uploads")
     assert table_exists(conn, "licitacion_historial")
     assert table_exists(conn, "licitacion_seguimiento_novedades")
+    assert table_exists(conn, "infonalia_activity_events")
     assert table_exists(conn, "monitor_runs")
-    assert table_exists(conn, "licitacion_file_inventory")
+    assert not table_exists(conn, "licitacion_file_inventory")
+
+
+def test_clientes_activos_migration_defaults_legacy_clients_to_active() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE clientes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            razon_social TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO clientes (razon_social, created_at, updated_at) VALUES (?, ?, ?)",
+        ("Cliente previo", "2026-07-16T10:00:00", "2026-07-16T10:00:00"),
+    )
+
+    run_migrations(conn, now=lambda: "2026-07-16T11:00:00")
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(clientes)").fetchall()}
+    indexes = {row[1] for row in conn.execute("PRAGMA index_list(clientes)").fetchall()}
+    row = conn.execute("SELECT activo, desactivado_at, desactivado_by FROM clientes WHERE id = 1").fetchone()
+    assert {"activo", "desactivado_at", "desactivado_by"} <= columns
+    assert "idx_clientes_activo_nombre" in indexes
+    assert tuple(row) == (1, None, None)
     assert table_exists(conn, "monitor_vencimiento_alerts")
     assert table_exists(conn, "ai_analysis_jobs")
     assert table_exists(conn, "ai_summaries")
@@ -269,12 +119,21 @@ def test_run_migrations_creates_table_and_records_baseline() -> None:
     assert table_exists(conn, "comments")
     assert table_exists(conn, "email_action_codes")
     assert table_exists(conn, "email_action_events")
+    email_action_event_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(email_action_events)").fetchall()
+    }
+    assert {
+        "download_job_id",
+        "execution_status",
+        "failure_stage",
+        "failure_code",
+        "failure_detail",
+        "telegram_notification_attempt_count",
+        "telegram_notification_next_attempt_at",
+        "telegram_notification_claimed_at",
+    } <= email_action_event_columns
     assert table_exists(conn, "infonalia_email_imports")
-    assert table_exists(conn, "justificaciones_baja")
-    assert table_exists(conn, "justificacion_baja_versiones")
-    assert table_exists(conn, "justificacion_baja_documentos")
-    assert table_exists(conn, "justificacion_baja_assets")
-    assert table_exists(conn, "justificacion_baja_historial")
+    assert table_exists(conn, "infonalia_email_import_claims")
     ai_job_columns = {row[1] for row in conn.execute("PRAGMA table_info(ai_analysis_jobs)").fetchall()}
     assert {"dismissed_at", "dismissed_by"} | AI_JOB_PROGRESS_COLUMNS <= ai_job_columns
     assert not table_exists(conn, "licitacion_actuaciones")
@@ -308,71 +167,14 @@ def test_run_migrations_is_idempotent() -> None:
     conn = sqlite3.connect(":memory:")
 
     assert run_migrations(conn, now=lambda: "2026-06-12T10:00:00") == [
-        "0001_baseline_schema",
-        "0002_download_jobs",
-        "0003_import_history",
-        "0004_actuaciones",
-        "0005_actuaciones_multilicitacion",
-        "0006_agenda_eventos",
-        "0007_storage_uploads",
-        "0008_licitaciones_center",
-        "0009_licitaciones_estados_operativos",
-        "0010_licitaciones_seguimiento_markers",
-        "0011_monitor_licitaciones_v0",
-        "0012_monitor_inventory_v05",
-        "0013_ai_analysis_phase1",
-        "0014_ai_jobs_dismissed",
-        "0015_ai_jobs_progress",
-        "0016_ai_analysis_notifications",
-        "0017_comments_unified",
-        "0018_email_action_codes",
-        "0019_email_action_events",
-        "0020_infonalia_email_imports",
-        "0021_download_jobs_request_metadata",
-        "0022_ai_notifications_pdf_delivery",
-        "0023_telegram_user_fields",
-        "0024_email_action_events_telegram_notifications",
-        "0025_infonalia_email_imports_telegram_notifications",
-        "0026_automation_orchestrator",
-        "0027_clientes_envios",
-        "0028_licitacion_tipo_publicacion",
-        "0029_justificaciones_baja",
-        "0035_tender_monitor_e2e",
+        migration.version for migration in MIGRATIONS
     ]
     assert run_migrations(conn, now=lambda: "2026-06-12T10:05:00") == []
 
     rows = conn.execute(f"SELECT version, applied_at FROM {MIGRATIONS_TABLE}").fetchall()
     assert rows == [
-        ("0001_baseline_schema", "2026-06-12T10:00:00"),
-        ("0002_download_jobs", "2026-06-12T10:00:00"),
-        ("0003_import_history", "2026-06-12T10:00:00"),
-        ("0004_actuaciones", "2026-06-12T10:00:00"),
-        ("0005_actuaciones_multilicitacion", "2026-06-12T10:00:00"),
-        ("0006_agenda_eventos", "2026-06-12T10:00:00"),
-        ("0007_storage_uploads", "2026-06-12T10:00:00"),
-        ("0008_licitaciones_center", "2026-06-12T10:00:00"),
-        ("0009_licitaciones_estados_operativos", "2026-06-12T10:00:00"),
-        ("0010_licitaciones_seguimiento_markers", "2026-06-12T10:00:00"),
-        ("0011_monitor_licitaciones_v0", "2026-06-12T10:00:00"),
-        ("0012_monitor_inventory_v05", "2026-06-12T10:00:00"),
-        ("0013_ai_analysis_phase1", "2026-06-12T10:00:00"),
-        ("0014_ai_jobs_dismissed", "2026-06-12T10:00:00"),
-        ("0015_ai_jobs_progress", "2026-06-12T10:00:00"),
-        ("0016_ai_analysis_notifications", "2026-06-12T10:00:00"),
-        ("0017_comments_unified", "2026-06-12T10:00:00"),
-        ("0018_email_action_codes", "2026-06-12T10:00:00"),
-        ("0019_email_action_events", "2026-06-12T10:00:00"),
-        ("0020_infonalia_email_imports", "2026-06-12T10:00:00"),
-        ("0021_download_jobs_request_metadata", "2026-06-12T10:00:00"),
-        ("0022_ai_notifications_pdf_delivery", "2026-06-12T10:00:00"),
-        ("0023_telegram_user_fields", "2026-06-12T10:00:00"),
-        ("0024_email_action_events_telegram_notifications", "2026-06-12T10:00:00"),
-        ("0025_infonalia_email_imports_telegram_notifications", "2026-06-12T10:00:00"),
-        ("0026_automation_orchestrator", "2026-06-12T10:00:00"),
-        ("0027_clientes_envios", "2026-06-12T10:00:00"),
-        ("0028_licitacion_tipo_publicacion", "2026-06-12T10:00:00"),
-        ("0029_justificaciones_baja", "2026-06-12T10:00:00"),
-        ("0035_tender_monitor_e2e", "2026-06-12T10:00:00"),
+        (migration.version, "2026-06-12T10:00:00")
+        for migration in MIGRATIONS
     ]
 
 
@@ -853,6 +655,119 @@ def test_infonalia_email_imports_telegram_notifications_migration_updates_existi
     assert "0025_infonalia_email_imports_telegram_notifications" in applied_migration_versions(conn)
 
 
+def test_infonalia_email_claims_migration_updates_existing_database() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        f"""
+        CREATE TABLE {MIGRATIONS_TABLE} (
+            version TEXT PRIMARY KEY,
+            description TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    old_migrations = [
+        migration
+        for migration in MIGRATIONS
+        if migration.version != "0033_infonalia_email_import_claims"
+    ]
+    conn.executemany(
+        f"INSERT INTO {MIGRATIONS_TABLE} (version, description, applied_at) VALUES (?, ?, ?)",
+        [(migration.version, migration.description, "2026-06-12T10:00:00") for migration in old_migrations],
+    )
+
+    applied = run_migrations(conn, now=lambda: "2026-07-16T14:00:00")
+
+    assert applied == ["0033_infonalia_email_import_claims"]
+    assert table_exists(conn, "infonalia_email_import_claims")
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(infonalia_email_import_claims)")}
+    assert {"dedupe_key", "message_id", "body_hash", "claimed_at", "status", "import_id"} <= columns
+    assert run_migrations(conn, now=lambda: "2026-07-16T14:05:00") == []
+
+
+def test_email_action_terminal_notifications_migration_updates_existing_database() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        f"""
+        CREATE TABLE {MIGRATIONS_TABLE} (
+            version TEXT PRIMARY KEY,
+            description TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    old_migrations = [
+        migration
+        for migration in MIGRATIONS
+        if migration.version != "0034_email_action_terminal_notifications"
+    ]
+    conn.executemany(
+        f"INSERT INTO {MIGRATIONS_TABLE} (version, description, applied_at) VALUES (?, ?, ?)",
+        [(migration.version, migration.description, "2026-07-16T14:00:00") for migration in old_migrations],
+    )
+    conn.execute(
+        """
+        CREATE TABLE email_action_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            source_message_id TEXT,
+            from_email TEXT,
+            subject TEXT,
+            code TEXT,
+            action_code TEXT,
+            action_name TEXT,
+            review_id INTEGER,
+            licitacion_id INTEGER,
+            previous_status TEXT,
+            new_status TEXT,
+            result TEXT NOT NULL,
+            reason TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE download_jobs (
+            id INTEGER PRIMARY KEY,
+            licitacion_id INTEGER NOT NULL,
+            request_message_id TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO email_action_events (
+            id, created_at, source_message_id, action_code, action_name,
+            licitacion_id, result, reason
+        )
+        VALUES (3, '2026-07-16T14:30:00', '<navarra>', '03', 'Preparar ficha', 9, 'processed', '')
+        """
+    )
+    conn.execute(
+        "INSERT INTO download_jobs (id, licitacion_id, request_message_id) VALUES (7, 9, '<navarra>')"
+    )
+
+    applied = run_migrations(conn, now=lambda: "2026-07-16T15:00:00")
+
+    assert applied == ["0034_email_action_terminal_notifications"]
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(email_action_events)").fetchall()}
+    assert {
+        "download_job_id",
+        "execution_status",
+        "failure_stage",
+        "failure_code",
+        "failure_detail",
+        "telegram_notification_attempt_count",
+        "telegram_notification_next_attempt_at",
+        "telegram_notification_claimed_at",
+    } <= columns
+    row = conn.execute("SELECT * FROM email_action_events WHERE id = 3").fetchone()
+    assert row["download_job_id"] == 7
+    assert row["execution_status"] == "legacy"
+    assert run_migrations(conn, now=lambda: "2026-07-16T15:05:00") == []
+
+
 def test_import_history_migration_schema_is_idempotent() -> None:
     conn = sqlite3.connect(":memory:")
 
@@ -942,6 +857,7 @@ def test_actuaciones_migration_schema_is_idempotent() -> None:
         "updated_at": "TEXT",
         "closed_at": "TEXT",
         "closed_by": "TEXT",
+        "cliente_id": "INTEGER",
     }
     indexes = {
         row[1]

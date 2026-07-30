@@ -87,19 +87,25 @@ def _licitacion_selection_dict(row: sqlite3.Row) -> dict[str, object]:
         "expediente": row["expediente"] or "",
         "organismo": row["organismo"] or "",
         "objeto": row["objeto"] or "",
+        "tipo": row["tipo"] or "",
+        "presupuesto": row["presupuesto"],
         "fecha_limite": row["fecha_limite"] or "",
         "hora_limite": row["hora_limite"] or "",
         "estado": row["estado"] or "",
         "provincia": row["provincia"] or "",
         "plataforma": row["plataforma"] or "",
+        "enlace_perfil": row["enlace_perfil"] or "",
+        "enlace_infonalia": row["enlace_infonalia"] or "",
+        "ruta_carpeta": row["ruta_carpeta"] or "",
     }
 
 
 def _actuacion_licitaciones(conn: sqlite3.Connection, actuacion_id: int) -> list[dict[str, object]]:
     rows = conn.execute(
         """
-        SELECT l.id, l.expediente, l.organismo, l.objeto, l.fecha_limite, l.hora_limite,
-               l.estado, l.provincia, l.plataforma
+        SELECT l.id, l.expediente, l.organismo, l.objeto, l.tipo, l.presupuesto,
+               l.fecha_limite, l.hora_limite, l.estado, l.provincia, l.plataforma,
+               l.enlace_perfil, l.enlace_infonalia, l.ruta_carpeta
         FROM actuacion_licitaciones al
         JOIN licitaciones l ON l.id = al.licitacion_id
         WHERE al.actuacion_id = ?
@@ -208,7 +214,8 @@ def agenda_actuacion_events(conn: sqlite3.Connection, *, current: datetime) -> l
 def agenda_licitacion_events(conn: sqlite3.Connection, *, current: datetime) -> list[dict[str, object]]:
     rows = conn.execute(
         """
-        SELECT id, expediente, objeto, organismo, fecha_limite, hora_limite, estado, provincia, plataforma
+        SELECT id, expediente, objeto, organismo, tipo, presupuesto, fecha_limite, hora_limite,
+               estado, provincia, plataforma, enlace_perfil, enlace_infonalia, ruta_carpeta
         FROM licitaciones
         WHERE fecha_limite IS NOT NULL
           AND fecha_limite <> ''

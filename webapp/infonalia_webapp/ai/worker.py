@@ -8,9 +8,17 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 try:
-    from ..app import db_session
+    from ..app import (
+        db_session,
+        finalize_email_ai_action_events_for_job,
+        notify_pending_email_action_telegram_events,
+    )
 except ImportError:  # pragma: no cover
-    from webapp.infonalia_webapp.app import db_session
+    from webapp.infonalia_webapp.app import (
+        db_session,
+        finalize_email_ai_action_events_for_job,
+        notify_pending_email_action_telegram_events,
+    )
 
 from .config import get_ai_config
 from .queue import mark_stale_jobs_in_conn, next_pending_job, update_job
@@ -98,6 +106,22 @@ def process_one_job(job_id: int | None = None) -> dict[str, object] | None:
             job.get("error_code") if isinstance(job, dict) else "",
             round(duration, 2),
         )
+        try:
+            terminal = finalize_email_ai_action_events_for_job(conn, job_id)
+            conn.commit()
+            telegram_results = []
+            for licitacion_id in terminal.get("licitacion_ids", []):
+                telegram_results.append(
+                    notify_pending_email_action_telegram_events(licitacion_id=int(licitacion_id))
+                )
+            if isinstance(payload, dict) and telegram_results:
+                payload["nuria_action_telegram_notifications"] = telegram_results
+        except Exception as exc:
+            LOGGER.exception(
+                "No se pudo finalizar el aviso de la orden de Nuria para el job IA %s: %s",
+                job_id,
+                exc,
+            )
         return payload
 
 

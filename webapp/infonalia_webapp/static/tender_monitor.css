@@ -24,6 +24,15 @@
   gap: .75rem;
 }
 
+.tender-monitor-search {
+  display: block;
+}
+
+.tender-monitor-search input {
+  width: 100%;
+  min-height: 44px;
+}
+
 .tender-monitor-card,
 .tender-monitor-detail,
 .tender-monitor-settings,
@@ -161,6 +170,24 @@
   white-space: pre-wrap;
 }
 
+.tender-monitor-cycle-tenders {
+  margin-top: 1rem;
+  border-top: 1px solid var(--border, #dfe3e8);
+}
+
+.tender-monitor-cycle-tenders summary {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  color: var(--primary, #1d5f51);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.tender-monitor-cycle-tenders[open] > .tender-monitor-detail-list {
+  padding-top: .25rem;
+}
+
 .tender-monitor-detail pre {
   max-width: 100%;
   overflow: auto;
@@ -169,6 +196,10 @@
   background: #172033;
   color: #f7f8fa;
   font-size: .72rem;
+}
+
+.tender-monitor-cycle-inline-detail {
+  display: none;
 }
 
 .tender-monitor-setting-grid {
@@ -196,22 +227,6 @@
 
 .tender-monitor-recipient label {
   white-space: nowrap;
-}
-
-.legacy-automation-console {
-  margin-top: 1.25rem;
-  border-top: 1px solid var(--border, #dfe3e8);
-  padding-top: 1rem;
-}
-
-.legacy-automation-console > summary {
-  cursor: pointer;
-  color: var(--muted, #667085);
-  font-weight: 700;
-}
-
-.legacy-automation-actions {
-  margin: 1rem 0;
 }
 
 .tender-monitor-panel-card {
@@ -246,8 +261,257 @@
 }
 
 @media (max-width: 640px) {
-  .tender-monitor-summary,
-  .tender-monitor-filters { grid-template-columns: 1fr; }
-  .tender-monitor-recipient { grid-template-columns: 1fr 1fr; }
-  .tender-monitor-recipient > strong { grid-column: 1 / -1; }
+  #monitor-section > .section-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  #monitor-section > .section-head .section-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  #monitor-section > .section-head .section-actions button,
+  .tender-monitor-filters > button {
+    min-height: 44px;
+    width: 100%;
+  }
+
+  #automation-section > .section-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  #automation-section > .section-head .section-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  #automation-section > .section-head .section-actions button {
+    min-height: 44px;
+    width: 100%;
+  }
+
+  .tender-monitor {
+    gap: .6rem;
+  }
+
+  .tender-monitor-banner {
+    padding: .75rem;
+    font-size: .88rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .tender-monitor-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .5rem;
+  }
+
+  .tender-monitor-card {
+    min-width: 0;
+    min-height: 64px;
+    padding: .5rem .65rem;
+  }
+
+  .tender-monitor-card span {
+    min-height: 0;
+    margin-bottom: .15rem;
+    font-size: .7rem;
+    line-height: 1.15;
+  }
+
+  .tender-monitor-card strong {
+    font-size: 1.2rem;
+    line-height: 1.1;
+  }
+
+  .tender-monitor-search input {
+    min-height: 42px;
+  }
+
+  .tender-monitor-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+  }
+
+  .tender-monitor-tabs button {
+    min-width: 0;
+    min-height: 44px;
+    padding: .65rem .3rem;
+    font-size: .82rem;
+  }
+
+  .tender-monitor-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .tender-monitor-filters input,
+  .tender-monitor-filters select,
+  .tender-monitor-setting-grid input,
+  .tender-monitor-setting-grid select {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .tender-monitor-table-wrap {
+    overflow: visible;
+  }
+
+  .tender-monitor-table,
+  .tender-monitor-table tbody,
+  .tender-monitor-table tr,
+  .tender-monitor-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .tender-monitor-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .tender-monitor-table tr {
+    margin-bottom: .75rem;
+    padding: .3rem .75rem;
+    border: 1px solid var(--border, #dfe3e8);
+    border-radius: .75rem;
+    background: var(--surface, #fff);
+  }
+
+  .tender-monitor-table td {
+    display: grid;
+    grid-template-columns: minmax(92px, .38fr) minmax(0, 1fr);
+    gap: .65rem;
+    padding: .6rem 0;
+    overflow-wrap: anywhere;
+  }
+
+  .tender-monitor-table td::before {
+    content: attr(data-label);
+    color: var(--muted, #667085);
+    font-size: .7rem;
+    font-weight: 800;
+    letter-spacing: .035em;
+    text-transform: uppercase;
+  }
+
+  .tender-monitor-table td:last-child {
+    border-bottom: 0;
+  }
+
+  .tender-monitor-table td.actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .45rem;
+    white-space: normal;
+  }
+
+  .tender-monitor-table td.actions::before {
+    flex: 0 0 100%;
+  }
+
+  .tender-monitor-table td.actions button {
+    flex: 1 1 88px;
+    min-height: 42px;
+    margin: 0;
+  }
+
+  .tender-monitor-table td.tender-monitor-cycle-inline-detail {
+    display: block;
+    padding-top: .45rem;
+  }
+
+  .tender-monitor-history-layout > .tender-monitor-detail {
+    display: none;
+  }
+
+  .tender-monitor-table td.tender-monitor-cycle-inline-detail::before {
+    display: none;
+  }
+
+  .tender-monitor-cycle-inline-detail details {
+    border-top: 1px solid var(--border, #dfe3e8);
+  }
+
+  .tender-monitor-cycle-inline-detail summary {
+    min-height: 42px;
+    display: flex;
+    align-items: center;
+    color: var(--primary, #1d5f51);
+    cursor: pointer;
+    font-weight: 700;
+  }
+
+  .tender-monitor-cycle-detail-content {
+    display: grid;
+    gap: .75rem;
+    padding: .2rem 0 .35rem;
+  }
+
+  .tender-monitor-cycle-detail-content h3 {
+    display: none;
+  }
+
+  .tender-monitor-detail {
+    max-height: none;
+    overflow: visible;
+    padding: .8rem;
+  }
+
+  .tender-monitor-detail-item {
+    overflow-wrap: anywhere;
+  }
+
+  .tender-monitor-detail-item ul {
+    padding-left: 1.1rem;
+  }
+
+  .tender-monitor-settings {
+    padding: .8rem;
+  }
+
+  .tender-monitor-recipient {
+    grid-template-columns: 1fr;
+    gap: .6rem;
+  }
+
+  .tender-monitor-recipient > strong,
+  .tender-monitor-recipient > span {
+    grid-column: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .tender-monitor-recipient label {
+    white-space: normal;
+  }
+
+  .tender-monitor-recipient > span,
+  .tender-monitor-panel-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .45rem;
+  }
+
+  .tender-monitor-recipient > span button,
+  .tender-monitor-panel-actions button {
+    min-height: 42px;
+    width: 100%;
+  }
+
+  .tender-monitor-panel-head {
+    flex-direction: column;
+  }
+
 }

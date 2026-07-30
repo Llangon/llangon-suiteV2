@@ -10,8 +10,6 @@ from zoneinfo import ZoneInfo
 
 from .config import MonitorConfigError, load_monitor_config
 from .email import prepare_monitor_emails
-from .inventory import InventoryFile, scan_inventory_files
-from .document_summary import build_document_summary
 from .platforms import check_followed_platforms
 from .repository import (
     TASK_TYPE_AGENDA_DIARIA,
@@ -66,7 +64,6 @@ except ImportError:
 APP_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB_PATH = APP_ROOT / "data" / "infonalia.db"
 load_env_file(APP_ROOT / ".env")
-SOURCE_LOCAL_DROPBOX = "local_dropbox"
 ALL_MODES = {"dry-run", "repair-routes", "inventory", "sync", "monitor"}
 EmailSender = Callable[[str, str, str, str], tuple[str | None, str | None]]
 AUTOMATION_MODE_MANUAL = "manual"
@@ -224,13 +221,10 @@ def table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 
 def mode_steps(mode: str) -> set[str]:
-    if mode == "repair-routes":
+    # ``inventory`` is kept as a compatibility alias for existing jobs and
+    # clients. The file census is retired; both modes now only reconcile paths.
+    if mode in {"repair-routes", "inventory"}:
         return {"repair"}
-    if mode == "inventory":
-        steps = {"inventory"}
-        if env_bool("LLANGON_FILE_INVENTORY_RECONCILE_PATHS", True):
-            steps.add("repair")
-        return steps
     return {"repair", "follow", "platforms", "email"}
 
 
@@ -309,93 +303,6 @@ def sync_follow_status(
                 (active, timestamp, timestamp, marker_path, timestamp, marker.licitacion_id),
             )
     return updates
-
-
-def upsert_inventory_file(conn: sqlite3.Connection, item: InventoryFile, timestamp: str) -> None:
-    conn.execute(
-        """
-        INSERT INTO licitacion_file_inventory (
-            licitacion_id,
-            folder_path,
-            relative_path,
-            file_name,
-            extension,
-            file_type,
-            folder_type,
-            is_relevant,
-            is_system_file,
-            size_bytes,
-            modified_at,
-            discovered_at,
-            last_seen_at,
-            checksum,
-            is_missing,
-            missing_since,
-            source
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL, ?)
-        ON CONFLICT(licitacion_id, relative_path, source) DO UPDATE SET
-            folder_path = excluded.folder_path,
-            file_name = excluded.file_name,
-            extension = excluded.extension,
-            file_type = excluded.file_type,
-            folder_type = excluded.folder_type,
-            is_relevant = excluded.is_relevant,
-            is_system_file = excluded.is_system_file,
-            size_bytes = excluded.size_bytes,
-            modified_at = excluded.modified_at,
-            last_seen_at = excluded.last_seen_at,
-            is_missing = 0,
-            missing_since = NULL
-        """,
-        (
-            item.licitacion_id,
-            str(item.folder_path),
-            item.relative_path,
-            item.file_name,
-            item.extension,
-            item.file_type,
-            item.folder_type,
-            1 if item.is_relevant else 0,
-            1 if item.is_system_file else 0,
-            item.size_bytes,
-            item.modified_at,
-            timestamp,
-            timestamp,
-            SOURCE_LOCAL_DROPBOX,
-        ),
-    )
-
-
-def inventory_files(
-    conn: sqlite3.Connection,
-    scan_result: ScanResult,
-    dry_run: bool,
-    timestamp: str,
-    warnings: list[MonitorIssue],
-    *,
-    max_files: int = 1000,
-    max_depth: int = 8,
-) -> list[dict[str, object]]:
-    markers, _rows = existing_markers(conn, scan_result, warnings)
-    discovered: list[dict[str, object]] = []
-    for marker in markers:
-        files = scan_inventory_files(marker, max_files=max_files, max_depth=max_depth)
-        discovered.extend(item.to_dict() for item in files)
-        if dry_run:
-            continue
-        conn.execute(
-            """
-            UPDATE licitacion_file_inventory
-            SET is_missing = 1,
-                missing_since = COALESCE(missing_since, ?)
-            WHERE licitacion_id = ? AND source = ?
-            """,
-            (timestamp, marker.licitacion_id, SOURCE_LOCAL_DROPBOX),
-        )
-        for item in files:
-            upsert_inventory_file(conn, item, timestamp)
-    return discovered
 
 
 def create_monitor_run(
@@ -495,6 +402,7 @@ def run_monitor(
     db_path: str | Path | None = None,
     root: str | Path | None = None,
     normalize_folder_path: FolderNormalizer | None = None,
+    schedule_key: str = "",
 ) -> dict[str, object]:
     clean_mode = normalize_mode(mode)
     effective_dry_run = True if clean_mode == "dry-run" else bool(dry_run)
@@ -517,6 +425,7 @@ def run_monitor(
             root_path=config.root_path,
             started_at=started_at,
             dry_run=effective_dry_run,
+            schedule_key=clean_text(schedule_key),
         )
         conn.commit()
 
@@ -553,18 +462,10 @@ def run_monitor(
             "emails_sent_count": 0,
             "platform_changes": [],
             "email_drafts": [],
-            "inventory_files": [],
             "inventory_files_count": 0,
-            "relevant_files_count": 0,
-            "system_files_count": 0,
-            "document_summaries": [],
             "conflicts": [issue.to_dict() for issue in scan_result.conflicts],
             "warnings": [],
-            "task_details": {
-                "inventory_max_files_per_folder": env_int("LLANGON_FILE_INVENTORY_MAX_FILES_PER_RUN", 1000),
-                "inventory_max_depth": env_int("LLANGON_FILE_INVENTORY_MAX_DEPTH", 8),
-                "inventory_reconcile_paths": env_bool("LLANGON_FILE_INVENTORY_RECONCILE_PATHS", True),
-            },
+            "task_details": {"operation": "marker_route_reconciliation"},
         }
 
         steps = mode_steps(clean_mode)
@@ -599,37 +500,6 @@ def run_monitor(
             report["emails_prepared_count"] = email_result.get("emails_prepared_count", 0)
             report["emails_sent_count"] = email_result.get("emails_sent_count", 0)
             report["email_drafts"] = email_result.get("drafts", [])[:20]
-        if "inventory" in steps:
-            max_files = env_int("LLANGON_FILE_INVENTORY_MAX_FILES_PER_RUN", 1000)
-            max_depth = env_int("LLANGON_FILE_INVENTORY_MAX_DEPTH", 8)
-            report["task_details"] = {
-                **dict(report.get("task_details") or {}),
-                "inventory_max_files_per_folder": max_files,
-                "inventory_max_depth": max_depth,
-            }
-            inventory = inventory_files(
-                conn,
-                scan_result,
-                effective_dry_run,
-                timestamp,
-                warnings,
-                max_files=max_files,
-                max_depth=max_depth,
-            )
-            report["inventory_files"] = inventory[:200]
-            report["inventory_files_count"] = len(inventory)
-            report["relevant_files_count"] = sum(
-                1 for item in inventory if item.get("is_relevant") and not item.get("is_system_file")
-            )
-            report["system_files_count"] = sum(1 for item in inventory if item.get("is_system_file"))
-            summaries_by_id: dict[int, list[dict[str, object]]] = {}
-            for item in inventory:
-                summaries_by_id.setdefault(int(item["licitacion_id"]), []).append(item)
-            report["document_summaries"] = [
-                build_document_summary(licitacion_id, rows)
-                for licitacion_id, rows in sorted(summaries_by_id.items())
-            ]
-
         report["warnings"] = [issue.to_dict() for issue in dedupe_issues(warnings)]
         report["folders_broken_count"] = len(report["conflicts"])
         report["finished_at"] = now_iso()

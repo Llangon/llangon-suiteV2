@@ -22,7 +22,7 @@ No retirar esa configuracion hasta tener dominio definitivo y autorizacion expre
 
 1. Confirmar que la web no contiene datos privados.
 2. Copiar `.firebaserc.example` como `.firebaserc` en la raiz del proyecto.
-3. Sustituir `REPLACE_WITH_FIREBASE_PROJECT_ID` por el proyecto autorizado.
+3. Confirmar que el proyecto configurado es `llangon`, proyecto definitivo de la web pública.
 4. Abrir una terminal en la raiz del proyecto.
 5. Instalar la herramienta de Firebase si fuera necesario:
 

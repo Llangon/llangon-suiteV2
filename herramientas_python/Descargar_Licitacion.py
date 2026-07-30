@@ -3,6 +3,14 @@ import subprocess
 import sys
 from urllib.parse import urlparse
 
+try:
+    from descargadores.common.destination_lock import DestinationBusyError, destination_lock
+except ImportError:  # Importación como módulo desde la raíz del repositorio.
+    from herramientas_python.descargadores.common.destination_lock import (
+        DestinationBusyError,
+        destination_lock,
+    )
+
 
 def log(mensaje=""):
     print(mensaje, flush=True)
@@ -35,6 +43,31 @@ def leer_url_desde_http_url(carpeta):
                 return linea[4:].strip()
 
     return ""
+
+
+def extraer_destino(opciones, carpeta_predeterminada):
+    restantes = []
+    destino = carpeta_predeterminada
+    indice = 0
+
+    while indice < len(opciones):
+        opcion = opciones[indice]
+        if opcion == "--destino":
+            if indice + 1 >= len(opciones):
+                raise ValueError("Falta la carpeta después de --destino.")
+            destino = opciones[indice + 1]
+            indice += 2
+            continue
+        if opcion.startswith("--destino="):
+            destino = opcion.split("=", 1)[1]
+            if not destino:
+                raise ValueError("Falta la carpeta después de --destino=.")
+            indice += 1
+            continue
+        restantes.append(opcion)
+        indice += 1
+
+    return os.path.abspath(os.path.expanduser(destino)), restantes
 
 
 def detectar_plataforma(url):
@@ -76,6 +109,12 @@ def detectar_plataforma(url):
     ):
         return "CATALUNYA"
 
+    if host in {"hacienda.navarra.es", "licitacionelectronica.navarra.es"}:
+        return "NAVARRA"
+
+    if host == "contratosdegalicia.gal" or host.endswith(".contratosdegalicia.gal"):
+        return "XUNTA_DE_GALICIA"
+
     return ""
 
 
@@ -84,29 +123,29 @@ def ejecutar(script, argumentos, carpeta_destino):
         log(f"No se encuentra el script necesario: {script}")
         return 1
 
+    carpeta_destino = os.path.abspath(carpeta_destino)
+    os.makedirs(carpeta_destino, exist_ok=True)
     comando = [sys.executable, script] + argumentos + ["--destino", carpeta_destino]
-    completed = subprocess.run(
-        comando,
-        cwd=carpeta_destino,
-        capture_output=True,
-        text=True,
-    )
+    child_environment = os.environ.copy()
+    child_environment["PYTHONIOENCODING"] = "utf-8"
+    try:
+        with destination_lock(carpeta_destino, owner=f"launcher:{os.getpid()}"):
+            completed = subprocess.run(
+                comando,
+                cwd=carpeta_destino,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=child_environment,
+            )
+    except DestinationBusyError as exc:
+        log(str(exc))
+        return 75
     if completed.stdout:
         print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n", flush=True)
     if completed.stderr:
         print(completed.stderr, end="" if completed.stderr.endswith("\n") else "\n", file=sys.stderr, flush=True)
-    if completed.returncode == 0:
-        try:
-            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            if repo_root not in sys.path:
-                sys.path.insert(0, repo_root)
-            from webapp.infonalia_webapp.monitor.snapshots import persist_normal_download_baseline
-
-            persist_normal_download_baseline(completed.stdout, carpeta_destino)
-        except Exception as exc:
-            # La descarga sigue siendo válida; el monitor reconstruirá una línea
-            # base segura si no pudo guardar esta memoria técnica auxiliar.
-            log(f"Aviso: no se pudo actualizar el estado técnico del monitor: {exc}")
     return completed.returncode
 
 
@@ -119,6 +158,12 @@ def main():
     else:
         url = leer_url_desde_http_url(carpeta_destino)
         opciones = []
+
+    try:
+        carpeta_destino, opciones = extraer_destino(opciones, carpeta_destino)
+    except ValueError as exc:
+        log(str(exc))
+        sys.exit(2)
 
     url = normalizar_url_entrada(url)
 
@@ -155,10 +200,23 @@ def main():
         script = script_en_misma_carpeta("Descargar_Catalunya.py")
         sys.exit(ejecutar(script, [url], carpeta_destino))
 
+    if plataforma == "NAVARRA":
+        log("Plataforma detectada: Navarra")
+        script = script_en_misma_carpeta("Descargar_Navarra.py")
+        sys.exit(ejecutar(script, [url], carpeta_destino))
+
+    if plataforma == "XUNTA_DE_GALICIA":
+        log("Plataforma detectada: Xunta de Galicia")
+        script = script_en_misma_carpeta("Descargar_XuntaGalicia.py")
+        sys.exit(ejecutar(script, [url], carpeta_destino))
+
     parsed = urlparse(url)
     log("No se reconoce la plataforma de esta URL.")
     log(f"Host detectado: {parsed.netloc or '(vacio)'}")
-    log("Por ahora estan soportadas: PLACE, Junta de Andalucia, Comunidad de Madrid, Euskadi y Catalunya.")
+    log(
+        "Por ahora estan soportadas: PLACE, Junta de Andalucia, Comunidad de Madrid, "
+        "Euskadi, Catalunya, Navarra y Xunta de Galicia."
+    )
     sys.exit(1)
 
 

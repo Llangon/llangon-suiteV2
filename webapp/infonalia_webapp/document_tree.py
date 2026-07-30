@@ -9,12 +9,10 @@ from typing import Any
 try:
     from .dropbox_paths import resolve_licitacion_folder
     from .monitor.classification import classify_document, classify_folder, is_system_file
-    from .monitor.document_summary import fetch_inventory_rows, inventory_row_to_document
     from .normalization import clean_text
 except ImportError:
     from dropbox_paths import resolve_licitacion_folder
     from monitor.classification import classify_document, classify_folder, is_system_file
-    from monitor.document_summary import fetch_inventory_rows, inventory_row_to_document
     from normalization import clean_text
 
 
@@ -203,12 +201,11 @@ def build_document_tree_payload(
     reconciliation_event = _latest_reconciliation_event(conn, licitacion_id)
     reconcile_message = _reconciliation_message(reconciliation_event, marker_warning)
     root_name = Path(resolution.path).name if resolution.path else clean_text(_row_get(row, "expediente")) or "Expediente"
-    inventory_rows = fetch_inventory_rows(conn, licitacion_id, visible_only=True)
-    documents = [inventory_row_to_document(item) for item in inventory_rows]
-    source = "inventory" if documents else "physical"
+    documents: list[dict[str, object]] = []
+    source = "physical"
     truncated = False
 
-    if not documents and resolution.ok and resolution.exists:
+    if resolution.ok and resolution.exists:
         documents, truncated = _physical_documents(Path(resolution.path), opts)
 
     status = "valid" if resolution.ok and resolution.exists else resolution.reason or "missing"
@@ -217,7 +214,7 @@ def build_document_tree_payload(
         status = "marker_conflict" if "Conflicto" in marker_warning else "marker_warning"
         message = marker_warning
     if resolution.ok and resolution.exists and not documents and not marker_warning:
-        message = "No hay documentación inventariada."
+        message = "No hay documentación en la carpeta."
 
     tree, accepted_documents = _tree_from_documents(root_name, documents)
     return {

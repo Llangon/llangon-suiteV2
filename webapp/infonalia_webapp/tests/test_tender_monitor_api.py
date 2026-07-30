@@ -4,6 +4,8 @@ from http import HTTPStatus
 from pathlib import Path
 
 from webapp.infonalia_webapp.monitor.tender_api import TenderMonitorAPIContext
+from webapp.infonalia_webapp.monitor.snapshots import snapshot_from_result
+from webapp.infonalia_webapp.monitor.tender_repository import save_snapshot, set_monitor_baseline
 from webapp.infonalia_webapp.tests.test_download_endpoint import (
     make_download_handler,
     temporary_download_app,
@@ -65,6 +67,54 @@ def test_monitor_get_summary_discovers_only_physical_follow_marker(tmp_path: Pat
     assert [item["id"] for item in payload["items"]] == [33]
     assert payload["items"][0]["followed"] is True
     assert payload["items"][0]["prepared"] is True
+
+
+def test_monitor_tender_detail_endpoint_uses_temporary_data(tmp_path: Path) -> None:
+    app = load_app_module()
+    root = tmp_path / "ReplicaMonitor"
+    root.mkdir()
+    with temporary_download_app(app):
+        prepare_followed_licitacion(app, root)
+        snapshot = snapshot_from_result(
+            {
+                "platform": "PLACE",
+                "source_url": "https://contrataciondelestado.es/wps/poc?licitacion=33",
+                "status": "success",
+                "finished_at": "2026-07-20T10:00:00",
+                "capabilities": {"documents": True, "questions_and_answers": False},
+                "artifacts": [],
+            }
+        )
+        with app.db_session() as conn:
+            snapshot_id = save_snapshot(
+                conn,
+                licitacion_id=33,
+                platform="PLACE",
+                snapshot=snapshot,
+                source="monitor",
+                execution_id=None,
+                timestamp="2026-07-20T10:00:00",
+            )
+            set_monitor_baseline(
+                conn,
+                licitacion_id=33,
+                snapshot_id=snapshot_id,
+                execution_id=None,
+                reason="migration",
+                timestamp="2026-07-20T10:00:00",
+            )
+        handler = make_download_handler(app, path="/api/tender-monitor/licitaciones/33")
+        attach_monitor_context(handler, app, root)
+        handler.do_GET()
+
+    status, payload = handler.responses[-1]
+    assert status == HTTPStatus.OK
+    assert payload["licitacion"]["id"] == 33
+    assert payload["monitor"]["followed"] is True
+    assert payload["monitor"]["prepared"] is True
+    assert payload["monitor"]["baseline"]["snapshot_id"] == snapshot_id
+    assert payload["monitor"]["baseline"]["reason"] == "migration"
+    assert payload["monitor"]["baseline"]["completeness"]["documents"] == "complete"
 
 
 def test_monitor_manual_permissions_and_worker_are_shared(tmp_path: Path) -> None:

@@ -33,11 +33,9 @@ def expediente_folder_text(value: object) -> str:
         return ""
     text = unicodedata.normalize("NFD", text)
     text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
-    text = text.upper().replace("&", " Y ")
-    text = re.sub(r"[\\/.-]+", "", text)
-    text = re.sub(r"[()]+", " ", text)
-    text = re.sub(r"[^A-Z0-9 ]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    text = text.upper()
+    text = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", text)
+    return re.sub(r"\s+", " ", text).strip().rstrip(".").rstrip()
 
 
 def short_folder_phrase(value: str, max_words: int = 7) -> str:

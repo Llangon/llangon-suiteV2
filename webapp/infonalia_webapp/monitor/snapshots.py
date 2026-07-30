@@ -12,9 +12,9 @@ from herramientas_python.descargadores.common.safe_files import atomic_write_jso
 
 
 SNAPSHOT_SCHEMA_VERSION = 1
+TECHNICAL_SIDECAR_SCHEMA_VERSION = 2
 TECHNICAL_DIRECTORY = ".llangon-monitor"
 TECHNICAL_SNAPSHOT_FILE = "technical_snapshot.json"
-STRUCTURED_RESULT_PREFIX = "RESULTADO_ESTRUCTURADO="
 VOLATILE_QUERY_KEYS = {
     "_",
     "cache",
@@ -106,13 +106,17 @@ def _clean_mapping(values: object, allowed_fields: set[str]) -> dict[str, object
 
 def _artifact_identity(item: Mapping[str, object]) -> str:
     role = normalize_text(item.get("role") or "document").casefold()
+    remote_id = normalize_text(item.get("remote_id"))
+    if remote_id:
+        return f"{role}:remote:{remote_id}"
     source_url = canonical_url(item.get("source_url"))
     if source_url:
         return f"{role}:url:{source_url}"
-    sha256 = normalize_text(item.get("sha256")).lower()
+    section = normalize_text(item.get("section")).casefold()
     name = normalize_text(item.get("name")).casefold()
-    if sha256:
-        return f"{role}:sha256:{sha256}"
+    published_at = normalize_text(item.get("published_at"))
+    if section or published_at:
+        return f"{role}:descriptor:{section}:{name}:{published_at}"
     return f"{role}:name:{name}"
 
 
@@ -124,13 +128,28 @@ def _normalize_artifacts(values: object, destination: Path | None = None) -> dic
     for raw in values:
         if not isinstance(raw, Mapping):
             continue
+        # Un fallo de transporte no demuestra que exista un documento oficial.
+        # Se conserva en el resultado/registro de incidencias, pero no puede
+        # entrar en el inventario que alimenta diferencias o baselines.
+        if normalize_text(raw.get("status")).casefold() == "failed":
+            continue
+        role = normalize_text(raw.get("role") or "document").casefold()
+        if role == "questions_document":
+            continue
         item = {
             "name": normalize_text(raw.get("name")),
             "source_url": canonical_url(raw.get("source_url")),
+            # Transient evidence for comparison. merge_valid_blocks removes it
+            # before the confirmed baseline is persisted.
+            "observation_status": normalize_text(raw.get("status")).casefold(),
             "sha256": normalize_text(raw.get("sha256")).lower(),
+            "sha256_source": normalize_text(raw.get("sha256_source")).casefold(),
             "content_type": normalize_text(raw.get("content_type")).casefold(),
             "size": int(raw.get("size") or 0),
-            "role": normalize_text(raw.get("role") or "document").casefold(),
+            "role": role,
+            "remote_id": normalize_text(raw.get("remote_id")),
+            "section": normalize_text(raw.get("section")),
+            "published_at": normalize_text(raw.get("published_at")),
             "published": True,
         }
         raw_path = normalize_text(raw.get("path"))
@@ -214,6 +233,11 @@ def snapshot_from_result(
     capabilities = payload.get("capabilities") if isinstance(payload.get("capabilities"), Mapping) else {}
     supports_questions = bool(capabilities.get("questions_and_answers"))
     question_result = payload.get("questions") if isinstance(payload.get("questions"), Mapping) else {}
+    explicit_completeness = (
+        payload.get("block_completeness")
+        if isinstance(payload.get("block_completeness"), Mapping)
+        else {}
+    )
     question_state = _load_question_state(payload, destination_path)
     question_complete = bool(
         supports_questions
@@ -226,6 +250,10 @@ def snapshot_from_result(
     documents = _normalize_artifacts(payload.get("artifacts"), destination_path)
     questions = _normalize_questions(question_state)
     block_status = "complete" if successful else ("partial" if partial else "invalid")
+    def block_status_for(name: str, fallback: str) -> str:
+        explicit = normalize_text(explicit_completeness.get(name)).casefold()
+        return explicit if explicit in {"complete", "partial", "invalid", "not_available", "not_applicable"} else fallback
+
     snapshot: dict[str, object] = {
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
         "platform": normalize_text(payload.get("platform")).upper(),
@@ -233,17 +261,27 @@ def snapshot_from_result(
         "tender_id": normalize_text(payload.get("tender_id")),
         "captured_at": captured_at or normalize_text(payload.get("finished_at")),
         "blocks": {
-            "general": {"status": block_status if general else "not_available", "data": general},
-            "dates": {"status": block_status if dates else "not_available", "data": dates},
-            "documents": {"status": block_status, "items": documents},
+            "general": {"status": block_status_for("general", block_status if general else "not_available"), "data": general},
+            "dates": {"status": block_status_for("dates", block_status if dates else "not_available"), "data": dates},
+            "documents": {"status": block_status_for("documents", block_status), "items": documents},
             "questions": {
-                "status": "not_applicable" if not supports_questions else ("complete" if question_complete else "invalid"),
+                "status": block_status_for(
+                    "questions",
+                    "not_applicable" if not supports_questions else ("complete" if question_complete else "invalid"),
+                ),
                 "items": questions,
             },
         },
     }
     fingerprint_payload = deepcopy(snapshot)
     fingerprint_payload.pop("captured_at", None)
+    for block in fingerprint_payload.get("blocks", {}).values():
+        if not isinstance(block, dict) or not isinstance(block.get("items"), dict):
+            continue
+        for item in block["items"].values():
+            if isinstance(item, dict):
+                item.pop("observation_failed", None)
+                item.pop("observation_status", None)
     snapshot["fingerprint"] = _json_hash(fingerprint_payload)
     return snapshot
 
@@ -260,40 +298,64 @@ def technical_snapshot_path(destination: Path | str) -> Path:
     return Path(destination) / TECHNICAL_DIRECTORY / TECHNICAL_SNAPSHOT_FILE
 
 
-def read_technical_snapshot(destination: Path | str) -> dict[str, object] | None:
+def read_technical_sidecar(destination: Path | str) -> dict[str, object] | None:
     path = technical_snapshot_path(destination)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict) or int(payload.get("schema_version") or 0) != SNAPSHOT_SCHEMA_VERSION:
+    if not isinstance(payload, dict):
         return None
-    return payload
-
-
-def write_technical_snapshot(destination: Path | str, snapshot: Mapping[str, object]) -> Path:
-    path = technical_snapshot_path(destination)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    mark_hidden(path.parent)
-    atomic_write_json(path, dict(snapshot))
-    return path
-
-
-def parse_structured_result(output: object) -> dict[str, object] | None:
-    for line in reversed(str(output or "").splitlines()):
-        if not line.startswith(STRUCTURED_RESULT_PREFIX):
-            continue
-        try:
-            payload = json.loads(line[len(STRUCTURED_RESULT_PREFIX) :])
-        except json.JSONDecodeError:
-            return None
-        return payload if isinstance(payload, dict) else None
+    try:
+        schema_version = int(payload.get("schema_version") or 0)
+    except (TypeError, ValueError):
+        return None
+    snapshot = payload.get("snapshot")
+    if schema_version == TECHNICAL_SIDECAR_SCHEMA_VERSION and isinstance(snapshot, Mapping):
+        return payload
+    if schema_version == SNAPSHOT_SCHEMA_VERSION and isinstance(payload.get("blocks"), Mapping):
+        return {
+            "schema_version": schema_version,
+            "writer": "legacy",
+            "legacy": True,
+            "snapshot_id": None,
+            "execution_id": None,
+            "licitacion_id": None,
+            "fingerprint": normalize_text(payload.get("fingerprint")),
+            "captured_at": normalize_text(payload.get("captured_at")),
+            "snapshot": payload,
+        }
     return None
 
 
-def persist_normal_download_baseline(output: object, destination: Path | str) -> Path | None:
-    result = parse_structured_result(output)
-    if not result or normalize_text(result.get("status")).casefold() not in {"success", "success_with_warnings"}:
-        return None
-    snapshot = snapshot_from_result(result, destination=destination)
-    return write_technical_snapshot(destination, snapshot)
+def read_technical_snapshot(destination: Path | str) -> dict[str, object] | None:
+    """Return the cached snapshot for diagnostics, never as baseline authority."""
+
+    sidecar = read_technical_sidecar(destination)
+    snapshot = sidecar.get("snapshot") if sidecar else None
+    return dict(snapshot) if isinstance(snapshot, Mapping) else None
+
+
+def write_monitor_sidecar_cache(
+    destination: Path | str,
+    snapshot: Mapping[str, object],
+    *,
+    licitacion_id: int,
+    snapshot_id: int,
+    execution_id: int,
+) -> Path:
+    path = technical_snapshot_path(destination)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mark_hidden(path.parent)
+    payload = {
+        "schema_version": TECHNICAL_SIDECAR_SCHEMA_VERSION,
+        "writer": "monitor",
+        "licitacion_id": int(licitacion_id),
+        "snapshot_id": int(snapshot_id),
+        "execution_id": int(execution_id),
+        "fingerprint": normalize_text(snapshot.get("fingerprint")),
+        "captured_at": normalize_text(snapshot.get("captured_at")),
+        "snapshot": dict(snapshot),
+    }
+    atomic_write_json(path, payload)
+    return path

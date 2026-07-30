@@ -10,9 +10,13 @@ DEFAULT_AI_CATEGORY_PATTERNS: dict[str, tuple[str, ...]] = {
     "acta": (r"\bacta\b",),
     "resolucion": (r"\bresoluci[oó]n\b",),
     "informe": (r"\binforme\b",),
-    "requerimiento": (r"\brequerimiento\b", r"\bsubsanaci[oó]n\b"),
-    "adjudicacion": (r"\badjudicaci[oó]n\b",),
-    "exclusion": (r"\bexclusi[oó]n\b", r"\bexcluid[oa]s?\b"),
+    "requerimiento": (
+        r"\brequerimiento\b",
+        r"\brequirimento\b",
+        r"\bsubsanaci[oó]n\b",
+    ),
+    "adjudicacion": (r"\badjudicaci[oó]n\b", r"\badxudicaci[oó]n\b"),
+    "exclusion": (r"\bexclusi[oó]n\b", r"\bexclu[ií]d[oa]s?\b"),
 }
 
 

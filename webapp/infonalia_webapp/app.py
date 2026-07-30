@@ -17,11 +17,12 @@ import time
 from collections.abc import Mapping
 from email.message import EmailMessage
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Sequence
 from urllib.parse import parse_qs, unquote, urlparse
 
 
@@ -262,6 +263,27 @@ except ImportError:
     )
 
 try:
+    from .infonalia_history import (
+        SEVERITY_ATTENTION,
+        SEVERITY_CRITICAL,
+        SEVERITY_NORMAL,
+        acknowledge_filtered_infonalia_events,
+        acknowledge_infonalia_event,
+        list_infonalia_history,
+        record_infonalia_activity,
+    )
+except ImportError:
+    from infonalia_history import (
+        SEVERITY_ATTENTION,
+        SEVERITY_CRITICAL,
+        SEVERITY_NORMAL,
+        acknowledge_filtered_infonalia_events,
+        acknowledge_infonalia_event,
+        list_infonalia_history,
+        record_infonalia_activity,
+    )
+
+try:
     from .licitation_records import licitation_row_to_dict
 except ImportError:
     from licitation_records import licitation_row_to_dict
@@ -370,6 +392,7 @@ try:
         CLIENTE_ENVIO_TIPOS,
         create_cliente,
         create_cliente_envio,
+        delete_cliente_envio,
         ensure_client_shipments_schema,
         generate_cliente_envio_draft,
         get_cliente,
@@ -380,6 +403,8 @@ try:
         mark_cliente_envio_sent,
         open_cliente_envio_draft,
         open_cliente_envio_folder,
+        require_operational_cliente,
+        set_cliente_active,
         update_cliente,
         update_cliente_envio,
     )
@@ -389,6 +414,7 @@ except ImportError:
         CLIENTE_ENVIO_TIPOS,
         create_cliente,
         create_cliente_envio,
+        delete_cliente_envio,
         ensure_client_shipments_schema,
         generate_cliente_envio_draft,
         get_cliente,
@@ -399,6 +425,8 @@ except ImportError:
         mark_cliente_envio_sent,
         open_cliente_envio_draft,
         open_cliente_envio_folder,
+        require_operational_cliente,
+        set_cliente_active,
         update_cliente,
         update_cliente_envio,
     )
@@ -606,11 +634,14 @@ try:
         dispatch_patch as dispatch_tender_monitor_patch,
         dispatch_post as dispatch_tender_monitor_post,
     )
+    from .monitor.tender_repository import acquire_lease as acquire_tender_lease
+    from .monitor.tender_repository import release_lease as release_tender_lease
     from .automation_orchestrator import (
         automation_diagnostic,
         automation_runs_payload,
         automation_status_payload,
         automation_tasks_payload,
+        launch_automation_task_worker as launch_internal_automation_task_worker,
         run_task as run_internal_automation_task,
         scheduler_tick as run_internal_scheduler_tick,
         set_task_enabled as set_internal_automation_enabled,
@@ -626,11 +657,14 @@ except ImportError:
         dispatch_patch as dispatch_tender_monitor_patch,
         dispatch_post as dispatch_tender_monitor_post,
     )
+    from monitor.tender_repository import acquire_lease as acquire_tender_lease
+    from monitor.tender_repository import release_lease as release_tender_lease
     from automation_orchestrator import (
         automation_diagnostic,
         automation_runs_payload,
         automation_status_payload,
         automation_tasks_payload,
+        launch_automation_task_worker as launch_internal_automation_task_worker,
         run_task as run_internal_automation_task,
         scheduler_tick as run_internal_scheduler_tick,
         set_task_enabled as set_internal_automation_enabled,
@@ -1137,12 +1171,16 @@ def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition:
 def actuaciones_select_sql(where: list[str] | None = None) -> str:
     sql = """
         SELECT a.*,
+               c.nombre_comercial AS cliente_nombre_comercial,
+               c.razon_social AS cliente_razon_social,
+               c.activo AS cliente_activo,
                (
                    SELECT COUNT(*)
                    FROM actuacion_licitaciones al_count
                    WHERE al_count.actuacion_id = a.id
                ) AS licitaciones_count
         FROM actuaciones a
+        LEFT JOIN clientes c ON c.id = a.cliente_id
     """
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -1245,6 +1283,19 @@ def normalize_licitacion_ids(value: object) -> list[int]:
         if licitacion_id not in seen:
             normalized.append(licitacion_id)
             seen.add(licitacion_id)
+    return normalized
+
+
+def validate_optional_cliente_id(
+    conn: sqlite3.Connection,
+    cliente_id: object,
+    *,
+    current_cliente_id: int | None = None,
+) -> int | None:
+    if cliente_id in (None, "", 0):
+        return None
+    normalized = int(cliente_id)
+    require_operational_cliente(conn, normalized, current_cliente_id=current_cliente_id)
     return normalized
 
 
@@ -1556,6 +1607,28 @@ def row_to_dict(row: sqlite3.Row) -> dict:
     return item
 
 
+def reconcile_folder_status_with_marker(item: dict, marker_status: dict[str, object]) -> None:
+    """Keep the detail folder status consistent with the marker-based lookup."""
+    folder_status = item.get("folder_status") or {}
+    marker_folder = clean_text(marker_status.get("folder_path"))
+    if folder_status.get("exists") is True or not marker_status.get("folder_exists") or not marker_folder:
+        return
+
+    marker_name = f"{int(item.get('id') or 0)}.llangon"
+    located_by_id_marker = bool(marker_status.get("id_marker_exists"))
+    label = f"Carpeta localizada por {marker_name}." if located_by_id_marker else "Carpeta válida."
+    item["folder_status"] = {
+        **folder_status,
+        "ok": True,
+        "path": marker_folder,
+        "exists": True,
+        "inside_dropbox_base": True,
+        "reason": "resolved_by_id_marker" if located_by_id_marker else "resolved_by_tracking_path",
+        "message": label,
+        "label": label,
+    }
+
+
 def ai_summary_indicators(conn: sqlite3.Connection, licitacion_ids: list[int]) -> dict[int, dict[str, object]]:
     if not licitacion_ids:
         return {}
@@ -1796,7 +1869,6 @@ def config_diagnostics_payload(settings: dict[str, str]) -> dict[str, object]:
             "agenda_pending_weekdays_only": env_enabled("MONITOR_AGENDA_PENDING_DAILY_WEEKDAYS_ONLY", "1"),
             "file_inventory_enabled": env_enabled("LLANGON_FILE_INVENTORY_ENABLED"),
             "file_inventory_poll_minutes": env_int_value("LLANGON_FILE_INVENTORY_POLL_MINUTES", 240),
-            "file_inventory_reconcile_paths": env_enabled("LLANGON_FILE_INVENTORY_RECONCILE_PATHS", "1"),
             "monitor_licitaciones_schedule_enabled": env_enabled("MONITOR_LICITACIONES_SCHEDULE_ENABLED"),
             "monitor_licitaciones_real_enabled": env_enabled("MONITOR_LICITACIONES_REAL_ENABLED"),
             "full_backup_time": env_value("LLANGON_FULL_BACKUP_TIME", "16:00"),
@@ -2199,6 +2271,24 @@ def import_csv_content(content: bytes, *, triggered_by: str = "", input_name: st
             error_count=without_expediente,
             timestamp=now_iso(),
         )
+        for dia_id in touched_days:
+            record_infonalia_activity(
+                conn,
+                category="import",
+                event_type="csv_import",
+                source="manual_csv",
+                actor=triggered_by,
+                result="processed",
+                title="Importación CSV de Infonalia completada",
+                detail=(
+                    f"Importadas: {imported}. Actualizadas: {updated}. "
+                    f"Omitidas: {skipped}. Errores: {without_expediente}."
+                ),
+                day_id=dia_id,
+                severity=SEVERITY_NORMAL if without_expediente == 0 else SEVERITY_CRITICAL,
+                dedupe_key=f"import_run:{import_run_id}:day:{dia_id}",
+                timestamp=run_timestamp,
+            )
 
     return {
         "importadas": imported,
@@ -2211,48 +2301,27 @@ def import_csv_content(content: bytes, *, triggered_by: str = "", input_name: st
 
 
 def parse_msg_body(body: str, fecha_infonalia: str, enrich_pdf: bool = True) -> list[dict[str, object]]:
-    blocks = [block for block in re.split(r"_{20,}", body or "") if "Ref. Infonalia:" in block]
-    payloads: list[dict[str, object]] = []
+    try:
+        from .infonalia_import_core import block_to_legacy_item, parse_representation
+    except ImportError:
+        from infonalia_import_core import block_to_legacy_item, parse_representation
 
-    for block in blocks:
+    parsed = parse_representation(body or "", representation="text", enforce_ref_format=False)
+    payloads: list[dict[str, object]] = []
+    for block in parsed.blocks:
+        item = block_to_legacy_item(block)
         data = {
-            "enlace_infonalia": "",
-            "enlace_perfil": "",
-            "expediente": "",
-            "organismo": "",
-            "objeto": "",
-            "provincia": "",
-            "fecha_limite": "",
-            "presupuesto": None,
+            "enlace_infonalia": clean_text(item.get("url_anuncio_infonalia")),
+            "enlace_perfil": clean_text(item.get("url_perfil_contratante")),
+            "expediente": clean_text(item.get("expediente")),
+            "organismo": clean_text(item.get("organismo")),
+            "objeto": clean_text(item.get("resumen_objeto")),
+            "provincia": clean_text(item.get("provincia_ejecucion")),
+            "fecha_limite": clean_text(item.get("plazo_presentacion_fecha")),
+            "presupuesto": item.get("presupuesto"),
             "tipo": "",
             "hora_limite": "",
         }
-
-        for raw_line in block.splitlines():
-            line = clean_text(raw_line)
-            if not line:
-                continue
-            lower = line.lower()
-
-            if "ver el texto íntegro del anuncio:" in lower or "ver el texto integro del anuncio:" in lower:
-                data["enlace_infonalia"] = normalize_url(extraer_despues_de_dos_puntos(line))
-            elif "perfil del contratante" in lower:
-                data["enlace_perfil"] = normalize_url(extraer_despues_de_dos_puntos(line))
-            elif "expediente" in lower:
-                data["expediente"] = extraer_despues_de_dos_puntos(line)
-            elif lower.startswith("organismo"):
-                data["organismo"] = extraer_despues_de_dos_puntos(line)
-            elif "resumen del objeto" in lower or "objeto del contrato" in lower or lower in {"objeto", "objeto:"} or lower.startswith("objeto:"):
-                data["objeto"] = extraer_despues_de_dos_puntos(line)
-            elif "provincia" in lower:
-                data["provincia"] = extraer_despues_de_dos_puntos(line)
-            elif "plazo presentación" in lower or "plazo presentacion" in lower:
-                data["fecha_limite"] = extraer_fecha_msg(line)
-            elif lower.startswith("presupuesto"):
-                data["presupuesto"] = parse_money(extraer_despues_de_dos_puntos(line))
-
-        if not clean_text(data["expediente"]):
-            continue
 
         if enrich_pdf and data["enlace_infonalia"]:
             enriched = enrich_from_infonalia_pdf(
@@ -2317,9 +2386,12 @@ def import_msg_content(
     input_name: str = "",
 ) -> dict:
     try:
-        import extract_msg
+        from .infonalia_msg_reader import read_msg_path
     except ImportError as exc:
-        raise ValueError("No está disponible la librería para leer ficheros MSG.") from exc
+        try:
+            from infonalia_msg_reader import read_msg_path
+        except ImportError:
+            raise ValueError("No está disponible la librería para leer ficheros MSG.") from exc
 
     upload_dir = DATA_ROOT / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
@@ -2327,14 +2399,28 @@ def import_msg_content(
     msg_path.write_bytes(content)
 
     try:
-        msg = extract_msg.Message(str(msg_path))
-        try:
-            fecha_infonalia = extract_msg_date(msg.date)
-            body = msg.body or ""
-        finally:
-            msg.close()
+        msg = read_msg_path(msg_path)
+        fecha_infonalia = extract_msg_date(msg.date)
+        body = msg.plain
+        html_body = msg.html
     except Exception as exc:
         raise ValueError(f"No se pudo leer el MSG: {exc}") from exc
+
+    if env_enabled("LLANGON_INFONALIA_STRICT_IMPORT_ENABLED"):
+        try:
+            from .infonalia_import_core import reconcile_message
+        except ImportError:
+            from infonalia_import_core import reconcile_message
+        reconciliation = reconcile_message(
+            plain_text=body,
+            html_text=html_body,
+            message_id=input_name,
+            require_both=True,
+            enforce_ref_format=True,
+        )
+        if not reconciliation.safe_to_persist:
+            reasons = "; ".join(issue.message for issue in reconciliation.issues[:8])
+            raise ValueError(f"El MSG no supera la conciliación fail-closed: {reasons}")
 
     payloads = parse_msg_body(body, fecha_infonalia, enrich_pdf=enrich_pdf)
     if not payloads:
@@ -2389,6 +2475,20 @@ def import_msg_content(
             error_count=0,
             timestamp=now_iso(),
         )
+        record_infonalia_activity(
+            conn,
+            category="import",
+            event_type="msg_import",
+            source="manual_msg",
+            actor=triggered_by,
+            result="processed",
+            title="Importación MSG de Infonalia completada",
+            detail=f"Importadas: {imported}. Actualizadas: {updated}. Omitidas: {skipped}.",
+            day_id=dia_id,
+            severity=SEVERITY_NORMAL,
+            dedupe_key=f"import_run:{import_run_id}:day:{dia_id}",
+            timestamp=run_timestamp,
+        )
 
     return {
         "dias": 1,
@@ -2408,6 +2508,11 @@ def resolve_destination_folder(row: sqlite3.Row | dict) -> Path:
     destination_row = dict(row) if uses_dropbox_api_backend() else row
     if uses_dropbox_api_backend():
         destination_row["ruta_carpeta"] = ""
+    elif dropbox_root:
+        marker_status = get_marker_status_for_licitacion(row, dropbox_root)
+        marker_folder = clean_text(marker_status.get("folder_path"))
+        if marker_status.get("id_marker_exists") and marker_folder:
+            return Path(marker_folder)
     return storage_resolve_destination_folder(
         destination_row,
         download_root=download_root,
@@ -2432,11 +2537,34 @@ def validate_confirmed_download_folder_name(value: object) -> str:
         raise DownloadSafetyError("El nombre de carpeta contiene caracteres no permitidos.")
     if name.endswith("."):
         raise DownloadSafetyError("El nombre de carpeta no puede terminar en punto.")
-    return name
+    return re.sub(r"\s+", " ", name)
 
 
 def confirmed_download_destination(default_destination: Path, folder_name: object) -> Path:
     return default_destination.parent / validate_confirmed_download_folder_name(folder_name)
+
+
+def manual_download_folder_path_for_storage(destination: Path) -> str:
+    """Store the exact manual destination without changing the email worker path logic."""
+    if uses_dropbox_api_backend():
+        return folder_path_for_storage(destination)
+
+    resolved_destination = Path(destination).resolve(strict=False)
+    dropbox_root = find_dropbox_root()
+    if dropbox_root is None:
+        return str(resolved_destination)
+
+    resolved_root = Path(dropbox_root).resolve(strict=True)
+    if not path_is_relative_to(resolved_destination, resolved_root):
+        return str(resolved_destination)
+
+    relative = resolved_destination.relative_to(resolved_root)
+    if not relative.parts:
+        raise DownloadSafetyError("La carpeta de descarga no puede ser la raíz de Dropbox.")
+    stored_path = str(relative)
+    if resolve_path_inside_base(resolved_root, stored_path) != resolved_destination:
+        raise DownloadSafetyError("La ruta de la carpeta manual no se puede guardar de forma exacta.")
+    return stored_path
 
 
 DOWNLOAD_JOB_STATUS_PENDING = "pending"
@@ -2454,6 +2582,12 @@ EMAIL_ACTION_TELEGRAM_CODES = {
     EMAIL_ACTION_DOWNLOAD_REVIEW_CODE,
     EMAIL_ACTION_PREPARE_CODE,
 }
+EMAIL_ACTION_EXECUTION_PENDING = "pending"
+EMAIL_ACTION_EXECUTION_COMPLETED = "completed"
+EMAIL_ACTION_EXECUTION_FAILED = "failed"
+EMAIL_ACTION_TELEGRAM_MAX_ATTEMPTS = 3
+EMAIL_ACTION_TELEGRAM_RETRY_MINUTES = (5, 30)
+EMAIL_ACTION_TELEGRAM_CLAIM_STALE_MINUTES = 15
 
 
 def _latest_download_job(conn: sqlite3.Connection, licitacion_id: int) -> sqlite3.Row | None:
@@ -2636,7 +2770,10 @@ def _preferred_admin_rows_for_telegram(conn: sqlite3.Connection) -> list[sqlite3
         """
         SELECT *
         FROM usuarios
-        WHERE role = 'admin' AND active = 1
+        WHERE role = 'admin'
+          AND active = 1
+          AND COALESCE(telegram_notifications_enabled, 0) = 1
+          AND COALESCE(telegram_chat_id, '') <> ''
         ORDER BY
             CASE
                 WHEN LOWER(COALESCE(username, '')) = 'manolo' THEN 0
@@ -2680,30 +2817,78 @@ def _email_action_folder_name(path_value: object) -> str:
 
 def _build_email_action_telegram_text(
     *,
-    licitacion: sqlite3.Row,
+    licitacion: sqlite3.Row | None,
     event: sqlite3.Row,
+    review_date: object = "",
 ) -> str:
-    licitacion_keys = set(licitacion.keys())
+    licitacion_keys = set(licitacion.keys()) if licitacion else set()
+    event_keys = set(event.keys())
     action_code = clean_text(event["action_code"])
     action_name = clean_text(event["action_name"]) or "Acción por correo"
-    if action_code == EMAIL_ACTION_PREPARE_CODE:
+    execution_status = clean_text(event["execution_status"]) if "execution_status" in event_keys else ""
+    is_failure = execution_status == EMAIL_ACTION_EXECUTION_FAILED
+    if is_failure:
+        headline = "🚨 Falló una orden de Nuria"
+        detail = "No se ha podido completar la acción solicitada."
+    elif action_code == EMAIL_ACTION_PREPARE_CODE:
         headline = "📄 Licitación lista para preparar ficha"
         detail = "La documentación ya está disponible para preparar la ficha."
     else:
         headline = "✅ Licitación descargada"
         detail = "La licitación se ha descargado correctamente."
 
-    expediente = clean_text(licitacion["expediente"]) or f"Licitación {int(licitacion['id'])}"
-    titulo = clean_text(licitacion["titulo"]) if "titulo" in licitacion_keys else ""
-    objeto = clean_text(licitacion["objeto"]) if "objeto" in licitacion_keys else ""
-    organismo = clean_text(licitacion["organismo"]) if "organismo" in licitacion_keys else ""
+    licitacion_id = int(licitacion["id"]) if licitacion else int(event["licitacion_id"] or 0)
+    expediente = clean_text(licitacion["expediente"]) if licitacion else ""
+    expediente = expediente or (f"Licitación {licitacion_id}" if licitacion_id else "No consta")
+    titulo = clean_text(licitacion["titulo"]) if licitacion and "titulo" in licitacion_keys else ""
+    objeto = clean_text(licitacion["objeto"]) if licitacion and "objeto" in licitacion_keys else ""
+    organismo = clean_text(licitacion["organismo"]) if licitacion and "organismo" in licitacion_keys else ""
     objeto = titulo or objeto or "Sin descripción"
     organismo = organismo or "Sin organismo"
-    deadline = _email_action_deadline_text(licitacion)
-    carpeta = clean_text(licitacion["ruta_carpeta"]) or "no consta"
-    carpeta_nombre = _email_action_folder_name(licitacion["ruta_carpeta"])
-    perfil = clean_text(licitacion["enlace_perfil"]) or "Sin enlace"
-    estado = clean_text(licitacion["estado"]) or action_name
+    deadline = _email_action_deadline_text(licitacion) if licitacion else "No consta"
+    ruta_carpeta = licitacion["ruta_carpeta"] if licitacion and "ruta_carpeta" in licitacion_keys else ""
+    carpeta = clean_text(ruta_carpeta) or "no consta"
+    carpeta_nombre = _email_action_folder_name(ruta_carpeta)
+    perfil = clean_text(licitacion["enlace_perfil"]) if licitacion and "enlace_perfil" in licitacion_keys else ""
+    perfil = perfil or "Sin enlace"
+    estado = clean_text(licitacion["estado"]) if licitacion and "estado" in licitacion_keys else ""
+    estado = estado or action_name
+
+    if is_failure:
+        stage_labels = {
+            "queue": "Creación del trabajo de descarga",
+            "worker_start": "Inicio del proceso de descarga",
+            "validation": "Validación de la descarga",
+            "destination": "Preparación de la carpeta de destino",
+            "downloader": "Descarga de documentación",
+            "storage": "Almacenamiento de la documentación",
+            "ai": "Procesamiento del resumen IA",
+            "action": "Procesamiento de la orden",
+        }
+        failure_stage = clean_text(event["failure_stage"]) if "failure_stage" in event_keys else ""
+        failure_detail = clean_text(event["failure_detail"]) if "failure_detail" in event_keys else ""
+        failure_detail = failure_detail or clean_text(event["reason"])
+        failure_detail = failure_detail[:1800] or "No consta el motivo técnico."
+        day_label = format_date_es(review_date) or clean_text(review_date) or "No consta"
+        return "\n".join(
+            [
+                headline,
+                "",
+                f"Nuria ha solicitado: {action_name}",
+                f"Día Infonalia: {day_label}",
+                "",
+                f"Expediente: {expediente}",
+                f"Título: {objeto}",
+                f"Organismo: {organismo}",
+                f"Estado actual: {estado}",
+                "",
+                f"Punto de fallo: {stage_labels.get(failure_stage, failure_stage or 'Procesamiento de la orden')}",
+                f"Motivo: {failure_detail}",
+                "",
+                f"Perfil del contratante: {perfil}",
+                "La incidencia ha quedado registrada en el histórico de Infonalia.",
+            ]
+        )[:4000]
 
     return "\n".join(
         [
@@ -2795,6 +2980,7 @@ def _mark_email_action_telegram_result(
     target: str = "",
     error: str = "",
     message_id: object = None,
+    next_attempt_at: str = "",
 ) -> None:
     conn.execute(
         """
@@ -2803,7 +2989,9 @@ def _mark_email_action_telegram_result(
             telegram_notification_attempted_at = ?,
             telegram_notification_target = ?,
             telegram_notification_error = ?,
-            telegram_notification_message_id = ?
+            telegram_notification_message_id = ?,
+            telegram_notification_next_attempt_at = ?,
+            telegram_notification_claimed_at = NULL
         WHERE id = ?
         """,
         (
@@ -2812,68 +3000,258 @@ def _mark_email_action_telegram_result(
             clean_text(target),
             clean_text(error)[:1000],
             clean_text(message_id),
+            clean_text(next_attempt_at) or None,
             event_id,
         ),
     )
 
 
+def _set_email_action_event_terminal_status(
+    conn: sqlite3.Connection,
+    *,
+    event_id: int,
+    execution_status: str,
+    failure_stage: str = "",
+    failure_code: str = "",
+    failure_detail: str = "",
+    allow_ai_completion: bool = False,
+) -> bool:
+    row = conn.execute(
+        "SELECT action_code, execution_status FROM email_action_events WHERE id = ?",
+        (event_id,),
+    ).fetchone()
+    if not row or clean_text(row["execution_status"]) != EMAIL_ACTION_EXECUTION_PENDING:
+        return False
+    action_code = clean_text(row["action_code"])
+    if (
+        execution_status == EMAIL_ACTION_EXECUTION_COMPLETED
+        and action_code == EMAIL_ACTION_AI_SUMMARY_CODE
+        and not allow_ai_completion
+    ):
+        return False
+    should_notify = (
+        execution_status == EMAIL_ACTION_EXECUTION_FAILED
+        or action_code in EMAIL_ACTION_TELEGRAM_CODES
+    )
+    updated = conn.execute(
+        """
+        UPDATE email_action_events
+        SET execution_status = ?, failure_stage = ?, failure_code = ?,
+            failure_detail = ?, telegram_notification_status = ?,
+            telegram_notification_attempted_at = NULL,
+            telegram_notification_target = NULL,
+            telegram_notification_error = NULL,
+            telegram_notification_message_id = NULL,
+            telegram_notification_attempt_count = 0,
+            telegram_notification_next_attempt_at = NULL,
+            telegram_notification_claimed_at = NULL
+        WHERE id = ? AND execution_status = ?
+        """,
+        (
+            execution_status,
+            clean_text(failure_stage),
+            clean_text(failure_code),
+            clean_text(failure_detail)[:2000],
+            "pending" if should_notify else "",
+            event_id,
+            EMAIL_ACTION_EXECUTION_PENDING,
+        ),
+    ).rowcount
+    return bool(updated)
+
+
+def _set_email_action_download_terminal_status(
+    conn: sqlite3.Connection,
+    *,
+    download_job_id: int,
+    execution_status: str,
+    failure_stage: str = "",
+    failure_code: str = "",
+    failure_detail: str = "",
+) -> list[int]:
+    ensure_email_action_schema(conn)
+    rows = conn.execute(
+        """
+        SELECT id, action_code
+        FROM email_action_events
+        WHERE download_job_id = ?
+          AND execution_status = ?
+        ORDER BY id ASC
+        """,
+        (download_job_id, EMAIL_ACTION_EXECUTION_PENDING),
+    ).fetchall()
+    updated: list[int] = []
+    for row in rows:
+        event_id = int(row["id"])
+        if _set_email_action_event_terminal_status(
+            conn,
+            event_id=event_id,
+            execution_status=execution_status,
+            failure_stage=failure_stage,
+            failure_code=failure_code,
+            failure_detail=failure_detail,
+        ):
+            updated.append(event_id)
+    return updated
+
+
 def notify_pending_email_action_telegram_events(
     *,
-    licitacion_id: int,
+    licitacion_id: int | None = None,
     download_job_id: int | None = None,
+    current: datetime | None = None,
+    limit: int = 100,
 ) -> dict[str, object]:
     notified = 0
     failed = 0
+    pending_retry = 0
     items: list[dict[str, object]] = []
+    current_dt = (current or datetime.now()).replace(microsecond=0)
+    timestamp = current_dt.isoformat()
+    stale_before = (current_dt - timedelta(minutes=EMAIL_ACTION_TELEGRAM_CLAIM_STALE_MINUTES)).isoformat()
     with db_session() as conn:
-        licitacion = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
-        if not licitacion:
-            return {"checked": 0, "sent": 0, "failed": 0, "items": []}
-        event_rows = conn.execute(
+        ensure_email_action_schema(conn)
+        filters = [
             """
-            SELECT *
-            FROM email_action_events
-            WHERE licitacion_id = ?
-              AND result = 'processed'
-              AND action_code IN (?, ?)
-              AND COALESCE(telegram_notification_attempted_at, '') = ''
-            ORDER BY id ASC
-            """,
             (
-                licitacion_id,
-                EMAIL_ACTION_DOWNLOAD_REVIEW_CODE,
-                EMAIL_ACTION_PREPARE_CODE,
-            ),
-        ).fetchall()
-        if not event_rows:
-            return {"checked": 0, "sent": 0, "failed": 0, "items": []}
-
-        for event_row in event_rows:
-            action_name = clean_text(event_row["action_name"]) or clean_text(event_row["action_code"])
-            text = _build_email_action_telegram_text(licitacion=licitacion, event=event_row)
-            delivery = _deliver_email_action_telegram_notification(
-                conn,
-                text=text,
-                licitacion_id=licitacion_id,
-                action_name=action_name,
+                (execution_status = ? AND action_code IN (?, ?))
+                OR execution_status = ?
             )
-            timestamp = now_iso()
+            """,
+            "COALESCE(telegram_notification_attempt_count, 0) < ?",
+            """
+            (
+                COALESCE(telegram_notification_status, '') IN ('', 'pending', 'failed')
+                OR (
+                    telegram_notification_status = 'sending'
+                    AND COALESCE(telegram_notification_claimed_at, '') <= ?
+                )
+            )
+            """,
+            "(COALESCE(telegram_notification_next_attempt_at, '') = '' OR telegram_notification_next_attempt_at <= ?)",
+        ]
+        values: list[object] = [
+            EMAIL_ACTION_EXECUTION_COMPLETED,
+            EMAIL_ACTION_DOWNLOAD_REVIEW_CODE,
+            EMAIL_ACTION_PREPARE_CODE,
+            EMAIL_ACTION_EXECUTION_FAILED,
+            EMAIL_ACTION_TELEGRAM_MAX_ATTEMPTS,
+            stale_before,
+            timestamp,
+        ]
+        if licitacion_id is not None:
+            filters.append("licitacion_id = ?")
+            values.append(int(licitacion_id))
+        if download_job_id is not None:
+            filters.append("download_job_id = ?")
+            values.append(int(download_job_id))
+        values.append(max(1, min(int(limit or 100), 500)))
+        event_ids = [
+            int(row["id"])
+            for row in conn.execute(
+                f"""
+                SELECT id
+                FROM email_action_events
+                WHERE {' AND '.join(filters)}
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                values,
+            ).fetchall()
+        ]
+
+        for event_id in event_ids:
+            claimed = conn.execute(
+                """
+                UPDATE email_action_events
+                SET telegram_notification_status = 'sending',
+                    telegram_notification_claimed_at = ?,
+                    telegram_notification_next_attempt_at = NULL,
+                    telegram_notification_attempt_count = COALESCE(telegram_notification_attempt_count, 0) + 1
+                WHERE id = ?
+                  AND COALESCE(telegram_notification_attempt_count, 0) < ?
+                  AND (
+                      COALESCE(telegram_notification_status, '') IN ('', 'pending', 'failed')
+                      OR (
+                          telegram_notification_status = 'sending'
+                          AND COALESCE(telegram_notification_claimed_at, '') <= ?
+                      )
+                  )
+                """,
+                (timestamp, event_id, EMAIL_ACTION_TELEGRAM_MAX_ATTEMPTS, stale_before),
+            ).rowcount
+            if not claimed:
+                continue
+            # The claim must be durable before contacting Telegram.
+            conn.commit()
+            event_row = conn.execute("SELECT * FROM email_action_events WHERE id = ?", (event_id,)).fetchone()
+            if not event_row:
+                continue
+            current_licitacion_id = int(event_row["licitacion_id"] or 0)
+            licitacion = (
+                conn.execute("SELECT * FROM licitaciones WHERE id = ?", (current_licitacion_id,)).fetchone()
+                if current_licitacion_id
+                else None
+            )
+            day_row = (
+                conn.execute("SELECT fecha FROM infonalia_dias WHERE id = ?", (int(event_row["review_id"]),)).fetchone()
+                if event_row["review_id"]
+                else None
+            )
+            action_name = clean_text(event_row["action_name"]) or clean_text(event_row["action_code"])
+            text = _build_email_action_telegram_text(
+                licitacion=licitacion,
+                event=event_row,
+                review_date=day_row["fecha"] if day_row else "",
+            )
+            try:
+                delivery = _deliver_email_action_telegram_notification(
+                    conn,
+                    text=text,
+                    licitacion_id=current_licitacion_id,
+                    action_name=action_name,
+                )
+            except Exception as exc:
+                delivery = {
+                    "ok": False,
+                    "status": "failed",
+                    "target": "",
+                    "message_id": None,
+                    "error": clean_text(exc) or exc.__class__.__name__,
+                }
+            attempt_count = int(event_row["telegram_notification_attempt_count"] or 0)
+            result_status = clean_text(delivery.get("status")) or "failed"
+            next_attempt_at = ""
+            if not delivery.get("ok"):
+                if attempt_count >= EMAIL_ACTION_TELEGRAM_MAX_ATTEMPTS:
+                    result_status = "exhausted"
+                else:
+                    retry_index = min(attempt_count - 1, len(EMAIL_ACTION_TELEGRAM_RETRY_MINUTES) - 1)
+                    next_attempt_at = (
+                        current_dt + timedelta(minutes=EMAIL_ACTION_TELEGRAM_RETRY_MINUTES[retry_index])
+                    ).isoformat()
+                    result_status = "failed"
+                    pending_retry += 1
             _mark_email_action_telegram_result(
                 conn,
-                event_id=int(event_row["id"]),
+                event_id=event_id,
                 timestamp=timestamp,
-                status=str(delivery.get("status") or "failed"),
+                status=result_status,
                 target=str(delivery.get("target") or ""),
                 error=str(delivery.get("error") or ""),
                 message_id=delivery.get("message_id"),
+                next_attempt_at=next_attempt_at,
             )
+            conn.commit()
             items.append(
                 {
-                    "event_id": int(event_row["id"]),
+                    "event_id": event_id,
                     "action_code": clean_text(event_row["action_code"]),
                     "action_name": action_name,
-                    "status": clean_text(delivery.get("status")),
+                    "execution_status": clean_text(event_row["execution_status"]),
+                    "status": result_status,
                     "target": clean_text(delivery.get("target")),
+                    "attempt": attempt_count,
                 }
             )
             if delivery.get("ok"):
@@ -2885,9 +3263,31 @@ def notify_pending_email_action_telegram_events(
         "checked": len(items),
         "sent": notified,
         "failed": failed,
+        "pending_retry": pending_retry,
         "job_id": download_job_id,
         "items": items,
     }
+
+
+def _finalize_email_action_download_events(
+    *,
+    download_job_id: int,
+    execution_status: str,
+    failure_stage: str = "",
+    failure_code: str = "",
+    failure_detail: str = "",
+) -> dict[str, object]:
+    with db_session() as conn:
+        event_ids = _set_email_action_download_terminal_status(
+            conn,
+            download_job_id=download_job_id,
+            execution_status=execution_status,
+            failure_stage=failure_stage,
+            failure_code=failure_code,
+            failure_detail=failure_detail,
+        )
+    delivery = notify_pending_email_action_telegram_events(download_job_id=download_job_id)
+    return {**delivery, "event_ids": event_ids}
 
 
 def _download_completed_successfully(http_status: HTTPStatus, payload: dict[str, object]) -> bool:
@@ -2950,6 +3350,108 @@ def _record_email_ai_summary_request_history(
     )
 
 
+def _set_email_ai_summary_action_terminal(
+    conn: sqlite3.Connection,
+    request: sqlite3.Row,
+    *,
+    execution_status: str,
+    detail: str,
+    failure_code: str = "",
+) -> bool:
+    event_id = int(request["email_action_event_id"] or 0)
+    if not event_id:
+        return False
+    updated = _set_email_action_event_terminal_status(
+        conn,
+        event_id=event_id,
+        execution_status=execution_status,
+        failure_stage="ai" if execution_status == EMAIL_ACTION_EXECUTION_FAILED else "",
+        failure_code=failure_code,
+        failure_detail=detail if execution_status == EMAIL_ACTION_EXECUTION_FAILED else "",
+        allow_ai_completion=True,
+    )
+    if updated and execution_status == EMAIL_ACTION_EXECUTION_FAILED:
+        record_infonalia_activity(
+            conn,
+            category="download_ai",
+            event_type="nuria_action_failed",
+            source="email_action",
+            actor=clean_text(request["requested_by"]),
+            result="error",
+            title="Falló una orden de Nuria",
+            detail=detail,
+            day_id=int(request["review_id"] or 0) or None,
+            licitacion_id=int(request["licitacion_id"]),
+            severity=SEVERITY_CRITICAL,
+            metadata={
+                "email_action_event_id": event_id,
+                "download_job_id": int(request["download_job_id"] or 0) or None,
+                "ai_job_id": int(request["ai_job_id"] or 0) or None,
+                "failure_stage": "ai",
+                "failure_code": failure_code,
+            },
+            dedupe_key=f"email_action:{event_id}:failed",
+            timestamp=now_iso(),
+        )
+    return updated
+
+
+def finalize_email_ai_action_events_for_job(
+    conn: sqlite3.Connection,
+    ai_job_id: int,
+) -> dict[str, object]:
+    job = conn.execute(
+        "SELECT status, error_code, error_message FROM ai_analysis_jobs WHERE id = ?",
+        (ai_job_id,),
+    ).fetchone()
+    if not job or clean_text(job["status"]) not in {"completed", "error"}:
+        return {"event_ids": [], "licitacion_ids": [], "status": clean_text(job["status"]) if job else "missing"}
+    requests = conn.execute(
+        "SELECT * FROM email_ai_summary_requests WHERE ai_job_id = ? ORDER BY id ASC",
+        (ai_job_id,),
+    ).fetchall()
+    event_ids: list[int] = []
+    licitacion_ids: list[int] = []
+    completed = clean_text(job["status"]) == "completed"
+    detail = (
+        "Resumen IA generado y procesado."
+        if completed
+        else clean_text(job["error_message"]) or "El análisis IA finalizó con error."
+    )
+    for request in requests:
+        _update_email_ai_summary_request(
+            conn,
+            int(request["id"]),
+            status="analysis_completed" if completed else "analysis_error",
+            detail=detail,
+            ai_job_id=ai_job_id,
+        )
+        _record_email_ai_summary_request_history(
+            conn,
+            request,
+            state="resumen_generado" if completed else "error_analisis_ia",
+            detail=detail,
+        )
+        if _set_email_ai_summary_action_terminal(
+            conn,
+            request,
+            execution_status=(
+                EMAIL_ACTION_EXECUTION_COMPLETED
+                if completed
+                else EMAIL_ACTION_EXECUTION_FAILED
+            ),
+            detail=detail,
+            failure_code="" if completed else clean_text(job["error_code"]) or "AI_ANALYSIS_ERROR",
+        ):
+            event_ids.append(int(request["email_action_event_id"]))
+            licitacion_ids.append(int(request["licitacion_id"]))
+    return {
+        "event_ids": event_ids,
+        "licitacion_ids": list(dict.fromkeys(licitacion_ids)),
+        "status": clean_text(job["status"]),
+    }
+
+
 def mark_email_ai_summary_requests_download_failed(download_job_id: int, error_message: str) -> int:
     """Deja trazada la petición de resumen si su descarga previa no pudo terminar."""
     with db_session() as conn:
@@ -2993,6 +3495,13 @@ def start_email_ai_summary_requests_for_download(download_job_id: int) -> dict[s
                 detail = "La orden de resumen IA no contiene un email de destino válido."
                 _update_email_ai_summary_request(conn, request_id, status="analysis_skipped", detail=detail)
                 _record_email_ai_summary_request_history(conn, request, state="sin_destinatario", detail=detail)
+                _set_email_ai_summary_action_terminal(
+                    conn,
+                    request,
+                    execution_status=EMAIL_ACTION_EXECUTION_FAILED,
+                    detail=detail,
+                    failure_code="AI_RECIPIENT_MISSING",
+                )
                 result["skipped"] = int(result["skipped"]) + 1
                 continue
             try:
@@ -3008,6 +3517,13 @@ def start_email_ai_summary_requests_for_download(download_job_id: int) -> dict[s
                 detail = f"No se pudo preparar el resumen IA: {exc}"
                 _update_email_ai_summary_request(conn, request_id, status="analysis_error", detail=detail)
                 _record_email_ai_summary_request_history(conn, request, state="error_preparando_ia", detail=detail)
+                _set_email_ai_summary_action_terminal(
+                    conn,
+                    request,
+                    execution_status=EMAIL_ACTION_EXECUTION_FAILED,
+                    detail=detail,
+                    failure_code="AI_PREPARATION_ERROR",
+                )
                 result["errors"] = int(result["errors"]) + 1
                 continue
 
@@ -3025,6 +3541,13 @@ def start_email_ai_summary_requests_for_download(download_job_id: int) -> dict[s
                     detail = f"No se pudo enviar el resumen IA ya disponible: {exc}"
                     _update_email_ai_summary_request(conn, request_id, status="delivery_error", detail=detail)
                     _record_email_ai_summary_request_history(conn, request, state="error_envio_resumen", detail=detail)
+                    _set_email_ai_summary_action_terminal(
+                        conn,
+                        request,
+                        execution_status=EMAIL_ACTION_EXECUTION_FAILED,
+                        detail=detail,
+                        failure_code="AI_SUMMARY_DELIVERY_ERROR",
+                    )
                     result["errors"] = int(result["errors"]) + 1
                     continue
                 sent = int(delivery.get("sent") or 0)
@@ -3044,8 +3567,21 @@ def start_email_ai_summary_requests_for_download(download_job_id: int) -> dict[s
                     detail=detail,
                 )
                 if sent and not errors:
+                    _set_email_ai_summary_action_terminal(
+                        conn,
+                        request,
+                        execution_status=EMAIL_ACTION_EXECUTION_COMPLETED,
+                        detail=detail,
+                    )
                     result["delivered_existing_summary"] = int(result["delivered_existing_summary"]) + 1
                 else:
+                    _set_email_ai_summary_action_terminal(
+                        conn,
+                        request,
+                        execution_status=EMAIL_ACTION_EXECUTION_FAILED,
+                        detail=detail,
+                        failure_code="AI_SUMMARY_DELIVERY_ERROR",
+                    )
                     result["errors"] = int(result["errors"]) + 1
                 continue
 
@@ -3060,6 +3596,13 @@ def start_email_ai_summary_requests_for_download(download_job_id: int) -> dict[s
                 detail = clean_text(payload.get("motivo_si_no_puede_generar")) or "No hay documentos aptos para generar el resumen IA."
                 _update_email_ai_summary_request(conn, request_id, status="analysis_skipped", detail=detail)
                 _record_email_ai_summary_request_history(conn, request, state="analisis_no_disponible", detail=detail)
+                _set_email_ai_summary_action_terminal(
+                    conn,
+                    request,
+                    execution_status=EMAIL_ACTION_EXECUTION_FAILED,
+                    detail=detail,
+                    failure_code="AI_ANALYSIS_NOT_AVAILABLE",
+                )
                 result["skipped"] = int(result["skipped"]) + 1
                 continue
 
@@ -3095,22 +3638,113 @@ def start_email_ai_summary_requests_for_download(download_job_id: int) -> dict[s
     for ai_job_id in dict.fromkeys(jobs_to_start):
         with db_session() as conn:
             worker = start_ai_worker_for_job(conn, ai_job_id)
+            if worker.get("ok") is False:
+                detail = (
+                    clean_text(worker.get("error_message"))
+                    or clean_text(worker.get("error"))
+                    or "No se pudo iniciar el proceso de análisis IA."
+                )
+                linked_requests = conn.execute(
+                    "SELECT * FROM email_ai_summary_requests WHERE ai_job_id = ? ORDER BY id ASC",
+                    (ai_job_id,),
+                ).fetchall()
+                for request in linked_requests:
+                    _update_email_ai_summary_request(
+                        conn,
+                        int(request["id"]),
+                        status="analysis_error",
+                        detail=detail,
+                        ai_job_id=ai_job_id,
+                    )
+                    _record_email_ai_summary_request_history(
+                        conn,
+                        request,
+                        state="error_iniciando_ia",
+                        detail=detail,
+                    )
+                    if _set_email_ai_summary_action_terminal(
+                        conn,
+                        request,
+                        execution_status=EMAIL_ACTION_EXECUTION_FAILED,
+                        detail=detail,
+                        failure_code="AI_WORKER_START_ERROR",
+                    ):
+                        result["errors"] = int(result["errors"]) + 1
         workers = result["workers"]
         if isinstance(workers, list):
             workers.append({"job_id": ai_job_id, **worker})
     return result
 
 
-def _finish_failed_download_job(download_job_id: int, error_message: str) -> None:
+def _finish_failed_download_job(
+    download_job_id: int,
+    error_message: str,
+    *,
+    failure_stage: str = "downloader",
+    failure_code: str = "DOWNLOAD_FAILED",
+) -> dict[str, object]:
+    event_ids: list[int] = []
     with db_session() as conn:
+        job = conn.execute(
+            """
+            SELECT jobs.licitacion_id, jobs.request_source, jobs.request_action,
+                   jobs.request_message_id, jobs.requested_by,
+                   CASE WHEN licitaciones.id IS NULL THEN 0 ELSE 1 END AS licitacion_exists
+            FROM download_jobs AS jobs
+            LEFT JOIN licitaciones ON licitaciones.id = jobs.licitacion_id
+            WHERE jobs.id = ?
+            """,
+            (download_job_id,),
+        ).fetchone()
+        timestamp = now_iso()
         finish_download_job(
             conn,
             download_job_id,
             status=DOWNLOAD_JOB_STATUS_FAILED,
             error_message=error_message[:2000],
-            timestamp=now_iso(),
+            timestamp=timestamp,
+        )
+        if job and int(job["licitacion_exists"] or 0):
+            record_infonalia_activity(
+                conn,
+                category="download_ai",
+                event_type="download_failed",
+                source=clean_text(job["request_source"]) or "download",
+                actor=clean_text(job["requested_by"]),
+                result="error",
+                title="Falló una descarga de documentación",
+                detail=error_message[:2000],
+                licitacion_id=int(job["licitacion_id"]),
+                severity=SEVERITY_CRITICAL,
+                metadata={
+                    "download_job_id": download_job_id,
+                    "request_action": clean_text(job["request_action"]),
+                    "request_message_id": clean_text(job["request_message_id"]),
+                    "failure_stage": clean_text(failure_stage),
+                    "failure_code": clean_text(failure_code),
+                },
+                dedupe_key=f"download_job:{download_job_id}:failed",
+                timestamp=timestamp,
+            )
+        event_ids = _set_email_action_download_terminal_status(
+            conn,
+            download_job_id=download_job_id,
+            execution_status=EMAIL_ACTION_EXECUTION_FAILED,
+            failure_stage=failure_stage,
+            failure_code=failure_code,
+            failure_detail=error_message,
         )
     mark_email_ai_summary_requests_download_failed(download_job_id, error_message)
+    try:
+        delivery = notify_pending_email_action_telegram_events(download_job_id=download_job_id)
+    except Exception as exc:
+        LOGGER.exception(
+            "No se pudo procesar el aviso Telegram del fallo de descarga. job_id=%s error=%s",
+            download_job_id,
+            exc,
+        )
+        delivery = {"checked": 0, "sent": 0, "failed": 1, "items": [], "error": str(exc)}
+    return {**delivery, "event_ids": event_ids}
 
 
 def execute_download_for_destination(
@@ -3141,7 +3775,12 @@ def execute_download_for_destination(
         )
     except subprocess.TimeoutExpired:
         error_message = "La descarga ha tardado demasiado y se ha detenido."
-        _finish_failed_download_job(download_job_id, error_message)
+        _finish_failed_download_job(
+            download_job_id,
+            error_message,
+            failure_stage="downloader",
+            failure_code="DOWNLOAD_TIMEOUT",
+        )
         return (
             HTTPStatus.REQUEST_TIMEOUT,
             {"error": error_message, "carpeta": str(destino), "ruta_carpeta": ruta_guardada},
@@ -3156,7 +3795,12 @@ def execute_download_for_destination(
 
     if completed.returncode != 0:
         error_message = f"El descargador devolvio codigo {completed.returncode}: {salida}".strip()
-        _finish_failed_download_job(download_job_id, error_message)
+        _finish_failed_download_job(
+            download_job_id,
+            error_message,
+            failure_stage="downloader",
+            failure_code="DOWNLOADER_EXIT_CODE",
+        )
         return (
             HTTPStatus.BAD_REQUEST,
             {
@@ -3168,15 +3812,6 @@ def execute_download_for_destination(
                 "error": error_message,
             },
         )
-
-    try:
-        try:
-            from .monitor.snapshots import persist_normal_download_baseline
-        except ImportError:
-            from monitor.snapshots import persist_normal_download_baseline
-        persist_normal_download_baseline(completed.stdout, destino)
-    except Exception as exc:
-        LOGGER.warning("No se pudo actualizar el estado técnico del monitor tras la descarga normal: %s", exc)
 
     try:
         folder_summary = scan_download_folder(destino)
@@ -3196,7 +3831,12 @@ def execute_download_for_destination(
             source_url=url,
         )
     except DownloadSafetyError as exc:
-        _finish_failed_download_job(download_job_id, str(exc))
+        _finish_failed_download_job(
+            download_job_id,
+            str(exc),
+            failure_stage="validation",
+            failure_code="DOWNLOAD_SAFETY_ERROR",
+        )
         return (
             HTTPStatus.BAD_REQUEST,
             {
@@ -3210,7 +3850,12 @@ def execute_download_for_destination(
         )
     except (LocalStorageError, OSError, StorageConfigurationError, DropboxStorageError) as exc:
         error_message = f"No se pudo confirmar el almacenamiento de descarga: {exc}"
-        _finish_failed_download_job(download_job_id, error_message)
+        _finish_failed_download_job(
+            download_job_id,
+            error_message,
+            failure_stage="storage",
+            failure_code="DOWNLOAD_STORAGE_ERROR",
+        )
         return (
             HTTPStatus.BAD_REQUEST,
             {
@@ -3277,6 +3922,28 @@ def execute_download_for_destination(
             timestamp=timestamp,
             error_message=storage_error_message,
         )
+        job = conn.execute(
+            "SELECT request_source, requested_by FROM download_jobs WHERE id = ?",
+            (download_job_id,),
+        ).fetchone()
+        record_infonalia_activity(
+            conn,
+            category="download_ai",
+            event_type="download_completed" if not storage_error_message else "download_completed_with_warnings",
+            source=clean_text(job["request_source"]) if job else "download",
+            actor=clean_text(job["requested_by"]) if job else "",
+            result=storage_status,
+            title=(
+                "Descarga de documentación completada"
+                if not storage_error_message
+                else "Descarga completada con incidencias"
+            ),
+            detail=storage_error_message or f"Documentación guardada en {ruta_guardada}.",
+            licitacion_id=licitacion_id,
+            severity=SEVERITY_ATTENTION if storage_error_message else SEVERITY_NORMAL,
+            dedupe_key=f"download_job:{download_job_id}:{storage_status}",
+            timestamp=timestamp,
+        )
 
     return (
         HTTPStatus.OK,
@@ -3305,10 +3972,82 @@ def execute_download_for_destination(
     )
 
 
+def execute_download_with_tender_lease(
+    *,
+    licitacion_id: int,
+    row: sqlite3.Row,
+    destino: Path,
+    ruta_guardada: str,
+    download_job_id: int,
+    source_url: str,
+    defer_on_busy: bool,
+) -> tuple[HTTPStatus, dict[str, object]]:
+    lease_key = f"tender-io:licitacion:{licitacion_id}"
+    owner = f"download-job:{download_job_id}:{os.getpid()}:{secrets.token_hex(4)}"
+    with db_session() as conn:
+        acquired, existing = acquire_tender_lease(
+            conn,
+            lease_key=lease_key,
+            owner=owner,
+            minutes=max(5, (MAX_DOWNLOAD_RUNTIME_SECONDS // 60) + 5),
+            timestamp=datetime.now(),
+            metadata={
+                "operation": "direct_download",
+                "download_job_id": download_job_id,
+                "licitacion_id": licitacion_id,
+            },
+        )
+        if not acquired and defer_on_busy:
+            conn.execute(
+                """
+                UPDATE download_jobs SET status = ?, started_at = NULL, updated_at = ?
+                WHERE id = ? AND status = ?
+                """,
+                (DOWNLOAD_JOB_STATUS_PENDING, now_iso(), download_job_id, DOWNLOAD_JOB_STATUS_RUNNING),
+            )
+    if not acquired:
+        message = "Hay otra operación de descarga o monitorización activa para esta licitación."
+        if not defer_on_busy:
+            _finish_failed_download_job(
+                download_job_id,
+                message,
+                failure_stage="lock",
+                failure_code="TENDER_OPERATION_BUSY",
+            )
+        return (
+            HTTPStatus.CONFLICT,
+            {
+                "ok": False,
+                "deferred": bool(defer_on_busy),
+                "error": message,
+                "active_operation": existing or {},
+                "carpeta": str(destino),
+                "ruta_carpeta": ruta_guardada,
+            },
+        )
+    try:
+        return execute_download_for_destination(
+            licitacion_id=licitacion_id,
+            row=row,
+            destino=destino,
+            ruta_guardada=ruta_guardada,
+            download_job_id=download_job_id,
+            source_url=source_url,
+        )
+    finally:
+        with db_session() as conn:
+            release_tender_lease(conn, lease_key=lease_key, owner=owner)
+
+
 def process_download_job(job_id: int) -> dict[str, object]:
     base_status = dropbox_base_status()
     if not uses_dropbox_api_backend() and base_status.configured and not base_status.ok:
-        _finish_failed_download_job(job_id, base_status.error or "La carpeta base de Dropbox no es válida.")
+        _finish_failed_download_job(
+            job_id,
+            base_status.error or "La carpeta base de Dropbox no es válida.",
+            failure_stage="storage",
+            failure_code="DOWNLOAD_BASE_STORAGE_INVALID",
+        )
         return {
             "ok": False,
             "status": "failed",
@@ -3343,43 +4082,66 @@ def process_download_job(job_id: int) -> dict[str, object]:
             }
         licitacion_id = int(job["licitacion_id"])
         row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
-        if not row:
-            finish_download_job(
-                conn,
-                job_id,
-                status=DOWNLOAD_JOB_STATUS_FAILED,
-                error_message="La licitación asociada ya no existe.",
-                timestamp=now_iso(),
-            )
-            return {"ok": False, "status": "failed", "job_id": job_id, "message": "Licitación asociada no encontrada."}
+    if not row:
+        _finish_failed_download_job(
+            job_id,
+            "La licitación asociada ya no existe.",
+            failure_stage="validation",
+            failure_code="DOWNLOAD_LICITACION_MISSING",
+        )
+        return {"ok": False, "status": "failed", "job_id": job_id, "message": "Licitación asociada no encontrada."}
 
     url = normalize_url(row["enlace_perfil"])
     if not url:
-        _finish_failed_download_job(job_id, "Esta licitación no tiene enlace de perfil.")
+        _finish_failed_download_job(
+            job_id,
+            "Esta licitación no tiene enlace de perfil.",
+            failure_stage="validation",
+            failure_code="DOWNLOAD_PROFILE_URL_MISSING",
+        )
         return {"ok": False, "status": "failed", "job_id": job_id, "message": "La licitación no tiene enlace de perfil."}
     try:
         url = validate_download_url(url)
         destino = validate_resolved_destination(resolve_destination_folder(row), download_allowed_destination_roots())
     except DownloadSafetyError as exc:
-        _finish_failed_download_job(job_id, str(exc))
+        _finish_failed_download_job(
+            job_id,
+            str(exc),
+            failure_stage="validation",
+            failure_code="DOWNLOAD_SAFETY_ERROR",
+        )
         return {"ok": False, "status": "failed", "job_id": job_id, "message": str(exc)}
     if destino.exists() and not destino.is_dir():
-        _finish_failed_download_job(job_id, "La ruta de destino existe pero no es una carpeta.")
+        _finish_failed_download_job(
+            job_id,
+            "La ruta de destino existe pero no es una carpeta.",
+            failure_stage="destination",
+            failure_code="DOWNLOAD_DESTINATION_INVALID",
+        )
         return {"ok": False, "status": "failed", "job_id": job_id, "message": "La ruta de destino no es una carpeta."}
     ruta_guardada = folder_path_for_storage(destino)
-    http_status, payload = execute_download_for_destination(
+    http_status, payload = execute_download_with_tender_lease(
         licitacion_id=licitacion_id,
         row=row,
         destino=destino,
         ruta_guardada=ruta_guardada,
         download_job_id=job_id,
         source_url=url,
+        defer_on_busy=True,
     )
+    if payload.get("deferred"):
+        return {
+            "ok": True,
+            "status": "pending",
+            "job_id": job_id,
+            "message": clean_text(payload.get("error")),
+            "payload": payload,
+        }
     if _download_completed_successfully(http_status, payload):
         payload["ai_summary_requests"] = start_email_ai_summary_requests_for_download(job_id)
-        payload["telegram_notifications"] = notify_pending_email_action_telegram_events(
-            licitacion_id=licitacion_id,
+        payload["telegram_notifications"] = _finalize_email_action_download_events(
             download_job_id=job_id,
+            execution_status=EMAIL_ACTION_EXECUTION_COMPLETED,
         )
     else:
         payload["ai_summary_requests"] = {
@@ -3806,6 +4568,7 @@ def send_monitor_email(
     body: str,
     html_body: str,
     *,
+    attachments: Sequence[Path] | None = None,
     settings: dict[str, str] | None = None,
 ) -> tuple[str | None, str | None]:
     recipients = split_email_recipients(recipient)
@@ -3816,6 +4579,7 @@ def send_monitor_email(
         body=body,
         html_body=html_body,
         logo_path=STATIC_ROOT / "logo-llangon.png",
+        attachments=attachments,
         now=now_iso,
         smtp_factory=smtplib.SMTP,
         smtp_ssl_factory=smtplib.SMTP_SSL,
@@ -3888,6 +4652,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_me()
         elif path == "/api/dias":
             self.api_list_dias()
+        elif path == "/api/infonalia/history":
+            self.api_list_infonalia_history(parsed.query)
         elif path == "/api/agenda/pending-tasks":
             self.api_agenda_pending_tasks(parsed.query)
         elif path == "/api/agenda/workbench":
@@ -4060,6 +4826,23 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
 
         if path.startswith("/api/tender-monitor"):
             self.api_tender_monitor_post(path)
+        elif path == "/api/infonalia/history/acknowledge-filtered":
+            self.api_acknowledge_filtered_infonalia_history()
+        elif path.startswith("/api/infonalia/history/") and path.endswith("/acknowledge"):
+            event_id = path.removeprefix("/api/infonalia/history/").removesuffix("/acknowledge").strip("/")
+            if not event_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_acknowledge_infonalia_history(int(event_id))
+        elif path.startswith("/api/clientes/") and (
+            path.endswith("/desactivar") or path.endswith("/reactivar")
+        ):
+            action = "desactivar" if path.endswith("/desactivar") else "reactivar"
+            cliente_id = path.removeprefix("/api/clientes/").removesuffix(f"/{action}").strip("/")
+            if not cliente_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_set_cliente_active(int(cliente_id), action == "reactivar")
         elif path == "/api/justificaciones-baja" or path.startswith("/api/justificaciones-baja/"):
             self.api_post_justificacion_baja(path)
         elif path == "/api/licitaciones":
@@ -4405,6 +5188,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_delete_comment(int(comment_id))
+        elif path.startswith("/api/cliente-envios/"):
+            envio_id = path.removeprefix("/api/cliente-envios/").strip("/")
+            if not envio_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_delete_cliente_envio(int(envio_id))
         elif path.startswith("/api/licitaciones/") and path.endswith("/ai-summary"):
             licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ai-summary").strip("/")
             if not licitacion_id.isdigit():
@@ -4481,6 +5270,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             if path == "/api/justificaciones-baja" or path.startswith("/api/justificaciones-baja/"):
                 return True
             if path in {
+                "/api/infonalia/history/acknowledge-filtered",
                 "/api/licitaciones",
                 "/api/licitaciones/capture",
                 "/api/actuaciones",
@@ -4503,6 +5293,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 "/api/import/infonalia-mail/run-now",
                 "/api/comments",
             }:
+                return True
+            if path.startswith("/api/infonalia/history/") and path.endswith("/acknowledge"):
+                return True
+            if path.startswith("/api/clientes/") and (
+                path.endswith("/desactivar") or path.endswith("/reactivar")
+            ):
                 return True
             if path.startswith("/api/comments/") and (
                 path.endswith("/pin")
@@ -4589,6 +5385,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if method == "DELETE":
             return (
                 path.startswith("/api/comments/")
+                or path.startswith("/api/cliente-envios/")
                 or path.startswith("/api/licitaciones/")
                 or path.startswith("/api/dias/")
                 or path.startswith("/api/config/users/")
@@ -4780,6 +5577,32 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     visibility=data.get("visibility", "internal"),
                     user=user,
                 )
+                entity_type = clean_text(data.get("entity_type")).lower()
+                entity_id = int(data.get("entity_id") or 0)
+                day_id = entity_id if entity_type == "infonalia_dia" else None
+                licitacion_id = entity_id if entity_type == "licitacion" else None
+                if licitacion_id:
+                    linked = conn.execute(
+                        "SELECT infonalia_dia_id FROM licitaciones WHERE id = ?",
+                        (licitacion_id,),
+                    ).fetchone()
+                    if not linked or not linked["infonalia_dia_id"]:
+                        licitacion_id = None
+                if day_id or licitacion_id:
+                    record_infonalia_activity(
+                        conn,
+                        category="comment",
+                        event_type="comment_created",
+                        source="web",
+                        actor=clean_text(user.get("username")),
+                        result="processed",
+                        title="Comentario añadido en la gestión de Infonalia",
+                        detail=clean_text(data.get("body")),
+                        day_id=day_id,
+                        licitacion_id=licitacion_id,
+                        severity=SEVERITY_NORMAL,
+                        dedupe_key=f"comment:{item.get('id')}",
+                    )
         except Exception as exc:
             self.send_comment_error(exc)
             return
@@ -4863,11 +5686,12 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             db_path=DB_PATH,
             user=self.current_user() or {},
             root=root,
-            email_sender=lambda to, subject, body, html_body: send_monitor_email(
+            email_sender=lambda to, subject, body, html_body, attachments=None: send_monitor_email(
                 to,
                 subject,
                 body,
                 html_body,
+                attachments=attachments,
                 settings=settings,
             ),
             telegram_sender=lambda user, message: send_telegram_user_message(
@@ -4997,9 +5821,46 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
     def api_admin_automation_run_task(self, task_key: str) -> None:
         if not self.require_admin():
             return
+        clean_key = clean_text(task_key)
+        if clean_key == "pc_restart":
+            try:
+                payload = self.read_json()
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                self.send_json({"ok": False, "error": "La confirmación de reinicio no es válida."}, HTTPStatus.BAD_REQUEST)
+                return
+            confirmation = clean_text(payload.get("confirmation")) if isinstance(payload, dict) else ""
+            if confirmation.upper() != "REINICIAR":
+                self.send_json(
+                    {"ok": False, "error": "Confirma el reinicio escribiendo REINICIAR."},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+        if clean_key == "file_inventory":
+            worker = launch_internal_automation_task_worker(
+                clean_key,
+                db_path=DB_PATH,
+                source="manual_worker",
+                triggered_by=clean_text((self.current_user() or {}).get("username")),
+            )
+            if worker.get("ok") is False:
+                self.send_json(
+                    {"ok": False, "error": clean_text(worker.get("error")) or "No se pudo iniciar la reconciliación de rutas."},
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+                return
+            self.send_json(
+                {
+                    "ok": True,
+                    "status": "queued",
+                    "summary": "Reconciliación de rutas iniciada en un proceso aislado.",
+                    "worker": worker,
+                },
+                HTTPStatus.ACCEPTED,
+            )
+            return
         try:
             result = run_internal_automation_task(
-                clean_text(task_key),
+                clean_key,
                 db_path=DB_PATH,
                 source="manual",
                 triggered_by=clean_text((self.current_user() or {}).get("username")),
@@ -5503,6 +6364,73 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             ]
         self.send_json({"items": items, "estados": DIA_ESTADOS_ORDEN})
 
+    def api_list_infonalia_history(self, query: str) -> None:
+        if not self.require_admin():
+            return
+        params = parse_qs(query)
+        filters = {
+            key: clean_text(params.get(key, [""])[0])
+            for key in (
+                "day_id",
+                "category",
+                "severity",
+                "review_state",
+                "result",
+                "source",
+                "actor",
+                "date_from",
+                "date_to",
+                "q",
+                "cursor",
+            )
+        }
+        try:
+            limit = int(clean_text(params.get("limit", ["50"])[0]) or 50)
+        except ValueError:
+            limit = 50
+        with db_session() as conn:
+            payload = list_infonalia_history(conn, filters=filters, limit=limit)
+        self.send_json(payload)
+
+    def api_acknowledge_infonalia_history(self, event_id: int) -> None:
+        if not self.require_admin():
+            return
+        user = self.current_user() or {}
+        username = clean_text(user.get("username")) or "admin"
+        with db_session() as conn:
+            changed = acknowledge_infonalia_event(conn, event_id, reviewed_by=username)
+        self.send_json({"ok": True, "changed": changed, "event_id": event_id})
+
+    def api_acknowledge_filtered_infonalia_history(self) -> None:
+        if not self.require_admin():
+            return
+        data = self.read_json()
+        raw_filters = data.get("filters") if isinstance(data.get("filters"), dict) else data
+        filters = {
+            key: clean_text(raw_filters.get(key))
+            for key in (
+                "day_id",
+                "category",
+                "severity",
+                "review_state",
+                "result",
+                "source",
+                "actor",
+                "date_from",
+                "date_to",
+                "q",
+            )
+        }
+        user = self.current_user() or {}
+        username = clean_text(user.get("username")) or "admin"
+        with db_session() as conn:
+            changed = acknowledge_filtered_infonalia_events(
+                conn,
+                filters=filters,
+                reviewed_by=username,
+            )
+        self.send_json({"ok": True, "acknowledged": changed})
+
     def api_agenda(self, query: str) -> None:
         params = parse_qs(query)
         with db_session() as conn:
@@ -5527,8 +6455,9 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
     def api_list_clientes(self, query: str) -> None:
         params = parse_qs(query)
         search = clean_text(params.get("q", [""])[0])
+        estado = clean_text(params.get("estado", ["activos"])[0])
         with db_session() as conn:
-            items = list_clientes(conn, search=search)
+            items = list_clientes(conn, search=search, estado=estado)
         self.send_json({"items": items})
 
     def api_get_cliente(self, cliente_id: int) -> None:
@@ -5668,6 +6597,34 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             except (ValueError, DropboxPathError) as exc:
                 self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
+        self.send_json({"ok": True, "item": item})
+
+    def api_set_cliente_active(self, cliente_id: int, active: bool) -> None:
+        if not self.require_admin():
+            return
+        user = self.current_user() or {}
+        with db_session() as conn:
+            try:
+                item = set_cliente_active(
+                    conn,
+                    cliente_id,
+                    active=active,
+                    user_id=user.get("username"),
+                    timestamp=now_iso(),
+                )
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+        self.send_json({"ok": True, "item": item})
+
+    def api_delete_cliente_envio(self, envio_id: int) -> None:
+        if not self.require_admin():
+            return
+        with db_session() as conn:
+            item = delete_cliente_envio(conn, envio_id)
+        if not item:
+            self.send_json({"error": "Envío no encontrado"}, HTTPStatus.NOT_FOUND)
+            return
         self.send_json({"ok": True, "item": item})
 
     def api_generate_cliente_envio_draft(self, envio_id: int) -> None:
@@ -6263,6 +7220,18 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         try:
             data = self._read_bounded_json()
             with db_session() as conn:
+                current = conn.execute(
+                    "SELECT cliente_id FROM justificaciones_baja WHERE id = ? AND archived_at IS NULL",
+                    (justification_id,),
+                ).fetchone()
+                if current is not None:
+                    draft_client = data.get("draft", {}).get("client") if isinstance(data.get("draft"), dict) else None
+                    if isinstance(draft_client, dict) and draft_client.get("client_id") not in (None, "", 0):
+                        require_operational_cliente(
+                            conn,
+                            int(draft_client["client_id"]),
+                            current_cliente_id=int(current["cliente_id"] or 0),
+                        )
                 item = self._justificaciones_service(conn).save(
                     justification_id,
                     draft=data["draft"],
@@ -6337,6 +7306,11 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     cliente = get_cliente(conn, cliente_id)
                     if cliente is None:
                         raise ValueError("El cliente indicado no existe.")
+                    require_operational_cliente(conn, cliente_id)
+                    if supplied_draft is not None:
+                        draft_client = supplied_draft.get("client")
+                        if isinstance(draft_client, dict) and draft_client.get("client_id") not in (None, "", 0):
+                            require_operational_cliente(conn, int(draft_client["client_id"]))
                     item = self._justificaciones_service(conn).create(
                         licitacion=row_to_dict(licitacion_row),
                         cliente=cliente,
@@ -6653,6 +7627,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 actuacion["source_id"] = int(actuacion["id"])
             apply_comments_metadata(conn, item.get("actuaciones") or [])
             marker_status = get_marker_status_for_licitacion(item, find_dropbox_root())
+            reconcile_folder_status_with_marker(item, marker_status)
             item["seguimiento_activo"] = bool(marker_status.get("activo"))
             item["seguimiento"] = {
                 **(item.get("seguimiento") or {}),
@@ -6889,6 +7864,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         with db_session() as conn:
             try:
                 licitacion_ids = validate_licitacion_ids(conn, licitacion_ids)
+                payload["cliente_id"] = validate_optional_cliente_id(conn, payload.get("cliente_id"))
             except ValueError as exc:
                 self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
@@ -6971,6 +7947,16 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             if licitacion_ids is not None:
                 try:
                     licitacion_ids = validate_licitacion_ids(conn, licitacion_ids)
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                    return
+            if "cliente_id" in payload:
+                try:
+                    payload["cliente_id"] = validate_optional_cliente_id(
+                        conn,
+                        payload["cliente_id"],
+                        current_cliente_id=int(existing["cliente_id"] or 0),
+                    )
                 except ValueError as exc:
                     self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                     return
@@ -7233,10 +8219,26 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 f"INSERT INTO licitaciones ({columns}) VALUES ({placeholders})",
                 list(payload.values()),
             )
+            licitacion_id = int(cur.lastrowid)
             if dia_id:
                 mark_dia_nuria_dirty(conn, dia_id)
                 refresh_dia_estado(conn, dia_id)
-            row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (cur.lastrowid,)).fetchone()
+                record_infonalia_activity(
+                    conn,
+                    category="internal_review",
+                    event_type="manual_licitacion_created",
+                    source="manual",
+                    actor=clean_text((self.current_user() or {}).get("username")),
+                    result="processed",
+                    title="Licitación creada manualmente en un Día Infonalia",
+                    detail=f"Expediente {expediente} creado desde el formulario Nueva licitación.",
+                    day_id=dia_id,
+                    licitacion_id=licitacion_id,
+                    severity=SEVERITY_NORMAL,
+                    dedupe_key=f"licitacion_created:{licitacion_id}",
+                    timestamp=timestamp,
+                )
+            row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
         self.send_json(row_to_dict(row), HTTPStatus.CREATED)
 
     def api_import_csv(self) -> None:
@@ -7520,6 +8522,20 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 metadata={"event": "send_to_nuria"},
                 timestamp=timestamp,
             )
+            record_infonalia_activity(
+                conn,
+                category="nuria_delivery",
+                event_type="day_sent_to_nuria",
+                source="web",
+                actor=clean_text(user.get("username")),
+                result="processed",
+                title="Día Infonalia enviado a Nuria",
+                detail=f"Se enviaron {len(review_rows)} elementos para revisión.",
+                day_id=dia_id,
+                severity=SEVERITY_NORMAL,
+                dedupe_key=f"day_sent:{dia_id}:{timestamp}",
+                timestamp=timestamp,
+            )
             asunto = f"Infonalia del día {format_date_es(day['fecha'])}"
             intro = (
                 f"{user.get('display_name', 'Administrador')} ha dejado disponible el día {day['titulo']} para su revisión."
@@ -7626,6 +8642,20 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 metadata={"event": "mark_reviewed"},
                 timestamp=timestamp,
             )
+            record_infonalia_activity(
+                conn,
+                category="closure",
+                event_type="day_marked_reviewed",
+                source="web",
+                actor=clean_text(user.get("username")),
+                result="processed",
+                title="Día Infonalia cerrado como revisado",
+                detail=f"El día {clean_text(day['titulo'])} quedó completado.",
+                day_id=dia_id,
+                severity=SEVERITY_NORMAL,
+                dedupe_key=f"day_reviewed:{dia_id}:{timestamp}",
+                timestamp=timestamp,
+            )
             if user.get("role") == "nuria":
                 counts_rows = conn.execute(
                     """
@@ -7680,6 +8710,20 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 entity_id=dia_id,
                 body=f"Día reabierto por {clean_text((self.current_user() or {}).get('display_name')) or 'administrador'}.",
                 metadata={"event": "unmark_reviewed"},
+                timestamp=timestamp,
+            )
+            record_infonalia_activity(
+                conn,
+                category="closure",
+                event_type="day_reopened",
+                source="web",
+                actor=clean_text((self.current_user() or {}).get("username")),
+                result="processed",
+                title="Día Infonalia reabierto",
+                detail=f"Se reabrió {clean_text(day['titulo'])} después de su cierre.",
+                day_id=dia_id,
+                severity=SEVERITY_ATTENTION,
+                dedupe_key=f"day_reopened:{dia_id}:{timestamp}",
                 timestamp=timestamp,
             )
             refresh_dia_estado(conn, dia_id)
@@ -7756,16 +8800,69 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     notification_emails=notification_emails,
                 )
                 job_id = int(payload.get("job_id") or 0)
+                record_infonalia_activity(
+                    conn,
+                    category="download_ai",
+                    event_type="ai_analysis_requested",
+                    source="web",
+                    actor=clean_text(user.get("username")),
+                    result="processed",
+                    title="Análisis IA solicitado",
+                    detail=f"Estado inicial: {clean_text(payload.get('job_status')) or 'preparado'}.",
+                    licitacion_id=licitacion_id,
+                    severity=SEVERITY_NORMAL,
+                    metadata={"job_id": job_id or None, "force": force, "provider": provider_name},
+                    dedupe_key=f"ai_analysis_job:{job_id}:requested" if job_id else "",
+                )
         except AIFileSelectionError as exc:
+            with db_session() as conn:
+                record_infonalia_activity(
+                    conn,
+                    category="download_ai",
+                    event_type="ai_analysis_request_failed",
+                    source="web",
+                    actor=clean_text(user.get("username")),
+                    result="error",
+                    title="Falló la solicitud de análisis IA",
+                    detail=str(exc),
+                    licitacion_id=licitacion_id,
+                    severity=SEVERITY_CRITICAL,
+                )
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         except EmailListError as exc:
+            with db_session() as conn:
+                record_infonalia_activity(
+                    conn,
+                    category="download_ai",
+                    event_type="ai_analysis_request_failed",
+                    source="web",
+                    actor=clean_text(user.get("username")),
+                    result="error",
+                    title="Falló la solicitud de análisis IA",
+                    detail=str(exc),
+                    licitacion_id=licitacion_id,
+                    severity=SEVERITY_CRITICAL,
+                )
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
             return
-        except Exception:
+        except Exception as exc:
+            with db_session() as conn:
+                record_infonalia_activity(
+                    conn,
+                    category="download_ai",
+                    event_type="ai_analysis_request_failed",
+                    source="web",
+                    actor=clean_text(user.get("username")),
+                    result="error",
+                    title="Falló la solicitud de análisis IA",
+                    detail=clean_text(exc) or exc.__class__.__name__,
+                    licitacion_id=licitacion_id,
+                    severity=SEVERITY_CRITICAL,
+                )
             self.send_json({"error": "No se pudo generar el analisis IA."}, HTTPStatus.BAD_REQUEST)
             return
         if job_id and payload.get("job_status") in {"pending", "queued", "deferred"}:
@@ -7774,6 +8871,20 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             payload["worker"] = worker
             if not worker.get("ok"):
                 with db_session() as conn:
+                    record_infonalia_activity(
+                        conn,
+                        category="download_ai",
+                        event_type="ai_worker_start_failed",
+                        source="web",
+                        actor=clean_text(user.get("username")),
+                        result="error",
+                        title="No se pudo iniciar el análisis IA",
+                        detail=clean_text(worker.get("error") or worker.get("message")),
+                        licitacion_id=licitacion_id,
+                        severity=SEVERITY_CRITICAL,
+                        metadata={"job_id": job_id},
+                        dedupe_key=f"ai_analysis_job:{job_id}:worker_start_failed",
+                    )
                     payload = get_ai_summary_payload(conn, licitacion_id)
                     payload["worker"] = worker
         self.send_json(payload)
@@ -8279,7 +9390,15 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 data.get("folder_name_confirmed")
                 or data.get("create_folder_name")
             )
-            if folder_name_confirmed:
+            if destino_sugerido.exists():
+                destino = destino_sugerido
+                if not destino.is_dir():
+                    self.send_json(
+                        {"error": "La ruta de destino existe pero no es una carpeta."},
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+            elif folder_name_confirmed:
                 destino = validate_resolved_destination(
                     confirmed_download_destination(destino_sugerido, folder_name_confirmed),
                     allowed_destination_roots,
@@ -8296,22 +9415,21 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                     return
             else:
                 destino = destino_sugerido
-                if not destino.exists():
-                    self.send_json(
-                        {
-                            "needs_folder_confirmation": True,
-                            "suggested_folder_name": destino.name,
-                            "message": "La carpeta de esta licitación no existe. Revisa el nombre antes de crearla.",
-                        }
-                    )
-                    return
-                if not destino.is_dir():
-                    self.send_json(
-                        {"error": "La ruta de destino existe pero no es una carpeta."},
-                        HTTPStatus.BAD_REQUEST,
-                    )
-                    return
+                self.send_json(
+                    {
+                        "needs_folder_confirmation": True,
+                        "suggested_folder_name": destino.name,
+                        "message": "La carpeta de esta licitación no existe. Revisa el nombre antes de crearla.",
+                    }
+                )
+                return
         except DownloadSafetyError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        try:
+            ruta_guardada = manual_download_folder_path_for_storage(destino)
+        except (DownloadSafetyError, DropboxPathError, OSError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
 
@@ -8349,20 +9467,20 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 (DOWNLOAD_JOB_STATUS_RUNNING, now_iso(), now_iso(), download_job_id),
             )
 
-        ruta_guardada = folder_path_for_storage(destino)
-        http_status, payload = execute_download_for_destination(
+        http_status, payload = execute_download_with_tender_lease(
             licitacion_id=licitacion_id,
             row=row,
             destino=destino,
             ruta_guardada=ruta_guardada,
             download_job_id=download_job_id,
             source_url=url,
+            defer_on_busy=False,
         )
         if _download_completed_successfully(http_status, payload):
             payload["ai_summary_requests"] = start_email_ai_summary_requests_for_download(download_job_id)
-            payload["telegram_notifications"] = notify_pending_email_action_telegram_events(
-                licitacion_id=licitacion_id,
+            payload["telegram_notifications"] = _finalize_email_action_download_events(
                 download_job_id=download_job_id,
+                execution_status=EMAIL_ACTION_EXECUTION_COMPLETED,
             )
         else:
             payload["ai_summary_requests"] = {
@@ -8416,6 +9534,29 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                         entity_id=licitacion_id,
                         body=f"Estado cambiado: {old_estado or 'Sin estado'} -> {estado or 'Sin estado'}",
                         metadata={"event_type": "estado", "old_value": old_estado, "new_value": estado},
+                        timestamp=timestamp,
+                    )
+                    dia_id = int(row["infonalia_dia_id"] or 0) or None
+                    day_was_closed = dia_is_reviewed(conn, dia_id)
+                    record_infonalia_activity(
+                        conn,
+                        category="internal_review",
+                        event_type="manual_nuria_state_change",
+                        source="web",
+                        actor=clean_text(user.get("username")),
+                        result="processed",
+                        title=(
+                            "Cambio manual de Nuria posterior al cierre"
+                            if day_was_closed
+                            else "Nuria cambió una decisión"
+                        ),
+                        detail=f"Estado cambiado de {old_estado or 'Sin estado'} a {estado or 'Sin estado'}.",
+                        day_id=dia_id,
+                        licitacion_id=licitacion_id,
+                        old_value=old_estado,
+                        new_value=estado,
+                        severity=SEVERITY_CRITICAL if day_was_closed else SEVERITY_NORMAL,
+                        dedupe_key=f"manual_nuria_state:{licitacion_id}:{timestamp}",
                         timestamp=timestamp,
                     )
                 row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
@@ -8501,11 +9642,15 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             if not updates:
                 self.send_json({"error": "No hay cambios"}, HTTPStatus.BAD_REQUEST)
                 return
+            changed_fields: list[str] = []
             for key, new_value in updates.items():
-                if key in {"updated_at", "ruta_carpeta"}:
+                if key == "updated_at":
                     continue
                 old_value = old_row[key] if key in old_row.keys() else ""
                 if str(old_value or "") != str(new_value or ""):
+                    changed_fields.append(key)
+                    if key == "ruta_carpeta":
+                        continue
                     record_licitacion_history(
                         conn,
                         licitacion_id,
@@ -8527,6 +9672,7 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             for key, old_value, new_value in center_history:
                 if key in updates:
                     continue
+                changed_fields.append(key)
                 record_licitacion_history(
                     conn,
                     licitacion_id,
@@ -8541,6 +9687,42 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             values = list(updates.values()) + [licitacion_id]
             conn.execute(f"UPDATE licitaciones SET {set_clause} WHERE id = ?", values)
             row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+            if "estado" in updates and str(old_row["estado"] or "") != str(updates["estado"] or ""):
+                record_infonalia_activity(
+                    conn,
+                    category="internal_review",
+                    event_type="admin_state_change",
+                    source="web",
+                    actor=clean_text(user.get("username")),
+                    result="processed",
+                    title="El administrador cambió el estado de una licitación",
+                    detail=f"Estado cambiado de {old_row['estado'] or 'Sin estado'} a {updates['estado'] or 'Sin estado'}.",
+                    day_id=int(old_row["infonalia_dia_id"] or 0) or None,
+                    licitacion_id=licitacion_id,
+                    old_value=old_row["estado"],
+                    new_value=updates["estado"],
+                    severity=SEVERITY_NORMAL,
+                    dedupe_key=f"admin_state:{licitacion_id}:{timestamp}",
+                    timestamp=timestamp,
+                )
+            non_state_fields = [key for key in changed_fields if key != "estado"]
+            if non_state_fields and old_row["infonalia_dia_id"]:
+                record_infonalia_activity(
+                    conn,
+                    category="internal_review",
+                    event_type="licitacion_updated",
+                    source="web",
+                    actor=clean_text(user.get("username")),
+                    result="processed",
+                    title="Licitación actualizada",
+                    detail=f"Campos modificados: {', '.join(sorted(set(non_state_fields)))}.",
+                    day_id=int(old_row["infonalia_dia_id"]),
+                    licitacion_id=licitacion_id,
+                    severity=SEVERITY_NORMAL,
+                    metadata={"fields": sorted(set(non_state_fields))},
+                    dedupe_key=f"licitacion_update:{licitacion_id}:{timestamp}",
+                    timestamp=timestamp,
+                )
             if row and row["infonalia_dia_id"]:
                 if mark_for_nuria:
                     mark_dia_nuria_dirty(conn, int(row["infonalia_dia_id"]))
@@ -8574,6 +9756,19 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                         HTTPStatus.CONFLICT,
                     )
                     return
+                record_infonalia_activity(
+                    conn,
+                    category="internal_review",
+                    event_type="licitacion_deleted",
+                    source="web",
+                    actor=clean_text((self.current_user() or {}).get("username")),
+                    result="processed",
+                    title="Licitación eliminada",
+                    detail=f"Se eliminó la licitación {clean_text(row['expediente']) or licitacion_id}.",
+                    day_id=int(dia_id or 0) or None,
+                    licitacion_id=licitacion_id,
+                    severity=SEVERITY_NORMAL,
+                )
                 delete_licitacion_dependents(conn, [licitacion_id])
                 conn.execute("DELETE FROM licitaciones WHERE id = ?", (licitacion_id,))
                 if dia_id:
@@ -8617,6 +9812,18 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                         HTTPStatus.CONFLICT,
                     )
                     return
+                record_infonalia_activity(
+                    conn,
+                    category="internal_review",
+                    event_type="day_deleted",
+                    source="web",
+                    actor=clean_text((self.current_user() or {}).get("username")),
+                    result="processed",
+                    title="Día Infonalia eliminado",
+                    detail=f"Se eliminó el día con {len(licitacion_ids)} licitaciones.",
+                    day_id=dia_id,
+                    severity=SEVERITY_ATTENTION,
+                )
                 deleted_counts = delete_licitacion_dependents_with_counts(conn, licitacion_ids)
                 deleted_counts["email_action_events"] = deleted_counts.get("email_action_events", 0) + sqlite_delete_if_table(
                     conn,

@@ -16,6 +16,8 @@ except ImportError:
 TELEGRAM_ENABLED_ENV = "LLANGON_TELEGRAM_ENABLED"
 TELEGRAM_BOT_TOKEN_ENV = "LLANGON_TELEGRAM_BOT_TOKEN"
 TELEGRAM_GROUP_CHAT_ID_ENV = "LLANGON_TELEGRAM_GROUP_CHAT_ID"
+TESTING_ENV = "LLANGON_TESTING"
+TEST_ALLOW_REAL_TELEGRAM_ENV = "LLANGON_TEST_ALLOW_REAL_TELEGRAM"
 DEFAULT_TELEGRAM_TIMEOUT_SECONDS = 10.0
 
 
@@ -60,6 +62,13 @@ def normalize_telegram_chat_id(value: object) -> str:
 def telegram_enabled(env: Mapping[str, object] | None = None) -> bool:
     values = env or {}
     return bool_text(values.get(TELEGRAM_ENABLED_ENV, "0"))
+
+
+def telegram_delivery_allowed(env: Mapping[str, object] | None = None) -> bool:
+    values = env or {}
+    return not bool_text(values.get(TESTING_ENV, "0")) or bool_text(
+        values.get(TEST_ALLOW_REAL_TELEGRAM_ENV, "0")
+    )
 
 
 def telegram_bot_token(env: Mapping[str, object] | None = None) -> str:
@@ -277,7 +286,7 @@ def send_telegram_group_message(
     sender: Callable[[str, dict[str, object], float], dict[str, object]] | None = None,
 ) -> TelegramResult:
     values = env or {}
-    if not telegram_enabled(values):
+    if not telegram_enabled(values) or not telegram_delivery_allowed(values):
         return TelegramResult(
             ok=False,
             status="disabled",
@@ -312,7 +321,7 @@ def send_telegram_user_message(
     sender: Callable[[str, dict[str, object], float], dict[str, object]] | None = None,
 ) -> TelegramResult:
     values = env or {}
-    if not telegram_enabled(values):
+    if not telegram_enabled(values) or not telegram_delivery_allowed(values):
         return TelegramResult(
             ok=False,
             status="disabled",

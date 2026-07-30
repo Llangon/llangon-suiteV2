@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 import pytest
+import webapp.infonalia_webapp.email_actions as email_actions_module
 
 from webapp.infonalia_webapp.email_actions import (
     ACTION_AI_SUMMARY,
@@ -441,7 +442,7 @@ def test_review_action_marks_day_and_auto_discards_only_pending_same_review() ->
         assert confirmations
 
 
-def test_individual_action_after_review_closed_is_ignored() -> None:
+def test_individual_action_after_review_closed_is_applied_without_reopening_day() -> None:
     app = load_app_module()
     with temporary_app_database(app):
         dia_id = insert_dia(app)
@@ -468,12 +469,85 @@ def test_individual_action_after_review_closed_is_ignored() -> None:
                 "SELECT result, reason FROM email_action_events WHERE licitacion_id = ? ORDER BY id DESC LIMIT 1",
                 (licitacion_id,),
             ).fetchone()
+            day = conn.execute("SELECT reviewed_at, nuria_dirty_at, estado FROM infonalia_dias WHERE id = ?", (dia_id,)).fetchone()
+            history = conn.execute(
+                "SELECT severity, requires_review, old_value, new_value FROM infonalia_activity_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
 
-        assert result["status"] == "ignored"
-        assert result["error_code"] == "REVIEW_CLOSED"
-        assert licitacion_state(app, licitacion_id) == "Enviada a Nuria"
-        assert event["result"] == "ignored"
-        assert event["reason"] == "Orden ignorada: revisión Infonalia ya cerrada."
+        assert result["status"] == "processed"
+        assert result["review_was_closed"] is True
+        assert result["changed"] is True
+        assert licitacion_state(app, licitacion_id) == "Descartada"
+        assert event["result"] == "processed"
+        assert "después del cierre" in event["reason"]
+        assert dict(day) == {
+            "reviewed_at": "2026-06-26T15:00:00",
+            "nuria_dirty_at": None,
+            "estado": "Completado",
+        }
+        assert dict(history) == {
+            "severity": "critical",
+            "requires_review": 1,
+            "old_value": "Enviada a Nuria",
+            "new_value": "Descartada",
+        }
+
+
+@pytest.mark.parametrize(
+    ("action_code", "expected_state", "expects_download_or_ai"),
+    [
+        (ACTION_DISCARD, "Descartada", False),
+        (ACTION_DOWNLOAD_REVIEW, "Descargar para ver", True),
+        (ACTION_PREPARE, "Preparar ficha", True),
+        (ACTION_AI_SUMMARY, "Descargar para ver", True),
+    ],
+)
+def test_actions_01_to_04_follow_the_open_day_flow_after_closure(
+    monkeypatch, action_code: str, expected_state: str, expects_download_or_ai: bool
+) -> None:
+    monkeypatch.setenv("LLANGON_REVIEW_AI_SUMMARY_BUTTON_ENABLED", "1")
+    requests: list[dict] = []
+
+    def fake_download_request(_conn, **kwargs):
+        requests.append(kwargs)
+        return {
+            "requested": action_code != ACTION_DISCARD,
+            "queue": {"status": "error", "message": "doble de descarga; no se ejecuta worker"},
+        }
+
+    monkeypatch.setattr(email_actions_module, "_request_automatic_download_after_email_action", fake_download_request)
+    app = load_app_module()
+    with temporary_app_database(app):
+        dia_id = insert_dia(app)
+        licitacion_id = insert_licitacion(app, dia_id, f"EXP-LATE-{action_code}")
+        set_licitacion_state(app, licitacion_id, "Enviada a Nuria")
+        with app.db_session() as conn:
+            conn.execute(
+                "UPDATE infonalia_dias SET reviewed_at = '2026-07-16T10:00:00', estado = 'Completado' WHERE id = ?",
+                (dia_id,),
+            )
+            result = process_email_action(
+                conn,
+                code=generate_action_code(licitacion_id, action_code),
+                sender_email="nuria@example.test",
+                source_message_id=f"<late-{action_code}>",
+                allowed_senders=["nuria@example.test"],
+            )
+            comment_count = conn.execute(
+                "SELECT COUNT(*) FROM comments WHERE entity_type = 'licitacion' AND entity_id = ?",
+                (licitacion_id,),
+            ).fetchone()[0]
+            day = conn.execute(
+                "SELECT reviewed_at, estado FROM infonalia_dias WHERE id = ?", (dia_id,)
+            ).fetchone()
+
+        assert result["status"] == "processed"
+        assert result["review_was_closed"] is True
+        assert licitacion_state(app, licitacion_id) == expected_state
+        assert comment_count == 1
+        assert dict(day) == {"reviewed_at": "2026-07-16T10:00:00", "estado": "Completado"}
+        assert len(requests) == 1
+        assert result["download_request"]["requested"] is expects_download_or_ai
 
 
 @pytest.mark.parametrize(

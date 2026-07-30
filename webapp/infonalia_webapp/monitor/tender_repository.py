@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Iterable, Mapping
 
 from .snapshots import snapshot_completeness
@@ -20,8 +22,11 @@ TERMINAL_EXECUTION_STATUSES = {
     "no_recipients",
     "notification_failed",
     "partial",
+    "deferred_busy",
     "error",
 }
+MONITOR_AUTOMATION_TASK_KEY = "monitor_licitaciones"
+MONITOR_AUTOMATION_DEFAULT_SCHEDULE = "08:00,13:00,18:00"
 
 
 def now_iso(value: datetime | None = None) -> str:
@@ -117,6 +122,144 @@ def finish_cycle(conn: sqlite3.Connection, cycle_id: int, *, status: str, timest
     )
 
 
+def update_cycle_worker(
+    conn: sqlite3.Connection,
+    cycle_id: int,
+    *,
+    launcher_pid: int | None = None,
+    worker_pid: int | None = None,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+    exit_code: int | None = None,
+    log_path: str | None = None,
+) -> None:
+    values = {
+        "worker_launcher_pid": launcher_pid,
+        "worker_pid": worker_pid,
+        "worker_started_at": started_at,
+        "worker_finished_at": finished_at,
+        "worker_exit_code": exit_code,
+        "worker_log_path": log_path,
+    }
+    updates = {key: value for key, value in values.items() if value is not None}
+    if not updates:
+        return
+    clause = ", ".join(f"{key} = ?" for key in updates)
+    conn.execute(
+        f"UPDATE tender_monitor_cycles SET {clause} WHERE id = ?",
+        [*updates.values(), int(cycle_id)],
+    )
+
+
+def update_cycle_worker_with_retry(
+    db_path: str | Path,
+    cycle_id: int,
+    *,
+    attempts: int = 8,
+    **values: object,
+) -> bool:
+    """Persist worker telemetry through a fresh connection, retrying SQLite contention."""
+
+    for attempt in range(max(1, attempts)):
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=5)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout = 5000")
+            ensure_tender_monitor_schema(conn)
+            update_cycle_worker(conn, cycle_id, **values)  # type: ignore[arg-type]
+            conn.commit()
+            return True
+        except sqlite3.Error:
+            if conn is not None:
+                conn.rollback()
+            if attempt + 1 < max(1, attempts):
+                time.sleep(min(2.0, 0.2 * (2**attempt)))
+        finally:
+            if conn is not None:
+                conn.close()
+    return False
+
+
+def fail_cycle_with_retry(
+    db_path: str | Path,
+    cycle_id: int,
+    *,
+    message: str,
+    exit_code: int = 1,
+    attempts: int = 8,
+) -> bool:
+    """Close a crashed worker and its unfinished execution using a new connection."""
+
+    for attempt in range(max(1, attempts)):
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=5)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA busy_timeout = 5000")
+            ensure_tender_monitor_schema(conn)
+            timestamp = now_iso()
+            cycle = cycle_row(conn, cycle_id)
+            if not cycle:
+                return False
+            unfinished = conn.execute(
+                """
+                SELECT id, licitacion_id FROM tender_monitor_executions
+                WHERE cycle_id = ? AND status NOT IN (%s)
+                """ % ",".join("?" for _ in TERMINAL_EXECUTION_STATUSES),
+                (cycle_id, *sorted(TERMINAL_EXECUTION_STATUSES)),
+            ).fetchall()
+            for execution in unfinished:
+                finish_execution(
+                    conn,
+                    int(execution["id"]),
+                    status="error",
+                    timestamp=timestamp,
+                    error_phase="worker",
+                    error_code="WORKER_TERMINATED",
+                    error_message=message,
+                )
+            if unfinished:
+                increment_cycle(conn, cycle_id, error_count=len(unfinished))
+            if str(cycle["status"]) not in TERMINAL_CYCLE_STATUSES:
+                finish_cycle(conn, cycle_id, status="failed", timestamp=timestamp)
+            update_cycle_worker(conn, cycle_id, finished_at=timestamp, exit_code=exit_code)
+            record_incident(
+                conn,
+                cycle_id=cycle_id,
+                execution_id=int(unfinished[0]["id"]) if unfinished else None,
+                licitacion_id=(
+                    int(unfinished[0]["licitacion_id"])
+                    if unfinished
+                    else cycle["current_licitacion_id"] or cycle["requested_licitacion_id"]
+                ),
+                phase="worker",
+                code="WORKER_TERMINATED",
+                summary="El worker terminó de forma inesperada y el ciclo se cerró de forma controlada.",
+                technical_detail=message,
+                outcome="recovered",
+                dedupe_key="worker-terminated",
+                timestamp=timestamp,
+            )
+            leases = conn.execute("SELECT lease_key, metadata_json FROM tender_monitor_leases").fetchall()
+            for lease in leases:
+                metadata = json_load(lease["metadata_json"], {})
+                if isinstance(metadata, Mapping) and int(metadata.get("cycle_id") or 0) == int(cycle_id):
+                    conn.execute("DELETE FROM tender_monitor_leases WHERE lease_key = ?", (lease["lease_key"],))
+            conn.commit()
+            return True
+        except sqlite3.Error:
+            if conn is not None:
+                conn.rollback()
+            if attempt + 1 < max(1, attempts):
+                time.sleep(min(2.0, 0.2 * (2**attempt)))
+        finally:
+            if conn is not None:
+                conn.close()
+    return False
+
+
 def increment_cycle(conn: sqlite3.Connection, cycle_id: int, **counts: int) -> None:
     allowed = {
         "processed_count",
@@ -200,13 +343,17 @@ def finish_execution(
     )
 
 
-def latest_snapshot(conn: sqlite3.Connection, licitacion_id: int) -> tuple[int | None, dict[str, object] | None]:
+def load_monitor_baseline(
+    conn: sqlite3.Connection,
+    licitacion_id: int,
+) -> tuple[int | None, dict[str, object] | None]:
     ensure_tender_monitor_schema(conn)
     row = conn.execute(
         """
-        SELECT id, snapshot_json FROM tender_monitor_snapshots
-        WHERE licitacion_id = ?
-        ORDER BY confirmed_at DESC, id DESC LIMIT 1
+        SELECT s.id, s.snapshot_json
+        FROM tender_monitor_baselines AS b
+        JOIN tender_monitor_snapshots AS s ON s.id = b.snapshot_id
+        WHERE b.licitacion_id = ? AND s.licitacion_id = b.licitacion_id
         """,
         (licitacion_id,),
     ).fetchone()
@@ -214,6 +361,39 @@ def latest_snapshot(conn: sqlite3.Connection, licitacion_id: int) -> tuple[int |
         return None, None
     payload = json_load(row["snapshot_json"], {})
     return int(row["id"]), payload if isinstance(payload, dict) else None
+
+
+def set_monitor_baseline(
+    conn: sqlite3.Connection,
+    *,
+    licitacion_id: int,
+    snapshot_id: int,
+    execution_id: int | None,
+    reason: str,
+    timestamp: str,
+) -> None:
+    if reason not in {"initial", "monitor_review", "manual_rebuild", "migration"}:
+        raise ValueError(f"Motivo de baseline no válido: {reason}")
+    snapshot = conn.execute(
+        "SELECT licitacion_id FROM tender_monitor_snapshots WHERE id = ?",
+        (snapshot_id,),
+    ).fetchone()
+    if not snapshot or int(snapshot["licitacion_id"]) != int(licitacion_id):
+        raise ValueError("El snapshot no pertenece a la licitación del baseline.")
+    conn.execute(
+        """
+        INSERT INTO tender_monitor_baselines (
+            licitacion_id, snapshot_id, execution_id, reason, schema_version, updated_at
+        ) VALUES (?, ?, ?, ?, 1, ?)
+        ON CONFLICT(licitacion_id) DO UPDATE SET
+            snapshot_id = excluded.snapshot_id,
+            execution_id = excluded.execution_id,
+            reason = excluded.reason,
+            schema_version = excluded.schema_version,
+            updated_at = excluded.updated_at
+        """,
+        (licitacion_id, snapshot_id, execution_id, reason, timestamp),
+    )
 
 
 def save_snapshot(
@@ -396,7 +576,7 @@ def recover_orphan_cycles(
     protected_cycle_id = int(metadata.get("cycle_id") or 0) if isinstance(metadata, Mapping) else 0
     rows = conn.execute(
         """
-        SELECT id, requested_licitacion_id,
+        SELECT id, requested_licitacion_id, current_licitacion_id,
                COALESCE(heartbeat_at, started_at, created_at, '') AS last_activity
         FROM tender_monitor_cycles
         WHERE status IN ('pending', 'running', 'waiting_ai', 'pending_notification')
@@ -410,12 +590,35 @@ def recover_orphan_cycles(
         last_activity = str(row["last_activity"] or "")
         if last_activity and last_activity > cutoff_text:
             continue
+        unfinished = conn.execute(
+            """
+            SELECT id, licitacion_id FROM tender_monitor_executions
+            WHERE cycle_id = ? AND status NOT IN (%s)
+            """ % ",".join("?" for _ in TERMINAL_EXECUTION_STATUSES),
+            (cycle_id, *sorted(TERMINAL_EXECUTION_STATUSES)),
+        ).fetchall()
+        for execution in unfinished:
+            finish_execution(
+                conn,
+                int(execution["id"]),
+                status="error",
+                timestamp=current_text,
+                error_phase="recovery",
+                error_code="ORPHAN_CYCLE_RECOVERED",
+                error_message="La ejecución quedó huérfana y fue cerrada durante la recuperación.",
+            )
+        if unfinished:
+            increment_cycle(conn, cycle_id, error_count=len(unfinished))
         finish_cycle(conn, cycle_id, status="failed", timestamp=current_text)
         record_incident(
             conn,
             cycle_id=cycle_id,
-            execution_id=None,
-            licitacion_id=row["requested_licitacion_id"],
+            execution_id=int(unfinished[0]["id"]) if unfinished else None,
+            licitacion_id=(
+                int(unfinished[0]["licitacion_id"])
+                if unfinished
+                else row["current_licitacion_id"] or row["requested_licitacion_id"]
+            ),
             phase="recovery",
             code="ORPHAN_CYCLE_RECOVERED",
             summary="Se cerró un ciclo huérfano sin lease ni heartbeat vigente.",
@@ -423,6 +626,11 @@ def recover_orphan_cycles(
             dedupe_key="orphan-cycle-recovered",
             timestamp=current_text,
         )
+        leases = conn.execute("SELECT lease_key, metadata_json FROM tender_monitor_leases").fetchall()
+        for lease_row in leases:
+            lease_metadata = json_load(lease_row["metadata_json"], {})
+            if isinstance(lease_metadata, Mapping) and int(lease_metadata.get("cycle_id") or 0) == cycle_id:
+                conn.execute("DELETE FROM tender_monitor_leases WHERE lease_key = ?", (lease_row["lease_key"],))
         recovered.append(cycle_id)
     return recovered
 
@@ -482,6 +690,32 @@ def release_lease(conn: sqlite3.Connection, *, lease_key: str, owner: str) -> No
     conn.execute("DELETE FROM tender_monitor_leases WHERE lease_key = ? AND owner = ?", (lease_key, owner))
 
 
+def monitor_automation_state(conn: sqlite3.Connection) -> dict[str, object]:
+    try:
+        row = conn.execute(
+            "SELECT enabled, schedule_value FROM automation_tasks WHERE key = ?",
+            (MONITOR_AUTOMATION_TASK_KEY,),
+        ).fetchone()
+    except sqlite3.Error:
+        row = None
+    try:
+        enabled = bool(row and int(row["enabled"] or 0) == 1)
+    except (TypeError, ValueError):
+        enabled = False
+    schedule = str(row["schedule_value"] or "").strip() if row else ""
+    schedule = schedule or MONITOR_AUTOMATION_DEFAULT_SCHEDULE
+    readable = ", ".join(part.strip() for part in schedule.split(",") if part.strip())
+    return {
+        "automatic_enabled": enabled,
+        "automatic_schedule": schedule,
+        "automatic_message": (
+            f"Ejecución automática activa todos los días a las {readable}."
+            if enabled
+            else f"Ejecución automática desactivada. Franjas configuradas: {readable}."
+        ),
+    }
+
+
 def settings_payload(conn: sqlite3.Connection) -> dict[str, object]:
     ensure_tender_monitor_schema(conn)
     values = dict(SETTING_DEFAULTS)
@@ -502,8 +736,7 @@ def settings_payload(conn: sqlite3.Connection) -> dict[str, object]:
         """
     ).fetchall()
     return {
-        "automatic_enabled": False,
-        "automatic_message": "Ejecución automática desactivada. El monitor solo se ejecuta manualmente.",
+        **monitor_automation_state(conn),
         "values": values,
         "users": [
             {

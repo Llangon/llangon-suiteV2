@@ -1791,6 +1791,35 @@ def test_resolve_selected_ai_files_rejects_path_traversal_and_absolute_paths(
     assert selected[0]["name"] == "PCAP.pdf"
 
 
+def test_question_documents_and_response_attachments_are_excluded_from_ai(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLANGON_DROPBOX_BASE_PATH", str(tmp_path))
+    folder = tmp_path / "expediente"
+    attachment_folder = folder / "Adjuntos de preguntas y respuestas"
+    attachment_folder.mkdir(parents=True)
+    (folder / "Preguntas y respuestas a fecha 2026-07-18 12-00-00.docx").write_bytes(b"docx")
+    (attachment_folder / "Anexo respuesta.xlsx").write_bytes(b"xlsx")
+    _write_pdf(folder / "PCAP.pdf")
+    licitacion = {"ruta_carpeta": str(folder)}
+
+    listed = list_ai_files(licitacion, max_documents=8, max_file_mb=45)
+
+    assert [item["name"] for item in listed["items"]] == ["PCAP.pdf"]
+    with pytest.raises(AIFileSelectionError, match="preguntas y respuestas"):
+        resolve_selected_ai_files(
+            licitacion,
+            ["Preguntas y respuestas a fecha 2026-07-18 12-00-00.docx"],
+            max_file_mb=45,
+        )
+    with pytest.raises(AIFileSelectionError, match="preguntas y respuestas"):
+        resolve_selected_ai_files(
+            licitacion,
+            ["Adjuntos de preguntas y respuestas\\Anexo respuesta.xlsx"],
+            max_file_mb=45,
+        )
+
+
 def test_generate_with_manual_selection_changes_document_hash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

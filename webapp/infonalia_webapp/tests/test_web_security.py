@@ -76,6 +76,22 @@ def test_private_html_entrypoints_do_not_need_inline_scripts() -> None:
         assert not re.search(r"<[^>]+\son[a-z]+\s*=", html)
 
 
+def test_private_app_javascript_url_is_versioned_to_avoid_stale_initial_view() -> None:
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+
+    assert re.search(r'<script src="/static/app\.js\?v=[^"]+"></script>', html)
+
+
+def test_actuaciones_view_omits_total_cards() -> None:
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="actuaciones-summary"' not in html
+    assert "actuacionesSummary" not in script
+    assert "renderActuacionesSummary" not in script
+    assert "function renderMetric([label, value])" in script
+
+
 def test_public_html_entrypoints_do_not_need_inline_scripts() -> None:
     html = (FIREBASE_ROOT / "index.html").read_text(encoding="utf-8")
     assert 'data-private-app-url="' in html
@@ -143,7 +159,7 @@ def test_private_app_escapes_dynamic_data_attributes() -> None:
     assert not re.search(r'data-[a-z0-9-]+="\$\{(?:item|dia)\.id\}"', script)
     assert 'data-calendar-date="${key}"' not in script
     assert 'data-open-dia="${escapeHtml(dia.id)}"' in script
-    assert 'data-calendar-date="${escapeHtml(key)}"' in script
+    assert 'data-calendar-date="${escapeHtml(item.date || "sin-fecha")}"' in script
     assert 'data-id="${escapeHtml(item.id)}"' in script
     assert 'data-download-id="${escapeHtml(item.id)}"' in script
     assert 'data-toggle-reviewed="${escapeHtml(item.id)}"' in script
@@ -160,17 +176,134 @@ def test_private_app_sanitizes_dynamic_css_class_tokens() -> None:
     assert ".replaceAll(\" \", \"-\")" not in script
 
 
-def test_agenda_layout_views_are_isolated() -> None:
+def test_agenda_unified_calendar_precedes_tasks_and_has_side_navigation() -> None:
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
     script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
     styles = (STATIC_ROOT / "styles.css").read_text(encoding="utf-8")
 
-    assert 'calendarSection.classList.add(`agenda-view-${appState.agendaView || "day"}`)' in script
-    assert "function renderAgendaWeekList" in script
-    assert "calendarDayPanel.innerHTML = \"\";" in script
-    assert ".agenda-view-day .calendar-layout" in styles
-    assert ".agenda-view-all .calendar-layout" in styles
-    assert ".agenda-view-week .calendar-layout" in styles
-    assert ".agenda-week-list-content" in styles
+    assert 'calendarSection.classList.add("agenda-view-pending")' in script
+    assert 'data-agenda-view' not in html
+    assert 'id="agenda-email-summary-button"' not in html
+    assert "sendAgendaEmailSummary" not in script
+    compact_calendar_render = script.split("function renderCompactCalendarCells", 1)[1].split("function renderAgendaMonth", 1)[0]
+    assert 'class="calendar-event-count"' in compact_calendar_render
+    assert "dayItems.length" in compact_calendar_render
+    assert 'dayItems.length ? "" : "no-items"' in compact_calendar_render
+    assert ".calendar-day.no-items" in styles
+    assert 'class="calendar-events"' not in compact_calendar_render
+    assert "renderCalendarEvent" not in script
+    assert "min-height: 72px;" in styles
+    pending_render = script.split("function renderAgendaPending", 1)[1].split("function renderAgendaAll", 1)[0]
+    assert 'class="pending-agenda-calendar"' in pending_render
+    assert 'class="agenda-legend pending-agenda-legend"' in pending_render
+    assert '<section class="agenda-legend">' not in html
+    assert 'data-pending-calendar-date' in pending_render
+    assert pending_render.index("pending-agenda-calendar") < pending_render.index('renderAgendaListPanel("", ""')
+    assert 'renderAgendaListPanel("Tareas pendientes", "Lista de trabajo"' not in pending_render
+    assert "#calendar-section > .section-head" in styles
+    assert "renderCompactCalendarCells(calendarGroups" in pending_render
+    assert 'data-calendar-nav="prev"' in pending_render
+    assert 'data-calendar-nav="today"' in pending_render
+    assert 'data-calendar-nav="next"' in pending_render
+    assert 'data-new-agenda-event' in pending_render
+    assert 'id="new-agenda-event-button"' not in html
+    assert 'class="agenda-search-field"' in html
+    assert '<summary>Buscar</summary>' not in html
+    assert 'pendingListHeading.after(agendaUnifiedToolbar)' in script
+    assert 'document.activeElement === calendarSearch' in pending_render
+    assert 'calendarSearch.focus({ preventScroll: true });' in pending_render
+    assert pending_render.index('pendingListHeading.after(agendaUnifiedToolbar)') < pending_render.index('calendarSearch.focus({ preventScroll: true });')
+    assert 'calendarSearch.setSelectionRange(' in pending_render
+    assert 'event.target.closest("button[data-new-agenda-event]")' in script
+    assert 'data-calendar-show-all' in pending_render
+    assert '<span class="pending-calendar-nav-label">Navegación</span>' in pending_render
+    assert '<span class="pending-calendar-nav-label">Filtro</span>' in pending_render
+    assert pending_render.index('data-calendar-nav="next"') < pending_render.index('data-calendar-nav="today"')
+    assert 'appState.calendarSelectedDate = "";' in script
+    show_calendar_view = script.split("function showCalendarView()", 1)[1].split("function ", 1)[0]
+    assert 'appState.calendarSelectedDate = "";' in show_calendar_view
+    assert "todayKey" not in show_calendar_view
+    assert 'dateKey(eventDate) === selectedKey' in pending_render
+    assert "monthName(previousMonth)" in pending_render
+    assert "monthName(nextMonth)" in pending_render
+    assert 'aria-label="Anterior: ${escapeHtml(monthTitle(previousMonth))}"' in pending_render
+    assert 'aria-label="Siguiente: ${escapeHtml(monthTitle(nextMonth))}"' in pending_render
+    assert "function navigateUnifiedAgendaCalendar(action)" in script
+    assert ".pending-agenda-calendar" in styles
+    assert ".agenda-view-pending .calendar-layout" in styles
+    assert "grid-template-columns: minmax(0, 1fr) 224px;" in styles
+    assert "grid-template-columns: minmax(0, 1fr) 86px;" in styles
+    assert "overflow-x: visible;" in styles
+    assert "min-width: 560px;" not in styles
+    assert 'id="back-to-days"' not in html
+    assert 'id="current-day-title"' not in html
+    assert "currentDayTitle" not in script
+    assert "#licitaciones-section:not(.has-day-context) > .section-head" in styles
+    assert "body:has(#licitaciones-section:not([hidden])) #ai-queue-button" in styles
+    assert "#days-section > .section-head .section-title-block" in styles
+    assert 'id="days-summary"' not in html
+    assert "renderDaysSummary" not in script
+    assert "function renderDeadlineText(value)" in script
+    assert "hours > 12 || (hours === 12 && minutes > 0)" in script
+    assert 'class="early-deadline-time"' in script
+    assert ".early-deadline-time" in styles
+    assert ".mobile-compact-card .province-chip" in styles
+    assert "background: #218c4f;" in styles
+    assert ".mobile-compact-card .mobile-card-actions > button.primary" in styles
+    assert "background: #e8f5ec;" in styles
+    assert 'class="badge card-state-badge ${badgeClass(item.estado)}"' in script
+    assert ".mobile-compact-card .card-flags > *" in styles
+    assert ".mobile-compact-card .card-flags > .card-state-badge" in styles
+    assert ".mobile-compact-card .card-head > .card-flags" in styles
+    assert "padding-right: min(42%, 120px);" in styles
+
+
+def test_private_search_boxes_submit_only_on_enter() -> None:
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    helper = script.split("function submitSearchOnEnter", 1)[1].split("function ", 1)[0]
+
+    assert '/static/app.js?v=20260730-pc-restart' in html
+    assert 'input?.addEventListener("keydown"' in helper
+    assert 'event.key !== "Enter"' in helper
+    assert "event.isComposing" in helper
+    assert "event.preventDefault();" in helper
+    assert "search();" in helper
+    for input_name, loader_name in (
+        ("searchInput", "loadItems"),
+        ("calendarSearch", "loadCalendarItems"),
+        ("notificationSearch", "loadNotifications"),
+        ("clientSearch", "loadClientes"),
+        ("clienteEnviosSearch", "loadClienteEnvios"),
+        ("licitacionSelectorSearch", "loadLicitacionSelectorResults"),
+    ):
+        assert f"submitSearchOnEnter({input_name}, {loader_name});" in script
+        assert f'{input_name}.addEventListener("input"' not in script
+        assert f'{input_name}?.addEventListener("input"' not in script
+
+
+def test_infonalia_history_ui_is_admin_only_high_contrast_and_searches_on_enter() -> None:
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_ROOT / "styles.css").read_text(encoding="utf-8")
+    render = script.split("function renderInfonaliaHistoryEvent", 1)[1].split(
+        "function renderInfonaliaHistory()", 1
+    )[0]
+
+    assert 'data-nuria-days-view="history" data-admin-only' in html
+    assert 'id="infonalia-history" class="infonalia-history" data-admin-only' in html
+    assert 'id="infonalia-history-tab-badge"' in html
+    assert 'id="infonalia-history-filters"' in html
+    assert 'placeholder="Expediente, organismo o texto · Enter"' in html
+    assert 'infonaliaHistoryFilters?.addEventListener("submit"' in script
+    assert 'infonaliaHistoryQuery?.addEventListener("input"' not in script
+    assert "escapeHtml(item.title" in render
+    assert "escapeHtml(item.detail)" in render
+    assert "context.map((value) => `<span>${escapeHtml(value)}</span>`" in render
+    assert ".history-event.severity-attention" in styles
+    assert ".history-event.severity-critical" in styles
+    assert "border-left-color: #b42318" in styles
+    assert ".history-event.is-reviewed" in styles
 
 
 def test_licitaciones_center_ui_is_simplified_and_has_detail_view() -> None:
@@ -181,9 +314,13 @@ def test_licitaciones_center_ui_is_simplified_and_has_detail_view() -> None:
     assert "Centro de licitaciones" in html
     assert 'data-licitaciones-view="live"' in html
     assert 'data-licitaciones-view="all"' in html
+    assert 'data-licitaciones-view="previous">Anuncios previos</button>' in html
     assert 'data-licitaciones-view="active"' not in html
+    assert 'id="publication-type-filter"' not in html
     assert 'id="summary" hidden' in html
     assert 'id="licitacion-detail-dialog"' in html
+    assert 'id="licitacion-detail-actions"' in html
+    assert html.index('id="licitacion-detail-actions"') < html.index('id="close-licitacion-detail"')
     assert "Detalle de trabajo" in html
     assert "PRÓXIMOS MÓDULOS" not in html
     assert '<p class="nav-group-title" data-admin-only hidden>Clientes</p>' in html
@@ -192,6 +329,10 @@ def test_licitaciones_center_ui_is_simplified_and_has_detail_view() -> None:
     assert 'data-nav-section="cliente-envios"' in html
     assert "Requerimientos" not in html
     assert 'data-open-licitacion-detail="${escapeHtml(item.id)}"' in script
+    assert 'appState.licitacionesView === "previous" ? "anuncio_previo" : "licitacion"' in script
+    assert 'appState.licitacionesView !== "previous" && appState.licitacionesYear' in script
+    assert 'appState.licitacionesView !== "previous" && appState.licitacionesMonth' in script
+    assert 'const showFilters = !appState.currentDiaId && appState.licitacionesView !== "previous";' in script
     assert "function renderLicitacionDetailView" in script
     assert "data-detail-tab=\"resumen\"" in script
     assert "data-detail-tab-panel=\"documentos-seguimiento\"" in script
@@ -203,8 +344,73 @@ def test_licitaciones_center_ui_is_simplified_and_has_detail_view() -> None:
     assert "@media print" in styles
     assert ".detail-dialog[open]" in styles
     assert ".detail-cover" in styles
+    assert ".detail-cover-side" in styles
+    assert "grid-template-columns: minmax(360px, 1fr) 190px;" in styles
+    assert ".detail-dialog-actions" in styles
+    assert "flex-wrap: nowrap;" in styles
+    assert "background: #f2f4f7;" in styles
+    assert "border: 1px solid #d0d5dd;" in styles
     assert ".detail-tabs" in styles
     assert ".document-card-list" in styles
+
+
+def test_all_tenders_tab_resets_year_and_month_filters() -> None:
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    handler = script.split('licitacionesTabs.addEventListener("click", (event) => {', 1)[1].split(
+        'licitacionesYearFilters.addEventListener("click", (event) => {', 1
+    )[0]
+
+    assert 'if (appState.licitacionesView === "all") {' in handler
+    assert 'appState.licitacionesYear = "Todos";' in handler
+    assert 'appState.licitacionesMonth = "Todos";' in handler
+
+
+def test_news_module_remains_integrated_but_hidden_from_suite_navigation() -> None:
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="news-admin-button" class="nav-item" data-nav-section="news-admin" data-admin-only data-feature-disabled hidden' in html
+    assert 'id="news-admin-section" hidden' in html
+    assert 'element.hasAttribute("data-feature-disabled")' in script
+    assert "function showNewsAdminView" in script
+    assert 'fetch("/api/news")' in script
+
+
+def test_cliente_envios_list_has_confirmed_admin_delete_action() -> None:
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert 'data-delete-cliente-envio="${escapeHtml(envio.id)}"' in script
+    assert "async function deleteClienteEnvio(envioId)" in script
+    assert "no los archivos de Dropbox ni el correo preparado" in script
+    assert "await afterClienteEnvioMutation(result.item);" in script
+
+
+def test_client_management_uses_table_modal_and_reversible_status_actions() -> None:
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_ROOT / "styles.css").read_text(encoding="utf-8")
+
+    clients_section = html.split('<section id="clients-section" hidden>', 1)[1].split(
+        '<dialog id="client-dialog"', 1
+    )[0]
+    assert 'id="client-form"' not in clients_section
+    assert 'id="clients-state-filter"' in clients_section
+    assert '<table class="clients-table">' in clients_section
+    for heading in ("NIF/CIF", "Razón social", "Nombre comercial", "Teléfono", "Email", "Estado", "Acciones"):
+        assert f"<th>{heading}</th>" in clients_section
+    assert 'id="client-dialog"' in html
+    assert 'id="client-form"' in html
+    assert "clientesGestion: []" in script
+    assert 'fetch("/api/clientes?estado=activos")' in script
+    assert 'params.set("estado", estado)' in script
+    assert "function operationalClientOptions" in script
+    assert "items.push({ ...currentClient, id: selectedValue, activo: false })" in script
+    assert 'populateActuacionClientOptions(item.cliente_id || "", item.cliente)' in script
+    assert "activo: item.cliente_activo" in script
+    assert 'data-client-status="${client.activo ? "desactivar" : "reactivar"}"' in script
+    assert "¿Desactivar a ${clientName}?" in script
+    assert ".clients-table td::before" in styles
+    assert "content: attr(data-label);" in styles
 
 
 def test_dropbox_marker_followup_ui_has_admin_only_safe_marker_controls() -> None:
@@ -232,12 +438,37 @@ def test_dropbox_marker_followup_ui_has_admin_only_safe_marker_controls() -> Non
 
 def test_licitacion_cards_and_detail_keep_hotfix_ux_noise_out() -> None:
     script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_ROOT / "styles.css").read_text(encoding="utf-8")
     card_render = script.split("function renderCard", 1)[1].split("function renderExpandedCard", 1)[0]
+    actuacion_render = script.split("function renderActuacionCard", 1)[1].split("function setSelectedActuacionLicitaciones", 1)[0]
     detail_render = script.split("function renderLicitacionDetailView", 1)[1].split("function renderLicitacionSummary", 1)[0]
+    detail_cover_render = detail_render.split('<section class="detail-cover">', 1)[1].split("</section>", 1)[0]
+    detail_actions_render = script.split("function renderDetailActionBar", 1)[1].split("function renderLicitacionSummary", 1)[0]
 
     assert "estadoLabel(item.estado)" in card_render
+    assert 'renderExpandableDescription(item.objeto || "Sin objeto informado", "object")' in card_render
+    assert 'renderExpandableDescription(item.descripcion, "muted actuacion-description")' in actuacion_render
+    assert "function renderExpandableDescription" in script
+    assert "function syncExpandableDescriptions" in script
+    assert 'text.scrollHeight > text.clientHeight + 1' in script
+    assert "MutationObserver(scheduleExpandableDescriptionSync)" in script
+    assert ".expandable-description-text" in styles
+    assert ".expandable-description.has-overflow .expandable-description-toggle" in styles
+    assert "-webkit-line-clamp: 2;" in styles
+    assert 'content: "Ver más";' in styles
+    assert 'content: "Ver menos";' in styles
     assert "dueText" in card_render
+    assert "const dueBadge = remainingDays === null" in card_render
+    assert '<div class="deadline-value">${renderDeadlineText(fechaLimite || "Sin fecha")}${dueBadge}</div>' in card_render
+    assert '<div class="mobile-deadline"><span>Vencimiento</span><strong>${renderDeadlineText(fechaLimite || "Sin fecha")}</strong>${dueBadge}</div>' in card_render
+    assert card_render.index("card-flags") < card_render.index("${dueBadge}")
     assert "province-chip" in card_render
+    assert "flex: 0 0 auto;" in styles
+    assert "flex-wrap: wrap;" in styles
+    assert "card-object-line" in card_render
+    assert card_render.index("<h2>${escapeHtml(item.expediente)}</h2>") < card_render.index("province-chip")
+    assert card_render.index("province-chip") < card_render.index('renderExpandableDescription(item.objeto || "Sin objeto informado", "object")')
+    assert card_render.index("province-chip") < card_render.index("card-flags")
     assert "No revisada" not in card_render
     assert "Revisada" not in card_render
     assert "Nueva" not in card_render
@@ -255,6 +486,19 @@ def test_licitacion_cards_and_detail_keep_hotfix_ux_noise_out() -> None:
     assert "Borrar" not in card_render
     assert ">Abrir</button>" in card_render
     assert "Crear nueva actuación" in card_render
+    assert 'const reviewStateActions = stateActionButtons.length' in card_render
+    assert 'const reviewClass = stateActionButtons.length ? " has-review-actions" : "";' in card_render
+    assert 'class="review-state-actions"' in card_render
+    assert "...stateActionButtons" not in card_render
+    assert card_render.count("${reviewStateActions}") == 2
+    assert ".review-state-actions" in styles
+    assert ".mobile-compact-card:not(.has-review-actions) > .card-layout" in styles
+    assert "@media (min-width: 761px)" in styles
+    assert ".card-folder-path::before" in styles
+    assert ".comments-widget:not(.comments-widget-full):has(.comments-thread:not([hidden]))" in styles
+    assert '<div class="mobile-deadline"><span>Vencimiento</span>' in card_render
+    assert '<div class="mobile-deadline"><span>Vencimiento</span>' in actuacion_render
+    assert ".mobile-compact-card .mobile-deadline" in styles
 
     summary_render = detail_render.split('data-detail-tab-panel="resumen"', 1)[1].split('data-detail-tab-panel="actuaciones"', 1)[0]
     documents_render = detail_render.split('data-detail-tab-panel="documentos-seguimiento"', 1)[1].split('data-detail-tab-panel="comentarios"', 1)[0]
@@ -273,9 +517,60 @@ def test_licitacion_cards_and_detail_keep_hotfix_ux_noise_out() -> None:
     assert "renderLicitacionHistory(item)" in documents_render
     assert 'renderCommentsWidget("licitacion", item.id, item.comments_summary, { full: true })' in comments_render
     assert "renderLicitacionWorkFields" not in detail_render
+    assert 'renderExpandableDescription(item.objeto || "Sin objeto informado", "detail-cover-object")' in detail_cover_render
+    assert "Presupuesto" not in detail_cover_render
+    assert '["Presupuesto", formatMoney(item.presupuesto)]' in detail_render
+    assert detail_cover_render.index("Fecha límite") < detail_cover_render.index("estadoLabel(item.estado)")
+    assert detail_cover_render.index("estadoLabel(item.estado)") < detail_cover_render.index("renderAiSummaryBadge(item)")
+    assert detail_cover_render.index("renderAiSummaryBadge(item)") < detail_cover_render.index("Carpeta:")
+    assert "Descargar documentación" not in detail_actions_render
+    assert "Envíos a clientes" not in detail_actions_render
+    assert "renderCreateClienteEnvioButton" not in detail_actions_render
+    assert "licitacionDetailActions.innerHTML = renderDetailActionBar" in script
+    assert 'licitacionDetailActions.addEventListener("click"' in script
+    assert 'class="detail-more-actions detail-actions-menu"' in detail_actions_render
+    assert 'aria-label="Más acciones"' in detail_actions_render
+    assert "☰" in detail_actions_render
     assert "Notas internas" not in detail_render
     assert "Estado interno" not in detail_render
     assert "file:///" not in script
+
+
+def test_detail_actions_always_use_menu_and_mobile_menu_keeps_a_usable_width() -> None:
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_ROOT / "styles.css").read_text(encoding="utf-8")
+    detail_actions_render = script.split("function renderDetailActionBar", 1)[1].split("function renderLicitacionSummary", 1)[0]
+
+    assert "if (actions.length === 1)" not in detail_actions_render
+    assert 'class="detail-more-actions detail-actions-menu"' in detail_actions_render
+    assert ".detail-actions-menu[open] .detail-more-menu" in styles
+    assert "min-width: 180px;" in styles
+
+
+def test_new_actuacion_title_is_suggested_from_type_client_alias_and_folder() -> None:
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert "function actuacionTitleFolderParts(item)" in script
+    assert "function suggestedActuacionTitle()" in script
+    assert "function updateSuggestedActuacionTitle()" in script
+    assert "clientIndex = yearIndex > 0 ? yearIndex - 1" in script
+    assert 'folderLabel: parts.at(-1)' in script
+    assert 'folderLabel: parts.slice(folderStart).join(" ")' not in script
+    assert '[typeLabel, clientAlias, folderLabel].filter(Boolean).join(" ")' in script
+    assert "titleInput.value !== previousSuggestion" in script
+    assert 'actuacionForm.elements.tipo.addEventListener("change", updateSuggestedActuacionTitle)' in script
+
+
+def test_actuacion_form_has_optional_cliente_selector_for_create_and_edit() -> None:
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert "Cliente (opcional)" in html
+    assert '<select name="cliente_id">' in html
+    assert '<option value="">Sin cliente</option>' in html
+    assert "function populateActuacionClientOptions" in script
+    assert 'populateActuacionClientOptions(item.cliente_id || "", item.cliente)' in script
+    assert "cliente_id: actuacionForm.elements.cliente_id.value || null" in script
 
 
 def test_nuria_day_review_filter_defaults_to_not_discarded() -> None:
@@ -291,23 +586,41 @@ def test_nuria_day_review_filter_defaults_to_not_discarded() -> None:
     assert 'if (diaId && isNuria()) stateFilter.value = "__nuria_active";' in script
 
 
-def test_agenda_pending_tasks_ui_is_admin_only_and_initial_route_by_role() -> None:
+def test_agenda_unified_pending_view_is_available_to_nuria() -> None:
     html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
     script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_ROOT / "styles.css").read_text(encoding="utf-8")
 
-    assert 'data-agenda-view="pending" data-admin-only hidden' in html
-    assert "Tareas pendientes" in html
+    assert "data-agenda-view" not in html
+    assert 'id="calendar-search"' in html
+    assert 'id="calendar-state-filter"' not in html
+    assert "calendarStateFilter" not in script
+    assert 'class="toolbar calendar-toolbar agenda-unified-toolbar"' in html
+    assert "grid-template-columns: minmax(0, 1fr);" in styles
+    assert 'id="agenda-email-summary-button"' not in html
+    assert "sendAgendaEmailSummary" not in script
     assert "/api/agenda/pending-tasks" in script
     assert "function showInitialView" in script
     assert 'appState.agendaView = "pending";' in script
     assert "showCalendarView();" in script
     assert "showDaysView();" in script
+    initial_view = script.split("async function showInitialView()", 1)[1].split("function showActuacionesView", 1)[0]
+    assert "if (canUsePendingAgenda())" in initial_view
+    assert initial_view.index("if (canUsePendingAgenda())") < initial_view.index("showDaysView();")
+    assert "function canUsePendingAgenda()" in script
+    assert "return isAdmin() || isNuria();" in script
+    assert 'if (!canUsePendingAgenda() || !token) return false;' in script
+    show_calendar = script.split("function showCalendarView", 1)[1].split("function agendaDeepLinkToken", 1)[0]
+    assert 'appState.agendaView = "pending";' in show_calendar
+    assert 'setPageHeader("Agenda", "Calendario y tareas pendientes")' in show_calendar
+    assert "nuriaEstados.includes(option.value) || option.value === current" in script
     assert "select data-pending-state" in script
     assert "updatePendingTaskState" in script
     assert "function pendingLicitacionCardItem" in script
     assert "return renderCard(pendingLicitacionCardItem(item)" in script
     assert "pending-licitacion-card" in script
     assert "function renderPendingTaskCard" in script
+    assert 'renderExpandableDescription(item.subtitle || item.description || "Sin descripción", "object")' in script
     assert "pending-task-card" in script
     assert 'class="card-layout"' in script
     assert "card-side-actions" in script
@@ -316,6 +629,11 @@ def test_agenda_pending_tasks_ui_is_admin_only_and_initial_route_by_role() -> No
     assert "agendaDeepLinkToken" in script
     assert 'params.get("agenda_source")' in script
     assert "openAgendaOrigin(token)" in script
+    agenda_card_render = script.split("function renderAgendaCompactCard", 1)[1].split("function renderCalendarDayPanel", 1)[0]
+    assert 'if (item.source_type === "licitacion")' in agenda_card_render
+    assert "return renderPendingTaskCard(item, colorClass);" in agenda_card_render
+    assert "isPendingAgendaView() && item.source_type" not in agenda_card_render
+    assert '<article class="radar-card agenda-card' not in agenda_card_render
 
 
 def test_private_app_has_mobile_drawer_shell() -> None:
@@ -339,6 +657,9 @@ def test_private_app_has_mobile_drawer_shell() -> None:
     assert 'document.querySelectorAll(".sidebar [data-nav-section]")' in script
 
     assert ".mobile-topbar" in styles
+    assert "display: grid;" in styles
+    assert "grid-template-columns: minmax(38px, 1fr) auto minmax(38px, 1fr);" in styles
+    assert "justify-self: center;" in styles
     assert "body.sidebar-open .sidebar" in styles
     assert ".sidebar-overlay:not([hidden])" in styles
     assert "transform: translateX(-105%)" in styles
@@ -364,7 +685,7 @@ def test_private_app_mobile_responsive_controls_stay_compact_without_horizontal_
     assert ".filter-chip-scroll" in styles
     assert "flex-wrap: wrap;" in styles
     assert "overflow-x: visible;" in styles
-    assert "#actuaciones-summary .metric" in styles
+    assert "#actuaciones-summary" not in styles
 
 
 def test_desktop_layout_keeps_sidebar_topbar_fixed_and_scrolls_central_content() -> None:

@@ -5,6 +5,7 @@ import os
 import socket
 import sqlite3
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, time as dt_time, timedelta
@@ -31,7 +32,11 @@ try:
         localize_scheduler_datetime,
         run_automation_task,
     )
-    from .monitor.tender_repository import active_cycle as active_tender_cycle, create_cycle as create_tender_cycle
+    from .monitor.tender_repository import (
+        active_cycle as active_tender_cycle,
+        create_cycle as create_tender_cycle,
+        recover_orphan_cycles,
+    )
     from .monitor.tender_schema import ensure_tender_monitor_schema
     from .monitor.tender_worker_launcher import launch_tender_monitor_worker
     from .normalization import bool_text, clean_text
@@ -56,7 +61,11 @@ except ImportError:  # pragma: no cover
         localize_scheduler_datetime,
         run_automation_task,
     )
-    from monitor.tender_repository import active_cycle as active_tender_cycle, create_cycle as create_tender_cycle
+    from monitor.tender_repository import (
+        active_cycle as active_tender_cycle,
+        create_cycle as create_tender_cycle,
+        recover_orphan_cycles,
+    )
     from monitor.tender_schema import ensure_tender_monitor_schema
     from monitor.tender_worker_launcher import launch_tender_monitor_worker
     from normalization import bool_text, clean_text
@@ -76,9 +85,18 @@ STATUS_RUNNING = "running"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_SKIPPED = "skipped"
+STATUS_INTERRUPTED = "interrupted"
+AUTOMATION_RUN_SCHEDULE_PREFIX = "automation_run:"
+TASK_TYPE_PC_RESTART = "pc_restart"
+TASK_TYPE_PC_RESTART_CANCEL = "pc_restart_cancel"
+PC_RESTART_DELAY_SECONDS = 60
 TASK_INTERVAL_SETTING_KEYS = {
     TASK_TYPE_EMAIL_ACTIONS_PROCESSOR: "email_actions_poll_minutes",
     TASK_TYPE_INFONALIA_MAIL_IMPORT: "infonalia_import_poll_minutes",
+}
+TASK_ENABLED_SETTING_KEYS = {
+    TASK_TYPE_EMAIL_ACTIONS_PROCESSOR: "email_actions_enabled",
+    TASK_TYPE_INFONALIA_MAIL_IMPORT: "infonalia_import_enabled",
 }
 
 
@@ -91,6 +109,7 @@ class AutomationDefinition:
     default_enabled: bool
     interval_minutes: int | None = None
     daily_time: str | None = None
+    daily_times: tuple[str, ...] = ()
     weekdays_only: bool = False
     manual_allowed: bool = True
     critical: bool = False
@@ -126,8 +145,8 @@ AUTOMATIONS: tuple[AutomationDefinition, ...] = (
     ),
     AutomationDefinition(
         key=TASK_TYPE_FILE_INVENTORY,
-        name="Inventario Dropbox",
-        description="Actualiza inventario de ficheros y reconciliación de rutas.",
+        name="Reconciliación de rutas Dropbox",
+        description="Localiza carpetas por su marcador {id}.llangon y corrige sus rutas.",
         schedule_type="interval",
         default_enabled=True,
         interval_minutes=240,
@@ -173,11 +192,30 @@ AUTOMATIONS: tuple[AutomationDefinition, ...] = (
         env_time="LLANGON_NIGHT_SUSPEND_TIME",
     ),
     AutomationDefinition(
+        key=TASK_TYPE_PC_RESTART,
+        name="Reinicio remoto del PC",
+        description="Programa un reinicio forzoso de Windows con 60 segundos de margen para cancelarlo.",
+        schedule_type="event",
+        default_enabled=True,
+        manual_allowed=True,
+        priority=210,
+    ),
+    AutomationDefinition(
+        key=TASK_TYPE_PC_RESTART_CANCEL,
+        name="Cancelar reinicio remoto",
+        description="Cancela el reinicio de Windows que esté pendiente de ejecutarse.",
+        schedule_type="event",
+        default_enabled=True,
+        manual_allowed=True,
+        priority=211,
+    ),
+    AutomationDefinition(
         key=TASK_TYPE_MONITOR_LICITACIONES,
         name="Monitor licitaciones",
-        description="Monitor futuro de novedades en plataformas. Se mantiene desactivado.",
-        schedule_type="manual",
+        description="Revisa las licitaciones seguidas tres veces al día y recupera la última franja al despertar.",
+        schedule_type="daily_times",
         default_enabled=False,
+        daily_times=("08:00", "13:00", "18:00"),
         manual_allowed=True,
         priority=300,
         env_enabled=None,
@@ -222,6 +260,22 @@ def parse_hhmm(value: object, fallback: str) -> str:
     except Exception:
         pass
     return fallback
+
+
+def parse_daily_times(value: object, fallback: tuple[str, ...]) -> tuple[str, ...]:
+    raw_values = clean_text(value).replace(";", ",").split(",") if clean_text(value) else list(fallback)
+    parsed: set[str] = set()
+    for raw in raw_values:
+        text = clean_text(raw)
+        if not text:
+            continue
+        normalized = parse_hhmm(text, "")
+        if normalized:
+            parsed.add(normalized)
+    if not parsed:
+        parsed = {parse_hhmm(item, "") for item in fallback}
+        parsed.discard("")
+    return tuple(sorted(parsed))
 
 
 def env_bool(name: str | None, default: bool) -> bool:
@@ -313,11 +367,17 @@ def task_override(conn: sqlite3.Connection, key: str) -> sqlite3.Row | None:
 
 
 def task_enabled(conn: sqlite3.Connection, definition: AutomationDefinition) -> bool:
-    if definition.key == TASK_TYPE_MONITOR_LICITACIONES:
-        return False
     row = task_override(conn, definition.key)
     if row and row["enabled"] is not None:
         return bool(row["enabled"])
+    setting_key = TASK_ENABLED_SETTING_KEYS.get(definition.key)
+    if setting_key:
+        try:
+            setting = conn.execute("SELECT value FROM app_settings WHERE key = ?", (setting_key,)).fetchone()
+        except sqlite3.Error:
+            setting = None
+        if setting and clean_text(setting["value"]) != "":
+            return bool_text(setting["value"])
     return env_bool(definition.env_enabled, definition.default_enabled)
 
 
@@ -337,6 +397,8 @@ def task_schedule_value(
         return str(env_minutes(definition.env_interval, definition.interval_minutes or 1))
     if definition.schedule_type == "daily_time":
         return parse_hhmm(os.environ.get(definition.env_time or ""), definition.daily_time or "00:00")
+    if definition.schedule_type == "daily_times":
+        return ",".join(parse_daily_times("", definition.daily_times))
     return ""
 
 
@@ -365,6 +427,26 @@ def last_completed_for_day(conn: sqlite3.Connection, key: str, day: date) -> sql
     ).fetchone()
 
 
+def last_completed_for_slot(conn: sqlite3.Connection, key: str, slot: datetime) -> sqlite3.Row | None:
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM automation_runs
+        WHERE task_key = ?
+          AND status = ?
+          AND source IN ('automatic', 'keeper_tick', 'wake_tick')
+          AND substr(started_at, 1, 10) = ?
+        ORDER BY id DESC
+        """,
+        (key, STATUS_COMPLETED, slot.date().isoformat()),
+    ).fetchall()
+    for row in rows:
+        started = parse_iso(row["started_at"])
+        if started and started >= slot:
+            return row
+    return None
+
+
 def next_daily_time(target: datetime, hhmm: str, *, weekdays_only: bool = False) -> datetime:
     hour, minute = [int(part) for part in hhmm.split(":", 1)]
     for offset in range(0, 8):
@@ -383,6 +465,36 @@ def previous_daily_slot(target: datetime, hhmm: str) -> datetime:
     if slot > target:
         slot -= timedelta(days=1)
     return slot
+
+
+def latest_daily_slot(target: datetime, times: tuple[str, ...], *, weekdays_only: bool = False) -> datetime | None:
+    if weekdays_only and target.date().weekday() >= 5:
+        return None
+    candidates = [
+        datetime.combine(
+            target.date(),
+            dt_time(*[int(part) for part in hhmm.split(":", 1)]),
+            tzinfo=target.tzinfo,
+        )
+        for hhmm in times
+    ]
+    arrived = [candidate for candidate in candidates if candidate <= target]
+    return max(arrived) if arrived else None
+
+
+def next_daily_times(target: datetime, times: tuple[str, ...], *, weekdays_only: bool = False) -> datetime:
+    candidates: list[datetime] = []
+    for hhmm in times:
+        candidates.append(next_daily_time(target, hhmm, weekdays_only=weekdays_only))
+    return min(candidates) if candidates else target + timedelta(days=1)
+
+
+def task_enabled_after_slot(conn: sqlite3.Connection, definition: AutomationDefinition, slot: datetime) -> bool:
+    row = task_override(conn, definition.key)
+    if not row or row["enabled"] != 1:
+        return True
+    updated_at = parse_iso(row["updated_at"])
+    return not updated_at or updated_at <= slot
 
 
 def compute_next_run(
@@ -407,6 +519,14 @@ def compute_next_run(
             task_schedule_value(conn, definition, db_path=db_path) or definition.daily_time or "00:00",
             weekdays_only=definition.weekdays_only,
         ).replace(microsecond=0).isoformat()
+    if definition.schedule_type == "daily_times":
+        times = parse_daily_times(
+            task_schedule_value(conn, definition, db_path=db_path),
+            definition.daily_times,
+        )
+        if due_for_tick(conn, definition, current=now, db_path=db_path):
+            return now.replace(microsecond=0).isoformat()
+        return next_daily_times(now, times, weekdays_only=definition.weekdays_only).replace(microsecond=0).isoformat()
     return ""
 
 
@@ -435,6 +555,15 @@ def due_for_tick(
         if slot.date() != now.date():
             return False
         return last_completed_for_day(conn, definition.key, slot.date()) is None
+    if definition.schedule_type == "daily_times":
+        times = parse_daily_times(
+            task_schedule_value(conn, definition, db_path=db_path),
+            definition.daily_times,
+        )
+        slot = latest_daily_slot(now, times, weekdays_only=definition.weekdays_only)
+        if slot is None or not task_enabled_after_slot(conn, definition, slot):
+            return False
+        return last_completed_for_slot(conn, definition.key, slot) is None
     return False
 
 
@@ -482,6 +611,274 @@ def acquire_lock(
 def release_lock(conn: sqlite3.Connection, key: str, owner: str) -> None:
     conn.execute("DELETE FROM automation_locks WHERE key = ? AND owner = ?", (key, owner))
     conn.commit()
+
+
+def windows_process_is_alive(pid: int) -> bool | None:
+    """Check a Windows PID without sending it a signal or modifying the process."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        open_process.restype = wintypes.HANDLE
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = (wintypes.HANDLE,)
+        close_handle.restype = wintypes.BOOL
+        get_exit_code = kernel32.GetExitCodeProcess
+        get_exit_code.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        get_exit_code.restype = wintypes.BOOL
+        handle = open_process(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if handle:
+            try:
+                exit_code = wintypes.DWORD()
+                if not get_exit_code(handle, ctypes.byref(exit_code)):
+                    return None
+                return exit_code.value == 259  # STILL_ACTIVE
+            finally:
+                close_handle(handle)
+        error = ctypes.get_last_error()
+        if error == 87:  # ERROR_INVALID_PARAMETER: the PID does not exist.
+            return False
+        if error == 5:  # ERROR_ACCESS_DENIED: the process exists but cannot be queried.
+            return True
+        return None
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def process_id_is_alive(pid: int, *, platform_name: str | None = None) -> bool | None:
+    platform = platform_name or os.name
+    if platform == "nt":
+        return windows_process_is_alive(pid)
+    return None
+
+
+def lock_owner_process_is_alive(owner: object) -> bool | None:
+    """Return False only when a local lock owner can be proven to be dead."""
+    parts = clean_text(owner).split(":", 3)
+    if len(parts) < 2 or parts[0].casefold() != socket.gethostname().casefold():
+        return None
+    try:
+        pid = int(parts[1])
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    return process_id_is_alive(pid)
+
+
+def lock_is_live(lock: sqlite3.Row | dict[str, object] | None, *, current: datetime | None = None) -> bool:
+    if not lock:
+        return False
+    expires_at = parse_iso(lock["expires_at"])
+    if not expires_at or expires_at <= now_local(current):
+        return False
+    return lock_owner_process_is_alive(lock["owner"]) is not False
+
+
+def recover_orphaned_automation_runs(
+    conn: sqlite3.Connection,
+    *,
+    current: datetime | None = None,
+) -> list[int]:
+    """Close runs left as running after their worker process disappeared."""
+    current_dt = now_local(current)
+    finished_at = current_dt.replace(microsecond=0).isoformat()
+    recovered: list[int] = []
+    rows = conn.execute(
+        "SELECT * FROM automation_runs WHERE status = ? ORDER BY id ASC",
+        (STATUS_RUNNING,),
+    ).fetchall()
+    for row in rows:
+        task_key = clean_text(row["task_key"])
+        owner = clean_text(row["lock_owner"])
+        lock = conn.execute(
+            "SELECT * FROM automation_locks WHERE key = ? AND owner = ?",
+            (f"task:{task_key}", owner),
+        ).fetchone()
+        if lock_is_live(lock, current=current_dt):
+            continue
+
+        started_at = parse_iso(row["started_at"])
+        duration = max(0.0, (current_dt - started_at).total_seconds()) if started_at else None
+        try:
+            details = json.loads(clean_text(row["details_json"]) or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            details = {}
+        if not isinstance(details, dict):
+            details = {}
+        details["recovery"] = {
+            "reason": "worker_process_not_alive",
+            "recovered_at": finished_at,
+        }
+        message = "Ejecución interrumpida porque el proceso que la inició ya no está activo."
+        conn.execute(
+            """
+            UPDATE automation_runs
+            SET status = ?, finished_at = ?, duration_seconds = ?, summary = ?,
+                error_message = ?, details_json = ?
+            WHERE id = ? AND status = ?
+            """,
+            (
+                STATUS_INTERRUPTED,
+                finished_at,
+                duration,
+                message,
+                message,
+                json.dumps(details, ensure_ascii=False, sort_keys=True),
+                row["id"],
+                STATUS_RUNNING,
+            ),
+        )
+        conn.execute(
+            "DELETE FROM automation_locks WHERE key = ? AND owner = ?",
+            (f"task:{task_key}", owner),
+        )
+        recovered.append(int(row["id"]))
+    recovered_monitor_runs = recover_orphaned_inventory_monitor_runs(
+        conn,
+        current=current_dt,
+    )
+    if recovered or recovered_monitor_runs:
+        conn.commit()
+    return recovered
+
+
+def automation_run_schedule_key(run_id: int) -> str:
+    return f"{AUTOMATION_RUN_SCHEDULE_PREFIX}{int(run_id)}"
+
+
+def recover_orphaned_inventory_monitor_runs(
+    conn: sqlite3.Connection,
+    *,
+    current: datetime | None = None,
+) -> list[int]:
+    """Close internal inventory rows whose owning automation is already terminal.
+
+    New executions carry an exact automation-run correlation in ``schedule_key``.
+    The bounded timestamp fallback exists only for rows created before that
+    correlation was introduced.
+    """
+    try:
+        monitor_rows = conn.execute(
+            "SELECT * FROM monitor_runs WHERE status = 'running' AND mode = 'inventory' ORDER BY id ASC"
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    if not monitor_rows:
+        return []
+
+    automation_rows = conn.execute(
+        """
+        SELECT *
+        FROM automation_runs
+        WHERE task_key = ?
+        ORDER BY id ASC
+        """,
+        (TASK_TYPE_FILE_INVENTORY,),
+    ).fetchall()
+    automation_by_id = {int(row["id"]): row for row in automation_rows}
+    legacy_terminal_automation_rows = [
+        row
+        for row in automation_rows
+        if clean_text(row["status"]) in {STATUS_FAILED, STATUS_INTERRUPTED}
+    ]
+    finished_at = now_iso(current)
+    message = "Reconciliación de rutas interrumpida porque su proceso de automatización ya no está activo."
+    recovered: list[int] = []
+
+    for monitor_row in monitor_rows:
+        row_keys = set(monitor_row.keys()) if hasattr(monitor_row, "keys") else set()
+        schedule_key = clean_text(monitor_row["schedule_key"]) if "schedule_key" in row_keys else ""
+        owner_run = None
+        if schedule_key.startswith(AUTOMATION_RUN_SCHEDULE_PREFIX):
+            try:
+                owner_run = automation_by_id.get(int(schedule_key.removeprefix(AUTOMATION_RUN_SCHEDULE_PREFIX)))
+            except ValueError:
+                owner_run = None
+            if owner_run is None or clean_text(owner_run["status"]) == STATUS_RUNNING:
+                continue
+        elif schedule_key:
+            continue
+        else:
+            monitor_started = parse_iso(monitor_row["started_at"])
+            if not monitor_started:
+                continue
+            for candidate in legacy_terminal_automation_rows:
+                candidate_started = parse_iso(candidate["started_at"])
+                if not candidate_started:
+                    continue
+                delta = monitor_started - candidate_started
+                if -timedelta(seconds=30) <= delta <= timedelta(minutes=5):
+                    owner_run = candidate
+                    break
+            if owner_run is None:
+                continue
+
+        cursor = conn.execute(
+            """
+            UPDATE monitor_runs
+            SET status = ?, finished_at = ?, error_message = ?,
+                warnings_count = CASE WHEN warnings_count < 1 THEN 1 ELSE warnings_count END
+            WHERE id = ? AND status = 'running'
+            """,
+            (STATUS_INTERRUPTED, finished_at, message, monitor_row["id"]),
+        )
+        if cursor.rowcount:
+            recovered.append(int(monitor_row["id"]))
+    return recovered
+
+
+def launch_automation_task_worker(
+    key: str,
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+    source: str = "manual_worker",
+    triggered_by: str = "",
+) -> dict[str, object]:
+    definition = automation_by_key(key)
+    if not definition:
+        return {"ok": False, "error": f"Automatización no reconocida: {key}"}
+    command = [
+        sys.executable,
+        "-m",
+        "webapp.infonalia_webapp.automation_worker",
+        "--task-key",
+        definition.key,
+        "--db",
+        str(db_path),
+        "--source",
+        clean_text(source) or "manual_worker",
+    ]
+    if clean_text(triggered_by):
+        command.extend(["--triggered-by", clean_text(triggered_by)])
+    kwargs: dict[str, object] = {
+        "cwd": str(PROJECT_ROOT),
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "shell": False,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        process = subprocess.Popen(command, **kwargs)
+    except Exception as exc:
+        message = f"No se pudo iniciar el worker de automatización: {exc}"
+        record_automation_start_failure(
+            definition.key,
+            db_path=db_path,
+            source=source,
+            triggered_by=triggered_by,
+            error_message=message,
+        )
+        return {"ok": False, "error": message}
+    return {"ok": True, "pid": process.pid, "task_key": definition.key}
 
 
 def active_locks(conn: sqlite3.Connection, *, current: datetime | None = None) -> list[dict[str, object]]:
@@ -548,6 +945,47 @@ def finish_run(
     conn.commit()
 
 
+def record_automation_start_failure(
+    key: str,
+    *,
+    db_path: str | Path,
+    source: str,
+    triggered_by: str = "",
+    error_message: str,
+) -> int | None:
+    """Persist a launcher/supervisor failure when no task process could start."""
+    definition = automation_by_key(key)
+    if not definition:
+        return None
+    conn = None
+    try:
+        conn = connect_db(db_path)
+        conn.row_factory = sqlite3.Row
+        ensure_monitor_schema(conn)
+        ensure_automation_schema(conn)
+        run_id = create_run(
+            conn,
+            definition,
+            source=clean_text(source) or "worker_supervisor",
+            triggered_by=clean_text(triggered_by),
+            lock_owner_value="",
+        )
+        finish_run(
+            conn,
+            run_id,
+            status=STATUS_FAILED,
+            summary="No se pudo iniciar el proceso aislado.",
+            error_message=clean_text(error_message),
+            details={"phase": "worker_start"},
+        )
+        return run_id
+    except Exception:
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def summarize_result(result: dict[str, object]) -> str:
     if clean_text(result.get("summary")):
         return clean_text(result.get("summary"))
@@ -557,7 +995,7 @@ def summarize_result(result: dict[str, object]) -> str:
         ("importados", "imported"),
         ("acciones", "processed"),
         ("emails", "emails_sent_count"),
-        ("inventario", "inventory_files_count"),
+        ("marcadores", "processed_items_count"),
         ("corregidas", "route_updates_count"),
     ):
         value = result.get(key)
@@ -566,28 +1004,26 @@ def summarize_result(result: dict[str, object]) -> str:
     return "; ".join(pieces) or clean_text(result.get("message")) or "Ejecución finalizada."
 
 
-def run_mail_interval_task(definition: AutomationDefinition, db_path: str | Path, current: datetime) -> dict[str, object]:
-    previous: dict[str, str | None] = {}
-    for item in AUTOMATIONS:
-        if item.key in {TASK_TYPE_INFONALIA_MAIL_IMPORT, TASK_TYPE_EMAIL_ACTIONS_PROCESSOR, TASK_TYPE_FILE_INVENTORY}:
-            for env_name in (item.env_enabled, item.env_interval):
-                if env_name:
-                    previous[env_name] = os.environ.get(env_name)
-    try:
-        for item in AUTOMATIONS:
-            if item.key in {TASK_TYPE_INFONALIA_MAIL_IMPORT, TASK_TYPE_EMAIL_ACTIONS_PROCESSOR, TASK_TYPE_FILE_INVENTORY}:
-                if item.env_enabled:
-                    os.environ[item.env_enabled] = "1" if item.key == definition.key else "0"
-                if item.env_interval:
-                    os.environ[item.env_interval] = "1"
-        reports = _run_mail_interval_jobs(db_path=db_path, current=current, dry_run=False)
-    finally:
-        for env_name, value in previous.items():
-            if value is None:
-                os.environ.pop(env_name, None)
-            else:
-                os.environ[env_name] = value
-    return reports[0] if reports else {"task_type": definition.key, "status": STATUS_SKIPPED, "message": "No estaba vencida según el scheduler heredado."}
+def run_mail_interval_task(
+    definition: AutomationDefinition,
+    db_path: str | Path,
+    current: datetime,
+    *,
+    automation_run_id: int | None = None,
+) -> dict[str, object]:
+    reports = _run_mail_interval_jobs(
+        db_path=db_path,
+        current=current,
+        dry_run=False,
+        task_types={definition.key},
+        force_selected=True,
+        automation_run_id=automation_run_id,
+    )
+    return reports[0] if reports else {
+        "task_type": definition.key,
+        "status": STATUS_SKIPPED,
+        "message": "No se pudo ejecutar la tarea solicitada.",
+    }
 
 
 def run_full_backup(db_path: str | Path) -> dict[str, object]:
@@ -659,6 +1095,75 @@ def run_night_suspend(conn: sqlite3.Connection, *, manual: bool = False) -> dict
     return {"status": STATUS_SKIPPED, "summary": "Suspensión omitida o rechazada por Windows.", "returncode": completed.returncode, "output": output[-2000:]}
 
 
+def run_pc_restart(*, source: str) -> dict[str, object]:
+    """Schedule a forced local Windows restart only after a manual API action."""
+    if source != "manual":
+        return {
+            "status": STATUS_SKIPPED,
+            "summary": "El reinicio remoto solo puede solicitarse manualmente desde la Suite.",
+        }
+    if os.name != "nt":
+        return {"status": STATUS_SKIPPED, "summary": "El reinicio remoto solo está disponible en Windows."}
+    command = [
+        "shutdown.exe",
+        "/r",
+        "/f",
+        "/t",
+        str(PC_RESTART_DELAY_SECONDS),
+        "/d",
+        "p:4:1",
+        "/c",
+        "Reinicio remoto solicitado desde Llangon Suite.",
+    ]
+    try:
+        completed = subprocess.run(command, cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=10)
+    except OSError as exc:
+        return {"status": STATUS_FAILED, "summary": "No se pudo programar el reinicio remoto.", "error": str(exc)}
+    output = (completed.stdout or "") + (completed.stderr or "")
+    if completed.returncode == 0:
+        return {
+            "status": STATUS_COMPLETED,
+            "summary": f"Reinicio forzoso programado para dentro de {PC_RESTART_DELAY_SECONDS} segundos.",
+            "restart_delay_seconds": PC_RESTART_DELAY_SECONDS,
+            "output": output[-2000:],
+        }
+    return {
+        "status": STATUS_FAILED,
+        "summary": "Windows rechazó la solicitud de reinicio remoto.",
+        "returncode": completed.returncode,
+        "output": output[-2000:],
+    }
+
+
+def cancel_pc_restart(*, source: str) -> dict[str, object]:
+    if source != "manual":
+        return {
+            "status": STATUS_SKIPPED,
+            "summary": "La cancelación del reinicio remoto solo puede solicitarse manualmente desde la Suite.",
+        }
+    if os.name != "nt":
+        return {"status": STATUS_SKIPPED, "summary": "La cancelación del reinicio remoto solo está disponible en Windows."}
+    try:
+        completed = subprocess.run(
+            ["shutdown.exe", "/a"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except OSError as exc:
+        return {"status": STATUS_FAILED, "summary": "No se pudo cancelar el reinicio remoto.", "error": str(exc)}
+    output = (completed.stdout or "") + (completed.stderr or "")
+    if completed.returncode == 0:
+        return {"status": STATUS_COMPLETED, "summary": "Reinicio remoto cancelado.", "output": output[-2000:]}
+    return {
+        "status": STATUS_SKIPPED,
+        "summary": "No había un reinicio remoto pendiente que cancelar.",
+        "returncode": completed.returncode,
+        "output": output[-2000:],
+    }
+
+
 def execute_task(
     conn: sqlite3.Connection,
     definition: AutomationDefinition,
@@ -667,10 +1172,38 @@ def execute_task(
     source: str,
     triggered_by: str = "",
     current: datetime | None = None,
+    automation_run_id: int | None = None,
 ) -> dict[str, object]:
     current_dt = now_local(current)
-    if definition.key in {TASK_TYPE_INFONALIA_MAIL_IMPORT, TASK_TYPE_EMAIL_ACTIONS_PROCESSOR, TASK_TYPE_FILE_INVENTORY}:
-        return run_mail_interval_task(definition, db_path, current_dt)
+    if definition.key == TASK_TYPE_FILE_INVENTORY:
+        ensure_tender_monitor_schema(conn)
+        # The reconciliation executor opens its own SQLite connections. Release
+        # schema/default-setting writes first or the child connection can fail
+        # immediately with ``database is locked``.
+        conn.commit()
+        active = active_tender_cycle(conn)
+        # ``active_tender_cycle`` defensively ensures the schema again and can
+        # therefore open a fresh write transaction of its own.
+        conn.commit()
+        if active:
+            return {
+                "status": STATUS_SKIPPED,
+                "summary": "Reconciliación de rutas aplazada mientras el monitor de licitaciones está activo.",
+                "cycle_id": active["id"],
+            }
+        return run_mail_interval_task(
+            definition,
+            db_path,
+            current_dt,
+            automation_run_id=automation_run_id,
+        )
+    if definition.key in {TASK_TYPE_INFONALIA_MAIL_IMPORT, TASK_TYPE_EMAIL_ACTIONS_PROCESSOR}:
+        return run_mail_interval_task(
+            definition,
+            db_path,
+            current_dt,
+            automation_run_id=automation_run_id,
+        )
     if definition.key == TASK_TYPE_AGENDA_PENDIENTES_DIARIA:
         recipients = configured_agenda_pending_recipients(db_path)
         from . import app
@@ -691,10 +1224,26 @@ def execute_task(
         return run_full_backup(db_path)
     if definition.key == "night_suspend":
         return run_night_suspend(conn, manual=(source == "manual"))
+    if definition.key == TASK_TYPE_PC_RESTART:
+        return run_pc_restart(source=source)
+    if definition.key == TASK_TYPE_PC_RESTART_CANCEL:
+        return cancel_pc_restart(source=source)
     if definition.key == TASK_TYPE_MONITOR_LICITACIONES:
-        if source != "manual":
-            return {"status": STATUS_SKIPPED, "summary": "La programación automática del monitor está desactivada."}
         ensure_tender_monitor_schema(conn)
+        inventory_run = conn.execute(
+            """
+            SELECT id FROM automation_runs
+            WHERE task_key = ? AND status = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (TASK_TYPE_FILE_INVENTORY, STATUS_RUNNING),
+        ).fetchone()
+        if inventory_run:
+            return {
+                "status": STATUS_SKIPPED,
+                "summary": "Monitor aplazado mientras la reconciliación de rutas está activa.",
+                "inventory_run_id": inventory_run["id"],
+            }
         active = active_tender_cycle(conn)
         if active:
             return {
@@ -704,8 +1253,9 @@ def execute_task(
             }
         cycle_id = create_tender_cycle(
             conn,
-            origin="manual_automation_console",
-            requested_by=clean_text(triggered_by) or "admin",
+            origin="manual_automation_console" if source == "manual" else "automatic_scheduler",
+            requested_by=clean_text(triggered_by) or ("admin" if source == "manual" else source),
+            metadata={"automation_source": source},
         )
         conn.commit()
         root = clean_text(os.environ.get("INFONALIA_MONITOR_ROOT")) or None
@@ -724,7 +1274,7 @@ def execute_task(
             }
         return {
             "status": STATUS_COMPLETED,
-            "summary": "Ciclo manual del monitor encolado.",
+            "summary": f"Ciclo {'manual' if source == 'manual' else 'automático'} del monitor encolado.",
             "cycle_id": cycle_id,
             "worker": worker,
         }
@@ -748,6 +1298,17 @@ def run_task(
     conn.row_factory = sqlite3.Row
     ensure_monitor_schema(conn)
     ensure_automation_schema(conn)
+    recover_orphaned_automation_runs(conn, current=current)
+    ensure_tender_monitor_schema(conn)
+    lease_row = conn.execute(
+        "SELECT value FROM tender_monitor_settings WHERE key = 'lease_minutes'"
+    ).fetchone()
+    try:
+        tender_lease_minutes = int(lease_row["value"] if lease_row else 60)
+    except (TypeError, ValueError):
+        tender_lease_minutes = 60
+    recover_orphan_cycles(conn, timestamp=now_local(current), minutes=tender_lease_minutes)
+    conn.commit()
     owner = lock_owner(source)
     task_lock = f"task:{definition.key}"
     ttl = CRITICAL_TASK_LOCK_TTL_MINUTES if definition.prevents_suspend else DEFAULT_TASK_LOCK_TTL_MINUTES
@@ -756,7 +1317,15 @@ def run_task(
         return {"task_key": definition.key, "status": STATUS_SKIPPED, "summary": "Omitida: ya está en ejecución.", "lock": existing}
     run_id = create_run(conn, definition, source=source, triggered_by=triggered_by, lock_owner_value=owner, current=current)
     try:
-        result = execute_task(conn, definition, db_path=db_path, source=source, triggered_by=triggered_by, current=current)
+        result = execute_task(
+            conn,
+            definition,
+            db_path=db_path,
+            source=source,
+            triggered_by=triggered_by,
+            current=current,
+            automation_run_id=run_id,
+        )
         status = clean_text(result.get("status")) or STATUS_COMPLETED
         if status not in {STATUS_COMPLETED, STATUS_FAILED, STATUS_SKIPPED, "completed_with_errors"}:
             status = STATUS_COMPLETED if not result.get("errors") else STATUS_FAILED
@@ -785,6 +1354,21 @@ def scheduler_tick(
     conn.row_factory = sqlite3.Row
     ensure_monitor_schema(conn)
     ensure_automation_schema(conn)
+    recover_orphaned_automation_runs(conn, current=current)
+    ensure_tender_monitor_schema(conn)
+    lease_row = conn.execute(
+        "SELECT value FROM tender_monitor_settings WHERE key = 'lease_minutes'"
+    ).fetchone()
+    try:
+        tender_lease_minutes = int(lease_row["value"] if lease_row else 60)
+    except (TypeError, ValueError):
+        tender_lease_minutes = 60
+    recovered_tender_cycles = recover_orphan_cycles(
+        conn,
+        timestamp=now_local(current),
+        minutes=tender_lease_minutes,
+    )
+    conn.commit()
     owner = lock_owner(source)
     acquired, existing = acquire_lock(
         conn,
@@ -806,7 +1390,14 @@ def scheduler_tick(
     try:
         for definition in due:
             results.append(run_task(definition.key, db_path=db_path, source=source, triggered_by=triggered_by, current=current))
-        return {"ok": True, "status": STATUS_COMPLETED, "source": source, "due_count": len(due), "results": results}
+        return {
+            "ok": True,
+            "status": STATUS_COMPLETED,
+            "source": source,
+            "due_count": len(due),
+            "recovered_tender_cycles": recovered_tender_cycles,
+            "results": results,
+        }
     finally:
         release_lock(conn, GLOBAL_LOCK_KEY, owner)
         conn.close()
@@ -821,8 +1412,6 @@ def set_task_enabled(
 ) -> dict[str, object]:
     if not automation_by_key(key):
         raise ValueError(f"Automatización no reconocida: {key}")
-    if key == TASK_TYPE_MONITOR_LICITACIONES and enabled:
-        raise ValueError("La programación automática del monitor de licitaciones permanece desactivada.")
     conn = connect_db(db_path)
     conn.row_factory = sqlite3.Row
     ensure_automation_schema(conn)
@@ -842,6 +1431,51 @@ def set_task_enabled(
     return payload
 
 
+def set_task_schedule(
+    key: str,
+    schedule_value: str,
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+    updated_by: str = "",
+) -> dict[str, object]:
+    definition = automation_by_key(key)
+    if not definition:
+        raise ValueError(f"Automatización no reconocida: {key}")
+    if definition.schedule_type == "daily_times":
+        parsed = parse_daily_times(schedule_value, ())
+        if not parsed:
+            raise ValueError("La programación debe incluir al menos una hora válida HH:MM.")
+        normalized = ",".join(parsed)
+    elif definition.schedule_type == "daily_time":
+        normalized = parse_hhmm(schedule_value, "")
+        if not normalized:
+            raise ValueError("La programación debe ser una hora válida HH:MM.")
+    elif definition.schedule_type == "interval":
+        try:
+            normalized = str(max(1, int(schedule_value)))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("El intervalo debe ser un número de minutos válido.") from exc
+    else:
+        raise ValueError("Esta automatización no admite una programación editable.")
+    conn = connect_db(db_path)
+    conn.row_factory = sqlite3.Row
+    ensure_automation_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO automation_tasks (key, enabled, schedule_value, updated_at, updated_by)
+        VALUES (?, NULL, ?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET schedule_value = excluded.schedule_value,
+            updated_at = excluded.updated_at,
+            updated_by = excluded.updated_by
+        """,
+        (key, normalized, now_iso(), clean_text(updated_by)),
+    )
+    conn.commit()
+    payload = task_payload(conn, definition, db_path=db_path)
+    conn.close()
+    return payload
+
+
 def task_payload(
     conn: sqlite3.Connection,
     definition: AutomationDefinition | None,
@@ -851,10 +1485,14 @@ def task_payload(
     if not definition:
         return {}
     row = last_run(conn, definition.key)
-    running = conn.execute(
-        "SELECT * FROM automation_runs WHERE task_key = ? AND status = ? ORDER BY id DESC LIMIT 1",
-        (definition.key, STATUS_RUNNING),
-    ).fetchone()
+    running = None
+    if row and clean_text(row["status"]) == STATUS_RUNNING:
+        lock = conn.execute(
+            "SELECT * FROM automation_locks WHERE key = ? AND owner = ?",
+            (f"task:{definition.key}", clean_text(row["lock_owner"])),
+        ).fetchone()
+        if lock_is_live(lock):
+            running = row
     enabled = task_enabled(conn, definition)
     schedule_value = task_schedule_value(conn, definition, db_path=db_path)
     return {
@@ -881,6 +1519,9 @@ def schedule_label(definition: AutomationDefinition, value: str) -> str:
     if definition.schedule_type == "daily_time":
         suffix = " laborables" if definition.weekdays_only else " diario"
         return f"{value}{suffix}"
+    if definition.schedule_type == "daily_times":
+        values = [item for item in value.split(",") if item]
+        return f"Diario a las {', '.join(values)}"
     if definition.schedule_type == "manual":
         return "Manual"
     return "Por evento"
@@ -890,6 +1531,7 @@ def automation_tasks_payload(*, db_path: str | Path = DEFAULT_DB_PATH) -> list[d
     conn = connect_db(db_path)
     conn.row_factory = sqlite3.Row
     ensure_automation_schema(conn)
+    recover_orphaned_automation_runs(conn)
     items = [task_payload(conn, definition, db_path=db_path) for definition in sorted(AUTOMATIONS, key=lambda item: item.priority)]
     conn.close()
     return items
@@ -905,6 +1547,7 @@ def automation_runs_payload(
     conn = connect_db(db_path)
     conn.row_factory = sqlite3.Row
     ensure_automation_schema(conn)
+    recover_orphaned_automation_runs(conn)
     clauses: list[str] = []
     params: list[object] = []
     if task_key:
@@ -941,6 +1584,7 @@ def automation_status_payload(*, db_path: str | Path = DEFAULT_DB_PATH) -> dict[
     conn = connect_db(db_path)
     conn.row_factory = sqlite3.Row
     ensure_automation_schema(conn)
+    recover_orphaned_automation_runs(conn)
     locks = active_locks(conn)
     tasks = [task_payload(conn, definition, db_path=db_path) for definition in sorted(AUTOMATIONS, key=lambda item: item.priority)]
     heartbeat = None

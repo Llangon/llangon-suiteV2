@@ -42,4 +42,7 @@ def test_detectar_plataforma_preserves_known_platforms() -> None:
     assert detectar_plataforma("https://contratos-publicos.comunidad.madrid/contrato") == "Comunidad Madrid"
     assert detectar_plataforma("https://www.contratacion.euskadi.eus/anuncio") == "Euskadi"
     assert detectar_plataforma("https://contractaciopublica.cat/ca/detall") == "Catalunya"
+    assert detectar_plataforma("https://hacienda.navarra.es/sicpportal/mtoAnunciosModalidad.aspx?cod=1") == "Navarra"
+    assert detectar_plataforma("https://licitacionelectronica.navarra.es/licitador/licitadores/detalle/1/s") == "Navarra"
+    assert detectar_plataforma("https://www.contratosdegalicia.gal/licitacion?N=827794") == "Xunta de Galicia"
     assert detectar_plataforma("https://example.test") == ""

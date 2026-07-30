@@ -87,6 +87,30 @@ def test_storage_markers_sync_endpoint_requires_csrf(tmp_path: Path) -> None:
     assert handler.responses[-1][0] == HTTPStatus.FORBIDDEN
 
 
+def test_licitacion_detail_reconciles_missing_route_with_unique_id_marker(tmp_path: Path) -> None:
+    app = load_app_module()
+    replica_root = tmp_path / "ReplicaDb"
+    marker_folder = replica_root / "2026" / "07 JULIO" / "licitacion real"
+    marker_folder.mkdir(parents=True)
+    (marker_folder / "335.llangon").write_text("", encoding="utf-8")
+
+    with temporary_download_app(app):
+        app.find_dropbox_root = lambda: replica_root
+        insert_licitacion_with_id(app, 335, r"2026\07 JULIO\carpeta antigua")
+        handler = make_download_handler(app, path="/api/licitaciones/335")
+
+        handler.api_get_licitacion(335)
+
+    status, payload = handler.responses[-1]
+    item = payload["item"]
+    assert status == HTTPStatus.OK
+    assert item["seguimiento"]["folder_exists"] is True
+    assert item["seguimiento"]["id_marker_exists"] is True
+    assert item["folder_status"]["exists"] is True
+    assert Path(item["folder_status"]["path"]) == marker_folder
+    assert item["folder_status"]["label"] == "Carpeta localizada por 335.llangon."
+
+
 def test_licitacion_marker_endpoints_create_exact_files_without_overwriting(tmp_path: Path) -> None:
     app = load_app_module()
     replica_root = tmp_path / "ReplicaDb"
