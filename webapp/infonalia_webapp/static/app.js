@@ -27,6 +27,7 @@ const appState = {
   newsItems: [],
   monitorRuns: [],
   automationStatus: null,
+  operationalHealth: null,
   automationTasks: [],
   automationRuns: [],
   automationWindowsTasks: null,
@@ -64,11 +65,16 @@ const appState = {
   downloadFolder: null,
   downloadFolderSubmitting: false,
   aiFileSelection: null,
+  portalFileSelection: null,
+  portalPreviews: {},
+  currentPortalPreview: null,
   aiSummaryEmail: null,
   aiPolling: new Map(),
   aiQueue: null,
   aiQueueTimer: null,
   aiQueueOpen: false,
+  activeLicitacionDetailId: "",
+  licitacionDetailDirty: false,
 };
 
 const daysSection = document.getElementById("days-section");
@@ -181,6 +187,10 @@ const monitorActionResult = document.getElementById("monitor-action-result");
 const monitorSchedulerStatus = document.getElementById("monitor-scheduler-status");
 const monitorSendAgendaDailyButton = document.getElementById("monitor-send-agenda-daily");
 const automationStatusSummary = document.getElementById("automation-status-summary");
+const operationalHealthStatus = document.getElementById("operational-health-status");
+const operationalHealthSummary = document.getElementById("operational-health-summary");
+const operationalHealthAttention = document.getElementById("operational-health-attention");
+const operationalHealthComponents = document.getElementById("operational-health-components");
 const automationTasksBoard = document.getElementById("automation-tasks-board");
 const automationWindowsTasks = document.getElementById("automation-windows-tasks");
 const automationDiagnosticText = document.getElementById("automation-diagnostic-text");
@@ -199,10 +209,15 @@ const editorEyebrow = document.getElementById("editor-eyebrow");
 const form = document.getElementById("licitacion-form");
 const capturePlatformButton = document.getElementById("capture-platform-button");
 const capturePlatformResult = document.getElementById("capture-platform-result");
-const licitacionDetailDialog = document.getElementById("licitacion-detail-dialog");
+const licitacionDetailSection = document.getElementById("licitacion-detail-section");
 const licitacionDetailTitle = document.getElementById("licitacion-detail-title");
 const licitacionDetailContent = document.getElementById("licitacion-detail-content");
 const licitacionDetailActions = document.getElementById("licitacion-detail-actions");
+const copyLicitacionLinkButton = document.getElementById("copy-licitacion-link");
+const appRouteErrorSection = document.getElementById("app-route-error");
+const appRouteErrorTitle = document.getElementById("app-route-error-title");
+const appRouteErrorMessage = document.getElementById("app-route-error-message");
+const appRouteErrorBack = document.getElementById("app-route-error-back");
 const preparedNoticeDialog = document.getElementById("prepared-notice-dialog");
 const preparedNoticeTo = document.getElementById("prepared-notice-to");
 const preparedNoticeSubject = document.getElementById("prepared-notice-subject");
@@ -221,6 +236,15 @@ const aiFileSelectionCount = document.getElementById("ai-file-selection-count");
 const confirmAiFileSelectionButton = document.getElementById("confirm-ai-file-selection");
 const aiNotifyOnCompletion = document.getElementById("ai-notify-on-completion");
 const aiNotificationEmails = document.getElementById("ai-notification-emails");
+const portalFileDialog = document.getElementById("portal-file-dialog");
+const portalFileList = document.getElementById("portal-file-list");
+const portalFileStatus = document.getElementById("portal-file-status");
+const portalFileSelectionCount = document.getElementById("portal-file-selection-count");
+const confirmPortalFileSelectionButton = document.getElementById("confirm-portal-file-selection");
+const portalPreviewDialog = document.getElementById("portal-preview-dialog");
+const portalPreviewContent = document.getElementById("portal-preview-content");
+const publishPortalPreviewButton = document.getElementById("publish-portal-preview");
+const approvePortalPreviewButton = document.getElementById("approve-portal-preview");
 const aiSummaryEmailDialog = document.getElementById("ai-summary-email-dialog");
 const aiSummaryEmailTo = document.getElementById("ai-summary-email-to");
 const aiSummaryEmailSubject = document.getElementById("ai-summary-email-subject");
@@ -1753,6 +1777,7 @@ function setActiveNav(section) {
 function setPageHeader(title, kicker = "Panel privado") {
   if (pageTitle) pageTitle.textContent = title;
   if (pageKicker) pageKicker.textContent = kicker;
+  document.title = `${title} · Llangón Web App`;
 }
 
 function openSidebar() {
@@ -1798,12 +1823,12 @@ function showDaysView() {
   loadDias();
 }
 
-function showLicitacionesView({ diaId = "", title = "Centro de licitaciones", view = "live" } = {}) {
+function showLicitacionesView({ diaId = "", title = "Centro de licitaciones", view = "live", order = "" } = {}) {
   appState.currentDiaId = diaId;
   appState.currentDiaTitle = title;
   appState.licitacionesView = diaId ? "all" : view;
   if (diaId && isNuria()) stateFilter.value = "__nuria_active";
-  if (!diaId) dateOrder.value = ["all", "previous"].includes(appState.licitacionesView) ? "desc" : "asc";
+  if (!diaId) dateOrder.value = order || (["all", "previous"].includes(appState.licitacionesView) ? "desc" : "asc");
   appState.lastSection = "licitaciones";
   setActiveNav("licitaciones");
   setPageHeader(diaId ? "Revisión de día" : "Centro de licitaciones", diaId ? title : "Bandeja");
@@ -1821,7 +1846,7 @@ function showLicitacionesView({ diaId = "", title = "Centro de licitaciones", vi
   configSection.hidden = true;
   renderLicitacionesTabs();
   renderLicitacionesDateFilters();
-  loadItems();
+  return loadItems();
 }
 
 function showCalendarView() {
@@ -1879,6 +1904,347 @@ async function showInitialView() {
   }
   showDaysView();
 }
+
+const appRoutePaths = Object.freeze({
+  agenda: "/app/agenda",
+  infonalia: "/app/infonalia",
+  licitaciones: "/app/licitaciones",
+  actuaciones: "/app/actuaciones",
+  clients: "/app/clientes",
+  clienteEnvios: "/app/envios-clientes",
+  notifications: "/app/buzon",
+  newsAdmin: "/app/noticias",
+  monitor: "/app/monitor",
+  automation: "/app/automatizaciones",
+  config: "/app/configuracion",
+});
+
+const licitacionDetailTabs = new Set([
+  "resumen",
+  "actuaciones",
+  "envios-clientes",
+  "documentos-seguimiento",
+  "comentarios",
+  "ai",
+  "portal",
+]);
+
+function parseAppRoute(url = window.location.href) {
+  const parsed = new URL(url, window.location.origin);
+  const path = parsed.pathname.replace(/\/+$/, "") || "/";
+  const objectDetailPatterns = [
+    ["actuacion-detail", /^\/app\/actuaciones\/(\d+)$/],
+    ["client-detail", /^\/app\/clientes\/(\d+)$/],
+    ["cliente-envio-detail", /^\/app\/envios-clientes\/(\d+)$/],
+    ["dia-detail", /^\/app\/infonalia\/dias\/(\d+)$/],
+  ];
+  for (const [name, pattern] of objectDetailPatterns) {
+    const match = path.match(pattern);
+    if (match) {
+      return {
+        name,
+        id: match[1],
+        view: name === "cliente-envio-detail" && parsed.searchParams.get("view") === "draft" ? "draft" : "edit",
+      };
+    }
+  }
+  const detailMatch = path.match(/^\/app\/licitaciones\/(\d+)$/);
+  if (detailMatch) {
+    const requestedTab = parsed.searchParams.get("tab") || "resumen";
+    return {
+      name: "licitacion-detail",
+      id: detailMatch[1],
+      tab: licitacionDetailTabs.has(requestedTab) ? requestedTab : "resumen",
+    };
+  }
+  if (path === "/app" || path === "/") return { name: "home" };
+  const match = Object.entries(appRoutePaths).find(([, routePath]) => routePath === path);
+  return match ? { name: match[0] } : { name: "not-found" };
+}
+
+function currentRelativeUrl() {
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+}
+
+async function navigateApp(url, { replace = false } = {}) {
+  const target = new URL(url, window.location.origin);
+  if (target.origin !== window.location.origin || (target.pathname !== "/app" && !target.pathname.startsWith("/app/"))) {
+    return false;
+  }
+  const nextUrl = `${target.pathname}${target.search}${target.hash}`;
+  const currentRoute = parseAppRoute();
+  const targetRoute = parseAppRoute(target.href);
+  if (!confirmLicitacionDetailNavigation(targetRoute)) return false;
+  if (nextUrl === currentRelativeUrl()) return true;
+  const returnUrl = currentRelativeUrl();
+  if (isObjectDetailRoute(targetRoute) && !isObjectDetailRoute(currentRoute)) {
+    const currentState = { ...(window.history.state || {}), llangonRoute: true };
+    if (currentRoute.name === "licitaciones") {
+      currentState.licitacionesContext = captureLicitacionesHistoryContext();
+    }
+    window.history.replaceState(currentState, "", returnUrl);
+  }
+  if (nextUrl !== currentRelativeUrl()) {
+    const nextState = { llangonRoute: true };
+    if (isObjectDetailRoute(targetRoute) && !isObjectDetailRoute(currentRoute)) {
+      nextState.returnUrl = returnUrl;
+    }
+    window.history[replace ? "replaceState" : "pushState"](nextState, "", nextUrl);
+  }
+  await renderCurrentAppRoute();
+  return true;
+}
+
+function confirmLicitacionDetailNavigation(targetRoute) {
+  if (!appState.licitacionDetailDirty) return true;
+  if (
+    targetRoute?.name === "licitacion-detail"
+    && String(targetRoute.id) === String(appState.activeLicitacionDetailId)
+  ) return true;
+  const confirmed = window.confirm("Hay cambios sin guardar en la ficha. ¿Quieres salir y descartarlos?");
+  if (confirmed) appState.licitacionDetailDirty = false;
+  return confirmed;
+}
+
+function isObjectDetailRoute(route) {
+  return new Set([
+    "licitacion-detail",
+    "actuacion-detail",
+    "client-detail",
+    "cliente-envio-detail",
+    "dia-detail",
+  ]).has(route?.name);
+}
+
+function captureLicitacionesHistoryContext() {
+  return {
+    diaId: appState.currentDiaId || "",
+    title: appState.currentDiaTitle || "Centro de licitaciones",
+    view: appState.licitacionesView || "live",
+    year: appState.licitacionesYear || "Todos",
+    month: appState.licitacionesMonth || "Todos",
+    state: stateFilter.value || "Todos",
+    order: dateOrder.value || "asc",
+    actuaciones: licitacionesActuacionesFilter.value || "",
+    quick: licitacionesQuickFilter.value || "",
+    search: searchInput.value || "",
+    scrollTop: document.querySelector(".shell")?.scrollTop || 0,
+  };
+}
+
+async function restoreLicitacionesHistoryContext(context) {
+  const saved = context || {};
+  appState.licitacionesYear = saved.year || String(new Date().getFullYear());
+  appState.licitacionesMonth = saved.month || String(new Date().getMonth() + 1);
+  stateFilter.value = saved.state || "Todos";
+  dateOrder.value = saved.order || "asc";
+  licitacionesActuacionesFilter.value = saved.actuaciones || "";
+  licitacionesQuickFilter.value = saved.quick || "";
+  searchInput.value = saved.search || "";
+  await showLicitacionesView({
+    diaId: saved.diaId || "",
+    title: saved.title || "Centro de licitaciones",
+    view: saved.view || "live",
+    order: saved.order || "",
+  });
+  window.requestAnimationFrame(() => {
+    const shell = document.querySelector(".shell");
+    if (shell) shell.scrollTop = Number(saved.scrollTop || 0);
+  });
+}
+
+function licitacionDetailUrl(id, tab = "") {
+  const base = `/app/licitaciones/${encodeURIComponent(String(id || ""))}`;
+  return tab && tab !== "resumen" ? `${base}?tab=${encodeURIComponent(tab)}` : base;
+}
+
+function actuacionDetailUrl(id) {
+  return `/app/actuaciones/${encodeURIComponent(String(id || ""))}`;
+}
+
+function clientDetailUrl(id) {
+  return `/app/clientes/${encodeURIComponent(String(id || ""))}`;
+}
+
+function clienteEnvioDetailUrl(id, { draft = false } = {}) {
+  const base = `/app/envios-clientes/${encodeURIComponent(String(id || ""))}`;
+  return draft ? `${base}?view=draft` : base;
+}
+
+function infonaliaDiaUrl(id) {
+  return `/app/infonalia/dias/${encodeURIComponent(String(id || ""))}`;
+}
+
+function renderAppObjectLink(url, id, label, { className = "", attributes = "" } = {}) {
+  const classes = ["app-object-link", className].filter(Boolean).join(" ");
+  return `<a class="${escapeHtml(classes)}" href="${escapeHtml(url)}" data-app-route data-object-id="${escapeHtml(id)}" ${attributes}>${escapeHtml(label)}</a>`;
+}
+
+function renderLicitacionAppLink(id, label = "Abrir", { className = "", attributes = "" } = {}) {
+  return renderAppObjectLink(licitacionDetailUrl(id), id, label, {
+    className,
+    attributes: `data-open-licitacion-detail="${escapeHtml(id)}" ${attributes}`,
+  });
+}
+
+let appRouteRenderSequence = 0;
+let ignoreNextPopstateRender = false;
+let licitacionDetailAbortController = null;
+async function renderCurrentAppRoute() {
+  const sequence = ++appRouteRenderSequence;
+  const route = parseAppRoute();
+  appRouteErrorSection.hidden = true;
+  if (route.name !== "licitacion-detail" && licitacionDetailAbortController) {
+    licitacionDetailAbortController.abort();
+    licitacionDetailAbortController = null;
+  }
+  if (route.name !== "licitacion-detail") licitacionDetailSection.hidden = true;
+  if (route.name !== "actuacion-detail" && actuacionDialog.open) actuacionDialog.close();
+  if (route.name !== "client-detail" && clientDialog?.open) clientDialog.close();
+  if (route.name !== "cliente-envio-detail" && clienteEnvioDialog.open) clienteEnvioDialog.close();
+  if (route.name !== "cliente-envio-detail" && clienteEnvioDraftDialog.open) clienteEnvioDraftDialog.close();
+  switch (route.name) {
+    case "home":
+      await showInitialView();
+      break;
+    case "agenda":
+      await showCalendarView();
+      break;
+    case "infonalia":
+      showDaysView();
+      break;
+    case "licitaciones":
+      await restoreLicitacionesHistoryContext(window.history.state?.licitacionesContext);
+      break;
+    case "licitacion-detail":
+      showLicitacionDetailPageShell();
+      await renderLicitacionDetailPage(route.id);
+      if (sequence === appRouteRenderSequence) activateDetailTabByName(route.tab, { syncUrl: false });
+      break;
+    case "actuacion-detail":
+      showActuacionesView();
+      await editActuacion(route.id);
+      if (sequence === appRouteRenderSequence && !actuacionDialog.open) {
+        showAppRouteError("Actuación no encontrada", "La actuación no existe o no se puede abrir.", appRoutePaths.actuaciones);
+      }
+      break;
+    case "client-detail":
+      showClientsView();
+      await loadClientDetail(route.id);
+      if (sequence === appRouteRenderSequence && !clientDialog?.open) {
+        showAppRouteError("Cliente no encontrado", "El cliente no existe o no tienes permiso para abrirlo.", appRoutePaths.clients);
+      }
+      break;
+    case "cliente-envio-detail":
+      showClienteEnviosView();
+      if (route.view === "draft") await openClienteEnvioDraftDialog(route.id);
+      else await openClienteEnvioDialog({ envioId: route.id });
+      if (sequence === appRouteRenderSequence && !clienteEnvioDialog.open && !clienteEnvioDraftDialog.open) {
+        showAppRouteError("Envío no encontrado", "El envío no existe o no tienes permiso para abrirlo.", appRoutePaths.clienteEnvios);
+      }
+      break;
+    case "dia-detail":
+      await showLicitacionesView({ diaId: route.id, title: "Día Infonalia", view: "all" });
+      break;
+    case "actuaciones":
+      showActuacionesView();
+      break;
+    case "clients":
+      showClientsView();
+      break;
+    case "clienteEnvios":
+      showClienteEnviosView();
+      break;
+    case "notifications":
+      showNotificationsView();
+      break;
+    case "newsAdmin":
+      showNewsAdminView();
+      break;
+    case "monitor":
+      showMonitorView();
+      break;
+    case "automation":
+      showAutomationView();
+      break;
+    case "config":
+      showConfigView();
+      break;
+    default:
+      showAppRouteError(
+        "Dirección no reconocida",
+        "La dirección no corresponde a ninguna pantalla u objeto disponible en la Suite.",
+        appRoutePaths.licitaciones,
+      );
+      break;
+  }
+}
+
+function showAppRouteError(title, message, fallbackUrl = appRoutePaths.licitaciones) {
+  daysSection.hidden = true;
+  licitacionesSection.hidden = true;
+  licitacionDetailSection.hidden = true;
+  calendarSection.hidden = true;
+  actuacionesSection.hidden = true;
+  clientsSection.hidden = true;
+  clienteEnviosSection.hidden = true;
+  notificationsSection.hidden = true;
+  newsAdminSection.hidden = true;
+  monitorSection.hidden = true;
+  automationSection.hidden = true;
+  configSection.hidden = true;
+  appRouteErrorTitle.textContent = title;
+  appRouteErrorMessage.textContent = message;
+  appRouteErrorBack.dataset.fallbackUrl = fallbackUrl;
+  appRouteErrorSection.hidden = false;
+  setActiveNav("");
+  setPageHeader(title, "Navegación");
+}
+
+function showLicitacionDetailPageShell() {
+  appState.lastSection = "licitaciones";
+  appState.currentDiaId = "";
+  setActiveNav("licitaciones");
+  setPageHeader("Ficha de licitación", "Centro de licitaciones");
+  daysSection.hidden = true;
+  licitacionesSection.hidden = true;
+  calendarSection.hidden = true;
+  actuacionesSection.hidden = true;
+  clientsSection.hidden = true;
+  clienteEnviosSection.hidden = true;
+  notificationsSection.hidden = true;
+  newsAdminSection.hidden = true;
+  monitorSection.hidden = true;
+  automationSection.hidden = true;
+  configSection.hidden = true;
+  licitacionDetailSection.hidden = false;
+}
+
+function isLicitacionDetailActive(id = "") {
+  const route = parseAppRoute();
+  return route.name === "licitacion-detail"
+    && !licitacionDetailSection.hidden
+    && (!id || String(route.id) === String(id));
+}
+
+window.addEventListener("popstate", () => {
+  if (ignoreNextPopstateRender) {
+    ignoreNextPopstateRender = false;
+    return;
+  }
+  if (!confirmLicitacionDetailNavigation(parseAppRoute())) {
+    ignoreNextPopstateRender = true;
+    window.history.forward();
+    return;
+  }
+  renderCurrentAppRoute();
+});
+
+window.addEventListener("beforeunload", (event) => {
+  if (!appState.licitacionDetailDirty) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
 
 function showActuacionesView() {
   appState.lastSection = "actuaciones";
@@ -2212,10 +2578,14 @@ function renderInfonaliaHistoryEvent(item) {
     : "";
   const actions = [];
   if (item.day_exists) {
-    actions.push(`<button type="button" data-history-open-day="${escapeHtml(item.day_id)}" data-history-day-title="${escapeHtml(item.day_title || formatDate(item.day_date) || "Día Infonalia")}">Abrir día</button>`);
+    actions.push(renderAppObjectLink(infonaliaDiaUrl(item.day_id), item.day_id, "Abrir día", {
+      attributes: `data-history-open-day="${escapeHtml(item.day_id)}" data-history-day-title="${escapeHtml(item.day_title || formatDate(item.day_date) || "Día Infonalia")}"`,
+    }));
   }
   if (item.licitacion_exists) {
-    actions.push(`<button type="button" data-history-open-licitacion="${escapeHtml(item.licitacion_id)}">Abrir licitación</button>`);
+    actions.push(renderLicitacionAppLink(item.licitacion_id, "Abrir licitación", {
+      attributes: `data-history-open-licitacion="${escapeHtml(item.licitacion_id)}"`,
+    }));
   }
   if (item.requires_review && !item.is_reviewed) {
     actions.push(`<button type="button" class="primary" data-history-ack="${escapeHtml(item.id)}">Marcar como revisado</button>`);
@@ -2429,8 +2799,13 @@ function renderActuacionCard(item) {
     canClose ? `<button data-close-actuacion="${escapeHtml(item.id)}">Cerrar</button>` : "",
     canClose ? `<button class="danger" data-cancel-actuacion="${escapeHtml(item.id)}">Cancelar</button>` : "",
   ];
-  const primaryAction = `<button data-edit-actuacion="${escapeHtml(item.id)}">Abrir</button>`;
-  const mobilePrimaryAction = `<button class="primary" data-edit-actuacion="${escapeHtml(item.id)}">Abrir</button>`;
+  const primaryAction = renderAppObjectLink(actuacionDetailUrl(item.id), item.id, "Abrir", {
+    attributes: `data-edit-actuacion="${escapeHtml(item.id)}"`,
+  });
+  const mobilePrimaryAction = renderAppObjectLink(actuacionDetailUrl(item.id), item.id, "Abrir", {
+    className: "primary",
+    attributes: `data-edit-actuacion="${escapeHtml(item.id)}"`,
+  });
   return `
     <article class="card compact-card actuacion-card mobile-compact-card${hasLinkedLicitaciones ? " has-linked-licitaciones" : ""}">
       <div class="card-content">
@@ -2662,6 +3037,7 @@ async function editActuacion(id) {
     return;
   }
   const item = result.item;
+  if (parseAppRoute().name === "actuacion-detail") setPageHeader(item.titulo || "Actuación", "Actuación");
   await ensureClientsLoaded();
   actuacionForm.reset();
   actuacionFormTitle.textContent = `Editar ${item.titulo || "actuación"}`;
@@ -2821,7 +3197,7 @@ function openAgendaOrigin(token) {
   const [sourceType, sourceId] = String(token || "").split(":");
   if (!sourceType || !sourceId) return;
   if (sourceType === "cliente_envio") {
-    openClienteEnvioDraftDialog(sourceId);
+    navigateApp(clienteEnvioDetailUrl(sourceId, { draft: true }));
     return;
   }
   if (sourceType === "licitacion") {
@@ -2829,7 +3205,7 @@ function openAgendaOrigin(token) {
     return;
   }
   if (sourceType === "actuacion") {
-    editActuacion(sourceId);
+    navigateApp(actuacionDetailUrl(sourceId));
     return;
   }
   if (sourceType === "interno") {
@@ -2854,7 +3230,10 @@ function renderDays() {
     const nuriaReview = dia.ultima_revision_nuria || "Sin revisión";
     const historyItems = (dia.historial_resumen || []).slice(0, 3);
     const dayActions = renderListActions(
-      `<button class="primary" data-open-dia="${escapeHtml(dia.id)}" data-title="${escapeHtml(dia.titulo)}">Abrir</button>`,
+      renderAppObjectLink(infonaliaDiaUrl(dia.id), dia.id, "Abrir", {
+        className: "primary",
+        attributes: `data-open-dia="${escapeHtml(dia.id)}" data-title="${escapeHtml(dia.titulo)}"`,
+      }),
       [
         `<button class="ghost" data-day-comments="${escapeHtml(dia.id)}">Ver comentarios</button>`,
         isAdmin() ? `<button class="danger" data-delete-dia="${escapeHtml(dia.id)}" data-title="${escapeHtml(dia.titulo)}">Borrar día</button>` : "",
@@ -3319,7 +3698,13 @@ function renderPendingStateControl(item, options = {}) {
 function renderAgendaActions(item) {
   const token = `${item.source_type}:${item.source_id}`;
   const primaryLabel = item.source_type === "cliente_envio" ? agendaOpenLabel(item) : "Abrir";
-  const primaryAction = `<button type="button" data-agenda-open="${escapeHtml(token)}">${escapeHtml(primaryLabel)}</button>`;
+  const primaryAction = item.source_type === "licitacion"
+    ? renderLicitacionAppLink(item.source_id, primaryLabel, { attributes: `data-agenda-open="${escapeHtml(token)}"` })
+    : item.source_type === "actuacion"
+      ? renderAppObjectLink(actuacionDetailUrl(item.source_id), item.source_id, primaryLabel, { attributes: `data-agenda-open="${escapeHtml(token)}"` })
+      : item.source_type === "cliente_envio"
+        ? renderAppObjectLink(clienteEnvioDetailUrl(item.source_id, { draft: true }), item.source_id, primaryLabel, { attributes: `data-agenda-open="${escapeHtml(token)}"` })
+        : `<button type="button" data-agenda-open="${escapeHtml(token)}">${escapeHtml(primaryLabel)}</button>`;
   const actions = [];
   if (item.source_type === "cliente_envio") {
     const envio = {
@@ -3948,7 +4333,9 @@ function renderClienteEnvioActions(envio, { includeEdit = true } = {}) {
     actions.push(`<button type="button" data-mark-cliente-envio-sent="${escapeHtml(envio.id)}">Marcar como enviado</button>`);
   }
   if (includeEdit && isAdmin()) {
-    actions.push(`<button type="button" data-edit-cliente-envio="${escapeHtml(envio.id)}">Editar envío</button>`);
+    actions.push(renderAppObjectLink(clienteEnvioDetailUrl(envio.id), envio.id, "Editar envío", {
+      attributes: `data-edit-cliente-envio="${escapeHtml(envio.id)}"`,
+    }));
     actions.push(`<button type="button" class="danger" data-delete-cliente-envio="${escapeHtml(envio.id)}">Eliminar envío</button>`);
   }
   return actions.join("");
@@ -3977,8 +4364,8 @@ function renderClienteEnvioCard(envio, { showClient = true, includeEdit = true }
         </div>
       </div>
       <div class="card-actions">
-        ${envio.licitacion_id ? `<button type="button" data-open-licitacion-detail="${escapeHtml(envio.licitacion_id)}">Abrir licitación</button>` : ""}
-        ${envio.actuacion_id ? `<button type="button" data-edit-actuacion="${escapeHtml(envio.actuacion_id)}">Abrir actuación</button>` : ""}
+        ${envio.licitacion_id ? renderLicitacionAppLink(envio.licitacion_id, "Abrir licitación") : ""}
+        ${envio.actuacion_id ? renderAppObjectLink(actuacionDetailUrl(envio.actuacion_id), envio.actuacion_id, "Abrir actuación", { attributes: `data-edit-actuacion="${escapeHtml(envio.actuacion_id)}"` }) : ""}
         ${renderClienteEnvioActions(envio, { includeEdit })}
       </div>
     </article>
@@ -4126,7 +4513,7 @@ function renderClientsBoard() {
       <td data-label="Estado"><span class="status-pill ${client.activo ? "status-active" : "status-inactive"}">${client.activo ? "Activo" : "Inactivo"}</span></td>
       <td data-label="Acciones">
         <div class="card-actions clients-table-actions">
-        <button type="button" data-edit-client="${escapeHtml(client.id)}">Editar</button>
+        ${renderAppObjectLink(clientDetailUrl(client.id), client.id, "Editar", { attributes: `data-edit-client="${escapeHtml(client.id)}"` })}
           <button type="button" class="${client.activo ? "danger" : "ghost"}" data-client-status="${client.activo ? "desactivar" : "reactivar"}" data-client-id="${escapeHtml(client.id)}" data-client-name="${escapeHtml(clienteName(client))}">${client.activo ? "Desactivar" : "Reactivar"}</button>
         </div>
       </td>
@@ -4142,6 +4529,7 @@ async function loadClientDetail(clientId) {
     return;
   }
   appState.clienteDetail = result.item;
+  if (parseAppRoute().name === "client-detail") setPageHeader(clienteName(result.item), "Cliente");
   fillClientForm(result.item);
   setInlineResult(clientFormResult, "");
   clientDialog?.showModal();
@@ -4322,6 +4710,7 @@ async function openClienteEnvioDialog({ licitacionId = "", actuacionId = "", env
       return;
     }
     const item = result.item;
+    if (parseAppRoute().name === "cliente-envio-detail") setPageHeader(item.asunto || `Envío ${item.id}`, "Envío a cliente");
     appState.clienteEnvioDetail = item;
     clienteEnvioForm.elements.id.value = item.id || "";
     clienteEnvioForm.elements.context_kind.value = item.actuacion_id ? "actuacion" : "licitacion";
@@ -4450,7 +4839,7 @@ async function afterClienteEnvioMutation(item) {
   if (appState.lastSection === "cliente-envios") {
     await loadClienteEnvios();
   }
-  if (item.licitacion_id && licitacionDetailDialog.open) {
+  if (item.licitacion_id && isLicitacionDetailActive(item.licitacion_id)) {
     await refreshLicitacionDetail(item.licitacion_id);
     const detail = appState.cardDetails[item.licitacion_id]?.item;
     if (detail) {
@@ -4465,9 +4854,9 @@ async function afterClienteEnvioMutation(item) {
   }
 }
 
-function activateDetailTabByName(tabName) {
+function activateDetailTabByName(tabName, options = {}) {
   const button = licitacionDetailContent.querySelector(`button[data-detail-tab="${tabName}"]`);
-  if (button) activateDetailTab(button);
+  if (button) activateDetailTab(button, options);
 }
 
 function renderDraftAttachmentOptions(detail) {
@@ -4484,6 +4873,7 @@ async function openClienteEnvioDraftDialog(envioId) {
     return;
   }
   const item = result.item;
+  if (parseAppRoute().name === "cliente-envio-detail") setPageHeader(item.asunto || `Envío ${item.id}`, "Envío a cliente");
   appState.clienteEnvioDetail = item;
   clienteEnvioDraftForm.elements.envio_id.value = item.id || "";
   clienteEnvioDraftTitle.textContent = `${item.cliente_nombre || "Cliente"} · ${item.tipo_envio_label || "Correo"}`;
@@ -4577,14 +4967,13 @@ async function handleClienteEnvioUiAction(target) {
 
   const editActuacionButton = target.closest("button[data-edit-actuacion]");
   if (editActuacionButton) {
-    await editActuacion(editActuacionButton.dataset.editActuacion);
+    await navigateApp(actuacionDetailUrl(editActuacionButton.dataset.editActuacion));
     return true;
   }
 
   const editClientButton = target.closest("button[data-edit-client]");
   if (editClientButton) {
-    showClientsView();
-    await loadClientDetail(editClientButton.dataset.editClient);
+    await navigateApp(clientDetailUrl(editClientButton.dataset.editClient));
     return true;
   }
 
@@ -4608,7 +4997,7 @@ async function handleClienteEnvioUiAction(target) {
 
   const editClienteEnvioButton = target.closest("button[data-edit-cliente-envio]");
   if (editClienteEnvioButton) {
-    await openClienteEnvioDialog({ envioId: editClienteEnvioButton.dataset.editClienteEnvio });
+    await navigateApp(clienteEnvioDetailUrl(editClienteEnvioButton.dataset.editClienteEnvio));
     return true;
   }
 
@@ -4620,7 +5009,7 @@ async function handleClienteEnvioUiAction(target) {
 
   const openClienteEnvioDraftButton = target.closest("button[data-open-cliente-envio-draft]");
   if (openClienteEnvioDraftButton) {
-    await openClienteEnvioDraftDialog(openClienteEnvioDraftButton.dataset.openClienteEnvioDraft);
+    await navigateApp(clienteEnvioDetailUrl(openClienteEnvioDraftButton.dataset.openClienteEnvioDraft, { draft: true }));
     return true;
   }
 
@@ -5161,7 +5550,7 @@ function renderAutomationConfig() {
     { label: "Zona horaria", value: automation.timezone || "Europe/Madrid" },
     { label: "Frecuencia general", value: `${automation.poll_minutes || 5} minutos` },
     { label: "Aviso diario de agenda", value: automation.agenda_pending_daily_enabled ? "Activo" : "Desactivado" },
-    { label: "Hora del aviso diario", value: automation.agenda_pending_daily_time || "06:00" },
+    { label: "Hora del aviso diario", value: automation.agenda_pending_daily_time || "08:00" },
     { label: "Solo días laborables", value: yesNo(automation.agenda_pending_weekdays_only) },
     { label: "Monitor licitaciones programado", value: automation.monitor_licitaciones_schedule_enabled ? "Activo" : "Desactivado" },
     { label: "Monitor licitaciones real", value: automation.monitor_licitaciones_real_enabled ? "Activo" : "Desactivado" },
@@ -5170,7 +5559,7 @@ function renderAutomationConfig() {
   ]);
   renderStatusRows(inventoryStatusBoard, [
     { label: "Reconciliación de rutas", value: automation.file_inventory_enabled ? "Activa" : "Desactivada" },
-    { label: "Frecuencia de reconciliación", value: `${automation.file_inventory_poll_minutes || 60} minutos` },
+    { label: "Frecuencia de reconciliación", value: `${automation.file_inventory_poll_minutes || 240} minutos` },
   ]);
 }
 
@@ -5763,6 +6152,53 @@ function renderAutomationStatusSummary(status) {
   ]);
 }
 
+function operationalHealthClass(status) {
+  const value = String(status || "").toUpperCase();
+  if (value === "OK") return "ok";
+  if (value === "ERROR") return "error";
+  return "degraded";
+}
+
+function renderOperationalHealth(payload) {
+  if (!operationalHealthStatus || !operationalHealthSummary || !operationalHealthAttention) return;
+  const overall = payload?.status || "ERROR";
+  const statusClass = operationalHealthClass(overall);
+  operationalHealthStatus.className = `operational-health-status ${statusClass}`;
+  operationalHealthStatus.textContent = overall;
+  operationalHealthSummary.textContent = payload?.human_summary || "No se pudo obtener el estado operativo.";
+
+  const attention = Array.isArray(payload?.needs_attention) ? payload.needs_attention : [];
+  if (!attention.length) {
+    operationalHealthAttention.innerHTML = `
+      <article class="operational-health-empty ok">
+        <strong>Sin incidencias activas</strong>
+        <span>Los componentes comprobados no requieren intervención.</span>
+      </article>
+    `;
+  } else {
+    operationalHealthAttention.innerHTML = attention.map((item) => `
+      <article class="operational-health-item ${operationalHealthClass(item.status)}">
+        <div>
+          <strong>${escapeHtml(item.label || item.key || "Componente")}</strong>
+          <span>${escapeHtml(item.summary || "Revisión necesaria.")}</span>
+        </div>
+        ${item.action ? `<p>${escapeHtml(item.action)}</p>` : ""}
+      </article>
+    `).join("");
+  }
+
+  if (operationalHealthComponents) {
+    const components = Array.isArray(payload?.components) ? payload.components : [];
+    operationalHealthComponents.innerHTML = components.map((item) => `
+      <article class="operational-health-component ${operationalHealthClass(item.status)}">
+        <strong>${escapeHtml(item.label || item.key || "Componente")}</strong>
+        <span>${escapeHtml(item.status || "-")}</span>
+        <small>${escapeHtml(item.summary || "")}</small>
+      </article>
+    `).join("");
+  }
+}
+
 function renderAutomationTasks(tasks) {
   if (!automationTasksBoard) return;
   if (!tasks?.length) {
@@ -5833,19 +6269,23 @@ function renderAutomationWindowsTasks(payload) {
 async function loadAutomationConsole() {
   if (!isAdmin()) return;
   try {
-    const [statusResponse, tasksResponse, windowsResponse, diagnosticResponse] = await Promise.all([
+    const [healthResponse, statusResponse, tasksResponse, windowsResponse, diagnosticResponse] = await Promise.all([
+      fetch("/api/admin/operational-health"),
       fetch("/api/admin/automation/status"),
       fetch("/api/admin/automation/tasks"),
       fetch("/api/admin/automation/windows-tasks"),
       fetch("/api/admin/automation/diagnostic"),
     ]);
+    const health = await healthResponse.json().catch(() => ({}));
     const status = await statusResponse.json().catch(() => ({}));
     const tasks = await tasksResponse.json().catch(() => ({}));
     const windows = await windowsResponse.json().catch(() => ({}));
     const diagnostic = await diagnosticResponse.json().catch(() => ({}));
+    appState.operationalHealth = health;
     appState.automationStatus = status;
     appState.automationTasks = tasks.items || status.tasks || [];
     appState.automationWindowsTasks = windows;
+    renderOperationalHealth(health);
     renderAutomationStatusSummary(status);
     renderAutomationTasks(appState.automationTasks);
     renderAutomationWindowsTasks(windows);
@@ -6230,8 +6670,8 @@ function renderCard(item, options = {}) {
     ? `<div class="review-state-actions">${stateActionButtons.join("")}</div>`
     : "";
   const reviewClass = stateActionButtons.length ? " has-review-actions" : "";
-  const primaryAction = `<button data-open-licitacion-detail="${escapeHtml(item.id)}">Abrir</button>`;
-  const mobilePrimaryAction = `<button class="primary" data-open-licitacion-detail="${escapeHtml(item.id)}">Abrir</button>`;
+  const primaryAction = renderLicitacionAppLink(item.id, "Abrir");
+  const mobilePrimaryAction = renderLicitacionAppLink(item.id, "Abrir", { className: "primary" });
   const actionStateControl = pendingStateControl
     ? `<div class="agenda-card-action-state">${pendingStateControl}</div>`
     : "";
@@ -6382,6 +6822,7 @@ function renderLicitacionDetailView(item) {
         <button type="button" class="detail-tab-button" data-detail-tab="documentos-seguimiento">Documentos y seguimiento</button>
         <button type="button" class="detail-tab-button" data-detail-tab="comentarios">Comentarios</button>
         <button type="button" class="detail-tab-button" data-detail-tab="ai">Análisis IA</button>
+        <button type="button" class="detail-tab-button" data-detail-tab="portal">Portal web</button>
       </nav>
 
       <section class="detail-tab-panel active" data-detail-tab-panel="resumen">
@@ -6457,6 +6898,19 @@ function renderLicitacionDetailView(item) {
         </div>
         <div class="ai-summary-panel" data-ai-summary-panel="${escapeHtml(item.id)}">
           <div class="empty">Cargando estado IA...</div>
+        </div>
+      </section>
+
+      <section class="detail-tab-panel" data-detail-tab-panel="portal">
+        <div class="detail-panel-head">
+          <div>
+            <p class="eyebrow">Portal público</p>
+            <h3>Preparación y control de cobertura</h3>
+          </div>
+          <button type="button" data-portal-prepare="${escapeHtml(item.id)}">Seleccionar ficheros</button>
+        </div>
+        <div class="portal-publications-panel" data-portal-publications-panel="${escapeHtml(item.id)}">
+          <div class="empty">Cargando publicaciones...</div>
         </div>
       </section>
 
@@ -7231,9 +7685,13 @@ function aiQueueStatusClass(job) {
 
 function renderAiQueueActions(job) {
   const actions = [];
-  if (job.can_open) actions.push(`<button type="button" data-ai-queue-open="${escapeHtml(job.licitacion_id)}">Abrir ficha</button>`);
+  if (job.can_open) actions.push(renderLicitacionAppLink(job.licitacion_id, "Abrir ficha", {
+    attributes: `data-ai-queue-open="${escapeHtml(job.licitacion_id)}"`,
+  }));
   if (job.can_cancel) actions.push(`<button type="button" data-ai-queue-cancel="${escapeHtml(job.id)}" data-ai-queue-cancel-status="${escapeHtml(job.status || "")}">Cancelar</button>`);
-  if (job.can_retry) actions.push(`<button type="button" data-ai-queue-open="${escapeHtml(job.licitacion_id)}">Reintentar</button>`);
+  if (job.can_retry) actions.push(renderLicitacionAppLink(job.licitacion_id, "Reintentar", {
+    attributes: `data-ai-queue-open="${escapeHtml(job.licitacion_id)}"`,
+  }));
   if (!["pending", "queued", "processing", "deferred"].includes(job.status || "")) {
     actions.push(`<button type="button" data-ai-queue-dismiss="${escapeHtml(job.id)}">Ocultar</button>`);
   }
@@ -7498,32 +7956,109 @@ async function clearFinishedAiQueue() {
   }
 }
 
+function buildFilePickerTree(items, rootLabel = "Carpeta del expediente") {
+  const root = { type: "folder", name: rootLabel, children: [] };
+  items.forEach((item) => {
+    const parts = String(item.relative_path || item.name || "")
+      .replaceAll("\\", "/")
+      .split("/")
+      .filter(Boolean);
+    if (!parts.length) return;
+    let parent = root;
+    parts.slice(0, -1).forEach((part) => {
+      let folder = parent.children.find((child) => child.type === "folder" && child.name === part);
+      if (!folder) {
+        folder = { type: "folder", name: part, children: [] };
+        parent.children.push(folder);
+      }
+      parent = folder;
+    });
+    parent.children.push({ type: "file", item });
+  });
+  const sortNode = (node) => {
+    node.children.sort((left, right) => {
+      if (left.type !== right.type) return left.type === "folder" ? -1 : 1;
+      const leftName = left.type === "folder" ? left.name : left.item.name;
+      const rightName = right.type === "folder" ? right.name : right.item.name;
+      return String(leftName || "").localeCompare(String(rightName || ""), "es", { sensitivity: "base" });
+    });
+    node.children.filter((child) => child.type === "folder").forEach(sortNode);
+  };
+  sortNode(root);
+  return root;
+}
+
+function countFilePickerFiles(node) {
+  if (node.type === "file") return 1;
+  return node.children.reduce((total, child) => total + countFilePickerFiles(child), 0);
+}
+
+function renderFilePickerNode(node, options = {}) {
+  if (node.type === "folder") {
+    const count = countFilePickerFiles(node);
+    return `
+      <details class="file-picker-folder" role="treeitem">
+        <summary>
+          <span class="file-picker-chevron" aria-hidden="true">›</span>
+          <span class="file-picker-folder-icon file-picker-folder-closed" aria-hidden="true">📁</span>
+          <span class="file-picker-folder-icon file-picker-folder-open" aria-hidden="true">📂</span>
+          <strong>${escapeHtml(node.name || "Carpeta")}</strong>
+          <small>${escapeHtml(`${count} fichero${count === 1 ? "" : "s"}`)}</small>
+        </summary>
+        <div class="file-picker-children" role="group">
+          ${node.children.map((child) => renderFilePickerNode(child, options)).join("")}
+        </div>
+      </details>
+    `;
+  }
+  const item = node.item;
+  const required = Boolean(options.portal && item.required);
+  const checked = Boolean(item.selected_by_default || required);
+  const disabled = required || item.selectable === false;
+  const fichaCandidate = Boolean(options.portal && (item.is_ficha_candidate || required));
+  const detail = [
+    item.size_human || formatBytes(item.size_bytes),
+    formatDateTime(item.modified_at) || item.modified_at,
+  ].filter(Boolean).join(" · ");
+  const note = required
+    ? "Ficha obligatoria · contenido principal"
+    : fichaCandidate
+      ? "Ficha de cliente · selecciona solo una"
+      : item.warning || item.reason || "";
+  return `
+    <label class="file-picker-file ${item.warning ? "has-warning" : ""}" role="treeitem" title="${escapeHtml(item.relative_path || item.name)}">
+      <input type="checkbox" value="${escapeHtml(item.relative_path)}" data-file-path="1" data-required="${required ? "1" : "0"}" data-is-ficha="${fichaCandidate ? "1" : "0"}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}>
+      <span class="file-picker-type">${escapeHtml((item.extension || "DOC").slice(0, 4).toUpperCase())}</span>
+      <span class="file-picker-file-copy">
+        <strong>${escapeHtml(item.name || "Fichero")}</strong>
+        <small>${escapeHtml(detail)}</small>
+        ${note ? `<em>${escapeHtml(note)}</em>` : ""}
+      </span>
+    </label>
+  `;
+}
+
+function renderFilePicker(container, items, options = {}) {
+  if (!items.length) {
+    container.innerHTML = `<div class="empty">${escapeHtml(options.emptyText || "No se han encontrado ficheros aptos.")}</div>`;
+    return;
+  }
+  const tree = buildFilePickerTree(items, options.rootLabel || "Carpeta del expediente");
+  container.innerHTML = renderFilePickerNode(tree, options);
+}
+
 function updateAiFileSelectionCount() {
-  const checked = aiFileList ? [...aiFileList.querySelectorAll("input[type='checkbox']:checked")].length : 0;
+  const checked = aiFileList ? [...aiFileList.querySelectorAll("input[data-file-path]:checked")].length : 0;
   if (aiFileSelectionCount) aiFileSelectionCount.textContent = `${checked} fichero(s) seleccionado(s)`;
   if (confirmAiFileSelectionButton) confirmAiFileSelectionButton.disabled = checked === 0;
 }
 
 function renderAiFileRows(items) {
   if (!aiFileList) return;
-  if (!items.length) {
-    aiFileList.innerHTML = `<tr><td colspan="5" class="empty">No se han encontrado ficheros aptos en la carpeta del expediente.</td></tr>`;
-    updateAiFileSelectionCount();
-    return;
-  }
-  aiFileList.innerHTML = items.map((item) => `
-    <tr class="${item.warning ? "not-recommended" : ""}">
-      <td><input type="checkbox" value="${escapeHtml(item.relative_path)}" ${item.selected_by_default ? "checked" : ""} ${item.selectable ? "" : "disabled"}></td>
-      <td title="${escapeHtml(item.relative_path || item.name)}">
-        <strong>${escapeHtml(item.name)}</strong>
-        ${item.warning ? `<small>${escapeHtml(item.warning)}</small>` : ""}
-      </td>
-      <td>${escapeHtml(item.extension || "")}</td>
-      <td>${escapeHtml(formatDateTime(item.modified_at) || item.modified_at || "")}</td>
-      <td>${escapeHtml(item.size_human || formatBytes(item.size_bytes))}</td>
-    </tr>
-  `).join("");
-  aiFileList.querySelectorAll("input[type='checkbox']").forEach((checkbox) => {
+  renderFilePicker(aiFileList, items, {
+    emptyText: "No se han encontrado ficheros aptos en la carpeta del expediente.",
+  });
+  aiFileList.querySelectorAll("input[data-file-path]").forEach((checkbox) => {
     checkbox.addEventListener("change", updateAiFileSelectionCount);
   });
   updateAiFileSelectionCount();
@@ -7535,7 +8070,7 @@ async function openAiFileSelection(licitacionId, button, force = false) {
     aiFileStatus.className = "import-result";
     aiFileStatus.textContent = "";
   }
-  if (aiFileList) aiFileList.innerHTML = `<tr><td colspan="5" class="empty">Cargando ficheros...</td></tr>`;
+  if (aiFileList) aiFileList.innerHTML = `<div class="empty">Cargando carpetas y ficheros...</div>`;
   if (confirmAiFileSelectionButton) confirmAiFileSelectionButton.disabled = true;
   if (aiNotifyOnCompletion) aiNotifyOnCompletion.checked = true;
   if (aiNotificationEmails) aiNotificationEmails.value = appState.user?.email || "";
@@ -7563,7 +8098,7 @@ function closeAiFileSelection() {
 async function confirmAiFileSelection() {
   const state = appState.aiFileSelection;
   if (!state) return;
-  const selectedFiles = [...aiFileList.querySelectorAll("input[type='checkbox']:checked")].map((input) => input.value);
+  const selectedFiles = [...aiFileList.querySelectorAll("input[data-file-path]:checked")].map((input) => input.value);
   if (!selectedFiles.length) {
     if (aiFileStatus) aiFileStatus.textContent = "Selecciona al menos un fichero.";
     return;
@@ -7626,6 +8161,328 @@ async function runAiSummaryGeneration(licitacionId, button, force = false, selec
 
 async function generateAiSummary(licitacionId, button, force = false) {
   await openAiFileSelection(licitacionId, button, force);
+}
+
+function updatePortalFileSelectionCount() {
+  const checked = [...portalFileList.querySelectorAll("input[data-file-path]:checked")];
+  const selectedFichas = checked.filter((input) => input.dataset.isFicha === "1");
+  portalFileSelectionCount.textContent = `${checked.length} fichero(s) seleccionado(s)`;
+  confirmPortalFileSelectionButton.disabled = selectedFichas.length !== 1;
+}
+
+function renderPortalFileRows(items) {
+  renderFilePicker(portalFileList, items, { portal: true });
+  portalFileList.querySelectorAll("input[data-file-path]").forEach((checkbox) => checkbox.addEventListener("change", () => {
+    if (checkbox.checked && checkbox.dataset.isFicha === "1") {
+      portalFileList.querySelectorAll('input[data-file-path][data-is-ficha="1"]').forEach((other) => {
+        if (other !== checkbox && !other.disabled) other.checked = false;
+      });
+    }
+    updatePortalFileSelectionCount();
+  }));
+  updatePortalFileSelectionCount();
+}
+
+function portalSourcePages(pages) {
+  const values = Array.isArray(pages) ? pages : [];
+  return values.length ? `<span class="portal-source-pages">Ficha · ${values.map((page) => `p. ${escapeHtml(page)}`).join(", ")}</span>` : "";
+}
+
+function renderPortalPreviewBlock(block) {
+  const source = portalSourcePages(block.sourcePages);
+  if (block.type === "source_page") {
+    return `
+      <details class="portal-source-fallback">
+        <summary>Contenido literal de la página ${escapeHtml(block.page)} ${source}</summary>
+        <pre>${escapeHtml(block.text || "")}</pre>
+      </details>
+    `;
+  }
+  if (block.type === "text") {
+    return `
+      <article class="portal-content-card">
+        <div class="portal-card-head">${block.title ? `<h3>${escapeHtml(block.title)}</h3>` : ""}${source}</div>
+        ${(block.paragraphs || []).map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")}
+        ${(block.bullets || []).length ? `<ul>${block.bullets.map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join("")}</ul>` : ""}
+      </article>
+    `;
+  }
+  if (block.type === "cards") {
+    return `<div class="portal-mini-grid">${(block.items || []).map((item) => `
+      <article class="portal-mini-card"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.text)}</p></article>
+    `).join("")}</div>${source}`;
+  }
+  if (block.type === "notice") {
+    return `<aside class="portal-notice portal-notice-${escapeHtml(block.tone || "neutral")}"><div><strong>${escapeHtml(block.title)}</strong><p>${escapeHtml(block.text)}</p></div>${source}</aside>`;
+  }
+  if (block.type === "criteria") {
+    return `
+      <article class="portal-content-card portal-criteria-card">
+        <div class="portal-card-head"><div><span>${escapeHtml(block.title)}</span><h3>${escapeHtml(block.scope)}</h3></div><strong>${escapeHtml(block.total)}</strong></div>
+        <div class="portal-criteria-list">${(block.criteria || []).map((criterion) => `
+          <div><span><strong>${escapeHtml(criterion.name)}</strong><small>${escapeHtml(criterion.description)}</small></span><b>${escapeHtml(criterion.score)}</b></div>
+        `).join("")}</div>${source}
+      </article>
+    `;
+  }
+  const columns = block.columns || [];
+  return `
+    <article class="portal-content-card portal-table-card">
+      <div class="portal-card-head">${block.title ? `<h3>${escapeHtml(block.title)}</h3>` : ""}${source}</div>
+      ${block.caption ? `<p>${escapeHtml(block.caption)}</p>` : ""}
+      <div class="portal-table-scroll"><table><thead><tr>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead>
+      <tbody>${(block.rows || []).map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
+    </article>
+  `;
+}
+
+function renderPortalPreview(model) {
+  const tender = model.tender || {};
+  const deadline = tender.deadline || {};
+  const coverage = model.coverage || {};
+  const deadlineText = [deadline.weekday, deadline.day, deadline.month, deadline.year].filter(Boolean).join(" ");
+  const ready = coverage.status === "preview_ready";
+  const publication = model.publication || {};
+  return `
+    <article class="portal-preview-page">
+      <header class="portal-preview-hero">
+        <div class="portal-preview-brand"><span>LLANGÓN</span><small>ASESORES</small></div>
+        <div class="portal-preview-hero-copy">
+          <p>Expediente ${escapeHtml(tender.reference || "")}</p>
+          <h1>${escapeHtml(tender.title || "Licitación")}</h1>
+          ${tender.recipient ? `<strong>Información preparada para ${escapeHtml(tender.recipient)}</strong>` : ""}
+        </div>
+        <div class="portal-preview-deadline"><span>Fecha límite</span><strong>${escapeHtml(deadlineText || "No consta")}</strong><b>${escapeHtml(deadline.time || "")}</b></div>
+      </header>
+
+      <section class="portal-audit-banner ${ready ? "is-ready" : "needs-review"}">
+        <div><strong>${ready ? "Vista previa estructurada y trazada" : "Vista previa con comprobaciones pendientes"}</strong>
+        <p>${ready ? "Todas las páginas han superado la cobertura textual y visual automática." : "Las páginas dudosas se conservan literalmente al final para impedir cualquier omisión."}</p></div>
+        <span>${escapeHtml(`${coverage.pages_audited || 0}/${coverage.pages_total || 0} páginas auditadas`)}</span>
+      </section>
+
+      ${publication.access_code ? `<section class="portal-access-code-card no-print"><div><span>Palabra clave personal</span><strong>${escapeHtml(publication.access_code)}</strong><small>Guárdala ahora. Por seguridad no podrá recuperarse; desde la ficha puedes sustituirla por una nueva.</small></div><button type="button" data-copy-text="${escapeHtml(publication.access_code)}">Copiar clave</button></section>` : ""}
+
+      ${(tender.highlights || []).length ? `<section class="portal-highlight-grid">${tender.highlights.map((item) => `
+        <article><span>${escapeHtml(item.label)}</span><strong>${escapeHtml(item.value)}</strong><small>${escapeHtml(item.detail)}</small></article>
+      `).join("")}</section>` : ""}
+
+      ${(tender.details || []).length ? `<section class="portal-preview-section"><div class="portal-section-heading"><p>Resumen</p><h2>Características de la licitación</h2></div>
+        <div class="portal-detail-grid">${tender.details.map((item) => `<article class="${item.emphasis ? `is-${escapeHtml(item.emphasis)}` : ""}"><span>${escapeHtml(item.label)}</span><strong>${escapeHtml(item.value)}</strong>${item.note ? `<small>${escapeHtml(item.note)}</small>` : ""}</article>`).join("")}</div>
+      </section>` : ""}
+
+      ${(model.sections || []).map((section) => `
+        <section class="portal-preview-section" id="portal-preview-${escapeHtml(section.id)}">
+          <div class="portal-section-heading"><div><p>${escapeHtml(section.eyebrow || "Información")}</p><h2>${escapeHtml(section.title)}</h2>${section.introduction ? `<span>${escapeHtml(section.introduction)}</span>` : ""}</div>${portalSourcePages(section.sourcePages)}</div>
+          <div class="portal-blocks">${(section.blocks || []).map(renderPortalPreviewBlock).join("")}</div>
+        </section>
+      `).join("")}
+
+      <section class="portal-preview-section portal-downloads-section">
+        <div class="portal-section-heading"><p>Documentación</p><h2>Descargas incluidas</h2></div>
+        <div class="portal-download-grid">${(model.downloads || []).map((item) => `<article><span>${escapeHtml(item.extension || "FICHERO")}</span><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.size_human || formatBytes(item.size_bytes))}</small></div></article>`).join("")}</div>
+      </section>
+
+      ${(coverage.warnings || []).length ? `<section class="portal-preview-section portal-audit-details"><h2>Comprobaciones pendientes</h2><ul>${coverage.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></section>` : ""}
+      <footer class="portal-preview-footer"><strong>LLANGÓN ASESORES</strong><span>Vista previa privada · No publicada</span></footer>
+    </article>
+  `;
+}
+
+function renderPortalPublications(items) {
+  if (!items.length) return `<div class="empty">Aún no hay portales preparados. Selecciona una Ficha.pdf para generar el primero.</div>`;
+  return `<div class="portal-publication-list">${items.map((item) => `
+    <article class="portal-publication-row">
+      <div><span>${escapeHtml(item.client_label || item.ficha_relative_path)}</span><strong>${escapeHtml(item.status === "published" ? "Publicado" : item.status === "needs_review" ? "Revisión pendiente" : "Borrador listo")}</strong><small>${escapeHtml(item.ficha_relative_path)}</small></div>
+      <div class="portal-trace-counts"><span>Accesos <b>${escapeHtml(item.access_count || 0)}</b></span><span>Descargas <b>${escapeHtml(item.download_count || 0)}</b></span>${item.last_activity_at ? `<small>Última actividad: ${escapeHtml(formatDateTime(item.last_activity_at))}</small>` : ""}</div>
+      <div class="portal-publication-actions no-print">
+        ${item.public_url ? `<a href="${escapeHtml(item.public_url)}" target="_blank" rel="noreferrer">Abrir portal</a>` : ""}
+        ${item.status === "published" ? `<button type="button" class="ghost" data-portal-rotate-code="${escapeHtml(item.id)}">Generar nueva clave</button><button type="button" class="ghost" data-portal-sync="${escapeHtml(item.id)}" data-licitacion-id="${escapeHtml(item.licitacion_id || "")}">Actualizar actividad</button>` : `<button type="button" class="ghost" data-portal-recover="${escapeHtml(item.id)}">Abrir vista previa y obtener clave</button>`}
+        ${item.status === "draft" && isAdmin() ? `<button type="button" data-portal-publish="${escapeHtml(item.id)}">Publicar</button>` : ""}
+      </div>
+      ${(item.recent_events || []).length ? `<details class="portal-event-details"><summary>Ver actividad registrada</summary><ul>${item.recent_events.map((event) => `<li><strong>${escapeHtml(event.event_type === "download" ? `Descarga: ${event.file_name || "fichero"}` : "Acceso a la información")}</strong><span>${escapeHtml(formatDateTime(event.occurred_at))}</span></li>`).join("")}</ul></details>` : ""}
+    </article>`).join("")}</div>`;
+}
+
+async function loadPortalPublications(licitacionId, { synced = false } = {}) {
+  const panel = licitacionDetailContent.querySelector(`[data-portal-publications-panel="${licitacionId}"]`);
+  if (!panel) return;
+  try {
+    const response = await fetch(`/api/licitaciones/${licitacionId}/portal-publications`);
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "No se pudieron cargar los portales.");
+    const items = (result.items || []).map((item) => ({ ...item, licitacion_id: licitacionId }));
+    panel.innerHTML = renderPortalPublications(items);
+    const published = items.filter((item) => item.status === "published");
+    if (!synced && published.length) {
+      await Promise.allSettled(published.map((item) => fetch(`/api/portal-publications/${encodeURIComponent(item.id)}/sync-events`, { method: "POST", headers: csrfHeaders() })));
+      await loadPortalPublications(licitacionId, { synced: true });
+    }
+  } catch (error) {
+    panel.innerHTML = `<div class="empty">${escapeHtml(error.message || "No se pudieron cargar los portales.")}</div>`;
+  }
+}
+
+async function recoverPortalPreview(publicationId, { open = true } = {}) {
+  const response = await fetch(`/api/portal-publications/${encodeURIComponent(publicationId)}/recover-preview`, {
+    method: "POST",
+    headers: csrfHeaders(),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || "No se pudo recuperar la vista previa guardada.");
+  if (open) openPortalPreview(result);
+  return result;
+}
+
+async function recoverPortalGeneratedAfter(licitacionId, startedAt) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    try {
+      const response = await fetch(`/api/licitaciones/${licitacionId}/portal-publications`, { cache: "no-store" });
+      const result = await response.json().catch(() => ({}));
+      if (response.ok) {
+        const candidate = (result.items || []).find((item) => {
+          const updated = Date.parse(item.updated_at || "");
+          return item.status !== "published" && Number.isFinite(updated) && updated >= startedAt - 5000;
+        });
+        if (candidate) return recoverPortalPreview(candidate.id);
+      }
+    } catch (_error) {
+      // La generación puede seguir ocupando el servidor; se reintenta sin perder el resultado.
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 3000));
+  }
+  return null;
+}
+
+async function publishPortal(publicationId, button) {
+  if (!confirm("¿Publicar este portal y cargar los documentos seleccionados? El enlace quedará accesible con su palabra clave personal.")) return;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "Publicando...";
+  try {
+    const response = await fetch(`/api/portal-publications/${encodeURIComponent(publicationId)}/publish`, { method: "POST", headers: csrfHeaders() });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "No se pudo publicar el portal.");
+    const emailMessage = result.notification_email?.sent
+      ? `\n\nAviso enviado a ${result.notification_email.recipients.join(", ")}.`
+      : `\n\nEl portal está publicado, pero no se envió el aviso por email: ${result.notification_email?.error || "sin destinatario configurado"}.`;
+    alert(`Portal publicado correctamente.\n\n${result.public_url}${emailMessage}`);
+    const panel = button.closest("[data-portal-publications-panel]");
+    if (panel) await loadPortalPublications(panel.dataset.portalPublicationsPanel);
+  } catch (error) { alert(error.message || "No se pudo publicar el portal."); }
+  finally { button.disabled = false; button.textContent = original; }
+}
+
+async function syncPortalActivity(publicationId, button) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "Actualizando...";
+  try {
+    const response = await fetch(`/api/portal-publications/${encodeURIComponent(publicationId)}/sync-events`, { method: "POST", headers: csrfHeaders() });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "No se pudo actualizar la actividad.");
+    const panel = button.closest("[data-portal-publications-panel]");
+    if (panel) await loadPortalPublications(panel.dataset.portalPublicationsPanel);
+  } catch (error) { alert(error.message || "No se pudo actualizar la actividad."); }
+  finally { button.disabled = false; button.textContent = original; }
+}
+
+async function rotatePortalAccessCode(publicationId, button) {
+  if (!confirm("¿Generar una nueva palabra clave? La clave anterior dejará de funcionar.")) return;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "Generando...";
+  try {
+    const response = await fetch(`/api/portal-publications/${encodeURIComponent(publicationId)}/rotate-access-code`, { method: "POST", headers: csrfHeaders() });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "No se pudo generar la nueva clave.");
+    openPortalPreview(result);
+  } catch (error) { alert(error.message || "No se pudo generar la nueva clave."); }
+  finally { button.disabled = false; button.textContent = original; }
+}
+
+function openPortalPreview(model) {
+  appState.currentPortalPreview = model;
+  portalPreviewContent.innerHTML = renderPortalPreview(model);
+  publishPortalPreviewButton.dataset.portalPublish = model.publication?.id || "";
+  publishPortalPreviewButton.hidden = !isAdmin() || !model.publication?.id || model.publication?.status !== "draft" || model.coverage?.status !== "preview_ready";
+  approvePortalPreviewButton.dataset.portalApprove = model.publication?.id || "";
+  approvePortalPreviewButton.hidden = !isAdmin() || !model.publication?.id || model.publication?.status === "published" || model.coverage?.status !== "needs_review";
+  portalPreviewDialog.showModal();
+}
+
+async function openPortalFileSelection(licitacionId) {
+  appState.portalFileSelection = { licitacionId, files: [] };
+  portalFileStatus.className = "import-result";
+  portalFileStatus.textContent = "";
+  portalFileList.innerHTML = `<div class="empty">Cargando carpetas y ficheros...</div>`;
+  confirmPortalFileSelectionButton.disabled = true;
+  portalFileDialog.showModal();
+  try {
+    const response = await fetch(`/api/licitaciones/${licitacionId}/portal-files`);
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "No se pudieron listar los ficheros.");
+    appState.portalFileSelection.files = result.items || [];
+    renderPortalFileRows(result.items || []);
+    if (result.selection_notice) {
+      portalFileStatus.className = "import-result warning";
+      portalFileStatus.textContent = result.selection_notice;
+    }
+    if (!result.can_prepare) {
+      portalFileStatus.className = "import-result error";
+      portalFileStatus.textContent = result.blocking_error || "No se puede preparar el portal.";
+      confirmPortalFileSelectionButton.disabled = true;
+    }
+  } catch (error) {
+    renderPortalFileRows([]);
+    portalFileStatus.className = "import-result error";
+    portalFileStatus.textContent = error.message || "No se pudieron listar los ficheros.";
+  }
+}
+
+async function confirmPortalFileSelection() {
+  const state = appState.portalFileSelection;
+  if (!state) return;
+  const selectedFiles = [...portalFileList.querySelectorAll("input[data-file-path]:checked")].map((input) => input.value);
+  confirmPortalFileSelectionButton.disabled = true;
+  confirmPortalFileSelectionButton.textContent = "Generando...";
+  portalFileStatus.className = "import-result";
+  portalFileStatus.textContent = "La IA está leyendo, organizando y contrastando todas las páginas de Ficha.pdf. Puede tardar unos minutos...";
+  const generationStartedAt = Date.now();
+  try {
+    const response = await fetch(`/api/licitaciones/${state.licitacionId}/portal-preview/generate`, {
+      method: "POST",
+      headers: { ...csrfHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ selected_files: selectedFiles, mode: "ai" }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const cause = result.error_detail ? `\n\nDetalle de Codex:\n${result.error_detail}` : "";
+      throw new Error(`${result.error || "No se pudo preparar la vista web."}${cause}`);
+    }
+    const coverage = result.coverage || {};
+    appState.portalPreviews[state.licitacionId] = result;
+    portalFileStatus.className = `import-result ${coverage.status === "needs_review" ? "warning" : "ok"}`;
+    portalFileStatus.textContent = coverage.status === "preview_ready"
+      ? `Vista previa generada y auditada: ${coverage.pages_audited || 0} de ${coverage.pages_total || 0} páginas. No se ha publicado nada.`
+      : `Vista previa generada con revisión pendiente. Las páginas dudosas se han conservado literalmente. No se ha publicado nada.`;
+    portalFileDialog.close();
+    openPortalPreview(result);
+  } catch (error) {
+    portalFileStatus.className = "import-result warning";
+    portalFileStatus.textContent = "La conexión dejó de esperar, pero la IA puede seguir trabajando. Recuperando el resultado guardado...";
+    const recovered = await recoverPortalGeneratedAfter(state.licitacionId, generationStartedAt);
+    if (recovered) {
+      appState.portalPreviews[state.licitacionId] = recovered;
+      portalFileDialog.close();
+      return;
+    }
+    portalFileStatus.className = "import-result error";
+    portalFileStatus.textContent = error.message || "No se pudo preparar la vista web.";
+  } finally {
+    confirmPortalFileSelectionButton.textContent = "Generar vista previa con IA";
+    updatePortalFileSelectionCount();
+  }
 }
 
 async function saveAiSummaryPdf(licitacionId, button) {
@@ -7839,7 +8696,7 @@ function renderLinkedActuaciones(items) {
             ${renderCommentsWidget("actuacion", actuacion.id, actuacion.comments_summary)}
           </div>
           <div class="links">
-            <button data-edit-actuacion="${escapeHtml(actuacion.id)}">Abrir actuación</button>
+            ${renderAppObjectLink(actuacionDetailUrl(actuacion.id), actuacion.id, "Abrir actuación", { attributes: `data-edit-actuacion="${escapeHtml(actuacion.id)}"` })}
             ${renderCreateClienteEnvioButton({ actuacionId: actuacion.id, label: "Crear envío" })}
           </div>
         </article>
@@ -8037,7 +8894,7 @@ async function finishDownload(result, id) {
   await loadItems();
   await refreshLicitacionDetail(id);
   const detail = appState.cardDetails[id]?.item;
-  if (detail && licitacionDetailDialog.open) {
+  if (detail && isLicitacionDetailActive(id)) {
     licitacionDetailTitle.textContent = "Ficha de licitación";
     licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
     licitacionDetailActions.innerHTML = renderDetailActionBar(detail);
@@ -8140,24 +8997,67 @@ async function toggleDetails(id) {
   }
 }
 
-async function openLicitacionDetail(id) {
+async function renderLicitacionDetailPage(id) {
+  if (licitacionDetailAbortController) licitacionDetailAbortController.abort();
+  const controller = new AbortController();
+  licitacionDetailAbortController = controller;
+  appState.activeLicitacionDetailId = String(id);
+  appState.licitacionDetailDirty = false;
   licitacionDetailTitle.textContent = "Ficha de licitación";
+  licitacionDetailActions.innerHTML = "";
   licitacionDetailContent.innerHTML = `<div class="empty">Cargando ficha ampliada...</div>`;
-  licitacionDetailDialog.showModal();
-  const response = await fetch(`/api/licitaciones/${id}`);
+  licitacionDetailSection.hidden = false;
+  let response;
+  try {
+    response = await fetch(`/api/licitaciones/${id}`, { signal: controller.signal });
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    showAppRouteError(
+      "No se pudo cargar la licitación",
+      "La Suite no ha podido conectar con el servidor. Comprueba la conexión e inténtalo de nuevo.",
+      appRoutePaths.licitaciones,
+    );
+    return;
+  }
+  if (response.redirected && new URL(response.url).pathname === "/login") {
+    window.location.href = `/login?${new URLSearchParams({ next: currentRelativeUrl() }).toString()}`;
+    return;
+  }
   const result = await response.json().catch(() => ({}));
+  if (parseAppRoute().name !== "licitacion-detail" || String(parseAppRoute().id) !== String(id)) return;
   if (!response.ok) {
-    licitacionDetailContent.innerHTML = `<div class="empty">No se pudo cargar la ficha.</div>`;
+    const notFound = response.status === 404;
+    showAppRouteError(
+      notFound ? "Licitación no encontrada" : "No se pudo abrir la licitación",
+      result.error || (notFound
+        ? "La licitación no existe o ha sido eliminada."
+        : "No tienes permiso o se ha producido un error al cargarla."),
+      appRoutePaths.licitaciones,
+    );
     return;
   }
   const item = result.item;
+  if (!item) {
+    showAppRouteError(
+      "Ficha incompleta",
+      "El servidor no ha devuelto los datos de esta licitación.",
+      appRoutePaths.licitaciones,
+    );
+    return;
+  }
   appState.cardDetails[id] = { ...(appState.cardDetails[id] || {}), item };
   licitacionDetailTitle.textContent = "Ficha de licitación";
+  setPageHeader(item.expediente || "Ficha de licitación", "Licitación");
+  document.title = `${item.expediente || `Licitación ${id}`} · Llangón Web App`;
   licitacionDetailContent.innerHTML = renderLicitacionDetailView(item);
   licitacionDetailActions.innerHTML = renderDetailActionBar(item);
   hydrateFullCommentWidgets(licitacionDetailContent);
   loadDocumentTree(id);
   loadAiSummary(id);
+}
+
+async function openLicitacionDetail(id, { replace = false, tab = "" } = {}) {
+  return navigateApp(licitacionDetailUrl(id, tab), { replace });
 }
 
 async function refreshLicitacionDetail(id) {
@@ -8204,11 +9104,12 @@ async function runLicitacionMarkerAction(id, action, button) {
     await refreshLicitacionDetail(id);
     renderBoard();
     const detail = appState.cardDetails[id]?.item;
-    if (detail && licitacionDetailDialog.open) {
+    if (detail && isLicitacionDetailActive(id)) {
     licitacionDetailTitle.textContent = "Ficha de licitación";
     licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
     licitacionDetailActions.innerHTML = renderDetailActionBar(detail);
     hydrateFullCommentWidgets(licitacionDetailContent);
+    activateDetailTabByName(parseAppRoute().tab, { syncUrl: false });
     loadDocumentTree(id, { silent: true });
     loadAiSummary(id);
     setMarkerActionResult(id, message, "success");
@@ -8253,15 +9154,17 @@ async function patchLicitacionWork(id, payload) {
     alert(result.error || "No se pudo actualizar la licitación.");
     return false;
   }
+  appState.licitacionDetailDirty = false;
   await loadItems();
   await refreshLicitacionDetail(id);
   renderBoard();
   const detail = appState.cardDetails[id]?.item;
-  if (detail && licitacionDetailDialog.open) {
+  if (detail && isLicitacionDetailActive(id)) {
     licitacionDetailTitle.textContent = "Ficha de licitación";
     licitacionDetailContent.innerHTML = renderLicitacionDetailView(detail);
     licitacionDetailActions.innerHTML = renderDetailActionBar(detail);
     hydrateFullCommentWidgets(licitacionDetailContent);
+    activateDetailTabByName(parseAppRoute().tab, { syncUrl: false });
     loadDocumentTree(id, { silent: true });
     loadAiSummary(id);
   }
@@ -8402,16 +9305,17 @@ function openDuplicateEditor(id) {
 }
 
 async function deleteLicitacion(id) {
-  if (!confirm("¿Seguro que quieres borrar esta licitación?")) return;
+  if (!confirm("¿Seguro que quieres borrar esta licitación?")) return false;
 
   const response = await fetch(`/api/licitaciones/${id}`, { method: "DELETE", headers: csrfHeaders() });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
     alert(result.error || "No se pudo borrar la licitación.");
-    return;
+    return false;
   }
   await loadItems();
   await loadDias();
+  return true;
 }
 
 async function deleteDia(id, title) {
@@ -8469,6 +9373,16 @@ document.addEventListener("click", (event) => {
 });
 scheduleExpandableDescriptionSync();
 
+document.addEventListener("click", (event) => {
+  const link = event.target.closest("a[data-app-route]");
+  if (!link || event.defaultPrevented || event.button !== 0) return;
+  if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  if (link.target === "_blank" || link.hasAttribute("download")) return;
+  event.preventDefault();
+  if (link.closest("#ai-queue-dialog")) closeAiQueueDialog();
+  navigateApp(link.href);
+});
+
 mobileMenuButton?.addEventListener("click", toggleSidebar);
 mobileMenuClose?.addEventListener("click", closeSidebar);
 sidebarOverlay?.addEventListener("click", closeSidebar);
@@ -8483,31 +9397,31 @@ document.querySelectorAll(".sidebar [data-nav-section]").forEach((button) => {
   button.addEventListener("click", closeSidebar);
 });
 
-document.getElementById("days-button").addEventListener("click", showDaysView);
-document.getElementById("list-button").addEventListener("click", () => showLicitacionesView({ view: "live" }));
-document.getElementById("calendar-button").addEventListener("click", showCalendarView);
-document.getElementById("actuaciones-button").addEventListener("click", showActuacionesView);
-document.getElementById("clients-button")?.addEventListener("click", showClientsView);
-document.getElementById("cliente-envios-button")?.addEventListener("click", showClienteEnviosView);
+document.getElementById("days-button").addEventListener("click", () => navigateApp(appRoutePaths.infonalia));
+document.getElementById("list-button").addEventListener("click", () => navigateApp(appRoutePaths.licitaciones));
+document.getElementById("calendar-button").addEventListener("click", () => navigateApp(appRoutePaths.agenda));
+document.getElementById("actuaciones-button").addEventListener("click", () => navigateApp(appRoutePaths.actuaciones));
+document.getElementById("clients-button")?.addEventListener("click", () => navigateApp(appRoutePaths.clients));
+document.getElementById("cliente-envios-button")?.addEventListener("click", () => navigateApp(appRoutePaths.clienteEnvios));
 logoutButton?.addEventListener("click", logout);
 aiQueueButton?.addEventListener("click", openAiQueueDialog);
 document.getElementById("ai-queue-menu-button")?.addEventListener("click", () => {
   closeSidebar();
   openAiQueueDialog();
 });
-document.getElementById("notifications-button").addEventListener("click", showNotificationsView);
-document.getElementById("notifications-menu-button")?.addEventListener("click", showNotificationsView);
+document.getElementById("notifications-button").addEventListener("click", () => navigateApp(appRoutePaths.notifications));
+document.getElementById("notifications-menu-button")?.addEventListener("click", () => navigateApp(appRoutePaths.notifications));
 document.getElementById("back-from-notifications").addEventListener("click", backFromNotifications);
-document.getElementById("news-admin-button").addEventListener("click", showNewsAdminView);
-document.getElementById("monitor-button").addEventListener("click", showMonitorView);
-document.getElementById("automation-button").addEventListener("click", showAutomationView);
+document.getElementById("news-admin-button").addEventListener("click", () => navigateApp(appRoutePaths.newsAdmin));
+document.getElementById("monitor-button").addEventListener("click", () => navigateApp(appRoutePaths.monitor));
+document.getElementById("automation-button").addEventListener("click", () => navigateApp(appRoutePaths.automation));
 window.addEventListener("tender-monitor:open-licitacion", async (event) => {
   const id = event.detail?.id;
   if (!id) return;
   showLicitacionesView({ view: "all" });
   await openLicitacionDetail(id);
 });
-document.getElementById("config-button").addEventListener("click", showConfigView);
+document.getElementById("config-button").addEventListener("click", () => navigateApp(appRoutePaths.config));
 document.getElementById("back-from-config").addEventListener("click", backFromConfig);
 configHelpOpenButton?.addEventListener("click", openConfigHelpManual);
 closeConfigHelpDialogButton?.addEventListener("click", closeConfigHelpManual);
@@ -8633,17 +9547,61 @@ document.getElementById("close-ai-file-dialog").addEventListener("click", closeA
 document.getElementById("cancel-ai-file-dialog").addEventListener("click", closeAiFileSelection);
 confirmAiFileSelectionButton.addEventListener("click", confirmAiFileSelection);
 document.getElementById("ai-select-recommended").addEventListener("click", () => {
-  aiFileList.querySelectorAll("input[type='checkbox']").forEach((checkbox) => {
+  aiFileList.querySelectorAll("input[data-file-path]").forEach((checkbox) => {
     const file = appState.aiFileSelection?.files?.find((item) => item.id === checkbox.value);
     checkbox.checked = Boolean(file?.selected_by_default && file?.selectable !== false);
   });
   updateAiFileSelectionCount();
 });
 document.getElementById("ai-clear-selection").addEventListener("click", () => {
-  aiFileList.querySelectorAll("input[type='checkbox']").forEach((checkbox) => {
+  aiFileList.querySelectorAll("input[data-file-path]").forEach((checkbox) => {
     checkbox.checked = false;
   });
   updateAiFileSelectionCount();
+});
+document.getElementById("close-portal-file-dialog").addEventListener("click", () => portalFileDialog.close());
+document.getElementById("cancel-portal-file-dialog").addEventListener("click", () => portalFileDialog.close());
+document.getElementById("close-portal-preview").addEventListener("click", () => portalPreviewDialog.close());
+document.getElementById("print-portal-preview").addEventListener("click", () => window.print());
+publishPortalPreviewButton.addEventListener("click", async () => {
+  const publicationId = publishPortalPreviewButton.dataset.portalPublish;
+  if (publicationId) await publishPortal(publicationId, publishPortalPreviewButton);
+});
+approvePortalPreviewButton.addEventListener("click", async () => {
+  const publicationId = approvePortalPreviewButton.dataset.portalApprove;
+  if (!publicationId || !appState.currentPortalPreview) return;
+  if (!confirm("¿Confirmas que has revisado el contenido literal conservado y deseas habilitar esta vista para publicación?")) return;
+  const original = approvePortalPreviewButton.textContent;
+  approvePortalPreviewButton.disabled = true;
+  approvePortalPreviewButton.textContent = "Aprobando...";
+  try {
+    const response = await fetch(`/api/portal-publications/${encodeURIComponent(publicationId)}/approve-review`, { method: "POST", headers: csrfHeaders() });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "No se pudo aprobar la revisión.");
+    appState.currentPortalPreview.coverage = result.coverage;
+    appState.currentPortalPreview.publication.status = "draft";
+    openPortalPreview(appState.currentPortalPreview);
+  } catch (error) { alert(error.message || "No se pudo aprobar la revisión."); }
+  finally { approvePortalPreviewButton.disabled = false; approvePortalPreviewButton.textContent = original; }
+});
+portalPreviewContent.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-copy-text]");
+  if (!button) return;
+  copyTextToClipboard(button.dataset.copyText || "");
+  button.textContent = "Clave copiada";
+});
+confirmPortalFileSelectionButton.addEventListener("click", confirmPortalFileSelection);
+document.getElementById("portal-select-all").addEventListener("click", () => {
+  portalFileList.querySelectorAll("input[data-file-path]").forEach((checkbox) => {
+    if (checkbox.dataset.isFicha !== "1" && !checkbox.disabled) checkbox.checked = true;
+  });
+  updatePortalFileSelectionCount();
+});
+document.getElementById("portal-clear-selection").addEventListener("click", () => {
+  portalFileList.querySelectorAll("input[data-file-path]").forEach((checkbox) => {
+    checkbox.checked = checkbox.dataset.required === "1" || (checkbox.dataset.isFicha === "1" && checkbox.checked);
+  });
+  updatePortalFileSelectionCount();
 });
 document.getElementById("close-ai-summary-email").addEventListener("click", () => aiSummaryEmailDialog.close());
 document.getElementById("cancel-ai-summary-email").addEventListener("click", () => aiSummaryEmailDialog.close());
@@ -8709,7 +9667,7 @@ agendaWorkbench.addEventListener("click", (event) => {
     return;
   }
   const actuacionButton = event.target.closest("button[data-workbench-actuacion]");
-  if (actuacionButton) editActuacion(actuacionButton.dataset.workbenchActuacion);
+  if (actuacionButton) navigateApp(actuacionDetailUrl(actuacionButton.dataset.workbenchActuacion));
 });
 function navigateUnifiedAgendaCalendar(action) {
   const today = new Date();
@@ -8736,6 +9694,7 @@ document.getElementById("refresh-clients-button")?.addEventListener("click", loa
 document.getElementById("new-client-button")?.addEventListener("click", openNewClientDialog);
 document.getElementById("close-client-dialog")?.addEventListener("click", () => clientDialog.close());
 document.getElementById("cancel-client-dialog")?.addEventListener("click", () => clientDialog.close());
+clientDialog?.addEventListener("close", () => returnFromObjectDetail("client-detail", appRoutePaths.clients));
 submitSearchOnEnter(clientSearch, loadClientes);
 clientsStateFilter?.addEventListener("change", loadClientes);
 clientForm?.addEventListener("submit", saveClient);
@@ -8744,12 +9703,14 @@ submitSearchOnEnter(clienteEnviosSearch, loadClienteEnvios);
 clienteEnviosStateFilter?.addEventListener("change", loadClienteEnvios);
 document.getElementById("close-cliente-envio-dialog")?.addEventListener("click", () => clienteEnvioDialog.close());
 document.getElementById("cancel-cliente-envio-dialog")?.addEventListener("click", () => clienteEnvioDialog.close());
+clienteEnvioDialog?.addEventListener("close", () => returnFromObjectDetail("cliente-envio-detail", appRoutePaths.clienteEnvios));
 document.getElementById("cliente-envio-load-folder")?.addEventListener("click", () => (
   loadClienteEnvioFolderFiles(clienteEnvioForm?.elements?.carpeta_dropbox?.value.trim(), selectedClienteEnvioPaths(clienteEnvioFiles))
 ));
 clienteEnvioForm?.addEventListener("submit", saveClienteEnvio);
 document.getElementById("close-cliente-envio-draft-dialog")?.addEventListener("click", () => clienteEnvioDraftDialog.close());
 document.getElementById("cancel-cliente-envio-draft-dialog")?.addEventListener("click", () => clienteEnvioDraftDialog.close());
+clienteEnvioDraftDialog?.addEventListener("close", () => returnFromObjectDetail("cliente-envio-detail", appRoutePaths.clienteEnvios));
 clienteEnvioDraftForm?.addEventListener("submit", generateClienteEnvioDraft);
 clienteEnvioOpenFolderButton?.addEventListener("click", () => {
   const envioId = clienteEnvioDraftForm?.elements?.envio_id?.value;
@@ -8765,6 +9726,7 @@ clienteEnvioMarkSentButton?.addEventListener("click", () => {
 });
 document.getElementById("close-actuacion-dialog").addEventListener("click", () => actuacionDialog.close());
 document.getElementById("cancel-actuacion-dialog").addEventListener("click", () => actuacionDialog.close());
+actuacionDialog.addEventListener("close", () => returnFromObjectDetail("actuacion-detail", appRoutePaths.actuaciones));
 document.getElementById("open-licitacion-selector").addEventListener("click", openLicitacionSelector);
 document.getElementById("close-licitacion-selector").addEventListener("click", () => licitacionSelectorDialog.close());
 document.getElementById("cancel-licitacion-selector").addEventListener("click", () => licitacionSelectorDialog.close());
@@ -8867,8 +9829,37 @@ newsAdminBoard.addEventListener("click", (event) => {
   }
 });
 
-document.getElementById("close-licitacion-detail").addEventListener("click", () => licitacionDetailDialog.close());
-licitacionDetailActions.addEventListener("click", (event) => {
+function returnFromLicitacionDetail() {
+  if (!confirmLicitacionDetailNavigation({ name: "licitaciones" })) return;
+  if (window.history.state?.returnUrl) {
+    window.history.back();
+    return;
+  }
+  navigateApp(appRoutePaths.licitaciones, { replace: true });
+}
+
+function returnFromObjectDetail(routeName, fallbackUrl) {
+  if (parseAppRoute().name !== routeName) return;
+  if (window.history.state?.returnUrl) {
+    window.history.back();
+    return;
+  }
+  navigateApp(fallbackUrl, { replace: true });
+}
+
+document.getElementById("close-licitacion-detail").addEventListener("click", returnFromLicitacionDetail);
+appRouteErrorBack?.addEventListener("click", () => {
+  navigateApp(appRouteErrorBack.dataset.fallbackUrl || appRoutePaths.licitaciones, { replace: true });
+});
+copyLicitacionLinkButton?.addEventListener("click", async () => {
+  await copyTextToClipboard(window.location.href);
+  const original = copyLicitacionLinkButton.textContent;
+  copyLicitacionLinkButton.textContent = "Enlace copiado";
+  window.setTimeout(() => {
+    copyLicitacionLinkButton.textContent = original;
+  }, 1800);
+});
+licitacionDetailActions.addEventListener("click", async (event) => {
   const editButton = event.target.closest("button[data-edit-id]");
   if (editButton) return openEditEditor(editButton.dataset.editId);
   const duplicateButton = event.target.closest("button[data-duplicate-id]");
@@ -8877,15 +9868,28 @@ licitacionDetailActions.addEventListener("click", (event) => {
   if (newActuacionButton) return openActuacionDialog(newActuacionButton.dataset.newActuacionId);
   const deleteButton = event.target.closest("button[data-delete-id]");
   if (deleteButton) {
-    deleteLicitacion(deleteButton.dataset.deleteId);
-    licitacionDetailDialog.close();
+    const deleted = await deleteLicitacion(deleteButton.dataset.deleteId);
+    if (deleted) {
+      appState.licitacionDetailDirty = false;
+      navigateApp(appRoutePaths.licitaciones, { replace: true });
+    }
   }
 });
 
-function activateDetailTab(button) {
+function activateDetailTab(button, { syncUrl = true } = {}) {
   const workspace = button.closest(".licitacion-detail-workspace");
   if (!workspace) return;
   const tab = button.dataset.detailTab || "resumen";
+  if (syncUrl) {
+    const route = parseAppRoute();
+    if (route.name === "licitacion-detail") {
+      window.history.replaceState(
+        { ...(window.history.state || {}), llangonRoute: true },
+        "",
+        licitacionDetailUrl(route.id, tab),
+      );
+    }
+  }
   workspace.querySelectorAll("[data-detail-tab]").forEach((item) => {
     item.classList.toggle("active", item.dataset.detailTab === tab);
   });
@@ -8895,6 +9899,10 @@ function activateDetailTab(button) {
   const aiPanel = workspace.querySelector("[data-ai-summary-panel]");
   if (tab === "ai" && aiPanel?.dataset.aiSummaryPanel) {
     loadAiSummary(aiPanel.dataset.aiSummaryPanel, { silent: true });
+  }
+  const portalPanel = workspace.querySelector("[data-portal-publications-panel]");
+  if (tab === "portal" && portalPanel?.dataset.portalPublicationsPanel) {
+    loadPortalPublications(portalPanel.dataset.portalPublicationsPanel);
   }
   const treePanel = workspace.querySelector("[data-document-tree-panel]");
   if (tab === "documentos-seguimiento" && treePanel?.dataset.documentTreePanel) {
@@ -8919,6 +9927,31 @@ licitacionDetailContent.addEventListener("click", async (event) => {
   const tabButton = event.target.closest("button[data-detail-tab]");
   if (tabButton) {
     activateDetailTab(tabButton);
+    return;
+  }
+  const portalPublishButton = event.target.closest("button[data-portal-publish]");
+  if (portalPublishButton) {
+    await publishPortal(portalPublishButton.dataset.portalPublish, portalPublishButton);
+    return;
+  }
+  const portalSyncButton = event.target.closest("button[data-portal-sync]");
+  if (portalSyncButton) {
+    await syncPortalActivity(portalSyncButton.dataset.portalSync, portalSyncButton);
+    return;
+  }
+  const portalRotateCodeButton = event.target.closest("button[data-portal-rotate-code]");
+  if (portalRotateCodeButton) {
+    await rotatePortalAccessCode(portalRotateCodeButton.dataset.portalRotateCode, portalRotateCodeButton);
+    return;
+  }
+  const portalRecoverButton = event.target.closest("button[data-portal-recover]");
+  if (portalRecoverButton) {
+    const original = portalRecoverButton.textContent;
+    portalRecoverButton.disabled = true;
+    portalRecoverButton.textContent = "Abriendo...";
+    try { await recoverPortalPreview(portalRecoverButton.dataset.portalRecover); }
+    catch (error) { alert(error.message || "No se pudo abrir la vista previa."); }
+    finally { portalRecoverButton.disabled = false; portalRecoverButton.textContent = original; }
     return;
   }
 
@@ -8991,6 +10024,12 @@ licitacionDetailContent.addEventListener("click", async (event) => {
     return;
   }
 
+  const portalPrepareButton = event.target.closest("button[data-portal-prepare]");
+  if (portalPrepareButton) {
+    openPortalFileSelection(portalPrepareButton.dataset.portalPrepare);
+    return;
+  }
+
   const aiEmailButton = event.target.closest("button[data-ai-email]");
   if (aiEmailButton) {
     openAiSummaryEmail(aiEmailButton.dataset.aiEmail);
@@ -9021,8 +10060,11 @@ licitacionDetailContent.addEventListener("click", async (event) => {
 
   const deleteButton = event.target.closest("button[data-delete-id]");
   if (deleteButton) {
-    deleteLicitacion(deleteButton.dataset.deleteId);
-    licitacionDetailDialog.close();
+    const deleted = await deleteLicitacion(deleteButton.dataset.deleteId);
+    if (deleted) {
+      appState.licitacionDetailDirty = false;
+      navigateApp(appRoutePaths.licitaciones, { replace: true });
+    }
     return;
   }
 
@@ -9042,7 +10084,7 @@ licitacionDetailContent.addEventListener("click", async (event) => {
 
   const editActuacionButton = event.target.closest("button[data-edit-actuacion]");
   if (editActuacionButton) {
-    editActuacion(editActuacionButton.dataset.editActuacion);
+    navigateApp(actuacionDetailUrl(editActuacionButton.dataset.editActuacion));
     return;
   }
 
@@ -9051,6 +10093,16 @@ licitacionDetailContent.addEventListener("click", async (event) => {
     quickActuacionComment(commentActuacionButton.dataset.commentActuacion);
   }
 });
+
+function markLicitacionDetailDirty(event) {
+  if (!isLicitacionDetailActive()) return;
+  if (event.target.matches("[data-notes-for], [data-internal-state-for], [data-publication-type-for]")) {
+    appState.licitacionDetailDirty = true;
+  }
+}
+
+licitacionDetailContent.addEventListener("input", markLicitacionDetailDirty);
+licitacionDetailContent.addEventListener("change", markLicitacionDetailDirty);
 
 daysBoard.addEventListener("click", (event) => {
   const commentsButton = event.target.closest("button[data-day-comments]");
@@ -9174,7 +10226,7 @@ board.addEventListener("click", async (event) => {
 
   const editActuacionButton = event.target.closest("button[data-edit-actuacion]");
   if (editActuacionButton) {
-    editActuacion(editActuacionButton.dataset.editActuacion);
+    navigateApp(actuacionDetailUrl(editActuacionButton.dataset.editActuacion));
     return;
   }
 
@@ -9199,7 +10251,7 @@ actuacionesBoard.addEventListener("click", async (event) => {
   if (await handleClienteEnvioUiAction(event.target)) return;
   const editButton = event.target.closest("button[data-edit-actuacion]");
   if (editButton) {
-    editActuacion(editButton.dataset.editActuacion);
+    navigateApp(actuacionDetailUrl(editButton.dataset.editActuacion));
     return;
   }
   const commentButton = event.target.closest("button[data-comment-actuacion]");
@@ -9482,7 +10534,7 @@ enhanceConfigHelp();
 renderConfigHelpManual();
 
 loadMe().then(() => {
-  showInitialView();
+  renderCurrentAppRoute();
   loadAiQueue();
   startAiQueuePolling(15000);
 });

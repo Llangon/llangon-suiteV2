@@ -40,6 +40,22 @@ if (Test-Path -LiteralPath $EnvPath) {
     }
 }
 
+# Una orden de arranque puede restringir temporalmente la escucha sin editar
+# el archivo de configuración persistente. Nunca permite ampliar exposición
+# salvo que también se autorice explícitamente el modo no-loopback.
+if ($env:INFONALIA_HOST) {
+    $HostAddress = $env:INFONALIA_HOST.Trim()
+}
+if ($env:INFONALIA_PORT) {
+    $ParsedPort = 0
+    if ([int]::TryParse($env:INFONALIA_PORT, [ref]$ParsedPort)) {
+        $Port = $ParsedPort
+    }
+}
+if ($env:INFONALIA_ALLOW_NON_LOOPBACK) {
+    $AllowNonLoopback = @("1", "true", "yes", "on", "si", "sí") -contains $env:INFONALIA_ALLOW_NON_LOOPBACK.ToLowerInvariant()
+}
+
 $LogPath = Join-Path $LogDir "web.log"
 $StdoutPath = Join-Path $LogDir "web.stdout.log"
 $StderrPath = Join-Path $LogDir "web.stderr.log"
@@ -124,6 +140,13 @@ if (($HostAddress -ne "127.0.0.1" -and $HostAddress -ne "localhost" -and $HostAd
     }
     exit 2
 }
+
+# Entrega al proceso Python exactamente la configuración que se acaba de
+# validar. Así un valor antiguo del archivo .env no puede reaparecer cuando
+# serve.py carga el entorno de despliegue.
+$env:INFONALIA_HOST = $HostAddress
+$env:INFONALIA_PORT = [string]$Port
+$env:INFONALIA_ALLOW_NON_LOOPBACK = if ($AllowNonLoopback) { "1" } else { "0" }
 
 if (Test-WebHealth) {
     $Listener = Get-WebListener

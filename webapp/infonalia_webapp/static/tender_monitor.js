@@ -139,7 +139,7 @@
             <td data-label="Última novedad">${escapeHtml(formatDate(item.last_change))}</td>
             <td data-label="Resultado">${pill(item.last_result, item.last_result)}</td>
             <td data-label="IA / aviso">${escapeHtml(item.ai_status || "—")} / ${escapeHtml(item.notification_status || "—")}</td>
-            <td class="actions" data-label="Acciones"><button type="button" class="secondary" data-tm-run-id="${escapeHtml(item.id)}" ${item.prepared ? "" : "disabled"}>Revisar</button> <button type="button" class="ghost" data-tm-open-id="${escapeHtml(item.id)}">Ficha</button> <button type="button" class="ghost" data-tm-history-id="${escapeHtml(item.id)}">Histórico</button></td>
+            <td class="actions" data-label="Acciones"><button type="button" class="secondary" data-tm-run-id="${escapeHtml(item.id)}" ${item.prepared ? "" : "disabled"}>Revisar</button> <a href="/app/licitaciones/${escapeHtml(item.id)}" class="ghost app-object-link" data-app-route data-tm-open-id="${escapeHtml(item.id)}">Ficha</a> <button type="button" class="ghost" data-tm-history-id="${escapeHtml(item.id)}">Histórico</button></td>
           </tr>`).join("")}</tbody>
       </table>`;
   }
@@ -542,7 +542,7 @@
     const follow = event.target.closest("[data-tm-follow-id]");
     if (follow) toggleFollow(follow.dataset.tmFollowId, follow.dataset.active === "1");
     const openTender = event.target.closest("[data-tm-open-id]");
-    if (openTender) window.dispatchEvent(new CustomEvent("tender-monitor:open-licitacion", { detail: { id: openTender.dataset.tmOpenId } }));
+    if (openTender && openTender.tagName !== "A") window.dispatchEvent(new CustomEvent("tender-monitor:open-licitacion", { detail: { id: openTender.dataset.tmOpenId } }));
     const rebuild = event.target.closest("[data-tm-rebuild-id]");
     if (rebuild) rebuildBaseline(rebuild.dataset.tmRebuildId);
     const notification = event.target.closest("[data-tm-retry-notification]");

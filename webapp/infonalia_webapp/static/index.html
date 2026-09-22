@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Llangón Web App</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260716-client-management">
+  <link rel="stylesheet" href="/static/styles.css?v=20260822-direct-object-links">
   <link rel="stylesheet" href="/static/tender_monitor.css?v=20260723-detail-priority">
 </head>
 <body>
@@ -235,19 +235,29 @@
       <section class="board" id="board"></section>
     </section>
 
-    <dialog id="licitacion-detail-dialog" class="detail-dialog">
-      <div class="dialog-head">
+    <section id="licitacion-detail-section" class="licitacion-detail-page" aria-labelledby="licitacion-detail-title" hidden>
+      <div class="licitacion-detail-page-head no-print">
         <div>
-          <p class="eyebrow">Detalle de trabajo</p>
+          <p class="eyebrow">Centro de licitaciones</p>
           <h2 id="licitacion-detail-title">Ficha de licitación</h2>
         </div>
         <div class="detail-dialog-actions no-print">
+          <button type="button" class="ghost" id="copy-licitacion-link">Copiar enlace</button>
           <div id="licitacion-detail-actions"></div>
           <button type="button" class="ghost detail-back-button" id="close-licitacion-detail">Volver</button>
         </div>
       </div>
       <section id="licitacion-detail-content" class="licitacion-detail-view"></section>
-    </dialog>
+    </section>
+
+    <section id="app-route-error" class="app-route-error" hidden>
+      <article>
+        <p class="eyebrow">Navegación</p>
+        <h2 id="app-route-error-title">No se pudo abrir este contenido</h2>
+        <p id="app-route-error-message" class="muted"></p>
+        <button id="app-route-error-back" type="button" class="primary">Volver</button>
+      </article>
+    </section>
 
     <section id="calendar-section" hidden>
       <div class="section-head">
@@ -616,6 +626,22 @@
       <div class="monitor-scheduler-status" id="monitor-scheduler-status">Automatizaciones: comprobando...</div>
 
       <section class="automation-console">
+        <article class="monitor-panel operational-health-panel">
+          <div class="panel-head operational-health-head">
+            <div>
+              <p class="eyebrow">Estado operativo</p>
+              <h3>¿Qué necesita atención ahora?</h3>
+            </div>
+            <span id="operational-health-status" class="operational-health-status">Comprobando…</span>
+          </div>
+          <p id="operational-health-summary" class="operational-health-summary">Ejecutando comprobaciones locales de solo lectura…</p>
+          <div id="operational-health-attention" class="operational-health-attention"></div>
+          <details class="operational-health-details">
+            <summary>Ver todos los componentes comprobados</summary>
+            <div id="operational-health-components" class="operational-health-components"></div>
+          </details>
+        </article>
+
         <article class="monitor-panel">
           <div class="panel-head">
             <div>
@@ -1224,25 +1250,52 @@
         <button type="button" class="ghost" id="ai-clear-selection">Limpiar selección</button>
       </div>
     </div>
-    <div class="ai-file-table-wrap">
-      <table class="ai-file-table">
-        <thead>
-          <tr>
-            <th></th>
-            <th>Nombre del fichero</th>
-            <th>Ext.</th>
-            <th>Fecha modificación</th>
-            <th>Tamaño</th>
-          </tr>
-        </thead>
-        <tbody id="ai-file-list"></tbody>
-      </table>
-    </div>
+    <div class="file-picker-tree" id="ai-file-list" role="tree" aria-label="Carpetas y ficheros para análisis"></div>
     <div class="import-result" id="ai-file-status"></div>
     <div class="dialog-actions">
       <button type="button" class="ghost" id="cancel-ai-file-dialog">Cancelar</button>
       <button type="button" class="primary" id="confirm-ai-file-selection">Continuar / Generar análisis</button>
     </div>
+  </dialog>
+
+  <dialog id="portal-file-dialog" class="notice-dialog wide-dialog">
+    <div class="dialog-head">
+      <div>
+        <p class="eyebrow">Portal de licitación</p>
+        <h2>Preparar vista web</h2>
+      </div>
+      <button type="button" class="icon-button" id="close-portal-file-dialog">×</button>
+    </div>
+    <p class="muted">Ficha.pdf es obligatoria y aporta todo el contenido de la página. La IA la organizará y contrastará página por página; los demás ficheros aparecerán en Descargas. No se publicará nada.</p>
+    <div class="ai-file-toolbar">
+      <strong id="portal-file-selection-count">0 ficheros seleccionados</strong>
+      <div>
+        <button type="button" class="ghost" id="portal-select-all">Seleccionar todos</button>
+        <button type="button" class="ghost" id="portal-clear-selection">Limpiar opcionales</button>
+      </div>
+    </div>
+    <div class="file-picker-tree" id="portal-file-list" role="tree" aria-label="Carpetas y ficheros para el portal"></div>
+    <div class="import-result" id="portal-file-status" role="status" aria-live="polite"></div>
+    <div class="dialog-actions">
+      <button type="button" class="ghost" id="cancel-portal-file-dialog">Cerrar</button>
+      <button type="button" class="primary" id="confirm-portal-file-selection">Generar vista previa con IA</button>
+    </div>
+  </dialog>
+
+  <dialog id="portal-preview-dialog" class="portal-preview-dialog">
+    <div class="portal-preview-toolbar no-print">
+      <div>
+        <p class="eyebrow">Vista previa privada</p>
+        <strong>Portal de licitación · todavía no publicado</strong>
+      </div>
+      <div>
+        <button type="button" class="primary" id="approve-portal-preview" hidden>Aprobar revisión</button>
+        <button type="button" class="primary" id="publish-portal-preview" hidden>Publicar portal</button>
+        <button type="button" class="ghost" id="print-portal-preview">Imprimir</button>
+        <button type="button" class="icon-button" id="close-portal-preview" aria-label="Cerrar vista previa">×</button>
+      </div>
+    </div>
+    <section id="portal-preview-content" class="portal-preview-content"></section>
   </dialog>
 
   <dialog id="ai-summary-email-dialog" class="notice-dialog">
@@ -1573,7 +1626,7 @@
     </form>
   </dialog>
 
-  <script src="/static/app.js?v=20260730-pc-restart"></script>
+  <script src="/static/app.js?v=20260822-direct-object-links"></script>
   <script src="/static/tender_monitor.js?v=20260723-detail-priority"></script>
 </body>
 </html>

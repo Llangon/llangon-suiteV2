@@ -1,0 +1,22 @@
+{
+    "status":  "ok",
+    "workbook":  "C:\\Users\\LLangon03\\Documents\\Codex\\Llangon-SuiteV2\\webapp\\infonalia_webapp\\tender_documents\\templates\\Ficha_Llangon_v2.xlsm",
+    "excel_version":  "16.0",
+    "checks":  [
+                   "apertura real en Excel",
+                   "estructura, VeryHidden y protección",
+                   "apertura sin consulta ni actualización de clientes",
+                   "botones y acciones VBA",
+                   "VBA compilado, caché sintética, PLACE local/bridge y modo offline",
+                   "Actualizar clientes real mediante bridge instalado y SQLite intacta",
+                   "Importar PLACE real desde página pública, XML oficial y escritura de campos",
+                   "criterios ampliables, suma y Revisar ficha",
+                   "payload JSON e Informe_PDF derivado con fallback real",
+                   "guardado y reapertura real",
+                   "Preparar PDF: payload Excel a bridge ReportLab",
+                   "plantilla maestra intacta durante la aceptación"
+               ],
+    "fallback_pdf":  "C:\\Users\\LLangon03\\Documents\\Codex\\Llangon-SuiteV2\\output\\pdf\\ficha_llangon_v2_button_fix\\Ficha_Llangon_v2_fallback_Excel_COM_r3.pdf",
+    "reportlab_pdf":  "C:\\Users\\LLangon03\\Documents\\Codex\\Llangon-SuiteV2\\output\\pdf\\ficha_llangon_v2_button_fix\\Ficha_Llangon_v2_payload_Excel_COM_r3.pdf",
+    "source_sha256":  "7B948D2126CE68930AB544771F5AEB2DAA7E1960F72DB2E15D9A0F869EE6657A"
+}

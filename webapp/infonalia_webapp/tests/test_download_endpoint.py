@@ -112,6 +112,7 @@ def insert_fake_licitacion(
     *,
     enlace_perfil: str = "https://example.test/licitacion/1",
     ruta_carpeta: str = "",
+    estado: str = "Descargar",
 ) -> int:
     timestamp = datetime(2026, 6, 12, 10, 0, 0).isoformat()
     with app.db_session() as conn:
@@ -140,7 +141,7 @@ def insert_fake_licitacion(
                 "2026-06-30",
                 "12:00",
                 enlace_perfil,
-                "Descargar",
+                estado,
                 ruta_carpeta,
                 timestamp,
                 timestamp,
@@ -214,7 +215,7 @@ def test_download_endpoint_success_updates_ruta_carpeta_with_mocked_subprocess()
     stat_before = PRODUCTIVE_DB_PATH.stat().st_mtime_ns if existed_before else None
 
     with temporary_download_app(app):
-        licitacion_id = insert_fake_licitacion(app)
+        licitacion_id = insert_fake_licitacion(app, estado="Preparada")
         calls = []
 
         def fake_run(args, cwd, capture_output, text, timeout):
@@ -251,8 +252,17 @@ def test_download_endpoint_success_updates_ruta_carpeta_with_mocked_subprocess()
         assert '"%PYTHON%" "%SCRIPT%"' in bat_content
         assert Path(payload["carpeta"], "documento-ficticio.pdf").exists()
         assert Path(payload["carpeta"], f"{licitacion_id}.llangon").exists()
-        assert not Path(payload["carpeta"], "EnSeguimiento.llangon").exists()
+        assert Path(payload["carpeta"], "EnSeguimiento.llangon").exists()
         assert payload["marker"]["path"].endswith(f"{licitacion_id}.llangon")
+        assert payload["follow_marker"]["path"].endswith("EnSeguimiento.llangon")
+        assert payload["follow_marker"]["created"] is True
+        with app.db_session() as conn:
+            seguimiento = conn.execute(
+                "SELECT seguimiento_activo, seguimiento_marker_warning FROM licitaciones WHERE id = ?",
+                (licitacion_id,),
+            ).fetchone()
+        assert seguimiento["seguimiento_activo"] == 1
+        assert seguimiento["seguimiento_marker_warning"] == ""
         manifest_path = Path(payload["carpeta"], ".infonalia_manifest.json")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         assert manifest["schema"] == "infonalia.download_manifest.v1"
@@ -337,6 +347,92 @@ def test_normal_download_endpoint_does_not_update_monitor_baseline_or_notify() -
     assert notification_count == 0
 
 
+def test_download_keeps_success_and_records_warning_when_follow_marker_fails(monkeypatch) -> None:
+    app = load_app_module()
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app)
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
+            return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
+
+        def fail_follow_marker(folder):
+            marker_path = Path(folder, "EnSeguimiento.llangon")
+            return {
+                "ok": False,
+                "created": False,
+                "exists": False,
+                "path": str(marker_path),
+                "folder_path": str(folder),
+                "error": "No se pudo crear el marcador de seguimiento.",
+                "message": "",
+            }
+
+        monkeypatch.setattr(app, "ensure_follow_marker", fail_follow_marker)
+        handler = make_download_handler(app, payload=confirmed_download_payload(app, licitacion_id))
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        status, payload = handler.responses[-1]
+        with app.db_session() as conn:
+            seguimiento = conn.execute(
+                "SELECT seguimiento_activo, seguimiento_marker_warning FROM licitaciones WHERE id = ?",
+                (licitacion_id,),
+            ).fetchone()
+
+        assert status == HTTPStatus.OK
+        assert payload["ok"] is True
+        assert payload["follow_marker"]["ok"] is False
+        assert seguimiento["seguimiento_activo"] == 0
+        assert seguimiento["seguimiento_marker_warning"] == "No se pudo crear el marcador de seguimiento."
+
+
+def test_partial_storage_does_not_activate_following(monkeypatch) -> None:
+    app = load_app_module()
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app)
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
+            return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
+
+        monkeypatch.setattr(
+            app,
+            "finalize_download_storage",
+            lambda **_kwargs: {
+                "backend": "dropbox",
+                "job_status": "partial",
+                "storage_uri": "dropbox://LlangonSuite/Licitaciones/parcial",
+                "manifest_uri": "manifest-partial.json",
+                "uploaded_count": 1,
+                "skipped_existing_count": 0,
+                "failed_count": 1,
+                "would_upload_count": 0,
+                "no_changes": False,
+                "warnings": [],
+                "errors": ["No se pudo subir un fichero."],
+            },
+        )
+        handler = make_download_handler(app, payload=confirmed_download_payload(app, licitacion_id))
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        status, payload = handler.responses[-1]
+        with app.db_session() as conn:
+            seguimiento = conn.execute(
+                "SELECT seguimiento_activo, seguimiento_marker_warning FROM licitaciones WHERE id = ?",
+                (licitacion_id,),
+            ).fetchone()
+
+        assert status == HTTPStatus.OK
+        assert payload["storage"]["job_status"] == "partial"
+        assert payload["follow_marker"]["skipped"] is True
+        assert not Path(payload["carpeta"], "EnSeguimiento.llangon").exists()
+        assert seguimiento["seguimiento_activo"] == 0
+        assert "almacenamiento no terminó completamente" in seguimiento["seguimiento_marker_warning"]
+        assert get_download_jobs(app, licitacion_id)[0]["status"] == "partial"
+
+
 def test_manual_download_returns_conflict_when_monitor_holds_shared_lease() -> None:
     app = load_app_module()
     with temporary_download_app(app):
@@ -401,6 +497,46 @@ def test_email_download_job_is_requeued_when_monitor_holds_shared_lease() -> Non
     assert jobs[0]["status"] == "pending"
 
 
+@pytest.mark.parametrize("request_action", ["Descargar para ver", "Preparar ficha"])
+def test_email_download_job_success_creates_follow_marker(request_action: str) -> None:
+    app = load_app_module()
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app)
+        with app.db_session() as conn:
+            request = app.create_download_job_request(
+                conn,
+                licitacion_id,
+                timestamp=app.now_iso(),
+                request_source=app.DOWNLOAD_REQUEST_SOURCE_EMAIL_ACTION,
+                request_action=request_action,
+                request_message_id=f"<{request_action}>",
+                requested_by="nuria@example.test",
+            )
+        job_id = int(request["job_id"])
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
+            return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
+
+        with mocked_subprocess_run(app, fake_run):
+            result = app.process_download_job(job_id)
+
+        destination = Path(result["payload"]["carpeta"])
+        with app.db_session() as conn:
+            seguimiento = conn.execute(
+                "SELECT seguimiento_activo, seguimiento_marker_warning FROM licitaciones WHERE id = ?",
+                (licitacion_id,),
+            ).fetchone()
+
+        assert result["ok"] is True
+        assert result["status"] == "completed"
+        assert (destination / f"{licitacion_id}.llangon").is_file()
+        assert (destination / "EnSeguimiento.llangon").is_file()
+        assert result["payload"]["follow_marker"]["created"] is True
+        assert seguimiento["seguimiento_activo"] == 1
+        assert seguimiento["seguimiento_marker_warning"] == ""
+
+
 def test_download_endpoint_keeps_reviewed_day_closed() -> None:
     app = load_app_module()
     with temporary_download_app(app):
@@ -451,9 +587,19 @@ def test_download_endpoint_dropbox_dry_run_records_incremental_storage(monkeypat
         status, payload = handler.responses[-1]
         assert status == HTTPStatus.OK
         assert payload["storage"]["backend"] == "dropbox"
+        assert payload["storage"]["job_status"] == "completed"
         assert payload["storage"]["dry_run"] is True
         assert payload["storage"]["would_upload_count"] == 3
         assert payload["storage"]["storage_uri"] == "dropbox://LlangonSuite/Licitaciones/TEST-DL-001_1"
+        assert payload["follow_marker"]["skipped"] is True
+        assert not Path(payload["carpeta"], "EnSeguimiento.llangon").exists()
+        with app.db_session() as conn:
+            seguimiento = conn.execute(
+                "SELECT seguimiento_activo, seguimiento_marker_warning FROM licitaciones WHERE id = ?",
+                (licitacion_id,),
+            ).fetchone()
+        assert seguimiento["seguimiento_activo"] == 0
+        assert "Dropbox API" in seguimiento["seguimiento_marker_warning"]
         jobs = get_download_jobs(app, licitacion_id)
         assert jobs[0]["storage_backend"] == "dropbox"
         assert jobs[0]["storage_uri"] == "dropbox://LlangonSuite/Licitaciones/TEST-DL-001_1"
@@ -528,9 +674,14 @@ def test_download_route_success_with_valid_csrf_and_mocked_subprocess() -> None:
 def test_download_existing_folder_does_not_request_confirmation() -> None:
     app = load_app_module()
     with temporary_download_app(app):
-        licitacion_id = insert_fake_licitacion(app)
+        licitacion_id = insert_fake_licitacion(app, estado="Preparada")
         destination = default_download_destination(app, licitacion_id)
         destination.mkdir(parents=True)
+        with app.db_session() as conn:
+            conn.execute(
+                "UPDATE licitaciones SET ruta_carpeta = ? WHERE id = ?",
+                (app.folder_path_for_storage(destination), licitacion_id),
+            )
         calls = []
 
         def fake_run(args, cwd, capture_output, text, timeout):
@@ -543,11 +694,84 @@ def test_download_existing_folder_does_not_request_confirmation() -> None:
             handler.api_download_licitacion(licitacion_id)
 
         status, payload = handler.responses[-1]
+        follow_marker_exists = (destination / "EnSeguimiento.llangon").exists()
+        follow_marker_created = payload["follow_marker"]["created"]
+        follow_marker_skipped = payload["follow_marker"]["skipped"]
 
     assert status == HTTPStatus.OK
     assert payload["ok"] is True
     assert "needs_folder_confirmation" not in payload
     assert calls == [str(destination)]
+    assert follow_marker_exists is False
+    assert follow_marker_created is False
+    assert follow_marker_skipped is True
+
+
+@pytest.mark.parametrize("estado", ["Descargar para ver", "Preparar ficha"])
+def test_download_registered_folder_in_nuria_follow_state_creates_marker(estado: str) -> None:
+    app = load_app_module()
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app, estado=estado)
+        destination = default_download_destination(app, licitacion_id)
+        destination.mkdir(parents=True)
+        with app.db_session() as conn:
+            conn.execute(
+                "UPDATE licitaciones SET ruta_carpeta = ? WHERE id = ?",
+                (app.folder_path_for_storage(destination), licitacion_id),
+            )
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
+            return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
+
+        handler = make_download_handler(app)
+        with mocked_subprocess_run(app, fake_run):
+            handler.api_download_licitacion(licitacion_id)
+
+        status, payload = handler.responses[-1]
+        with app.db_session() as conn:
+            seguimiento_activo = conn.execute(
+                "SELECT seguimiento_activo FROM licitaciones WHERE id = ?",
+                (licitacion_id,),
+            ).fetchone()["seguimiento_activo"]
+
+        assert status == HTTPStatus.OK
+        assert payload["follow_marker"]["created"] is True
+        assert (destination / "EnSeguimiento.llangon").is_file()
+        assert seguimiento_activo == 1
+
+
+def test_successful_retry_marks_residual_unregistered_folder_for_following() -> None:
+    app = load_app_module()
+    with temporary_download_app(app):
+        licitacion_id = insert_fake_licitacion(app)
+        destination = default_download_destination(app, licitacion_id)
+        attempts = 0
+
+        def fake_run(args, cwd, capture_output, text, timeout):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                Path(cwd, "salida-parcial.tmp").write_text("parcial", encoding="utf-8")
+                return SimpleNamespace(returncode=2, stdout="", stderr="fallo ficticio")
+            Path(cwd, "documento-ficticio.pdf").write_bytes(b"fake pdf")
+            return SimpleNamespace(returncode=0, stdout="descarga correcta", stderr="")
+
+        first_handler = make_download_handler(app, payload=confirmed_download_payload(app, licitacion_id))
+        with mocked_subprocess_run(app, fake_run):
+            first_handler.api_download_licitacion(licitacion_id)
+            second_handler = make_download_handler(app)
+            second_handler.api_download_licitacion(licitacion_id)
+
+        first_status, _first_payload = first_handler.responses[-1]
+        second_status, second_payload = second_handler.responses[-1]
+
+        assert first_status == HTTPStatus.BAD_REQUEST
+        assert destination.is_dir()
+        assert second_status == HTTPStatus.OK
+        assert second_payload["follow_marker"]["created"] is True
+        assert (destination / "EnSeguimiento.llangon").is_file()
+        assert get_ruta_carpeta(app, licitacion_id)
 
 
 @pytest.mark.parametrize("stale_confirmation", [False, True])
@@ -562,6 +786,7 @@ def test_download_reuses_folder_found_by_unique_id_marker(stale_confirmation: bo
         licitacion_id = insert_fake_licitacion(
             app,
             ruta_carpeta=r"2026\07 JULIO\BARCELONA HOSP BELLVITGE CARPETA ANTIGUA",
+            estado="Preparada",
         )
         (marker_folder / f"{licitacion_id}.llangon").write_text("", encoding="utf-8")
         calls = []
@@ -578,6 +803,7 @@ def test_download_reuses_folder_found_by_unique_id_marker(stale_confirmation: bo
 
         status, result = handler.responses[-1]
         ruta_carpeta = get_ruta_carpeta(app, licitacion_id)
+        follow_marker_exists = (marker_folder / "EnSeguimiento.llangon").exists()
 
     assert status == HTTPStatus.OK
     assert result["ok"] is True
@@ -586,6 +812,8 @@ def test_download_reuses_folder_found_by_unique_id_marker(stale_confirmation: bo
     assert Path(result["carpeta"]) == marker_folder
     assert Path(ruta_carpeta).parts == ("2026", "07 JULIO", marker_folder.name)
     assert not (marker_folder.parent / "CARPETA DUPLICADA").exists()
+    assert follow_marker_exists is False
+    assert result["follow_marker"]["skipped"] is True
 
 
 def test_download_missing_folder_returns_confirmation_without_creating_folder() -> None:
@@ -984,6 +1212,7 @@ def test_download_endpoint_failure_does_not_update_ruta_carpeta() -> None:
         assert payload["codigo"] == 2
         assert "fallo ficticio" in payload["salida"]
         assert get_ruta_carpeta(app, licitacion_id) == ""
+        assert not Path(payload["carpeta"], "EnSeguimiento.llangon").exists()
         jobs = get_download_jobs(app, licitacion_id)
         assert len(jobs) == 1
         assert jobs[0]["status"] == "failed"

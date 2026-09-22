@@ -263,7 +263,7 @@ def test_private_search_boxes_submit_only_on_enter() -> None:
     script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
     helper = script.split("function submitSearchOnEnter", 1)[1].split("function ", 1)[0]
 
-    assert '/static/app.js?v=20260730-pc-restart' in html
+    assert '/static/app.js?v=20260822-direct-object-links' in html
     assert 'input?.addEventListener("keydown"' in helper
     assert 'event.key !== "Enter"' in helper
     assert "event.isComposing" in helper
@@ -318,22 +318,33 @@ def test_licitaciones_center_ui_is_simplified_and_has_detail_view() -> None:
     assert 'data-licitaciones-view="active"' not in html
     assert 'id="publication-type-filter"' not in html
     assert 'id="summary" hidden' in html
-    assert 'id="licitacion-detail-dialog"' in html
+    assert 'id="licitacion-detail-section"' in html
+    assert 'class="licitacion-detail-page"' in html
+    assert 'id="licitacion-detail-dialog"' not in html
     assert 'id="licitacion-detail-actions"' in html
+    assert 'id="copy-licitacion-link"' in html
     assert html.index('id="licitacion-detail-actions"') < html.index('id="close-licitacion-detail"')
-    assert "Detalle de trabajo" in html
+    assert "Centro de licitaciones" in html
     assert "PRÓXIMOS MÓDULOS" not in html
     assert '<p class="nav-group-title" data-admin-only hidden>Clientes</p>' in html
     assert 'id="clients-button"' in html
     assert 'id="cliente-envios-button"' in html
     assert 'data-nav-section="cliente-envios"' in html
     assert "Requerimientos" not in html
-    assert 'data-open-licitacion-detail="${escapeHtml(item.id)}"' in script
+    assert "function renderLicitacionAppLink" in script
+    assert "renderAppObjectLink(licitacionDetailUrl(id), id, label" in script
+    assert 'href="${escapeHtml(url)}"' in script
+    assert "data-app-route" in script
     assert 'appState.licitacionesView === "previous" ? "anuncio_previo" : "licitacion"' in script
     assert 'appState.licitacionesView !== "previous" && appState.licitacionesYear' in script
     assert 'appState.licitacionesView !== "previous" && appState.licitacionesMonth' in script
     assert 'const showFilters = !appState.currentDiaId && appState.licitacionesView !== "previous";' in script
     assert "function renderLicitacionDetailView" in script
+    assert "function parseAppRoute" in script
+    assert "function licitacionDetailUrl" in script
+    assert 'window.addEventListener("popstate"' in script
+    assert "window.history.replaceState" in script
+    assert "returnFromLicitacionDetail" in script
     assert "data-detail-tab=\"resumen\"" in script
     assert "data-detail-tab-panel=\"documentos-seguimiento\"" in script
     assert "data-detail-tab-panel=\"comentarios\"" in script
@@ -342,7 +353,7 @@ def test_licitaciones_center_ui_is_simplified_and_has_detail_view() -> None:
     assert "Copiar ruta" in script
     assert "Crear nueva actuación" in script
     assert "@media print" in styles
-    assert ".detail-dialog[open]" in styles
+    assert ".shell > .licitacion-detail-page:not([hidden])" in styles
     assert ".detail-cover" in styles
     assert ".detail-cover-side" in styles
     assert "grid-template-columns: minmax(360px, 1fr) 190px;" in styles
@@ -352,6 +363,44 @@ def test_licitaciones_center_ui_is_simplified_and_has_detail_view() -> None:
     assert "border: 1px solid #d0d5dd;" in styles
     assert ".detail-tabs" in styles
     assert ".document-card-list" in styles
+
+
+def test_app_router_covers_collection_and_object_urls_with_native_links() -> None:
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    monitor_script = (STATIC_ROOT / "tender_monitor.js").read_text(encoding="utf-8")
+
+    for route in (
+        "/app/agenda",
+        "/app/infonalia",
+        "/app/licitaciones",
+        "/app/actuaciones",
+        "/app/clientes",
+        "/app/envios-clientes",
+        "/app/buzon",
+        "/app/monitor",
+        "/app/automatizaciones",
+        "/app/configuracion",
+    ):
+        assert f'"{route}"' in script
+
+    for route_name, pattern in (
+        ("actuacion-detail", r"^\/app\/actuaciones\/(\d+)$"),
+        ("client-detail", r"^\/app\/clientes\/(\d+)$"),
+        ("cliente-envio-detail", r"^\/app\/envios-clientes\/(\d+)$"),
+        ("dia-detail", r"^\/app\/infonalia\/dias\/(\d+)$"),
+    ):
+        assert f'["{route_name}", /{pattern}/]' in script
+
+    assert r"path.match(/^\/app\/licitaciones\/(\d+)$/)" in script
+    assert "renderAppObjectLink(actuacionDetailUrl(item.id)" in script
+    assert "renderAppObjectLink(clientDetailUrl(client.id)" in script
+    assert "renderAppObjectLink(clienteEnvioDetailUrl(envio.id)" in script
+    assert "renderAppObjectLink(infonaliaDiaUrl(dia.id)" in script
+    assert "renderLicitacionAppLink(item.id, \"Abrir\")" in script
+    assert 'event.target.closest("a[data-app-route]")' in script
+    assert "event.button !== 0" in script
+    assert "event.ctrlKey || event.metaKey || event.shiftKey || event.altKey" in script
+    assert 'href="/app/licitaciones/${escapeHtml(item.id)}"' in monitor_script
 
 
 def test_all_tenders_tab_resets_year_and_month_filters() -> None:
@@ -484,7 +533,7 @@ def test_licitacion_cards_and_detail_keep_hotfix_ux_noise_out() -> None:
     assert "ID ${escapeHtml(item.id)}" in card_render
     assert "Duplicar" not in card_render
     assert "Borrar" not in card_render
-    assert ">Abrir</button>" in card_render
+    assert 'renderLicitacionAppLink(item.id, "Abrir")' in card_render
     assert "Crear nueva actuación" in card_render
     assert 'const reviewStateActions = stateActionButtons.length' in card_render
     assert 'const reviewClass = stateActionButtons.length ? " has-review-actions" : "";' in card_render

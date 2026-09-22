@@ -9,9 +9,10 @@
 ## Arranque manual de la app privada
 
 ```powershell
-cd webapp\infonalia_webapp
-python app.py
+.\.venv\Scripts\python.exe -m webapp.infonalia_webapp.serve
 ```
+
+No usar `python app.py`: los subpaquetes internos requieren el arranque como paquete. El script operativo indicado a continuación usa esta misma vía.
 
 ## Arranque operativo con scripts Windows
 
@@ -25,6 +26,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows\start_web_production.
 Invoke-WebRequest http://127.0.0.1:8787/api/health -UseBasicParsing
 ```
 
+El endpoint anterior solo confirma que el proceso web responde. La auditoría funcional local, sin conexiones externas, se ejecuta con:
+
+```powershell
+.\.venv\Scripts\python.exe -m webapp.infonalia_webapp.operational_health
+```
+
+El dashboard autenticado incorpora además el estado de tareas Windows mediante `GET /api/admin/operational-health`.
+
 ## Vista previa de la web publica
 
 ```powershell
@@ -35,7 +44,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\windows\start_public_web_prev
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest --collect-only -q
-.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .codex_tmp\pytest-suite
 ```
 
 ## Checks JavaScript
@@ -60,6 +69,7 @@ python -m webapp.infonalia_webapp.monitor.scheduler --status
 python -m webapp.infonalia_webapp.monitor.scheduler --dry-run
 python -m webapp.infonalia_webapp.automation_orchestrator --status
 python -m webapp.infonalia_webapp.backup_sqlite --dry-run
+.\.venv\Scripts\python.exe -m webapp.infonalia_webapp.operational_health
 ```
 
 ## Tests de descargadores sin efectos reales

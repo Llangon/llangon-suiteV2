@@ -24,8 +24,8 @@ def temporary_rate_limiter(app, max_attempts: int = 2):
         app.LOGIN_RATE_LIMITER = old_limiter
 
 
-def make_login_handler(app, username: str, password: str, ip: str = "127.0.0.1"):
-    body = urlencode({"username": username, "password": password}).encode("utf-8")
+def make_login_handler(app, username: str, password: str, ip: str = "127.0.0.1", next_path: str = ""):
+    body = urlencode({"username": username, "password": password, "next": next_path}).encode("utf-8")
     handler = object.__new__(app.InfonaliaHandler)
     handler.headers = {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -145,6 +145,65 @@ def test_successful_login_clears_failed_attempts_and_sets_cookie() -> None:
         assert payload
         assert payload["csrf"]
         assert limiter.is_limited(login_key) is False
+
+
+def test_successful_login_returns_to_safe_deep_link() -> None:
+    app = load_app_module()
+
+    with temporary_app_database(app), temporary_rate_limiter(app):
+        success = make_login_handler(
+            app,
+            "admin_test",
+            "admin_password_test",
+            next_path="/app/licitaciones/336?tab=documentos-seguimiento",
+        )
+        success.handle_login()
+
+        assert success.statuses[-1] == HTTPStatus.SEE_OTHER
+        assert last_header(success, "Location") == "/app/licitaciones/336?tab=documentos-seguimiento"
+
+
+def test_login_rejects_external_return_destination() -> None:
+    app = load_app_module()
+
+    with temporary_app_database(app), temporary_rate_limiter(app):
+        success = make_login_handler(
+            app,
+            "admin_test",
+            "admin_password_test",
+            next_path="https://example.test/steal-session",
+        )
+        success.handle_login()
+
+        assert success.statuses[-1] == HTTPStatus.SEE_OTHER
+        assert last_header(success, "Location") == "/app"
+
+
+def test_failed_login_preserves_safe_deep_link() -> None:
+    app = load_app_module()
+
+    with temporary_app_database(app), temporary_rate_limiter(app):
+        failed = make_login_handler(
+            app,
+            "admin_test",
+            "bad-password",
+            next_path="/app/licitaciones/336",
+        )
+        failed.handle_login()
+
+        assert failed.statuses[-1] == HTTPStatus.SEE_OTHER
+        assert last_header(failed, "Location") == "/login?error=1&next=%2Fapp%2Flicitaciones%2F336"
+
+
+def test_unauthenticated_deep_link_redirects_to_login_with_return_destination() -> None:
+    app = load_app_module()
+    handler = make_logout_handler(app, "GET", authenticated=False)
+    handler.path = "/app/licitaciones/336?tab=ai"
+
+    handler.do_GET()
+
+    assert handler.statuses[-1] == HTTPStatus.SEE_OTHER
+    assert last_header(handler, "Location") == "/login?next=%2Fapp%2Flicitaciones%2F336%3Ftab%3Dai"
 
 
 def test_current_user_lazily_adds_csrf_to_old_signed_session() -> None:

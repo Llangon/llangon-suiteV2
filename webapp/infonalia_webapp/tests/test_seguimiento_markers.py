@@ -8,6 +8,7 @@ from webapp.infonalia_webapp.seguimiento_markers import (
     allowed_marker_folder,
     create_follow_marker_for_licitacion,
     create_id_marker_for_licitacion,
+    ensure_follow_marker,
     ensure_id_marker,
     find_id_markers,
     get_marker_status_for_licitacion,
@@ -61,6 +62,26 @@ def test_ensure_id_marker_creates_exact_empty_file_without_follow_marker(tmp_pat
     second = ensure_id_marker(33, folder)
     assert second["created"] is False
     assert (folder / "33.llangon").read_text(encoding="utf-8") == "manual"
+
+
+def test_ensure_follow_marker_creates_exact_empty_file_idempotently(tmp_path: Path) -> None:
+    folder = tmp_path / "2026" / "06 JUNIO" / "licitacion"
+    folder.mkdir(parents=True)
+
+    result = ensure_follow_marker(folder)
+
+    marker = folder / FOLLOW_MARKER_NAME
+    assert result["ok"] is True
+    assert result["created"] is True
+    assert marker.read_text(encoding="utf-8") == ""
+
+    marker.write_text("manual", encoding="utf-8")
+    second = ensure_follow_marker(folder)
+
+    assert second["ok"] is True
+    assert second["created"] is False
+    assert second["exists"] is True
+    assert marker.read_text(encoding="utf-8") == "manual"
 
 
 def test_scan_markers_only_enters_valid_year_roots_and_recurses_inside(tmp_path: Path) -> None:

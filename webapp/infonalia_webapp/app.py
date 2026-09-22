@@ -23,7 +23,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Sequence
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
 
 LOGGER = logging.getLogger(__name__)
@@ -450,6 +450,7 @@ except ImportError:
 try:
     from .ai.config import get_ai_config
     from .ai.file_selection import AIFileSelectionError, list_ai_files
+    from .ai.gemini_provider import AIProviderError
     from .ai.notifications import (
         EmailListError,
         create_job_notifications,
@@ -473,6 +474,7 @@ try:
 except ImportError:
     from ai.config import get_ai_config
     from ai.file_selection import AIFileSelectionError, list_ai_files
+    from ai.gemini_provider import AIProviderError
     from ai.notifications import (
         EmailListError,
         create_job_notifications,
@@ -493,6 +495,47 @@ except ImportError:
         request_ai_analysis,
     )
     from ai.worker_launcher import start_ai_worker_for_job
+
+try:
+    from .portal_publication import (
+        PortalAISchemaError,
+        PortalFileSelectionError,
+        PortalGenerationError,
+        PortalRemoteError,
+        approve_portal_review,
+        build_ai_portal_preview,
+        build_portal_model,
+        ensure_portal_schema,
+        list_portal_files,
+        portal_provider_error_payload,
+        publication_rows,
+        publish_portal,
+        recover_portal_preview,
+        rotate_portal_access_code,
+        resolve_portal_files,
+        save_portal_draft,
+        sync_portal_events,
+    )
+except ImportError:
+    from portal_publication import (
+        PortalAISchemaError,
+        PortalFileSelectionError,
+        PortalGenerationError,
+        PortalRemoteError,
+        approve_portal_review,
+        build_ai_portal_preview,
+        build_portal_model,
+        ensure_portal_schema,
+        list_portal_files,
+        portal_provider_error_payload,
+        publication_rows,
+        publish_portal,
+        recover_portal_preview,
+        rotate_portal_access_code,
+        resolve_portal_files,
+        save_portal_draft,
+        sync_portal_events,
+    )
 
 try:
     from .notification_rendering import (
@@ -605,6 +648,7 @@ try:
     from .seguimiento_markers import (
         create_follow_marker_for_licitacion,
         create_id_marker_for_licitacion,
+        ensure_follow_marker,
         ensure_id_marker,
         get_marker_status_for_licitacion,
         marker_status_for_folder,
@@ -616,6 +660,7 @@ except ImportError:
     from seguimiento_markers import (
         create_follow_marker_for_licitacion,
         create_id_marker_for_licitacion,
+        ensure_follow_marker,
         ensure_id_marker,
         get_marker_status_for_licitacion,
         marker_status_for_folder,
@@ -647,6 +692,7 @@ try:
         set_task_enabled as set_internal_automation_enabled,
         windows_tasks_payload,
     )
+
 except ImportError:
     from monitor.service import MonitorError, run_automation_task, run_monitor
     from monitor.repository import ensure_monitor_schema, get_monitor_run, list_monitor_runs
@@ -670,6 +716,11 @@ except ImportError:
         set_task_enabled as set_internal_automation_enabled,
         windows_tasks_payload,
     )
+
+try:
+    from .operational_health import build_operational_health
+except ImportError:
+    from operational_health import build_operational_health
 
 try:
     from .actuacion_indicators import (
@@ -835,15 +886,15 @@ except ImportError:
 APP_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_ROOT.parent
 REPOSITORY_ROOT = PROJECT_ROOT.parent
+ENV_PATH = APP_ROOT / ".env"
+load_env_file(ENV_PATH)
 TOOLS_ROOT = REPOSITORY_ROOT / "herramientas_python"
 STATIC_ROOT = APP_ROOT / "static"
-DATA_ROOT = APP_ROOT / "data"
+DATA_ROOT = Path(os.environ.get("LLANGON_DATA_ROOT", str(APP_ROOT / "data"))).expanduser().resolve()
 DOWNLOAD_ROOT = DATA_ROOT / "descargas"
 DB_PATH = DATA_ROOT / "infonalia.db"
 SECRET_PATH = DATA_ROOT / "secret.key"
 LAUNCHER_PATH = TOOLS_ROOT / "Descargar_Licitacion.py"
-ENV_PATH = APP_ROOT / ".env"
-load_env_file(ENV_PATH)
 
 
 ADMIN_USER = required_env("INFONALIA_ADMIN_USER")
@@ -897,6 +948,7 @@ LOGIN_RATE_LIMITER = LoginRateLimiter(
 NURIA_ESTADOS = NURIA_VISIBLE_STATES
 NURIA_ESTADOS_VALIDOS = set(NURIA_REVIEW_STATES)
 NURIA_LICITACIONES_ESTADOS = AGENDA_LICITACION_STATES
+AUTO_FOLLOW_STATES = {ESTADO_DESCARGAR_PARA_VER, ESTADO_PREPARAR_FICHA}
 CALENDARIO_ESTADOS = AGENDA_LICITACION_STATES
 GESTIONADAS_ESTADOS = [
     ESTADO_OFERTA_ENVIADA,
@@ -1070,6 +1122,7 @@ def init_db() -> None:
             )
             """
         )
+        ensure_portal_schema(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS notificaciones (
@@ -3757,6 +3810,14 @@ def execute_download_for_destination(
     source_url: str,
 ) -> tuple[HTTPStatus, dict[str, object]]:
     url = clean_text(source_url)
+    destination_existed_before = destino.exists()
+    registered_folder_before = bool(clean_text(row["ruta_carpeta"]))
+    follow_requested_by_state = normalize_licitacion_estado(row["estado"], default="") in AUTO_FOLLOW_STATES
+    should_create_follow_marker = (
+        not destination_existed_before
+        or not registered_folder_before
+        or follow_requested_by_state
+    )
     destino.mkdir(parents=True, exist_ok=True)
     write_http_url(
         destino,
@@ -3868,10 +3929,55 @@ def execute_download_for_destination(
             },
         )
 
+    storage_status = str(storage_result.get("job_status") or DOWNLOAD_JOB_STATUS_COMPLETED)
+    storage_backend = clean_text(storage_result.get("backend")) or "local"
     marker_result = ensure_id_marker(licitacion_id, destino)
     marker_status = marker_status_for_folder(licitacion_id, destino)
-    if marker_result.get("error") and not marker_status.get("warning"):
-        marker_status["warning"] = marker_result.get("error")
+    if not should_create_follow_marker:
+        follow_marker_result = {
+            "ok": True,
+            "created": False,
+            "exists": bool(marker_status.get("follow_marker_exists")),
+            "path": clean_text(marker_status.get("follow_marker_path")),
+            "folder_path": str(destino),
+            "error": "",
+            "message": "Seguimiento automático omitido porque la carpeta ya estaba registrada.",
+            "skipped": True,
+        }
+    elif storage_status != DOWNLOAD_JOB_STATUS_COMPLETED:
+        follow_marker_result = {
+            "ok": False,
+            "created": False,
+            "exists": False,
+            "path": clean_text(marker_status.get("follow_marker_path")),
+            "folder_path": str(destino),
+            "error": "Seguimiento no activado porque el almacenamiento no terminó completamente.",
+            "message": "",
+            "skipped": True,
+        }
+    elif storage_backend == "dropbox":
+        follow_marker_result = {
+            "ok": False,
+            "created": False,
+            "exists": False,
+            "path": clean_text(marker_status.get("follow_marker_path")),
+            "folder_path": str(destino),
+            "error": (
+                "Seguimiento no activado: el backend experimental Dropbox API no publica "
+                "marcadores físicos para el monitor."
+            ),
+            "message": "",
+            "skipped": True,
+        }
+    else:
+        follow_marker_result = ensure_follow_marker(destino)
+        marker_status = marker_status_for_folder(licitacion_id, destino)
+    marker_warnings = [
+        clean_text(marker_status.get("warning")),
+        clean_text(marker_result.get("error")),
+        clean_text(follow_marker_result.get("error")),
+    ]
+    marker_status["warning"] = "; ".join(dict.fromkeys(item for item in marker_warnings if item))
 
     timestamp = now_iso()
     updates = {
@@ -3885,7 +3991,6 @@ def execute_download_for_destination(
     }
 
     set_clause = ", ".join(f"{key} = ?" for key in updates)
-    storage_status = str(storage_result.get("job_status") or DOWNLOAD_JOB_STATUS_COMPLETED)
     storage_errors = storage_result.get("errors") or []
     storage_error_message = "; ".join(str(error) for error in storage_errors)[:2000]
     with db_session() as conn:
@@ -3954,8 +4059,10 @@ def execute_download_for_destination(
             "ruta_carpeta": ruta_guardada,
             "salida": salida,
             "marker": marker_result,
+            "follow_marker": follow_marker_result,
             "storage": {
                 "backend": storage_result.get("backend"),
+                "job_status": storage_status,
                 "dry_run": storage_result.get("dry_run"),
                 "mode": storage_result.get("mode"),
                 "storage_uri": storage_result.get("storage_uri"),
@@ -4643,7 +4750,10 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             return
 
         if not self.current_user():
-            self.redirect("/login")
+            if path == "/app" or path.startswith("/app/"):
+                self.redirect(f"/login?{urlencode({'next': self.path})}")
+            else:
+                self.redirect("/login")
             return
 
         if path == "/app" or path.startswith("/app/"):
@@ -4710,6 +4820,18 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_list_ai_files(int(licitacion_id))
+        elif path.startswith("/api/licitaciones/") and path.endswith("/portal-files"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/portal-files").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_list_portal_files(int(licitacion_id))
+        elif path.startswith("/api/licitaciones/") and path.endswith("/portal-publications"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/portal-publications").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_list_portal_publications(int(licitacion_id))
         elif path.startswith("/api/licitaciones/") and path.endswith("/ai-summary"):
             licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ai-summary").strip("/")
             if not licitacion_id.isdigit():
@@ -4775,6 +4897,8 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             self.api_admin_automation_diagnostic()
         elif path == "/api/admin/automation/windows-tasks":
             self.api_admin_automation_windows_tasks()
+        elif path == "/api/admin/operational-health":
+            self.api_admin_operational_health()
         elif path.startswith("/api/tender-monitor"):
             self.api_tender_monitor_get(path, parsed.query)
         elif path == "/api/monitor/runs":
@@ -4959,6 +5083,27 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
                 return
             self.api_generate_ai_summary(int(licitacion_id), force=False)
+        elif path.startswith("/api/licitaciones/") and path.endswith("/portal-preview/generate"):
+            licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/portal-preview/generate").strip("/")
+            if not licitacion_id.isdigit():
+                self.send_json({"error": "Id no valido"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.api_generate_portal_preview(int(licitacion_id))
+        elif path.startswith("/api/portal-publications/") and path.endswith("/publish"):
+            publication_id = path.removeprefix("/api/portal-publications/").removesuffix("/publish").strip("/")
+            self.api_publish_portal(publication_id)
+        elif path.startswith("/api/portal-publications/") and path.endswith("/recover-preview"):
+            publication_id = path.removeprefix("/api/portal-publications/").removesuffix("/recover-preview").strip("/")
+            self.api_recover_portal_preview(publication_id)
+        elif path.startswith("/api/portal-publications/") and path.endswith("/rotate-access-code"):
+            publication_id = path.removeprefix("/api/portal-publications/").removesuffix("/rotate-access-code").strip("/")
+            self.api_rotate_portal_access_code(publication_id)
+        elif path.startswith("/api/portal-publications/") and path.endswith("/approve-review"):
+            publication_id = path.removeprefix("/api/portal-publications/").removesuffix("/approve-review").strip("/")
+            self.api_approve_portal_review(publication_id)
+        elif path.startswith("/api/portal-publications/") and path.endswith("/sync-events"):
+            publication_id = path.removeprefix("/api/portal-publications/").removesuffix("/sync-events").strip("/")
+            self.api_sync_portal_events(publication_id)
         elif path.startswith("/api/licitaciones/") and path.endswith("/ai-summary/regenerate"):
             licitacion_id = path.removeprefix("/api/licitaciones/").removesuffix("/ai-summary/regenerate").strip("/")
             if not licitacion_id.isdigit():
@@ -5267,6 +5412,10 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if method == "POST":
             if path.startswith("/api/tender-monitor"):
                 return True
+            if path.startswith("/api/portal-publications/"):
+                return True
+            if path.startswith("/api/licitaciones/") and path.endswith("/portal-preview/generate"):
+                return True
             if path == "/api/justificaciones-baja" or path.startswith("/api/justificaciones-baja/"):
                 return True
             if path in {
@@ -5431,27 +5580,47 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
             form = parse_qs(self.read_body().decode("utf-8"))
             username = form.get("username", [""])[0]
             password = form.get("password", [""])[0]
+            requested_next = form.get("next", [""])[0]
         else:
             data = self.read_json()
             username = str(data.get("username", ""))
             password = str(data.get("password", ""))
+            requested_next = str(data.get("next", ""))
+
+        next_path = self.safe_app_return_path(requested_next)
+
+        def failed_login_location(error: str) -> str:
+            params = {"error": error}
+            if next_path != "/app":
+                params["next"] = next_path
+            return f"/login?{urlencode(params)}"
 
         login_key = normalize_login_key(get_client_ip(self), username)
         if LOGIN_RATE_LIMITER.is_limited(login_key):
-            self.redirect("/login?error=rate")
+            self.redirect(failed_login_location("rate"))
             return
 
         user = get_user_record(username, include_password=True)
         if user and user.get("active") and verify_password(user.get("password_hash"), password):
             if maintenance_mode_enabled() and user.get("role") != "admin":
-                self.redirect("/login?error=maintenance")
+                self.redirect(failed_login_location("maintenance"))
                 return
             LOGIN_RATE_LIMITER.clear(login_key)
             token = make_token(username, str(user["role"]))
-            self.redirect("/app", cookie=token)
+            self.redirect(next_path, cookie=token)
         else:
             LOGIN_RATE_LIMITER.record_failure(login_key)
-            self.redirect("/login?error=1")
+            self.redirect(failed_login_location("1"))
+
+    @staticmethod
+    def safe_app_return_path(value: object) -> str:
+        candidate = str(value or "").strip()
+        if not candidate or "\r" in candidate or "\n" in candidate:
+            return "/app"
+        parsed = urlparse(candidate)
+        if parsed.scheme or parsed.netloc or parsed.path not in {"/app"} and not parsed.path.startswith("/app/"):
+            return "/app"
+        return candidate
 
     def api_me(self) -> None:
         user = self.current_user()
@@ -5817,6 +5986,18 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
         if not self.require_admin():
             return
         self.send_json(windows_tasks_payload())
+
+    def api_admin_operational_health(self) -> None:
+        if not self.require_admin():
+            return
+        windows = windows_tasks_payload()
+        self.send_json(
+            build_operational_health(
+                db_path=DB_PATH,
+                environ=os.environ,
+                windows_tasks=windows,
+            )
+        )
 
     def api_admin_automation_run_task(self, task_key: str) -> None:
         if not self.require_admin():
@@ -8762,6 +8943,166 @@ class InfonaliaHandler(BaseHTTPRequestHandler):
                 )
         except AIFileSelectionError as exc:
             self.send_json({"error": str(exc), "items": []}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(payload)
+
+    def api_list_portal_files(self, licitacion_id: int) -> None:
+        try:
+            with db_session() as conn:
+                row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+                if not row:
+                    self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                    return
+                payload = list_portal_files(row)
+        except PortalFileSelectionError as exc:
+            self.send_json({"error": str(exc), "items": [], "can_prepare": False}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(payload)
+
+    def api_list_portal_publications(self, licitacion_id: int) -> None:
+        with db_session() as conn:
+            exists = conn.execute("SELECT 1 FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+            if not exists:
+                self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                return
+            payload = {"items": publication_rows(conn, licitacion_id)}
+        self.send_json(payload)
+
+    def api_generate_portal_preview(self, licitacion_id: int) -> None:
+        """Genera y audita el modelo en memoria; nunca publica ni escribe en la carpeta fuente."""
+        try:
+            data = self.read_json()
+        except json.JSONDecodeError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        selected_files = data.get("selected_files")
+        if not isinstance(selected_files, list):
+            self.send_json({"error": "selected_files debe ser una lista."}, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            with db_session() as conn:
+                row = conn.execute("SELECT * FROM licitaciones WHERE id = ?", (licitacion_id,)).fetchone()
+                if not row:
+                    self.send_json({"error": "Licitacion no encontrada"}, HTTPStatus.NOT_FOUND)
+                    return
+                ficha, downloads = resolve_portal_files(row, selected_files)
+                mode = clean_text(data.get("mode")) or "local"
+                if mode == "ai":
+                    payload = build_ai_portal_preview(row, ficha, downloads)
+                elif mode == "local":
+                    payload = build_portal_model(row, ficha, downloads)
+                else:
+                    self.send_json({"error": "Modo de generación no válido."}, HTTPStatus.BAD_REQUEST)
+                    return
+                publication = save_portal_draft(
+                    conn,
+                    licitacion_id=licitacion_id,
+                    ficha_relative_path=str(ficha["relative_path"]),
+                    model=payload,
+                    selected_files=[str(item) for item in selected_files],
+                )
+                payload["publication"] = publication
+        except AIProviderError as exc:
+            self.send_json(portal_provider_error_payload(exc), HTTPStatus.BAD_REQUEST)
+            return
+        except (PortalFileSelectionError, PortalGenerationError, PortalAISchemaError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as exc:
+            LOGGER.exception("No se pudo preparar la vista web local de la licitación %s", licitacion_id)
+            self.send_json(
+                {
+                    "error": "No se pudo preparar la vista web local.",
+                    "error_code": "PORTAL_PREVIEW_INTERNAL_ERROR",
+                    "error_detail": f"{type(exc).__name__}: {exc}",
+                },
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+        try:
+            self.send_json(payload)
+        except (TypeError, ValueError) as exc:
+            LOGGER.exception("No se pudo serializar la vista web local de la licitación %s", licitacion_id)
+            self.send_json(
+                {
+                    "error": f"La vista se generó, pero el navegador no pudo recibirla ({type(exc).__name__}).",
+                    "error_code": "PORTAL_RESPONSE_ERROR",
+                },
+                HTTPStatus.BAD_REQUEST,
+            )
+
+    def api_publish_portal(self, publication_id: str) -> None:
+        if not publication_id or not self.require_admin():
+            return
+        try:
+            with db_session() as conn:
+                payload = publish_portal(conn, publication_id)
+        except PortalRemoteError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        configured = os.environ.get("LLANGON_PORTAL_NOTIFY_EMAILS", "")
+        recipients = [item for item in split_email_recipients(configured) if is_valid_email_address(item)]
+        if not recipients:
+            user_email = clean_text((self.current_user() or {}).get("email"))
+            if is_valid_email_address(user_email):
+                recipients = [user_email]
+        if recipients:
+            subject = "Portal de licitación publicado"
+            body = (
+                "El portal de licitación se ha publicado correctamente.\n\n"
+                f"Enlace: {payload.get('public_url', '')}\n"
+                f"Documentos cargados: {payload.get('files_uploaded', 0)}\n\n"
+                "La actividad de accesos y descargas aparecerá en la pestaña Portal web de la licitación."
+            )
+            sent_at, email_error = send_notification_email(None, subject, body, email_recipients=recipients)
+            payload["notification_email"] = {"sent": bool(sent_at), "recipients": recipients, "error": email_error or ""}
+        else:
+            payload["notification_email"] = {"sent": False, "recipients": [], "error": "No hay destinatarios configurados."}
+        self.send_json(payload)
+
+    def api_recover_portal_preview(self, publication_id: str) -> None:
+        if not publication_id:
+            self.send_json({"error": "Publicación no válida."}, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            with db_session() as conn:
+                payload = recover_portal_preview(conn, publication_id)
+        except (ValueError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(payload)
+
+    def api_rotate_portal_access_code(self, publication_id: str) -> None:
+        if not publication_id or not self.require_admin():
+            return
+        try:
+            with db_session() as conn:
+                payload = rotate_portal_access_code(conn, publication_id)
+        except (PortalRemoteError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(payload)
+
+    def api_approve_portal_review(self, publication_id: str) -> None:
+        if not publication_id or not self.require_admin():
+            return
+        try:
+            with db_session() as conn:
+                payload = approve_portal_review(conn, publication_id)
+        except (ValueError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(payload)
+
+    def api_sync_portal_events(self, publication_id: str) -> None:
+        if not publication_id:
+            self.send_json({"error": "Publicación no válida."}, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            with db_session() as conn:
+                payload = sync_portal_events(conn, publication_id)
+        except PortalRemoteError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         self.send_json(payload)
 

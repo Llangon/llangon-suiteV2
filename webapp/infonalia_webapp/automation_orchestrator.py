@@ -1626,7 +1626,7 @@ def windows_tasks_payload() -> dict[str, object]:
         script = "; ".join([
             "$names=@(" + ",".join("'" + item + "'" for item in names) + ")",
             "$items=@()",
-            "foreach($n in $names){$t=Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue; if($t){$i=Get-ScheduledTaskInfo -TaskName $n; $items += [pscustomobject]@{name=$n;state=$t.State.ToString();enabled=$t.Settings.Enabled;wake_to_run=$t.Settings.WakeToRun;last_run=$i.LastRunTime;next_run=$i.NextRunTime;result=$i.LastTaskResult;action=($t.Actions|%{\"$($_.Execute) $($_.Arguments)\"}) -join ' || '}}}",
+            "foreach($n in $names){$t=Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue; if($t){$i=Get-ScheduledTaskInfo -TaskName $n; $items += [pscustomobject]@{name=$n;state=$t.State.ToString();enabled=$t.Settings.Enabled;wake_to_run=$t.Settings.WakeToRun;last_run=$i.LastRunTime.ToString('o');next_run=$i.NextRunTime.ToString('o');result=$i.LastTaskResult;action=($t.Actions|%{\"$($_.Execute) $($_.Arguments)\"}) -join ' || '}}}",
             "$items | ConvertTo-Json -Depth 4",
         ])
         completed = subprocess.run(["powershell.exe", "-NoProfile", "-Command", script], capture_output=True, text=True, timeout=10)

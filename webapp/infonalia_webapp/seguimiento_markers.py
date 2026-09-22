@@ -189,6 +189,20 @@ def create_marker_file(
     )
 
 
+def ensure_follow_marker(folder_path: Path | str) -> dict[str, object]:
+    """Create the physical follow marker in an already materialized tender folder."""
+
+    folder = Path(folder_path)
+    marker_path = folder / FOLLOW_MARKER_NAME
+    if not folder.exists() or not folder.is_dir():
+        return _marker_result(
+            path=marker_path,
+            folder_path=folder,
+            error="La carpeta de licitacion no existe.",
+        )
+    return create_marker_file(marker_path, folder_path=folder)
+
+
 def create_id_marker_for_licitacion(
     row: sqlite3.Row | dict[str, object],
     *,

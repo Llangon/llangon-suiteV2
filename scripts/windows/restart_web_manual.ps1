@@ -205,6 +205,13 @@ if (-not (Test-Path -LiteralPath $StartScript)) {
     exit 3
 }
 
+# El reinicio manual es la vía segura de uso diario: la suite privada nunca
+# debe quedar expuesta a la red. El túnel de Cloudflare apunta exclusivamente
+# al servidor público independiente del puerto 8790.
+$env:INFONALIA_HOST = "127.0.0.1"
+$env:INFONALIA_ALLOW_NON_LOOPBACK = "0"
+$env:INFONALIA_PORT = [string]$Port
+
 Start-Process powershell.exe `
     -ArgumentList @("-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $StartScript) `
     -WindowStyle Hidden `
